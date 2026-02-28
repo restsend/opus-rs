@@ -61,7 +61,6 @@ fn celt_loopback_160bytes() {
     let start_idx = 4 * frame_size;
     let end_idx = 9 * frame_size;
     let mut best_snr: f32 = -100.0;
-    let mut best_delay = 0;
     for delay in 0..(frame_size * 2) {
         let mut s_e = 0.0f64;
         let mut n_e = 0.0f64;
@@ -82,7 +81,6 @@ fn celt_loopback_160bytes() {
         let snr = 10.0 * (s_e / (n_e + 1e-12)).log10() as f32;
         if snr > best_snr {
             best_snr = snr;
-            best_delay = delay;
         }
     }
 

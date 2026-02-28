@@ -10,8 +10,11 @@ use std::path::Path;
 #[derive(Debug, Clone)]
 struct WavHeader {
     sample_rate: u32,
+    #[allow(unused)]
     bits_per_sample: u16,
+    #[allow(unused)]
     num_channels: u16,
+    #[allow(unused)]
     data_size: u32,
 }
 
