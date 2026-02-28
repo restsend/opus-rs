@@ -1,0 +1,14 @@
+[package]
+name = "opus-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+num-complex = "0.4"
+rustfft = "6.4"
+once_cell = "1.17"
+
+[dev-dependencies]
+opusic-sys = "0.5.8"
+
+[build-dependencies]
