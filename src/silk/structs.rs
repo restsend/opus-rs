@@ -1,5 +1,29 @@
 use crate::silk::define::*;
 
+/// Stereo encoder state (C: sStereo)
+#[derive(Clone)]
+pub struct SilkStereoState {
+    /// Mid channel overlap buffer
+    pub s_mid: [i16; 2],
+    /// Side channel overlap buffer
+    pub s_side: [i16; 2],
+    /// Left channel previous (for prediction)
+    pub left: i16,
+    /// Current frame's side channel data (for stereo encoding)
+    pub side: Vec<i16>,
+}
+
+impl Default for SilkStereoState {
+    fn default() -> Self {
+        Self {
+            s_mid: [0; 2],
+            s_side: [0; 2],
+            left: 0,
+            side: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct NLSFCodebook {
     pub n_vectors: i16,
@@ -30,6 +54,12 @@ pub struct SideInfoIndices {
     pub per_index: i8,
     pub ltp_scale_index: i8,
     pub seed: i8,
+    /// Stereo prediction index
+    pub pred_idx: i8,
+    /// Stereo side channel index
+    pub side_idx: i8,
+    /// Flag for mid-only encoding
+    pub only_middle: i8,
 }
 
 impl Default for SideInfoIndices {
@@ -47,6 +77,9 @@ impl Default for SideInfoIndices {
             per_index: 0,
             ltp_scale_index: 0,
             seed: 0,
+            pred_idx: 0,
+            side_idx: 0,
+            only_middle: 0,
         }
     }
 }
@@ -161,6 +194,8 @@ pub struct SilkEncoderStateCommon {
     pub lbrr_gain_increases: i32,
     pub lbrr_flags: [i32; MAX_FRAMES_PER_PACKET],
     pub prefill_flag: i32,
+    /// Number of channels (1 = mono, 2 = stereo)
+    pub n_channels: i32,
 }
 
 impl Default for SilkEncoderStateCommon {
@@ -227,6 +262,7 @@ impl Default for SilkEncoderStateCommon {
             lbrr_gain_increases: 0,
             lbrr_flags: [0; MAX_FRAMES_PER_PACKET],
             prefill_flag: 0,
+            n_channels: 1,
         }
     }
 }
@@ -240,8 +276,8 @@ pub struct SilkEncoderState {
     pub res_nrg_smth: i32,
     pub pitch_estimation_lpc_order: i32,
     pub ps_nlsf_cb: Option<&'static NLSFCodebook>,
-    /// 2-sample overlap buffer between frames (C: sStereo.sMid)
-    pub s_mid: [i16; 2],
+    /// Stereo encoder state (C: sStereo)
+    pub stereo: SilkStereoState,
     /// Resampler delay buffer (C: resampler_state.delayBuf).
     /// Size must be at least Fs_in_kHz (max 48 for 48kHz).
     pub resampler_delay_buf: [i16; 48],
@@ -258,7 +294,7 @@ impl Default for SilkEncoderState {
             res_nrg_smth: 0,
             pitch_estimation_lpc_order: 0,
             ps_nlsf_cb: None,
-            s_mid: [0; 2],
+            stereo: SilkStereoState::default(),
             resampler_delay_buf: [0; 48],
         }
     }

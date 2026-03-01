@@ -1,4 +1,6 @@
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use std::hint::black_box;
+
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use opus_rs::silk::lpc_analysis::silk_burg_modified_fix;
 use opus_rs::silk::sigproc_fix::{
     silk_autocorr, silk_inner_prod_aligned, silk_lpc_analysis_filter,
@@ -307,5 +309,6 @@ criterion_group!(
     bench_inner_prod,
     bench_lpc_analysis_filter,
     bench_silk_vs_c,
+    bench_opus_encode_celt,
 );
 criterion_main!(benches);

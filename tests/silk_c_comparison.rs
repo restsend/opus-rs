@@ -62,7 +62,6 @@ fn test_rust_vs_c_silk_encode() {
     );
 
     // Find first byte difference
-    let max_len = c_opus.len().max(rust_opus.len());
     let min_len = c_opus.len().min(rust_opus.len());
     let mut first_diff = None;
     for i in 0..min_len {
@@ -103,7 +102,7 @@ fn test_rust_vs_c_silk_encode() {
 
     // Multi-frame test: encode 5 consecutive frames
     println!("\n=== Multi-frame comparison (5 frames) ===");
-    let mut c_enc = unsafe {
+    let c_enc = unsafe {
         let mut err = 0i32;
         let enc =
             opusic_sys::opus_encoder_create(8000, 1, opusic_sys::OPUS_APPLICATION_VOIP, &mut err);

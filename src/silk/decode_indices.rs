@@ -123,3 +123,25 @@ pub fn silk_decode_indices(
     /* Decode seed */
     ps_dec.indices.seed = ps_range_dec.decode_icdf(&SILK_UNIFORM4_ICDF, 8) as i8;
 }
+
+/// Decode stereo prediction parameters
+pub fn silk_decode_stereo(
+    ps_range_dec: &mut RangeCoder,
+) -> (i8, i8, i8) {
+    // Decode whether we're only decoding mid (mono)
+    let only_middle = ps_range_dec.decode_icdf(&SILK_STEREO_ONLY_CODE_MID_ICDF, 8) as i8;
+
+    if only_middle == 0 {
+        // Decode the joint stereo index
+        let joint_idx = ps_range_dec.decode_icdf(&SILK_STEREO_PRED_JOINT_ICDF, 8) as i8;
+
+        // Extract side_idx and pred_idx from joint index
+        // joint_idx = side_idx * 5 + (pred_idx >> 2)
+        let side_idx = joint_idx / 5;
+        let pred_idx = (joint_idx % 5) * 4; // Scale back to 0-12 (multiply by 4)
+
+        (side_idx, pred_idx, only_middle)
+    } else {
+        (0, 0, only_middle)
+    }
+}

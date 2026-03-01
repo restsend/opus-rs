@@ -307,9 +307,6 @@ fn silk_noise_shape_quantizer(
     let mut tmp2: i32;
     let mut s_lf_ar_shp_q14: i32;
 
-    #[cfg(debug_assertions)]
-    let debug_nsq = std::env::var("SILK_DEBUG_NSQ").is_ok();
-
     let gain_q10 = gain_q16 >> 6;
 
     /* Compute base indices for lagged access (before loop, as in C) */
@@ -403,23 +400,6 @@ fn silk_noise_shape_quantizer(
 
         r_q10 = x_sc_q10[i] - tmp1; /* residual error Q10 */
 
-        /* Debug: dump first few samples per subframe */
-        #[cfg(debug_assertions)]
-        if debug_nsq && i < 5 {
-            eprintln!(
-                "  nsq[sf={},i={}]: x_sc_q10={} lpc_pred_q10={} n_ar_q12={} n_lf_q12={} tmp1={} r_q10={} rand_seed={}",
-                _subfr_idx,
-                i,
-                x_sc_q10[i],
-                lpc_pred_q10,
-                n_ar_q12,
-                n_lf_q12,
-                tmp1,
-                r_q10,
-                nsq.rand_seed
-            );
-        }
-
         /* Flip sign depending on dither */
         if nsq.rand_seed < 0 {
             r_q10 = -r_q10;
@@ -475,14 +455,6 @@ fn silk_noise_shape_quantizer(
         }
 
         pulses[i] = silk_rshift_round(q1_q10, 10) as i8;
-
-        #[cfg(debug_assertions)]
-        if debug_nsq && i < 5 {
-            eprintln!(
-                "  nsq[sf={},i={}]: pulse={} q1_q10={} offset_q10={} rd1={} rd2={}",
-                _subfr_idx, i, pulses[i], q1_q10, offset_q10, rd1_q20, rd2_q20
-            );
-        }
 
         /* Excitation */
         exc_q14 = q1_q10 << 4;

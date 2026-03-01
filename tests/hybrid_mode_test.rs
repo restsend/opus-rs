@@ -1,6 +1,6 @@
 /// Tests for Hybrid (SILK + CELT) mode encoding and decoding.
 /// Hybrid mode uses SILK for low-frequency content and CELT for high-frequency content.
-use opus_rs::{Application, Bandwidth, OpusDecoder, OpusEncoder};
+use opus_rs::{Application, OpusEncoder};
 use std::f32::consts::PI;
 
 /// Test that Hybrid mode can be enabled and produces valid packets
@@ -9,11 +9,13 @@ fn test_hybrid_mode_encode_basic() {
     let sample_rate = 48000;
     let frame_size = 960; // 20ms at 48kHz
 
-    let mut encoder = OpusEncoder::new(sample_rate, 1, Application::Audio)
-        .expect("Encoder creation failed");
+    let mut encoder =
+        OpusEncoder::new(sample_rate, 1, Application::Audio).expect("Encoder creation failed");
 
     // Enable Hybrid mode
-    encoder.enable_hybrid_mode().expect("Failed to enable Hybrid mode");
+    encoder
+        .enable_hybrid_mode()
+        .expect("Failed to enable Hybrid mode");
     encoder.bitrate_bps = 32000;
 
     let mut input = vec![0.0f32; frame_size];
@@ -51,10 +53,12 @@ fn test_hybrid_mode_24khz_swb() {
     let sample_rate = 24000;
     let frame_size = 480; // 20ms at 24kHz
 
-    let mut encoder = OpusEncoder::new(sample_rate, 1, Application::Audio)
-        .expect("Encoder creation failed");
+    let mut encoder =
+        OpusEncoder::new(sample_rate, 1, Application::Audio).expect("Encoder creation failed");
 
-    encoder.enable_hybrid_mode().expect("Failed to enable Hybrid mode at 24kHz");
+    encoder
+        .enable_hybrid_mode()
+        .expect("Failed to enable Hybrid mode at 24kHz");
     encoder.bitrate_bps = 28000;
 
     let mut input = vec![0.0f32; frame_size];
@@ -81,9 +85,11 @@ fn test_hybrid_mode_bitrate_range() {
     let frame_size = 960;
 
     for bitrate in [24000, 32000, 48000, 64000, 96000] {
-        let mut encoder = OpusEncoder::new(sample_rate, 1, Application::Audio)
-            .expect("Encoder creation failed");
-        encoder.enable_hybrid_mode().expect("Failed to enable Hybrid mode");
+        let mut encoder =
+            OpusEncoder::new(sample_rate, 1, Application::Audio).expect("Encoder creation failed");
+        encoder
+            .enable_hybrid_mode()
+            .expect("Failed to enable Hybrid mode");
         encoder.bitrate_bps = bitrate;
 
         let mut input = vec![0.0f32; frame_size];
@@ -110,9 +116,11 @@ fn test_hybrid_mode_consecutive_frames() {
     let sample_rate = 48000;
     let frame_size = 960;
 
-    let mut encoder = OpusEncoder::new(sample_rate, 1, Application::Audio)
-        .expect("Encoder creation failed");
-    encoder.enable_hybrid_mode().expect("Failed to enable Hybrid mode");
+    let mut encoder =
+        OpusEncoder::new(sample_rate, 1, Application::Audio).expect("Encoder creation failed");
+    encoder
+        .enable_hybrid_mode()
+        .expect("Failed to enable Hybrid mode");
     encoder.bitrate_bps = 32000;
 
     let mut frame_sizes = Vec::new();
@@ -142,24 +150,21 @@ fn test_hybrid_mode_consecutive_frames() {
 #[test]
 fn test_hybrid_mode_invalid_sample_rates() {
     // 8kHz: SILK-only rate, cannot use Hybrid
-    let mut enc_8k = OpusEncoder::new(8000, 1, Application::Audio)
-        .expect("Encoder creation failed");
-    assert!(
-        enc_8k.enable_hybrid_mode().is_err(),
-        "Should fail for 8kHz"
-    );
+    let mut enc_8k =
+        OpusEncoder::new(8000, 1, Application::Audio).expect("Encoder creation failed");
+    assert!(enc_8k.enable_hybrid_mode().is_err(), "Should fail for 8kHz");
 
     // 16kHz: SILK NB/WB rate, cannot use Hybrid
-    let mut enc_16k = OpusEncoder::new(16000, 1, Application::Audio)
-        .expect("Encoder creation failed");
+    let mut enc_16k =
+        OpusEncoder::new(16000, 1, Application::Audio).expect("Encoder creation failed");
     assert!(
         enc_16k.enable_hybrid_mode().is_err(),
         "Should fail for 16kHz"
     );
 
     // 48kHz: Valid for Hybrid
-    let mut enc_48k = OpusEncoder::new(48000, 1, Application::Audio)
-        .expect("Encoder creation failed");
+    let mut enc_48k =
+        OpusEncoder::new(48000, 1, Application::Audio).expect("Encoder creation failed");
     assert!(
         enc_48k.enable_hybrid_mode().is_ok(),
         "Should succeed for 48kHz"
@@ -239,6 +244,10 @@ fn test_celt_decode_with_start_band() {
     let mut output = vec![0.0f32; frame_size];
     decoder.decode_with_start_band(&encoded, frame_size, &mut output, 17);
 
-    println!("Encoded {} bytes, decoded {} samples", encoded.len(), frame_size);
+    println!(
+        "Encoded {} bytes, decoded {} samples",
+        encoded.len(),
+        frame_size
+    );
     println!("✅ CELT decode_with_start_band test passed (no crash)");
 }

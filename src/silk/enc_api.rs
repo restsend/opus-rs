@@ -121,12 +121,12 @@ pub fn silk_encode_prefill(
     // Work on a local buffer (C uses inputBuf+1 in-place)
     let mut input_buf = [0i16; super::define::MAX_FRAME_LENGTH + 2];
     // input_buf[0..2] = s_mid (overlap); for prefill these are zero (post-reset)
-    input_buf[0] = ps_enc.s_mid[0];
-    input_buf[1] = ps_enc.s_mid[1];
+    input_buf[0] = ps_enc.stereo.s_mid[0];
+    input_buf[1] = ps_enc.stereo.s_mid[1];
     input_buf[2..2 + n].copy_from_slice(&samples[..n]);
     // Save new overlap
-    ps_enc.s_mid[0] = input_buf[prefill_frame_length];
-    ps_enc.s_mid[1] = input_buf[prefill_frame_length + 1];
+    ps_enc.stereo.s_mid[0] = input_buf[prefill_frame_length];
+    ps_enc.stereo.s_mid[1] = input_buf[prefill_frame_length + 1];
     // Apply LP filter (modifies input_buf[1..])
     silk_lp_variable_cutoff(
         &mut ps_enc.s_cmn.s_lp,
@@ -226,13 +226,6 @@ pub fn silk_encode_frame(
         &res_pitch[res_pitch_frame_idx..],
         x_tmp,
     );
-    #[cfg(debug_assertions)]
-    if std::env::var("SILK_DEBUG_NSQ").is_ok() {
-        eprintln!(
-            "  [ENC] after noise_shape: lf_shp_q14[0]={:#010x}",
-            s_enc_ctrl.lf_shp_q14[0]
-        );
-    }
 
     /***************************************************/
     /* Find linear prediction coefficients (LPC + LTP) */
@@ -255,14 +248,6 @@ pub fn silk_encode_frame(
     /* Process gains                        */
     /****************************************/
     silk_process_gains_fix(ps_enc, &mut s_enc_ctrl, cond_coding);
-    #[cfg(debug_assertions)]
-    if std::env::var("SILK_DEBUG_NSQ").is_ok() {
-        eprintln!(
-            "  [ENC] after process_gains: lf_shp_q14[0]={:#010x}",
-            s_enc_ctrl.lf_shp_q14[0]
-        );
-    }
-
     /****************************************/
     /* Rate control loop                    */
     /****************************************/
@@ -320,75 +305,6 @@ pub fn silk_encode_frame(
             let mut pred_coef_q12_flat = [0i16; 2 * MAX_LPC_ORDER];
             pred_coef_q12_flat[..MAX_LPC_ORDER].copy_from_slice(&s_enc_ctrl.pred_coef_q12[0]);
             pred_coef_q12_flat[MAX_LPC_ORDER..].copy_from_slice(&s_enc_ctrl.pred_coef_q12[1]);
-
-            // Debug: dump NSQ input parameters (guarded by env var)
-            #[cfg(debug_assertions)]
-            if std::env::var("SILK_DEBUG_NSQ").is_ok() && iter == 0 {
-                eprintln!(
-                    "  [ENC] iter=0 pre-dump: lf_shp_q14[0]={:#010x}",
-                    s_enc_ctrl.lf_shp_q14[0]
-                );
-                eprintln!(
-                    "=== NSQ INPUT DUMP (frame_counter={}) ===",
-                    ps_enc.s_cmn.frame_counter
-                );
-                eprintln!(
-                    "  signal_type={} quant_offset_type={}",
-                    ps_enc.s_cmn.indices.signal_type, ps_enc.s_cmn.indices.quant_offset_type
-                );
-                eprintln!(
-                    "  gains_q16={:?}",
-                    &s_enc_ctrl.gains_q16[..ps_enc.s_cmn.nb_subfr as usize]
-                );
-                eprintln!("  lambda_q10={}", s_enc_ctrl.lambda_q10);
-                eprintln!(
-                    "  pred_coef_q12[0]={:?}",
-                    &s_enc_ctrl.pred_coef_q12[0][..ps_enc.s_cmn.predict_lpc_order as usize]
-                );
-                eprintln!(
-                    "  pred_coef_q12[1]={:?}",
-                    &s_enc_ctrl.pred_coef_q12[1][..ps_enc.s_cmn.predict_lpc_order as usize]
-                );
-                eprintln!(
-                    "  ar_q13[0..shaping]={:?}",
-                    &s_enc_ctrl.ar_q13[..ps_enc.s_cmn.shaping_lpc_order as usize]
-                );
-                eprintln!(
-                    "  tilt_q14={:?}",
-                    &s_enc_ctrl.tilt_q14[..ps_enc.s_cmn.nb_subfr as usize]
-                );
-                eprintln!(
-                    "  lf_shp_q14={:?}",
-                    &s_enc_ctrl.lf_shp_q14[..ps_enc.s_cmn.nb_subfr as usize]
-                );
-                eprintln!(
-                    "  harm_shape_gain_q14={:?}",
-                    &s_enc_ctrl.harm_shape_gain_q14[..ps_enc.s_cmn.nb_subfr as usize]
-                );
-                eprintln!(
-                    "  pitch_l={:?}",
-                    &s_enc_ctrl.pitch_l[..ps_enc.s_cmn.nb_subfr as usize]
-                );
-                eprintln!(
-                    "  x_buf[x_frame..+20]={:?}",
-                    &ps_enc.s_cmn.x_buf[x_frame_idx..x_frame_idx + 20]
-                );
-                eprintln!(
-                    "  la_shape={} la_shape_max={} new_samples_at={}",
-                    la_shape,
-                    la_shape_max,
-                    x_frame_idx + la_shape_max
-                );
-                eprintln!(
-                    "  x_buf[new_samples_idx..+20]={:?}",
-                    &ps_enc.s_cmn.x_buf
-                        [x_frame_idx + la_shape_max..x_frame_idx + la_shape_max + 20]
-                );
-                eprintln!(
-                    "  n_states_delayed_decision={}",
-                    ps_enc.s_cmn.n_states_delayed_decision
-                );
-            }
 
             if ps_enc.s_cmn.n_states_delayed_decision > 1 {
                 silk_nsq_del_dec(
@@ -500,15 +416,6 @@ pub fn silk_encode_frame(
                 );
 
                 n_bits = rc.tell() as i32;
-            }
-
-            // Rate control debug
-            #[cfg(debug_assertions)]
-            if std::env::var("SILK_DEBUG_NSQ").is_ok() && ps_enc.s_cmn.frame_counter <= 3 {
-                eprintln!(
-                    "  [RC] iter={} n_bits={} max_bits={} found_lower={} found_upper={} gain_mult_q8={}",
-                    iter, n_bits, max_bits, found_lower, found_upper, gain_mult_q8
-                );
             }
 
             // VBR: if first iteration and within budget, stop
@@ -799,15 +706,15 @@ pub fn silk_encode(
 
         // inputBuf[0..2] = sMid, inputBuf[2..2+n] = resampler_out
         let mut input_buf = [0i16; MAX_FRAME_LENGTH + 2];
-        input_buf[0] = ps_enc.s_mid[0];
-        input_buf[1] = ps_enc.s_mid[1];
+        input_buf[0] = ps_enc.stereo.s_mid[0];
+        input_buf[1] = ps_enc.stereo.s_mid[1];
         input_buf[2..2 + n].copy_from_slice(&resampler_out[..n]);
 
         // Save last 2 samples for next frame's overlap BEFORE LP filter (matching C)
         // C: silk_memcpy(sStereo.sMid, &inputBuf[frame_length], 2)
         // This happens before VAD and LP filter in C.
-        ps_enc.s_mid[0] = input_buf[frame_length];
-        ps_enc.s_mid[1] = input_buf[frame_length + 1];
+        ps_enc.stereo.s_mid[0] = input_buf[frame_length];
+        ps_enc.stereo.s_mid[1] = input_buf[frame_length + 1];
 
         // --- LBRR preamble encoding (first frame only) ---
         if frame_idx == 0 {
@@ -879,13 +786,6 @@ pub fn silk_encode(
         } else {
             max_bits
         };
-        #[cfg(debug_assertions)]
-        if std::env::var("SILK_DEBUG_NSQ").is_ok() {
-            eprintln!(
-                "  [SILK_ENC] frame_idx={} frame_max_bits={} max_bits={} tot_blocks={} cond_coding={}",
-                frame_idx, frame_max_bits, max_bits, _tot_blocks, cond_coding
-            );
-        }
 
         let mut frame_bytes = 0i32;
         let ret = silk_encode_frame(

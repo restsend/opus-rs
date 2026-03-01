@@ -165,3 +165,30 @@ pub fn silk_encode_indices(
     /* Encode seed */
     ps_range_enc.encode_icdf(ps_indices.seed as i32, &SILK_UNIFORM4_ICDF, 8);
 }
+
+/// Encode stereo prediction parameters
+/// Called after encoding the mid channel, before encoding the side channel
+pub fn silk_encode_stereo(
+    ps_range_enc: &mut RangeCoder,
+    side_idx: i8,
+    pred_idx: i8,
+    only_middle: i8,
+) {
+    // Encode whether we're only encoding mid (mono)
+    ps_range_enc.encode_icdf(
+        only_middle as i32,
+        &SILK_STEREO_ONLY_CODE_MID_ICDF,
+        8,
+    );
+
+    if only_middle == 0 {
+        // Encode the joint stereo index
+        // The joint index is computed as: (side_idx * 5 + (pred_idx >> 2))
+        // This gives values 0-19, but the table has 25 entries for compatibility
+        let i = (side_idx as i32).min(4);
+        let j = (pred_idx as i32) >> 2; // 0-3
+        let joint_idx = i * 5 + j;
+
+        ps_range_enc.encode_icdf(joint_idx, &SILK_STEREO_PRED_JOINT_ICDF, 8);
+    }
+}

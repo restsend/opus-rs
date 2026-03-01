@@ -2,8 +2,8 @@
 edition = "2024"
 authors = ["jinti<shenjindi@fourz.cn>"]
 name = "opus-rs"
-version = "0.1.1"
-description = "Rust implementation of Opus codec"
+version = "0.1.2"
+description = "pure Rust implementation of Opus codec"
 license = "BSD-3-Clause"
 repository = "https://github.com/restsend/opus-rs"
 
@@ -14,7 +14,7 @@ once_cell = "1.17"
 
 [dev-dependencies]
 opusic-sys = "0.5.8"
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8.2", features = ["html_reports"] }
 
 [[bench]]
 name = "opus_bench"

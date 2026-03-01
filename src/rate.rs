@@ -171,12 +171,6 @@ pub fn clt_compute_allocation(
     let hi_final = lo as usize;
     let lo_final = (lo - 1) as usize;
 
-    #[cfg(debug_assertions)]
-    println!(
-        "DEBUG_ALLOC: lo_final={} hi_final={} total={} intensity_rsv={} dual_stereo_rsv={}",
-        lo_final, hi_final, total, intensity_rsv, dual_stereo_rsv
-    );
-
     let mut bits1 = vec![0; nb_ebands];
     let mut bits2 = vec![0; nb_ebands];
 
@@ -261,7 +255,7 @@ fn interp_bits2pulses(
     prev: i32,
     signal_bandwidth: i32,
 ) -> i32 {
-    let mut psum: i32 = 0;
+    let mut psum: i32;
     let mut lo = 0;
     let mut hi = 1 << 6; // ALLOC_STEPS
     let alloc_floor = c << BITRES;
@@ -269,12 +263,6 @@ fn interp_bits2pulses(
     let log_m = lm << BITRES;
 
     let mut bits = vec![0; m.nb_ebands];
-
-    #[cfg(debug_assertions)]
-    println!(
-        "DEBUG_ALLOC_COMPUTE: total={} start={} end={} lo={} hi={}",
-        total, start, end, lo, hi
-    );
 
     for _ in 0..6 {
         let mid = (lo + hi) >> 1;
@@ -297,13 +285,6 @@ fn interp_bits2pulses(
             lo = mid;
         }
     }
-
-    #[cfg(debug_assertions)]
-    println!(
-        "DEBUG_ALLOC_COMPUTE: search result lo={}, psum (last)={}",
-        lo, psum
-    );
-
     psum = 0;
     let mut done = false;
     for j in (start..end).rev() {
@@ -320,11 +301,6 @@ fn interp_bits2pulses(
         tmp = min(tmp, cap[j]);
         bits[j] = tmp;
         psum += tmp;
-        #[cfg(debug_assertions)]
-        println!(
-            "DEBUG_ALLOC_COMPUTE: band={} tmp={} psum={} thresh={} bits1={} bits2={}",
-            j, tmp, psum, thresh[j], bits1[j], bits2[j]
-        );
     }
 
     let mut coded_bands = end;
@@ -431,9 +407,6 @@ fn interp_bits2pulses(
         left -= tmp;
     }
 
-    #[cfg(debug_assertions)]
-    println!("DEBUG RATE: coded_bands={}", coded_bands);
-
     let mut balance = 0;
     for j in start..coded_bands {
         let n0 = (m.e_bands[j + 1] - m.e_bands[j]) as i32;
@@ -469,19 +442,7 @@ fn interp_bits2pulses(
             if c * ebits[j] > (bits[j] >> BITRES) {
                 ebits[j] = bits[j] >> stereo >> BITRES;
             }
-
-            if j == 2 {
-                #[cfg(debug_assertions)]
-                println!(
-                    "DEBUG RATE: band 2 processing. bits[2]={}, ebits before clamp={}",
-                    bits[j], ebits[j]
-                );
-            }
             ebits[j] = min(ebits[j], MAX_FINE_BITS);
-            if j == 2 {
-                #[cfg(debug_assertions)]
-                println!("DEBUG RATE: band 2 after clamp={}", ebits[j]);
-            }
             fine_priority[j] = if ebits[j] * (den << BITRES) >= bits[j] + offset {
                 1
             } else {

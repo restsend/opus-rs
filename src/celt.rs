@@ -671,12 +671,6 @@ impl CeltEncoder {
         let mode = self.mode;
         let channels = self.channels;
         let nb_ebands = mode.nb_ebands;
-
-        if frame_size == 960 {}
-
-        let mode = self.mode;
-        let channels = self.channels;
-        let nb_ebands = mode.nb_ebands;
         let overlap = mode.overlap;
 
         // Calculate LM

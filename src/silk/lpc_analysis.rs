@@ -21,15 +21,6 @@ pub fn silk_find_lpc_fix(
     /* Default: no interpolation */
     ps_enc_c.indices.nlsf_interp_coef_q2 = 4;
 
-    #[cfg(debug_assertions)]
-    if std::env::var("SILK_DEBUG_NLSF").is_ok() {
-        eprintln!(
-            "  [NLSF] find_lpc_fix: min_inv_gain_q30={} subfr_length={} nb_subfr={} d={} first_frame={}",
-            min_inv_gain_q30, subfr_length, ps_enc_c.nb_subfr, d, ps_enc_c.first_frame_after_reset
-        );
-        eprintln!("  [NLSF] lpc_in_pre[0..210]={:?}", &x[..210.min(x.len())]);
-    }
-
     /* Burg AR analysis for the full frame */
     silk_burg_modified_fix(
         &mut res_nrg,
@@ -41,11 +32,6 @@ pub fn silk_find_lpc_fix(
         ps_enc_c.nb_subfr as usize,
         d,
     );
-
-    #[cfg(debug_assertions)]
-    if std::env::var("SILK_DEBUG_NLSF").is_ok() {
-        eprintln!("  [NLSF] burg_a_q16={:?}", &a_q16[..d]);
-    }
 
     if ps_enc_c.use_interpolated_nlsfs != 0
         && ps_enc_c.first_frame_after_reset == 0
@@ -168,14 +154,6 @@ pub fn silk_find_lpc_fix(
         /* NLSF interpolation is currently inactive,
          * calculate NLSFs from full frame AR coefficients */
         silk_a2nlsf(nlsf_q15, &mut a_q16, d);
-    }
-
-    #[cfg(debug_assertions)]
-    if std::env::var("SILK_DEBUG_NLSF").is_ok() {
-        eprintln!(
-            "  [NLSF] nlsf_q15 before process_nlsfs={:?}",
-            &nlsf_q15[..d]
-        );
     }
 }
 

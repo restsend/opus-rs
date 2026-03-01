@@ -208,31 +208,17 @@ impl OpusEncoder {
                     self.complexity,
                 );
                 self.silk_enc.s_cmn.use_cbr = if self.use_cbr { 1 } else { 0 };
+                // Set number of channels for stereo support
+                self.silk_enc.s_cmn.n_channels = self.channels as i32;
                 self.silk_initialized = true;
 
-                // C encoder prefills with Fs/100 = 80 samples of silence before the first real frame.
-                // This warms up the VAD state (speech_activity_q8, input_quality_bands_q15, etc.)
-                // which affects noise shaping in the first real frame.
-                // C: silk_Encode(silk_enc, ..., prefill=1, activity=0) on 80 zeros.
-                // With prefillFlag=1, C skips pitch/NSQ/entropy coding and only runs
-                // VAD + LP variable cutoff + x_buf update.
-                {
-                    let encoder_buffer = self.sampling_rate as usize / 100; // Fs/100 = 80 samples @8kHz
-                    let prefill_zeros = vec![0i16; encoder_buffer];
-                    silk_encode_prefill(
-                        &mut *self.silk_enc,
-                        &prefill_zeros,
-                        0, // activity = inactive (silence)
-                    );
-                    #[cfg(debug_assertions)]
-                    if std::env::var("SILK_DEBUG_NSQ").is_ok() {
-                        eprintln!(
-                            "  [PREFILL] speech_activity_q8={} input_quality_bands={:?}",
-                            self.silk_enc.s_cmn.speech_activity_q8,
-                            &self.silk_enc.s_cmn.input_quality_bands_q15[..4]
-                        );
-                    }
-                }
+                let encoder_buffer = self.sampling_rate as usize / 100; // Fs/100 = 80 samples @8kHz
+                let prefill_zeros = vec![0i16; encoder_buffer];
+                silk_encode_prefill(
+                    &mut *self.silk_enc,
+                    &prefill_zeros,
+                    0, // activity = inactive (silence)
+                );
             }
             // Always update FEC and packet loss settings (may change between calls)
             self.silk_enc.s_cmn.use_in_band_fec = if self.use_inband_fec { 1 } else { 0 };
@@ -285,9 +271,26 @@ impl OpusEncoder {
 
             let input_i16 = filtered_i16;
 
+            // Convert input to SILK format
+            // For SILK stereo: convert L/R to Mid (L+R)/2 and Side (L-R) for encoding.
             // For Hybrid mode: downsample from API rate to SILK's 16kHz internal rate.
-            // This is necessary because SILK can only process up to 16kHz.
-            let silk_input: Vec<i16> = if mode == OpusMode::Hybrid && self.sampling_rate > 16000 {
+            let silk_input: Vec<i16> = if mode == OpusMode::SilkOnly && self.channels == 2 {
+                // Convert interleaved stereo (L R L R ...) to Mid channel
+                // Mid = (L + R) / 2, Side = L - R
+                let frame_length = input_i16.len() / 2;
+                let mut mid = vec![0i16; frame_length];
+                let mut side = vec![0i16; frame_length];
+                for i in 0..frame_length {
+                    // L is at index 2*i, R is at index 2*i+1
+                    let l = input_i16[2 * i] as i32;
+                    let r = input_i16[2 * i + 1] as i32;
+                    mid[i] = ((l + r) / 2) as i16;
+                    side[i] = (l - r) as i16;
+                }
+                // Store side for later stereo encoding
+                self.silk_enc.stereo.side = side;
+                mid
+            } else if mode == OpusMode::Hybrid && self.sampling_rate > 16000 {
                 // Downsample from API rate (24kHz or 48kHz) to 16kHz using SilkResampler
                 // Note: The silk encoder struct already has resampler_delay_buf for delay;
                 // here we use a local resampler for the downsampling step.
@@ -413,14 +416,6 @@ impl OpusEncoder {
                 .saturating_sub(2)
                 .min(output.len().saturating_sub(2));
             let frame_len = payload_bytes.min(max_frame_bytes);
-
-            #[cfg(debug_assertions)]
-            if std::env::var("SILK_DEBUG_NSQ").is_ok() {
-                eprintln!(
-                    "  [LIB] silk payload: frame_len={} target_total={} n_bytes={}",
-                    frame_len, target_total, n_bytes
-                );
-            }
 
             // Code 3, 1 frame, no padding (always 0x01 — matching C reference)
             output[0] = toc | 0x03;
