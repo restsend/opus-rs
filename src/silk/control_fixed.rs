@@ -40,17 +40,14 @@ pub fn silk_find_pred_coefs_fix(
         local_gains[i] = silk_div32(1 << 16, inv_gains_q16[i]);
     }
 
-    let mut lpc_in_pre = vec![
-        0i16;
-        ps_enc.s_cmn.nb_subfr as usize
-            * ps_enc.s_cmn.predict_lpc_order as usize
-            + ps_enc.s_cmn.frame_length as usize
-    ];
+    // Stack buffer: max = MAX_NB_SUBFR * MAX_LPC_ORDER + MAX_FRAME_LENGTH = 4*16 + 640 = 704.
+    let mut lpc_in_pre = [0i16; MAX_NB_SUBFR * MAX_LPC_ORDER + MAX_FRAME_LENGTH];
 
     if ps_enc.s_cmn.indices.signal_type == TYPE_VOICED as i8 {
         /* VOICED */
-        let mut x_xltp_q17 = vec![0i32; ps_enc.s_cmn.nb_subfr as usize * LTP_ORDER];
-        let mut xxltp_q17 = vec![0i32; ps_enc.s_cmn.nb_subfr as usize * LTP_ORDER * LTP_ORDER];
+        // Stack buffers: MAX_NB_SUBFR * LTP_ORDER = 4*5 = 20; * LTP_ORDER² = 100.
+        let mut x_xltp_q17 = [0i32; MAX_NB_SUBFR * LTP_ORDER];
+        let mut xxltp_q17 = [0i32; MAX_NB_SUBFR * LTP_ORDER * LTP_ORDER];
 
         /* LTP analysis */
         silk_find_ltp_fix(
@@ -152,8 +149,40 @@ pub fn silk_find_pred_coefs_fix(
         min_inv_gain_q30,
     );
 
+    #[cfg(debug_assertions)]
+    if std::env::var("SILK_DEBUG_NLSF").is_ok() {
+        eprintln!(
+            "  [CTRL] min_inv_gain_q30={} first_frame_after_reset={}",
+            min_inv_gain_q30, ps_enc.s_cmn.first_frame_after_reset
+        );
+        eprintln!(
+            "  [CTRL] lpc_in_pre[40..60]={:?}",
+            &lpc_in_pre[40..60.min(lpc_in_pre.len())]
+        );
+        eprintln!(
+            "  [CTRL] lpc_in_pre[48..70]={:?}",
+            &lpc_in_pre[48..70.min(lpc_in_pre.len())]
+        );
+        eprintln!(
+            "  [CTRL] inv_gains_q16={:?}",
+            &inv_gains_q16[..ps_enc.s_cmn.nb_subfr as usize]
+        );
+        eprintln!("  [CTRL] x offset from x_buf[ltp_mem_len-predict_lpc_order]");
+        // Show the raw x data (before scaling) at positions around the sine start
+        eprintln!("  [CTRL] x[40..60]={:?}", &x[40..60.min(x.len())]);
+        eprintln!("  [CTRL] x[48..70]={:?}", &x[48..70.min(x.len())]);
+    }
+
     /* Quantize LSFs */
     silk_process_nlsfs(ps_enc, ps_enc_ctrl, &mut nlsf_q15);
+
+    #[cfg(debug_assertions)]
+    if std::env::var("SILK_DEBUG_NLSF").is_ok() {
+        eprintln!(
+            "  [CTRL] nlsf_indices after process_nlsfs={:?}",
+            &ps_enc.s_cmn.indices.nlsf_indices[..ps_enc.s_cmn.predict_lpc_order as usize + 1]
+        );
+    }
 
     /* Calculate residual energy using quantized LPC coefficients */
     silk_residual_energy_fix(

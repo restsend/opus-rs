@@ -466,9 +466,8 @@ pub fn silk_nsq_del_dec(
 ) {
     let mut x_sc_q10 = [0i32; MAX_SUB_FRAME_LENGTH];
     let mut delayed_ga_q10 = [0i32; DECISION_DELAY];
-    let mut s_ltp_q15 =
-        vec![0i32; ps_common.ltp_mem_length as usize + ps_common.frame_length as usize];
-    let mut s_ltp = vec![0i16; ps_common.ltp_mem_length as usize + ps_common.frame_length as usize];
+    let mut s_ltp_q15 = [0i32; LTP_MEM_LENGTH_MS * MAX_FS_KHZ + MAX_FRAME_LENGTH];
+    let mut s_ltp = [0i16; LTP_MEM_LENGTH_MS * MAX_FS_KHZ + MAX_FRAME_LENGTH];
     let mut ps_del_dec = [NSQDelDecStruct::default(); NSQ_MAX_STATES_OPERATING];
 
     let mut lag = ps_nsq.lag_prev;

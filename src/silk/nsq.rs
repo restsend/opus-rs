@@ -30,10 +30,9 @@ pub fn silk_nsq(
     let mut harm_shape_fir_packed_q14: i32;
     let mut offset_q10: i32;
 
-    let mut s_ltp_q15 =
-        vec![0i32; ps_enc_c.ltp_mem_length as usize + ps_enc_c.frame_length as usize];
-    let mut s_ltp = vec![0i16; ps_enc_c.ltp_mem_length as usize + ps_enc_c.frame_length as usize];
-    let mut x_sc_q10 = vec![0i32; ps_enc_c.subfr_length as usize];
+    let mut s_ltp_q15 = [0i32; LTP_MEM_LENGTH_MS * MAX_FS_KHZ + MAX_FRAME_LENGTH];
+    let mut s_ltp = [0i16; LTP_MEM_LENGTH_MS * MAX_FS_KHZ + MAX_FRAME_LENGTH];
+    let mut x_sc_q10 = [0i32; MAX_SUB_FRAME_LENGTH];
 
     nsq.rand_seed = ps_indices.seed as i32;
 
@@ -233,35 +232,38 @@ pub fn silk_nsq_scale_states(
 /// Noise shape feedback loop - matches C silk_NSQ_noise_shape_feedback_loop_c
 /// Shifts data0 value into data1 shift register and computes weighted sum
 
-#[inline]
+#[inline(always)]
 fn silk_nsq_noise_shape_feedback_loop(
     data0_val: i32,
     data1: &mut [i32],
     coef: &[i16],
     order: usize,
 ) -> i32 {
-    let mut tmp2 = data0_val;
-    let mut tmp1 = data1[0];
-    data1[0] = tmp2;
+    // SAFETY: order ≤ MAX_SHAPE_LPC_ORDER ≤ data1.len() and coef.len()
+    unsafe {
+        let mut tmp2 = data0_val;
+        let mut tmp1 = *data1.get_unchecked(0);
+        *data1.get_unchecked_mut(0) = tmp2;
 
-    let mut out = (order as i32) >> 1;
-    out = silk_smlawb(out, tmp2, coef[0] as i32);
+        let mut out = (order as i32) >> 1;
+        out = silk_smlawb(out, tmp2, *coef.get_unchecked(0) as i32);
 
-    let mut j = 2;
-    while j < order {
-        tmp2 = data1[j - 1];
-        data1[j - 1] = tmp1;
-        out = silk_smlawb(out, tmp1, coef[j - 1] as i32);
-        tmp1 = data1[j];
-        data1[j] = tmp2;
-        out = silk_smlawb(out, tmp2, coef[j] as i32);
-        j += 2;
+        let mut j = 2;
+        while j < order {
+            tmp2 = *data1.get_unchecked(j - 1);
+            *data1.get_unchecked_mut(j - 1) = tmp1;
+            out = silk_smlawb(out, tmp1, *coef.get_unchecked(j - 1) as i32);
+            tmp1 = *data1.get_unchecked(j);
+            *data1.get_unchecked_mut(j) = tmp2;
+            out = silk_smlawb(out, tmp2, *coef.get_unchecked(j) as i32);
+            j += 2;
+        }
+        *data1.get_unchecked_mut(order - 1) = tmp1;
+        out = silk_smlawb(out, tmp1, *coef.get_unchecked(order - 1) as i32);
+        /* Q11 -> Q12 */
+        out <<= 1;
+        out
     }
-    data1[order - 1] = tmp1;
-    out = silk_smlawb(out, tmp1, coef[order - 1] as i32);
-    /* Q11 -> Q12 */
-    out <<= 1;
-    out
 }
 
 fn silk_noise_shape_quantizer(
@@ -305,6 +307,9 @@ fn silk_noise_shape_quantizer(
     let mut tmp2: i32;
     let mut s_lf_ar_shp_q14: i32;
 
+    #[cfg(debug_assertions)]
+    let debug_nsq = std::env::var("SILK_DEBUG_NSQ").is_ok();
+
     let gain_q10 = gain_q16 >> 6;
 
     /* Compute base indices for lagged access (before loop, as in C) */
@@ -318,9 +323,14 @@ fn silk_noise_shape_quantizer(
         /* Short-term prediction */
         let ps_lpc_idx = NSQ_LPC_BUF_LENGTH - 1 + i;
         lpc_pred_q10 = (predict_lpc_order as i32) >> 1;
+        // SAFETY: ps_lpc_idx - j stays within [NSQ_LPC_BUF_LENGTH-1 .. NSQ_LPC_BUF_LENGTH-1+subfr_length),
+        // and a_q12 has at least predict_lpc_order elements (MAX_LPC_ORDER).
         for j in 0..predict_lpc_order {
-            lpc_pred_q10 =
-                silk_smlawb(lpc_pred_q10, nsq.s_lpc_q14[ps_lpc_idx - j], a_q12[j] as i32);
+            lpc_pred_q10 = silk_smlawb(
+                lpc_pred_q10,
+                unsafe { *nsq.s_lpc_q14.get_unchecked(ps_lpc_idx - j) },
+                unsafe { *a_q12.get_unchecked(j) } as i32,
+            );
         }
 
         /* Long-term prediction */
@@ -393,6 +403,23 @@ fn silk_noise_shape_quantizer(
 
         r_q10 = x_sc_q10[i] - tmp1; /* residual error Q10 */
 
+        /* Debug: dump first few samples per subframe */
+        #[cfg(debug_assertions)]
+        if debug_nsq && i < 5 {
+            eprintln!(
+                "  nsq[sf={},i={}]: x_sc_q10={} lpc_pred_q10={} n_ar_q12={} n_lf_q12={} tmp1={} r_q10={} rand_seed={}",
+                _subfr_idx,
+                i,
+                x_sc_q10[i],
+                lpc_pred_q10,
+                n_ar_q12,
+                n_lf_q12,
+                tmp1,
+                r_q10,
+                nsq.rand_seed
+            );
+        }
+
         /* Flip sign depending on dither */
         if nsq.rand_seed < 0 {
             r_q10 = -r_q10;
@@ -448,6 +475,14 @@ fn silk_noise_shape_quantizer(
         }
 
         pulses[i] = silk_rshift_round(q1_q10, 10) as i8;
+
+        #[cfg(debug_assertions)]
+        if debug_nsq && i < 5 {
+            eprintln!(
+                "  nsq[sf={},i={}]: pulse={} q1_q10={} offset_q10={} rd1={} rd2={}",
+                _subfr_idx, i, pulses[i], q1_q10, offset_q10, rd1_q20, rd2_q20
+            );
+        }
 
         /* Excitation */
         exc_q14 = q1_q10 << 4;

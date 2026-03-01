@@ -650,10 +650,26 @@ impl CeltEncoder {
     }
 
     pub fn encode(&mut self, pcm: &[f32], frame_size: usize, rc: &mut RangeCoder) {
+        self.encode_impl(pcm, frame_size, rc, 0)
+    }
+
+    /// Encode with start_band support for Hybrid mode.
+    /// When start_band > 0, only bands from start_band..nb_ebands are quantized.
+    pub fn encode_with_start_band(&mut self, pcm: &[f32], frame_size: usize, rc: &mut RangeCoder, start_band: usize) {
+        self.encode_impl(pcm, frame_size, rc, start_band)
+    }
+
+    fn encode_impl(&mut self, pcm: &[f32], frame_size: usize, rc: &mut RangeCoder, start_band: usize) {
         let mut max_pcm = 0.0f32;
         for i in 0..frame_size {
             max_pcm = max_pcm.max(pcm[i].abs());
         }
+
+        if frame_size == 960 {}
+
+        let mode = self.mode;
+        let channels = self.channels;
+        let nb_ebands = mode.nb_ebands;
 
         if frame_size == 960 {}
 
@@ -872,7 +888,7 @@ impl CeltEncoder {
         let intra_ener = false; // For now assuming no forced intra except transient
         quant_coarse_energy(
             mode,
-            0,
+            start_band,
             nb_ebands,
             &mut band_log_e,
             &mut self.old_band_e,
@@ -901,7 +917,7 @@ impl CeltEncoder {
             tf_chan,
         );
         tf_encode(
-            0,
+            start_band,
             nb_ebands,
             is_transient,
             &mut tf_res,
@@ -1006,7 +1022,7 @@ impl CeltEncoder {
 
         self.last_coded_bands = clt_compute_allocation(
             mode,
-            0,
+            start_band,
             nb_ebands,
             &offsets,
             &cap,
@@ -1028,7 +1044,7 @@ impl CeltEncoder {
 
         quant_fine_energy(
             mode,
-            0,
+            start_band,
             nb_ebands,
             &mut self.old_band_e,
             &mut error,
@@ -1046,7 +1062,7 @@ impl CeltEncoder {
         quant_all_bands(
             true,
             mode,
-            0,
+            start_band,
             nb_ebands,
             x_split,
             y_opt,
@@ -1068,7 +1084,7 @@ impl CeltEncoder {
 
         quant_energy_finalise(
             mode,
-            0,
+            start_band,
             nb_ebands,
             &mut self.old_band_e,
             &mut error,
@@ -1096,7 +1112,7 @@ impl CeltEncoder {
                 &x,
                 &mut freq_synth,
                 &band_amp_synth,
-                0,
+                start_band,
                 nb_ebands,
                 channels,
                 (1 << lm) as usize,
@@ -1219,6 +1235,17 @@ impl CeltDecoder {
     }
 
     pub fn decode(&mut self, compressed: &[u8], frame_size: usize, pcm: &mut [f32]) -> usize {
+        self.decode_impl(compressed, frame_size, pcm, 0)
+    }
+
+    /// Decode with start_band support for Hybrid mode.
+    /// `start_band > 0` means this CELT frame only contains data for bands
+    /// from start_band..nb_ebands; the lower bands come from SILK.
+    pub fn decode_with_start_band(&mut self, compressed: &[u8], frame_size: usize, pcm: &mut [f32], start_band: usize) -> usize {
+        self.decode_impl(compressed, frame_size, pcm, start_band)
+    }
+
+    fn decode_impl(&mut self, compressed: &[u8], frame_size: usize, pcm: &mut [f32], start_band: usize) -> usize {
         let mode = self.mode;
         let channels = self.channels;
         let nb_ebands = mode.nb_ebands;
@@ -1278,7 +1305,7 @@ impl CeltDecoder {
 
         unquant_coarse_energy(
             mode,
-            0,
+            start_band,
             nb_ebands,
             &mut self.old_band_e,
             (total_bits << 3) as u32,
@@ -1289,7 +1316,7 @@ impl CeltDecoder {
         );
 
         let mut tf_res = vec![0i32; nb_ebands];
-        tf_decode(0, nb_ebands, is_transient, &mut tf_res, lm as i32, &mut rc);
+        tf_decode(start_band, nb_ebands, is_transient, &mut tf_res, lm as i32, &mut rc);
 
         // Spread decision (C order: after TF, before dynalloc)
         let spread_decision = if rc.tell() + 4 <= total_bits {
@@ -1360,7 +1387,7 @@ impl CeltDecoder {
 
         let coded_bands = clt_compute_allocation(
             mode,
-            0,
+            start_band,
             nb_ebands,
             &offsets,
             &cap,
@@ -1382,7 +1409,7 @@ impl CeltDecoder {
 
         unquant_fine_energy(
             mode,
-            0,
+            start_band,
             nb_ebands,
             &mut self.old_band_e,
             &ebits,
@@ -1413,7 +1440,7 @@ impl CeltDecoder {
         quant_all_bands(
             false,
             mode,
-            0,
+            start_band,
             nb_ebands,
             x_split,
             y_opt,
@@ -1441,7 +1468,7 @@ impl CeltDecoder {
 
         unquant_energy_finalise(
             mode,
-            0,
+            start_band,
             nb_ebands,
             &mut self.old_band_e,
             &ebits,
@@ -1475,7 +1502,7 @@ impl CeltDecoder {
             &x,
             &mut freq,
             &self.old_band_e,
-            0,
+            start_band,
             nb_ebands,
             channels,
             (1 << lm) as usize,

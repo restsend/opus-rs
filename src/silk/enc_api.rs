@@ -58,6 +58,117 @@ pub fn silk_encode_do_vad(
     }
 }
 
+/// Prefill the SILK encoder with silence samples to warm up the VAD state.
+///
+/// This exactly mirrors what C `silk_Encode` does when called with `prefillFlag=1`:
+/// 1. Temporarily overrides frame_length to 10ms (80 samples @8kHz) since C forces
+///    payloadSize_ms=10 for the prefill regardless of the real packet size.
+/// 2. Runs VAD on the silence input (updating speech_activity_q8, input_quality_bands_q15)
+/// 3. Runs LP variable cutoff filter
+/// 4. Copies the filtered samples into x_buf (at x_frame + LA_SHAPE_MS * fs_kHz)
+/// 5. Shifts x_buf left by prefill_frame_length (like C's memmove at end of encode_frame_FIX)
+/// 6. Does NOT do pitch analysis, NSQ, or entropy coding.
+/// 7. Restores original frame_length.
+///
+/// After this call the encoder's VAD state matches what C has after its prefill pass,
+/// so the first real encoded frame will produce the same noise-shaping parameters.
+pub fn silk_encode_prefill(
+    ps_enc: &mut SilkEncoderState,
+    samples: &[i16], // exactly 10ms of silence (fs_khz * 10 samples)
+    activity: i32,   // Opus activity (0=inactive for silence)
+) {
+    // C forces payloadSize_ms=10 for the prefill, giving frame_length = fs_kHz * 10.
+    // Save the real frame_length and override for the duration of the prefill.
+    let fs_khz = ps_enc.s_cmn.fs_khz as usize;
+    let prefill_frame_length = fs_khz * 10; // 10ms frame (80 samples @8kHz)
+    let real_frame_length = ps_enc.s_cmn.frame_length as usize;
+    let real_nb_subfr = ps_enc.s_cmn.nb_subfr;
+    let real_subfr_length = ps_enc.s_cmn.subfr_length;
+
+    // Temporarily set to 10ms frame parameters (matching C's payloadSize_ms=10 override)
+    ps_enc.s_cmn.frame_length = prefill_frame_length as i32;
+    // At 10ms we always have 2 subframes (5ms each)
+    ps_enc.s_cmn.nb_subfr = 2;
+    ps_enc.s_cmn.subfr_length = (prefill_frame_length / 2) as i32;
+
+    let ltp_mem_length = ps_enc.s_cmn.ltp_mem_length as usize;
+    // LA_SHAPE_MS is always 5 (a compile-time constant in C), not the
+    // complexity-dependent la_shape field.
+    let la_shape_ms_samples = 5 * fs_khz; // LA_SHAPE_MS * fs_kHz
+
+    // --- Step 1: VAD on unfiltered data ---
+    // C: silk_encode_do_VAD_Fxx(&psEnc->state_Fxx[0], activity)
+    //    which calls silk_VAD_GetSA_Q8_FIX on inputBuf+1 (same as our samples slice)
+    let n = prefill_frame_length.min(samples.len());
+    silk_vad_get_sa_q8(ps_enc, &samples[..n], prefill_frame_length);
+
+    // Silence forced: override VAD if needed (matching silk_encode_do_vad logic)
+    let activity_threshold = crate::silk::define::SPEECH_ACTIVITY_DTX_THRES_Q8;
+    if activity == 0 && ps_enc.s_cmn.speech_activity_q8 >= activity_threshold {
+        ps_enc.s_cmn.speech_activity_q8 = activity_threshold - 1;
+    }
+    // Update signal_type (C: silk_encode_do_VAD_FIX sets this)
+    if ps_enc.s_cmn.speech_activity_q8 < activity_threshold {
+        ps_enc.s_cmn.indices.signal_type = crate::silk::define::TYPE_NO_VOICE_ACTIVITY as i8;
+        ps_enc.s_cmn.no_speech_counter += 1;
+    } else {
+        ps_enc.s_cmn.no_speech_counter = 0;
+        ps_enc.s_cmn.in_dtx = 0;
+        ps_enc.s_cmn.indices.signal_type = crate::silk::define::TYPE_UNVOICED as i8;
+    }
+
+    // --- Step 2: LP variable cutoff filter ---
+    // Work on a local buffer (C uses inputBuf+1 in-place)
+    let mut input_buf = [0i16; super::define::MAX_FRAME_LENGTH + 2];
+    // input_buf[0..2] = s_mid (overlap); for prefill these are zero (post-reset)
+    input_buf[0] = ps_enc.s_mid[0];
+    input_buf[1] = ps_enc.s_mid[1];
+    input_buf[2..2 + n].copy_from_slice(&samples[..n]);
+    // Save new overlap
+    ps_enc.s_mid[0] = input_buf[prefill_frame_length];
+    ps_enc.s_mid[1] = input_buf[prefill_frame_length + 1];
+    // Apply LP filter (modifies input_buf[1..])
+    silk_lp_variable_cutoff(
+        &mut ps_enc.s_cmn.s_lp,
+        &mut input_buf[1..],
+        prefill_frame_length,
+    );
+
+    // --- Step 3: Copy filtered samples into x_buf ---
+    // C: silk_memcpy(x_frame + LA_SHAPE_MS * fs_kHz, inputBuf + 1, frame_length)
+    //    where x_frame = x_buf + ltp_mem_length
+    let x_frame_idx = ltp_mem_length;
+    let dst = x_frame_idx + la_shape_ms_samples;
+    // Only write as many samples as we have (prefill_frame_length)
+    if dst + prefill_frame_length <= ps_enc.s_cmn.x_buf.len() {
+        ps_enc.s_cmn.x_buf[dst..dst + prefill_frame_length]
+            .copy_from_slice(&input_buf[1..1 + prefill_frame_length]);
+    }
+
+    // --- Step 4: Update x_buf (shift left by prefill_frame_length) ---
+    // C: silk_memmove(x_buf, &x_buf[frame_length], (ltp_mem_length + LA_SHAPE_MS*fs_kHz))
+    let move_len = ltp_mem_length + la_shape_ms_samples;
+    if prefill_frame_length + move_len <= ps_enc.s_cmn.x_buf.len() {
+        ps_enc
+            .s_cmn
+            .x_buf
+            .copy_within(prefill_frame_length..prefill_frame_length + move_len, 0);
+    }
+
+    // Update frame counter (C does this in encode_frame_FIX line 116)
+    ps_enc.s_cmn.frame_counter += 1;
+    // NOTE: In C, first_frame_after_reset is NOT cleared during prefill.
+    // In C encode_frame_FIX, `first_frame_after_reset = 0` (line 379) comes
+    // AFTER the prefill early return (line 365), so it remains 1 after prefill.
+    // The real first encoded frame clears it. Do NOT set it to 0 here.
+    // ps_enc.s_cmn.first_frame_after_reset = 0; // <-- wrong during prefill
+
+    // --- Restore original frame parameters ---
+    ps_enc.s_cmn.frame_length = real_frame_length as i32;
+    ps_enc.s_cmn.nb_subfr = real_nb_subfr;
+    ps_enc.s_cmn.subfr_length = real_subfr_length;
+}
+
 pub fn silk_encode_frame(
     ps_enc: &mut SilkEncoderState,
     input: &[i16],
@@ -80,32 +191,29 @@ pub fn silk_encode_frame(
     /* start of frame to encode */
     let x_frame_idx = ltp_mem_length;
 
-    /***************************************/
-    /* Ensure smooth bandwidth transitions */
-    /***************************************/
-    /* In C: silk_LP_variable_cutoff operates on inputBuf+1 in-place before copying */
-    let mut input_buf = vec![0i16; frame_length];
-    input_buf[..frame_length].copy_from_slice(&input[..frame_length]);
-    silk_lp_variable_cutoff(&mut ps_enc.s_cmn.s_lp, &mut input_buf, frame_length);
-
     /*******************************************/
     /* Copy new frame to front of input buffer */
     /*******************************************/
+    /* LP variable cutoff is now applied in silk_encode() before this function,
+     * matching the C flow where silk_LP_variable_cutoff is in silk_Encode, not
+     * in silk_encode_frame_FIX. */
     /* In C: x_frame + LA_SHAPE_MS * psEnc->sCmn.fs_kHz is the start where new samples go */
     /* LA_SHAPE_MS = 5 is a fixed constant, NOT the complexity-dependent la_shape */
     let la_shape_max = 5 * ps_enc.s_cmn.fs_khz as usize; // LA_SHAPE_MS * fs_kHz
     let new_samples_idx = x_frame_idx + la_shape_max;
     ps_enc.s_cmn.x_buf[new_samples_idx..new_samples_idx + frame_length]
-        .copy_from_slice(&input_buf[..frame_length]);
+        .copy_from_slice(&input[..frame_length]);
 
-    let mut res_pitch = vec![0i16; ps_enc.s_cmn.la_pitch as usize + frame_length + ltp_mem_length];
+    // Stack-copy x_buf before mutable borrows (avoids heap allocations and borrow checker conflicts)
+    let x_buf_copy = ps_enc.s_cmn.x_buf; // array value copy (~1440 bytes on stack)
+
+    let mut res_pitch = [0i16; LA_PITCH_MAX + MAX_FRAME_LENGTH + LTP_MEM_LENGTH_MS * MAX_FS_KHZ];
     let res_pitch_frame_idx = ltp_mem_length;
 
     /*****************************************/
     /* Find pitch lags, initial LPC analysis */
     /*****************************************/
     /* C passes x_frame - ltp_mem_length = x_buf as the x parameter */
-    let x_buf_copy = ps_enc.s_cmn.x_buf.to_vec();
     silk_find_pitch_lags_fix(ps_enc, &mut s_enc_ctrl, &mut res_pitch, &x_buf_copy, 0);
 
     /************************/
@@ -115,13 +223,20 @@ pub fn silk_encode_frame(
     // Since Rust can't do negative indexing, pass the wider buffer starting
     // la_shape samples before x_frame. noise_shape_analysis expects x[0]
     // to correspond to x_frame - la_shape.
-    let x_tmp = ps_enc.s_cmn.x_buf[x_frame_idx - la_shape..].to_vec();
+    let x_tmp = &x_buf_copy[x_frame_idx - la_shape..];
     silk_noise_shape_analysis_fix(
         ps_enc,
         &mut s_enc_ctrl,
         &res_pitch[res_pitch_frame_idx..],
-        &x_tmp,
+        x_tmp,
     );
+    #[cfg(debug_assertions)]
+    if std::env::var("SILK_DEBUG_NSQ").is_ok() {
+        eprintln!(
+            "  [ENC] after noise_shape: lf_shp_q14[0]={:#010x}",
+            s_enc_ctrl.lf_shp_q14[0]
+        );
+    }
 
     /***************************************************/
     /* Find linear prediction coefficients (LPC + LTP) */
@@ -130,12 +245,12 @@ pub fn silk_encode_frame(
     // We pass x_buf[ltp_mem_length - predict_lpc_order..] so x_ptr_idx=0 in find_pred_coefs corresponds to
     // x_buf[ltp_mem_length - predict_lpc_order] = C's (x - predict_lpc_order).
     let predict_lpc_order = ps_enc.s_cmn.predict_lpc_order as usize;
-    let x_tmp_frame = ps_enc.s_cmn.x_buf[x_frame_idx - predict_lpc_order..].to_vec();
+    let x_tmp_frame = &x_buf_copy[x_frame_idx - predict_lpc_order..];
     silk_find_pred_coefs_fix(
         ps_enc,
         &mut s_enc_ctrl,
         &res_pitch[res_pitch_frame_idx..],
-        &x_tmp_frame,
+        x_tmp_frame,
         &x_buf_copy,
         cond_coding,
     );
@@ -144,6 +259,13 @@ pub fn silk_encode_frame(
     /* Process gains                        */
     /****************************************/
     silk_process_gains_fix(ps_enc, &mut s_enc_ctrl, cond_coding);
+    #[cfg(debug_assertions)]
+    if std::env::var("SILK_DEBUG_NSQ").is_ok() {
+        eprintln!(
+            "  [ENC] after process_gains: lf_shp_q14[0]={:#010x}",
+            s_enc_ctrl.lf_shp_q14[0]
+        );
+    }
 
     /****************************************/
     /* Rate control loop                    */
@@ -173,13 +295,13 @@ pub fn silk_encode_frame(
     let ec_prev_signal_type_copy = ps_enc.s_cmn.ec_prev_signal_type;
     let mut rc_copy2: Option<RangeCoder> = None;
     let mut nsq_copy2: Option<SilkNSQState> = None;
-    let mut ec_buf_copy = vec![0u8; 1275];
+    let mut ec_buf_copy = [0u8; 1275];
     let mut last_gain_index_copy2: i8 = 0;
 
-    // Per-subframe gain locking
-    let mut gain_lock = vec![false; MAX_NB_SUBFR];
-    let mut best_gain_mult = vec![256i32; MAX_NB_SUBFR];
-    let mut best_sum = vec![i32::MAX; MAX_NB_SUBFR];
+    // Per-subframe gain locking (stack arrays - no heap needed for 4 elements)
+    let mut gain_lock = [false; MAX_NB_SUBFR];
+    let mut best_gain_mult = [256i32; MAX_NB_SUBFR];
+    let mut best_sum = [i32::MAX; MAX_NB_SUBFR];
 
     for iter in 0..=max_iter {
         if gains_id == gains_id_lower {
@@ -203,12 +325,85 @@ pub fn silk_encode_frame(
             pred_coef_q12_flat[..MAX_LPC_ORDER].copy_from_slice(&s_enc_ctrl.pred_coef_q12[0]);
             pred_coef_q12_flat[MAX_LPC_ORDER..].copy_from_slice(&s_enc_ctrl.pred_coef_q12[1]);
 
+            // Debug: dump NSQ input parameters (guarded by env var)
+            #[cfg(debug_assertions)]
+            if std::env::var("SILK_DEBUG_NSQ").is_ok() && iter == 0 {
+                eprintln!(
+                    "  [ENC] iter=0 pre-dump: lf_shp_q14[0]={:#010x}",
+                    s_enc_ctrl.lf_shp_q14[0]
+                );
+                eprintln!(
+                    "=== NSQ INPUT DUMP (frame_counter={}) ===",
+                    ps_enc.s_cmn.frame_counter
+                );
+                eprintln!(
+                    "  signal_type={} quant_offset_type={}",
+                    ps_enc.s_cmn.indices.signal_type, ps_enc.s_cmn.indices.quant_offset_type
+                );
+                eprintln!(
+                    "  gains_q16={:?}",
+                    &s_enc_ctrl.gains_q16[..ps_enc.s_cmn.nb_subfr as usize]
+                );
+                eprintln!("  lambda_q10={}", s_enc_ctrl.lambda_q10);
+                eprintln!(
+                    "  pred_coef_q12[0]={:?}",
+                    &s_enc_ctrl.pred_coef_q12[0][..ps_enc.s_cmn.predict_lpc_order as usize]
+                );
+                eprintln!(
+                    "  pred_coef_q12[1]={:?}",
+                    &s_enc_ctrl.pred_coef_q12[1][..ps_enc.s_cmn.predict_lpc_order as usize]
+                );
+                eprintln!(
+                    "  ar_q13[0..shaping]={:?}",
+                    &s_enc_ctrl.ar_q13[..ps_enc.s_cmn.shaping_lpc_order as usize]
+                );
+                eprintln!(
+                    "  tilt_q14={:?}",
+                    &s_enc_ctrl.tilt_q14[..ps_enc.s_cmn.nb_subfr as usize]
+                );
+                eprintln!(
+                    "  lf_shp_q14={:?}",
+                    &s_enc_ctrl.lf_shp_q14[..ps_enc.s_cmn.nb_subfr as usize]
+                );
+                eprintln!(
+                    "  harm_shape_gain_q14={:?}",
+                    &s_enc_ctrl.harm_shape_gain_q14[..ps_enc.s_cmn.nb_subfr as usize]
+                );
+                eprintln!(
+                    "  pitch_l={:?}",
+                    &s_enc_ctrl.pitch_l[..ps_enc.s_cmn.nb_subfr as usize]
+                );
+                eprintln!(
+                    "  x_buf[x_frame..+20]={:?}",
+                    &ps_enc.s_cmn.x_buf[x_frame_idx..x_frame_idx + 20]
+                );
+                eprintln!(
+                    "  la_shape={} la_shape_max={} new_samples_at={}",
+                    la_shape,
+                    la_shape_max,
+                    x_frame_idx + la_shape_max
+                );
+                eprintln!(
+                    "  x_buf[new_samples_idx..+20]={:?}",
+                    &ps_enc.s_cmn.x_buf
+                        [x_frame_idx + la_shape_max..x_frame_idx + la_shape_max + 20]
+                );
+                eprintln!(
+                    "  n_states_delayed_decision={}",
+                    ps_enc.s_cmn.n_states_delayed_decision
+                );
+            }
+
             if ps_enc.s_cmn.n_states_delayed_decision > 1 {
                 silk_nsq_del_dec(
                     &ps_enc.s_cmn,
                     &mut ps_enc.s_nsq,
                     &ps_enc.s_cmn.indices,
+                    // C: silk_NSQ_del_dec(psEncC, psEncNSQ, indices, x_frame, ...)
+                    // x_frame = x_buf[ltp_mem_length..] — NSQ processes frame_length samples from x_frame
                     &ps_enc.s_cmn.x_buf[x_frame_idx..],
+                    // NOTE: x_buf[x_frame_idx..x_frame_idx+LA_SHAPE] = previous frame's look-ahead (shared data)
+                    // x_buf[x_frame_idx+LA_SHAPE..] = current frame samples
                     &mut ps_enc.pulses,
                     &pred_coef_q12_flat,
                     &s_enc_ctrl.ltp_coef_q14,
@@ -226,7 +421,10 @@ pub fn silk_encode_frame(
                     &ps_enc.s_cmn,
                     &mut ps_enc.s_nsq,
                     &ps_enc.s_cmn.indices,
+                    // C: silk_NSQ(psEncC, psEncNSQ, indices, x_frame, ...)
+                    // x_frame = x_buf[ltp_mem_length..]
                     &ps_enc.s_cmn.x_buf[x_frame_idx..],
+                    // NOTE: x_buf[x_frame_idx..+LA_SHAPE] = previous frame look-ahead; rest = current frame
                     &mut ps_enc.pulses,
                     &pred_coef_q12_flat,
                     &s_enc_ctrl.ltp_coef_q14,
@@ -306,6 +504,15 @@ pub fn silk_encode_frame(
                 );
 
                 n_bits = rc.tell() as i32;
+            }
+
+            // Rate control debug
+            #[cfg(debug_assertions)]
+            if std::env::var("SILK_DEBUG_NSQ").is_ok() && ps_enc.s_cmn.frame_counter <= 3 {
+                eprintln!(
+                    "  [RC] iter={} n_bits={} max_bits={} found_lower={} found_upper={} gain_mult_q8={}",
+                    iter, n_bits, max_bits, found_lower, found_upper, gain_mult_q8
+                );
             }
 
             // VBR: if first iteration and within budget, stop
@@ -511,9 +718,33 @@ pub fn silk_encode(
         n_bits_per_frame * 50
     };
 
-    // Set LBRR flags to 0 (no LBRR encoding in this implementation)
+    // Determine if LBRR should be active this packet.
+    // LBRR is enabled when use_in_band_fec=1 and packet_loss_perc > 0.
+    // The LBRR frames were prepared during the PREVIOUS call by saving the main
+    // frame indices into indices_lbrr[]. We use lbrr_enabled from the struct
+    // (which the caller sets by storing use_in_band_fec there).
+    // IMPORTANT: Only activate LBRR if saved indices have valid voice activity
+    // (signal_type >= TYPE_UNVOICED). On the first packet, no previous data exists.
+    let lbrr_possible = ps_enc.s_cmn.use_in_band_fec != 0
+        && ps_enc.s_cmn.packet_loss_perc > 0
+        && ps_enc.s_cmn.lbrr_enabled != 0;
+
+    // Compute lbrr_symbol: which frames have valid saved LBRR data
+    // A frame has valid LBRR if its signal_type >= TYPE_UNVOICED (not silence)
+    let mut lbrr_symbol: i32 = 0;
+    if lbrr_possible {
+        for i in 0..n_frames_per_packet as usize {
+            if ps_enc.s_cmn.indices_lbrr[i].signal_type >= TYPE_UNVOICED as i8 {
+                lbrr_symbol |= 1 << i;
+            }
+        }
+    }
+    let use_lbrr = lbrr_symbol > 0;
+
+    ps_enc.s_cmn.lbrr_flag = if lbrr_symbol > 0 { 1 } else { 0 };
+    // Copy lbrr_flags from the bitmask for later use in encoding and flag patching
     for i in 0..n_frames_per_packet as usize {
-        ps_enc.s_cmn.indices_lbrr[i] = SideInfoIndices::default();
+        ps_enc.s_cmn.lbrr_flags[i] = (lbrr_symbol >> i) & 1;
     }
 
     // Iterate over frames in this packet
@@ -553,7 +784,7 @@ pub fn silk_encode(
         let n_samp: usize = fs_in_khz - input_delay;
 
         let n = raw_frame.len();
-        let mut resampler_out = vec![0i16; n];
+        let mut resampler_out = [0i16; MAX_FRAME_LENGTH];
 
         // Step 1: delayBuf[inputDelay..Fs_in_kHz] = in[0..nSamples]
         let mut delay_buf = ps_enc.resampler_delay_buf;
@@ -571,18 +802,16 @@ pub fn silk_encode(
         ps_enc.resampler_delay_buf = delay_buf;
 
         // inputBuf[0..2] = sMid, inputBuf[2..2+n] = resampler_out
-        let mut input_buf = vec![0i16; frame_length + 2];
+        let mut input_buf = [0i16; MAX_FRAME_LENGTH + 2];
         input_buf[0] = ps_enc.s_mid[0];
         input_buf[1] = ps_enc.s_mid[1];
-        input_buf[2..2 + n].copy_from_slice(&resampler_out);
+        input_buf[2..2 + n].copy_from_slice(&resampler_out[..n]);
 
-        // Save last 2 samples for next frame's overlap
+        // Save last 2 samples for next frame's overlap BEFORE LP filter (matching C)
+        // C: silk_memcpy(sStereo.sMid, &inputBuf[frame_length], 2)
+        // This happens before VAD and LP filter in C.
         ps_enc.s_mid[0] = input_buf[frame_length];
         ps_enc.s_mid[1] = input_buf[frame_length + 1];
-
-        // The actual frame data is inputBuf[1..frame_length+1] (160 samples)
-        // This includes 1 overlap sample from previous frame + 159 new samples
-        let frame_samples = &input_buf[1..1 + frame_length];
 
         // --- LBRR preamble encoding (first frame only) ---
         if frame_idx == 0 {
@@ -592,18 +821,54 @@ pub fn silk_encode(
             let icdf = [icdf_val, 0u8];
             rc.encode_icdf(0, &icdf, 8);
 
-            // Encode LBRR flags (all zero = no LBRR)
-            let lbrr_symbol = 0i32;
-            ps_enc.s_cmn.lbrr_flag = if lbrr_symbol > 0 { 1 } else { 0 };
-            // If LBRR symbol > 0 and nFramesPerPacket > 1, encode the LBRR frame flags
-            // (skipped since we don't produce LBRR)
+            // Encode LBRR flags
+            if lbrr_symbol > 0 {
+                // Encode LBRR symbol into range coder
+                // C: ec_enc_icdf(psRangeEnc, LBRR_symbol - 1, silk_LBRR_flags_iCDF_ptr[nFramesPerPacket-2], 8)
+                let lbrr_icdf = match n_frames_per_packet {
+                    2 => &crate::silk::tables::SILK_LBRR_FLAGS_2_ICDF[..],
+                    3 => &crate::silk::tables::SILK_LBRR_FLAGS_3_ICDF[..],
+                    _ => &crate::silk::tables::SILK_LBRR_FLAGS_2_ICDF[..],
+                };
+                if n_frames_per_packet > 1 {
+                    rc.encode_icdf(lbrr_symbol - 1, lbrr_icdf, 8);
+                }
+                // For each frame with LBRR, encode its indices and pulses
+                for i in 0..n_frames_per_packet as usize {
+                    if ps_enc.s_cmn.lbrr_flags[i] != 0 {
+                        let lbrr_cond = if i > 0 && ps_enc.s_cmn.lbrr_flags[i - 1] != 0 {
+                            CODE_CONDITIONALLY
+                        } else {
+                            CODE_INDEPENDENTLY_NO_LTP_SCALING
+                        };
+                        silk_encode_indices(ps_enc, rc, i, true, lbrr_cond);
+                        silk_encode_pulses(
+                            rc,
+                            ps_enc.s_cmn.indices_lbrr[i].signal_type as i32,
+                            ps_enc.s_cmn.indices_lbrr[i].quant_offset_type as i32,
+                            &ps_enc.s_cmn.pulses_lbrr[i],
+                            ps_enc.s_cmn.frame_length as usize,
+                        );
+                    }
+                }
+            }
         }
 
         // --- SNR control ---
         silk_control_snr(&mut ps_enc.s_cmn, frame_rate_bps);
 
-        // --- VAD ---
-        silk_encode_do_vad(ps_enc, frame_samples, activity);
+        // --- VAD on unfiltered data (C calls VAD before LP filter) ---
+        // C: silk_encode_do_VAD_Fxx(&psEnc->state_Fxx[0], activity) on inputBuf+1
+        let vad_frame = &input_buf[1..1 + frame_length];
+        silk_encode_do_vad(ps_enc, vad_frame, activity);
+
+        // --- Apply LP variable cutoff filter (C: inside silk_encode_frame_FIX) ---
+        // C: silk_LP_variable_cutoff(&psEnc->sCmn.sLP, inputBuf+1, frame_length)
+        silk_lp_variable_cutoff(&mut ps_enc.s_cmn.s_lp, &mut input_buf[1..], frame_length);
+
+        // The actual frame data is inputBuf[1..frame_length+1] (160 samples)
+        // Now LP-filtered, ready for silk_encode_frame
+        let frame_samples = &input_buf[1..1 + frame_length];
 
         // --- Conditional coding ---
         let cond_coding = if ps_enc.s_cmn.n_frames_encoded == 0 {
@@ -618,6 +883,13 @@ pub fn silk_encode(
         } else {
             max_bits
         };
+        #[cfg(debug_assertions)]
+        if std::env::var("SILK_DEBUG_NSQ").is_ok() {
+            eprintln!(
+                "  [SILK_ENC] frame_idx={} frame_max_bits={} max_bits={} tot_blocks={} cond_coding={}",
+                frame_idx, frame_max_bits, max_bits, _tot_blocks, cond_coding
+            );
+        }
 
         let mut frame_bytes = 0i32;
         let ret = silk_encode_frame(
@@ -635,6 +907,28 @@ pub fn silk_encode(
         );
         if ret != 0 {
             return ret;
+        }
+
+        // --- Save indices for LBRR use in the next packet ---
+        // After encoding each frame, save its indices as LBRR data for the next packet.
+        // This matches the C silk_LBRR_encode() approach where previous frame
+        // data is re-used at lower bitrate in the next packet.
+        if use_lbrr || ps_enc.s_cmn.use_in_band_fec != 0 {
+            let fi = frame_idx as usize;
+            if fi < MAX_FRAMES_PER_PACKET {
+                ps_enc.s_cmn.indices_lbrr[fi] = ps_enc.s_cmn.indices;
+                // Apply LBRR gain increase: raise gains_indices by lbrr_gain_increases
+                // This reduces quality but also reduces bits for the LBRR copy.
+                let gain_inc = ps_enc.s_cmn.lbrr_gain_increases.max(0).min(16) as i8;
+                for g in 0..ps_enc.s_cmn.nb_subfr as usize {
+                    let new_gain = (ps_enc.s_cmn.indices_lbrr[fi].gains_indices[g] as i32
+                        + gain_inc as i32)
+                        .min(63) as i8;
+                    ps_enc.s_cmn.indices_lbrr[fi].gains_indices[g] = new_gain;
+                }
+                // Store pulses
+                ps_enc.s_cmn.pulses_lbrr[fi] = ps_enc.pulses;
+            }
         }
 
         ps_enc.s_cmn.n_frames_encoded += 1;

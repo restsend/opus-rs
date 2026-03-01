@@ -46,7 +46,7 @@ pub fn silk_find_pitch_lags_fix(
     /*************************************/
 
     /* Calculate windowed signal */
-    let mut wsig = vec![0i16; pitch_lpc_win_length];
+    let mut wsig = [0i16; PE_MAX_FRAME_LENGTH];
     let x_ptr_start = buf_len - pitch_lpc_win_length;
 
     /* First la_pitch samples: sine-rise window */

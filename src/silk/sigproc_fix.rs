@@ -1,6 +1,7 @@
 use crate::silk::define::*;
 use crate::silk::macros::*;
 
+#[inline]
 pub fn silk_k2a_q16(a_q24: &mut [i32], rc_q16: &[i32], order: usize) {
     for k in 0..order {
         let rc = rc_q16[k];
@@ -265,16 +266,17 @@ pub fn silk_autocorr(
     shift = ac0_log2 - 30 + ac0_shift + 1;
     shift = shift / 2;
 
+    // Stack buffer: max n = pitch_lpc_win_length ≤ (20+4)*16 = 384; shape_win ≤ 240.
+    // Use PE_MAX_FRAME_LENGTH (640) to also cover direct benchmark calls with n=640.
+    let mut xx_buf = [0i16; PE_MAX_FRAME_LENGTH];
     let xptr: &[i16];
-    let mut xx_buf;
 
     if shift > 0 {
         /* PSHR32: rounding shift */
-        xx_buf = vec![0i16; n];
         for j in 0..n {
             xx_buf[j] = silk_rshift_round(input_data[j] as i32, shift) as i16;
         }
-        xptr = &xx_buf;
+        xptr = &xx_buf[..n];
     } else {
         shift = 0;
         xptr = input_data;
@@ -389,12 +391,14 @@ pub fn silk_sum_sqr_shift(energy: &mut i32, shift: &mut i32, x: &[i16], len: usi
     *energy = nrg;
 }
 
+#[inline(always)]
 pub fn silk_inner_prod_aligned(ptr1: &[i16], ptr2: &[i16], len: usize) -> i32 {
-    let mut acc: i32 = 0;
-    for i in 0..len {
-        acc = silk_smlabb(acc, ptr1[i] as i32, ptr2[i] as i32);
-    }
-    acc
+    ptr1[..len]
+        .iter()
+        .zip(&ptr2[..len])
+        .fold(0i32, |acc, (&a, &b)| {
+            acc.wrapping_add((a as i32).wrapping_mul(b as i32))
+        })
 }
 
 pub fn silk_corr_vector_fix(
@@ -737,28 +741,57 @@ pub fn silk_lpc_analysis_filter(
         out[ix] = 0;
     }
 
-    for ix in d..len {
-        let mut out32_q12: i32;
-        out32_q12 = silk_smulbb(input[ix - 1] as i32, b[0] as i32);
-        out32_q12 = out32_q12.wrapping_add(silk_smulbb(input[ix - 2] as i32, b[1] as i32));
-        out32_q12 = out32_q12.wrapping_add(silk_smulbb(input[ix - 3] as i32, b[2] as i32));
-        out32_q12 = out32_q12.wrapping_add(silk_smulbb(input[ix - 4] as i32, b[3] as i32));
-        out32_q12 = out32_q12.wrapping_add(silk_smulbb(input[ix - 5] as i32, b[4] as i32));
-        out32_q12 = out32_q12.wrapping_add(silk_smulbb(input[ix - 6] as i32, b[5] as i32));
-        for j in (6..d).step_by(2) {
-            out32_q12 = out32_q12.wrapping_add(silk_smulbb(input[ix - j - 1] as i32, b[j] as i32));
-            out32_q12 =
-                out32_q12.wrapping_add(silk_smulbb(input[ix - j - 2] as i32, b[j + 1] as i32));
+    // SAFETY: ix ranges d..len, and we access input[ix-1..ix-d-1], all within input[0..len+d-1].
+    // b has exactly d elements. out has at least len elements.
+    unsafe {
+        for ix in d..len {
+            let mut out32_q12: i32;
+            out32_q12 = silk_smulbb(
+                *input.get_unchecked(ix - 1) as i32,
+                *b.get_unchecked(0) as i32,
+            );
+            out32_q12 = out32_q12.wrapping_add(silk_smulbb(
+                *input.get_unchecked(ix - 2) as i32,
+                *b.get_unchecked(1) as i32,
+            ));
+            out32_q12 = out32_q12.wrapping_add(silk_smulbb(
+                *input.get_unchecked(ix - 3) as i32,
+                *b.get_unchecked(2) as i32,
+            ));
+            out32_q12 = out32_q12.wrapping_add(silk_smulbb(
+                *input.get_unchecked(ix - 4) as i32,
+                *b.get_unchecked(3) as i32,
+            ));
+            out32_q12 = out32_q12.wrapping_add(silk_smulbb(
+                *input.get_unchecked(ix - 5) as i32,
+                *b.get_unchecked(4) as i32,
+            ));
+            out32_q12 = out32_q12.wrapping_add(silk_smulbb(
+                *input.get_unchecked(ix - 6) as i32,
+                *b.get_unchecked(5) as i32,
+            ));
+            let mut j = 6;
+            while j < d {
+                out32_q12 = out32_q12.wrapping_add(silk_smulbb(
+                    *input.get_unchecked(ix - j - 1) as i32,
+                    *b.get_unchecked(j) as i32,
+                ));
+                out32_q12 = out32_q12.wrapping_add(silk_smulbb(
+                    *input.get_unchecked(ix - j - 2) as i32,
+                    *b.get_unchecked(j + 1) as i32,
+                ));
+                j += 2;
+            }
+
+            /* Subtract prediction */
+            out32_q12 = ((*input.get_unchecked(ix) as i32) << 12).wrapping_sub(out32_q12);
+
+            /* Scale to Q0 */
+            let out32 = silk_rshift_round(out32_q12, 12);
+
+            /* Saturate output */
+            *out.get_unchecked_mut(ix) = silk_sat16(out32) as i16;
         }
-
-        /* Subtract prediction */
-        out32_q12 = ((input[ix] as i32) << 12).wrapping_sub(out32_q12);
-
-        /* Scale to Q0 */
-        let out32 = silk_rshift_round(out32_q12, 12);
-
-        /* Saturate output */
-        out[ix] = silk_sat16(out32) as i16;
     }
 }
 

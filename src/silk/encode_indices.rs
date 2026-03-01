@@ -11,11 +11,13 @@ pub fn silk_encode_indices(
     encode_lbrr: bool,
     cond_coding: i32,
 ) {
+    // Copy indices to avoid borrow conflicts when we mutate ec_prev* fields below
     let ps_indices = if encode_lbrr {
-        &ps_enc_c.s_cmn.indices_lbrr[frame_index]
+        ps_enc_c.s_cmn.indices_lbrr[frame_index]
     } else {
-        &ps_enc_c.s_cmn.indices
+        ps_enc_c.s_cmn.indices
     };
+    let ps_indices = &ps_indices;
 
     /*******************************************/
     /* Encode signal type and quantizer offset */
@@ -90,10 +92,19 @@ pub fn silk_encode_indices(
         /* Encode pitch */
         /****************/
         /* Lag index */
-        if cond_coding == CODE_CONDITIONALLY {
-            /* Delta lag index */
-            ps_range_enc.encode_icdf(ps_indices.lag_index as i32 + 9, &SILK_PITCH_DELTA_ICDF, 8);
-        } else {
+        let mut encode_absolute_lag_index = true;
+        if cond_coding == CODE_CONDITIONALLY && ps_enc_c.s_cmn.ec_prev_signal_type == TYPE_VOICED {
+            /* Delta Encoding */
+            let mut delta_lag_index = ps_indices.lag_index as i32 - ps_enc_c.s_cmn.ec_prev_lag_index as i32;
+            if delta_lag_index < -8 || delta_lag_index > 11 {
+                delta_lag_index = 0;
+            } else {
+                delta_lag_index += 9;
+                encode_absolute_lag_index = false; /* Only use delta */
+            }
+            ps_range_enc.encode_icdf(delta_lag_index, &SILK_PITCH_DELTA_ICDF, 8);
+        }
+        if encode_absolute_lag_index {
             /* Absolute lag index */
             let pitch_high_bits = ps_indices.lag_index as i32 / (ps_enc_c.s_cmn.fs_khz / 2);
             let pitch_low_bits =
@@ -108,6 +119,7 @@ pub fn silk_encode_indices(
             };
             ps_range_enc.encode_icdf(pitch_low_bits, low_bits_icdf, 8);
         }
+        ps_enc_c.s_cmn.ec_prev_lag_index = ps_indices.lag_index;
 
         /* Contour index */
         let contour_icdf = if ps_enc_c.s_cmn.nb_subfr == 2 {
@@ -139,12 +151,16 @@ pub fn silk_encode_indices(
                 8,
             );
         }
+
+        /**********************/
+        /* Encode LTP scaling */
+        /**********************/
+        if cond_coding == CODE_INDEPENDENTLY {
+            ps_range_enc.encode_icdf(ps_indices.ltp_scale_index as i32, &SILK_LTPSCALE_ICDF, 8);
+        }
     }
 
-    /* Encode LTP scaling */
-    if ps_indices.signal_type as i32 == TYPE_VOICED {
-        ps_range_enc.encode_icdf(ps_indices.ltp_scale_index as i32, &SILK_LTPSCALE_ICDF, 8);
-    }
+    ps_enc_c.s_cmn.ec_prev_signal_type = ps_indices.signal_type as i32;
 
     /* Encode seed */
     ps_range_enc.encode_icdf(ps_indices.seed as i32, &SILK_UNIFORM4_ICDF, 8);

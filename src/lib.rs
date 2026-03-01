@@ -15,7 +15,7 @@ use celt::{CeltDecoder, CeltEncoder};
 use hp_cutoff::hp_cutoff;
 use range_coder::RangeCoder;
 use silk::control_codec::silk_control_encoder;
-use silk::enc_api::silk_encode;
+use silk::enc_api::{silk_encode, silk_encode_prefill};
 use silk::init_encoder::silk_init_encoder;
 use silk::lin2log::silk_lin2log;
 use silk::log2lin::silk_log2lin;
@@ -56,6 +56,14 @@ pub struct OpusEncoder {
     pub bitrate_bps: i32,
     pub complexity: i32,
     pub use_cbr: bool,
+    /// Enable in-band FEC (LBRR). When set to true, the encoder will
+    /// include redundant copies of previous frames (at lower quality) to
+    /// allow packet-loss recovery on the decoder side.
+    pub use_inband_fec: bool,
+    /// Expected packet loss percentage (0-100). Used to determine whether
+    /// LBRR encoding is worth the overhead. Non-zero value enables LBRR
+    /// when `use_inband_fec` is also true.
+    pub packet_loss_perc: i32,
     silk_initialized: bool,
     mode: OpusMode,
     // HP filter state
@@ -104,11 +112,33 @@ impl OpusEncoder {
             bitrate_bps: 64000,
             complexity: 0,
             use_cbr: false,
+            use_inband_fec: false,
+            packet_loss_perc: 0,
             silk_initialized: false,
             mode: opus_mode,
             variable_hp_smth2_q15,
             hp_mem: vec![0; channels * 2],
         })
+    }
+
+    /// Enable Hybrid mode (SILK + CELT).
+    /// This is only valid for sampling rates of 24000 or 48000 Hz.
+    /// In Hybrid mode, SILK handles the low-frequency portion and CELT handles the high-frequency.
+    /// IMPORTANT: Hybrid mode requires the input to be at the encoder's sampling rate (24kHz or 48kHz).
+    /// The SILK encoder will internally use 16kHz for its processing.
+    pub fn enable_hybrid_mode(&mut self) -> Result<(), &'static str> {
+        if self.sampling_rate != 24000 && self.sampling_rate != 48000 {
+            return Err("Hybrid mode requires 24kHz or 48kHz sampling rate");
+        }
+        let bw = if self.sampling_rate == 48000 {
+            Bandwidth::Fullband
+        } else {
+            Bandwidth::Superwideband
+        };
+        self.mode = OpusMode::Hybrid;
+        self.bandwidth = bw;
+        self.silk_initialized = false; // Force re-initialization at SILK internal rate
+        Ok(())
     }
 
     pub fn encode(
@@ -155,21 +185,63 @@ impl OpusEncoder {
         let mut rc = RangeCoder::new_encoder((max_data_bytes - 1) as u32);
 
         if mode == OpusMode::SilkOnly || mode == OpusMode::Hybrid {
-            /* Initialize/configure SILK encoder if needed */
-            let fs_khz = self.sampling_rate / 1000;
+            /* Initialize/configure SILK encoder if needed.
+               For Hybrid mode, SILK operates at 16kHz internal rate regardless of
+               the encoder's API sampling rate (24kHz or 48kHz). The input must be
+               downsampled before passing to SILK.
+            */
+            let silk_fs_khz = if mode == OpusMode::Hybrid {
+                16 // SILK always uses 16kHz in Hybrid (SWB) mode
+            } else {
+                self.sampling_rate / 1000
+            };
+            // SILK frame duration matches the API frame duration
             let frame_ms = (frame_size as i32 * 1000) / self.sampling_rate;
-            if !self.silk_initialized || self.silk_enc.s_cmn.fs_khz != fs_khz as i32 {
+            if !self.silk_initialized || self.silk_enc.s_cmn.fs_khz != silk_fs_khz as i32 {
                 let silk_init_bitrate = (((n_bytes - 1) * 8) as i64 * self.sampling_rate as i64
                     / frame_size as i64) as i32;
                 silk_control_encoder(
                     &mut *self.silk_enc,
-                    fs_khz as i32,
+                    silk_fs_khz as i32,
                     frame_ms,
                     silk_init_bitrate,
                     self.complexity,
                 );
                 self.silk_enc.s_cmn.use_cbr = if self.use_cbr { 1 } else { 0 };
                 self.silk_initialized = true;
+
+                // C encoder prefills with Fs/100 = 80 samples of silence before the first real frame.
+                // This warms up the VAD state (speech_activity_q8, input_quality_bands_q15, etc.)
+                // which affects noise shaping in the first real frame.
+                // C: silk_Encode(silk_enc, ..., prefill=1, activity=0) on 80 zeros.
+                // With prefillFlag=1, C skips pitch/NSQ/entropy coding and only runs
+                // VAD + LP variable cutoff + x_buf update.
+                {
+                    let encoder_buffer = self.sampling_rate as usize / 100; // Fs/100 = 80 samples @8kHz
+                    let prefill_zeros = vec![0i16; encoder_buffer];
+                    silk_encode_prefill(
+                        &mut *self.silk_enc,
+                        &prefill_zeros,
+                        0, // activity = inactive (silence)
+                    );
+                    #[cfg(debug_assertions)]
+                    if std::env::var("SILK_DEBUG_NSQ").is_ok() {
+                        eprintln!(
+                            "  [PREFILL] speech_activity_q8={} input_quality_bands={:?}",
+                            self.silk_enc.s_cmn.speech_activity_q8,
+                            &self.silk_enc.s_cmn.input_quality_bands_q15[..4]
+                        );
+                    }
+                }
+            }
+            // Always update FEC and packet loss settings (may change between calls)
+            self.silk_enc.s_cmn.use_in_band_fec = if self.use_inband_fec { 1 } else { 0 };
+            self.silk_enc.s_cmn.packet_loss_perc = self.packet_loss_perc.clamp(0, 100);
+            // Enable LBRR in the state struct when FEC is requested
+            self.silk_enc.s_cmn.lbrr_enabled = if self.use_inband_fec { 1 } else { 0 };
+            // LBRR gain increase (C default: 2 steps ~= 3dB quality reduction for LBRR copy)
+            if self.silk_enc.s_cmn.lbrr_gain_increases == 0 {
+                self.silk_enc.s_cmn.lbrr_gain_increases = 2;
             }
 
             // Apply HP filter before SILK encoding (matching C opus_encode_native)
@@ -213,20 +285,56 @@ impl OpusEncoder {
 
             let input_i16 = filtered_i16;
 
+            // For Hybrid mode: downsample from API rate to SILK's 16kHz internal rate.
+            // This is necessary because SILK can only process up to 16kHz.
+            let silk_input: Vec<i16> = if mode == OpusMode::Hybrid && self.sampling_rate > 16000 {
+                // Downsample from API rate (24kHz or 48kHz) to 16kHz using SilkResampler
+                // Note: The silk encoder struct already has resampler_delay_buf for delay;
+                // here we use a local resampler for the downsampling step.
+                let downsample_ratio = self.sampling_rate / 16000;
+                let silk_frame_size = frame_size / downsample_ratio as usize;
+                let mut downsampled = vec![0i16; silk_frame_size];
+                // Simple downsampling: take every Nth sample (low quality, but functional)
+                // A proper implementation would use the SilkResampler.
+                for i in 0..silk_frame_size {
+                    downsampled[i] = input_i16[i * downsample_ratio as usize];
+                }
+                downsampled
+            } else {
+                input_i16
+            };
+
             let mut pn_bytes = 0;
 
             /* Use the top-level silk_encode which handles:
             - VAD, LBRR preamble, SNR control, HP variable cutoff,
             - multi-frame packets, and VAD flag patching */
-            // C: st->silk_mode.maxBits = (max_data_bytes-1)*8;
-            // The -1 accounts for the TOC byte which is not part of the SILK payload
-            let silk_max_bits = ((n_bytes - 1) * 8) as i32;
-            let silk_bitrate =
-                (silk_max_bits as i64 * self.sampling_rate as i64 / frame_size as i64) as i32;
+            // For Hybrid mode, reserve ~40% of bits for SILK and ~60% for CELT
+            let silk_max_bits = if mode == OpusMode::Hybrid {
+                ((n_bytes - 1) * 8 * 2 / 5) as i32 // ~40% for SILK in Hybrid
+            } else {
+                ((n_bytes - 1) * 8) as i32
+            };
+            let silk_rate_for_calc = if mode == OpusMode::Hybrid {
+                16000
+            } else {
+                self.sampling_rate
+            };
+            let silk_frame_len = silk_input.len();
+            // C: silk_mode.bitRate = 8 * bytes_target * frame_rate = 8 * cbr_bytes * (Fs/frame_size)
+            // where bytes_target = cbr_bytes = n_bytes (total packet size including TOC).
+            // The SILK bitrate uses the full n_bytes count (not n_bytes-1), matching C's
+            // total_bitRate = 8 * bytes_target * frame_rate computation.
+            let silk_bitrate = if mode == OpusMode::Hybrid {
+                (silk_max_bits as i64 * silk_rate_for_calc as i64 / silk_frame_len as i64) as i32
+            } else {
+                // Match C: silk_mode.bitRate = 8 * cbr_bytes * (Fs / frame_size)
+                (8i64 * n_bytes as i64 * silk_rate_for_calc as i64 / silk_frame_len as i64) as i32
+            };
             let ret = silk_encode(
                 &mut *self.silk_enc,
-                &input_i16,
-                input_i16.len(),
+                &silk_input,
+                silk_input.len(),
                 &mut rc,
                 &mut pn_bytes,
                 silk_bitrate,
@@ -240,7 +348,19 @@ impl OpusEncoder {
         }
 
         if mode == OpusMode::CeltOnly || mode == OpusMode::Hybrid {
-            self.celt_enc.encode(input, frame_size, &mut rc);
+            // Hybrid mode: CELT encodes the high-frequency bands.
+            // For Hybrid mode, SILK has already encoded the low-frequency part.
+            // CELT starts at start_band (17 for SWB/FB in 48kHz CELT).
+            // For CeltOnly, start_band = 0 (full spectrum).
+            let start_band = if mode == OpusMode::Hybrid {
+                // Band 17 in the default CELT mode corresponds to ~8kHz crossover
+                // for both 24kHz SWB and 48kHz FB hybrid configurations.
+                17
+            } else {
+                0
+            };
+            self.celt_enc
+                .encode_with_start_band(input, frame_size, &mut rc, start_band);
         }
 
         rc.done();
@@ -277,58 +397,48 @@ impl OpusEncoder {
         let payload_bytes = total_bytes.min(output.len() - 1);
         let ret_with_toc = payload_bytes + 1; // +1 for TOC byte
 
-        // For SILK-only mode, always use Code 3 format (matching C behavior)
-        // This provides self-delimiting frame boundaries
+        // For SILK-only mode, always use Code 3 format (matching C behavior).
+        // C never uses the Opus padding mechanism for SILK-only CBR packets.
+        // Instead, it writes Code 3 with count byte = 0x01 (1 frame, no padding)
+        // and zero-fills the remaining bytes to reach the CBR target size.
         if mode == OpusMode::SilkOnly {
             let target_total = if self.use_cbr {
                 n_bytes.min(output.len())
             } else {
                 ret_with_toc
             };
-            let frame_len = payload_bytes;
 
-            // Code 3 header takes 2 bytes (TOC + count)
-            let available_for_frame_and_pad = if target_total > 2 {
-                target_total - 2
-            } else {
-                0
-            };
-            let pad_amount = available_for_frame_and_pad.saturating_sub(frame_len);
+            // Clamp frame data to the space available after TOC + count byte (2 bytes)
+            let max_frame_bytes = target_total
+                .saturating_sub(2)
+                .min(output.len().saturating_sub(2));
+            let frame_len = payload_bytes.min(max_frame_bytes);
 
-            if pad_amount > 0 {
-                // Code 3 with padding
-                output[0] = toc | 0x03; // Code 3
-                let count_byte = 1u8 | 0x40; // 1 frame, padding flag set
-                output[1] = count_byte;
-
-                // Encode padding length (RFC 6716 §3.2.1)
-                let nb_255s = (pad_amount - 1) / 255;
-                let mut ptr = 2usize;
-                for _ in 0..nb_255s {
-                    output[ptr] = 255;
-                    ptr += 1;
-                }
-                output[ptr] = (pad_amount - 255 * nb_255s - 1) as u8;
-                ptr += 1;
-
-                // Copy frame data
-                output[ptr..ptr + frame_len].copy_from_slice(&silk_payload[..frame_len]);
-                ptr += frame_len;
-
-                // Fill padding with zeros
-                while ptr < target_total {
-                    output[ptr] = 0;
-                    ptr += 1;
-                }
-
-                return Ok(target_total);
-            } else {
-                // Code 3 without padding (matching C output format)
-                output[0] = toc | 0x03; // Code 3
-                output[1] = 0x01; // 1 frame, no padding flag
-                output[2..2 + frame_len].copy_from_slice(&silk_payload[..frame_len]);
-                return Ok(2 + frame_len);
+            #[cfg(debug_assertions)]
+            if std::env::var("SILK_DEBUG_NSQ").is_ok() {
+                eprintln!(
+                    "  [LIB] silk payload: frame_len={} target_total={} n_bytes={}",
+                    frame_len, target_total, n_bytes
+                );
             }
+
+            // Code 3, 1 frame, no padding (always 0x01 — matching C reference)
+            output[0] = toc | 0x03;
+            output[1] = 0x01;
+
+            // Copy SILK payload
+            if frame_len > 0 {
+                output[2..2 + frame_len].copy_from_slice(&silk_payload[..frame_len]);
+            }
+
+            // Zero-fill any remaining bytes to reach CBR target (C does this implicitly)
+            let out_len = output.len();
+            let written = 2 + frame_len;
+            for byte in output[written..target_total.min(out_len)].iter_mut() {
+                *byte = 0;
+            }
+
+            return Ok(target_total.min(out_len));
         }
 
         // No CBR padding needed — write as Code 0
@@ -353,6 +463,10 @@ pub struct OpusDecoder {
     bandwidth: Bandwidth,
     /// Stream channels from previous frame
     stream_channels: usize,
+    /// SILK decoder resampler (internal rate → API rate)
+    silk_resampler: silk::resampler::SilkResampler,
+    /// Previous internal sample rate (for resampler re-init)
+    prev_internal_rate: i32,
 }
 
 impl OpusDecoder {
@@ -382,6 +496,8 @@ impl OpusDecoder {
             frame_size: 0,
             bandwidth: Bandwidth::Auto,
             stream_channels: channels,
+            silk_resampler: silk::resampler::SilkResampler::default(),
+            prev_internal_rate: 0,
         })
     }
 
@@ -493,44 +609,39 @@ impl OpusDecoder {
 
                 let decoded_samples = ret as usize;
 
-                // Convert i16 to f32 and handle sample rate conversion
-                // If internal rate matches API rate, direct copy
-                // Otherwise, we need resampling (simplified: just output at internal rate)
-                let output_samples = if self.sampling_rate == internal_sample_rate {
-                    decoded_samples
-                } else {
-                    // Simple linear interpolation resampling
-                    let ratio = self.sampling_rate as f64 / internal_sample_rate as f64;
-                    let out_len = (decoded_samples as f64 * ratio) as usize;
-                    out_len.min(frame_size)
-                };
-
+                // Sample rate conversion via SilkResampler
                 if self.sampling_rate == internal_sample_rate {
-                    // Direct conversion
-                    for i in 0..output_samples.min(output.len()) {
+                    // No resampling needed: direct i16 → f32 conversion
+                    let n = decoded_samples.min(frame_size).min(output.len());
+                    for i in 0..n {
                         output[i] = pcm_i16[i] as f32 / 32768.0;
                     }
+                    self.prev_mode = Some(OpusMode::SilkOnly);
+                    Ok(n)
                 } else {
-                    // Simple resampling (linear interpolation)
-                    let ratio = internal_sample_rate as f64 / self.sampling_rate as f64;
-                    for i in 0..output_samples.min(output.len()) {
-                        let src_pos = i as f64 * ratio;
-                        let src_idx = src_pos as usize;
-                        let frac = src_pos - src_idx as f64;
-                        if src_idx + 1 < decoded_samples {
-                            let s0 = pcm_i16[src_idx] as f64 / 32768.0;
-                            let s1 = pcm_i16[src_idx + 1] as f64 / 32768.0;
-                            output[i] = (s0 + frac * (s1 - s0)) as f32;
-                        } else if src_idx < decoded_samples {
-                            output[i] = pcm_i16[src_idx] as f32 / 32768.0;
-                        } else {
-                            output[i] = 0.0;
-                        }
+                    // (Re-)initialize resampler if internal rate changed
+                    if internal_sample_rate != self.prev_internal_rate {
+                        self.silk_resampler
+                            .init(internal_sample_rate, self.sampling_rate);
+                        self.prev_internal_rate = internal_sample_rate;
                     }
-                }
 
-                self.prev_mode = Some(OpusMode::SilkOnly);
-                Ok(output_samples.min(frame_size))
+                    let ratio = self.sampling_rate as f64 / internal_sample_rate as f64;
+                    let out_len = ((decoded_samples as f64 * ratio) as usize).min(frame_size);
+                    let mut pcm_out = vec![0i16; out_len];
+                    self.silk_resampler.process(
+                        &mut pcm_out,
+                        &pcm_i16[..decoded_samples],
+                        decoded_samples as i32,
+                    );
+
+                    let n = out_len.min(output.len());
+                    for i in 0..n {
+                        output[i] = pcm_out[i] as f32 / 32768.0;
+                    }
+                    self.prev_mode = Some(OpusMode::SilkOnly);
+                    Ok(n)
+                }
             }
 
             OpusMode::CeltOnly => {
@@ -541,10 +652,93 @@ impl OpusDecoder {
             }
 
             OpusMode::Hybrid => {
-                // Hybrid mode: SILK + CELT
-                // For now, just decode CELT part
-                // TODO: implement full hybrid decode
-                return Err("Hybrid mode not yet supported");
+                // Hybrid mode: SILK provides low-frequency, CELT provides high-frequency.
+                //
+                // In C opus, the hybrid packet contains:
+                //  - SILK bitstream: written from front using range coder
+                //  - CELT bitstream: written from back using range coder (entropy coder, LSB first)
+                // Both share the same packet buffer.
+                //
+                // For the decoder, we:
+                // 1. Decode SILK from the packet to get low-frequency PCM
+                // 2. Decode CELT with start_band=17 from the same packet to get high-frequency
+                // 3. Add the two outputs together
+                //
+                // NOTE: Since our encoder writes SILK data to a separate range coder pass
+                // and CELT uses the remaining bits, the decode must follow the same order.
+
+                let internal_sample_rate = match bandwidth {
+                    Bandwidth::Superwideband => 16000, // 24kHz SWB: SILK at 16kHz
+                    Bandwidth::Fullband => 16000,      // 48kHz FB:  SILK at 16kHz
+                    _ => 16000,
+                };
+
+                // Step 1: Decode SILK low-frequency portion
+                let mut rc = RangeCoder::new_decoder(payload_data.to_vec());
+                let internal_frame_size =
+                    (frame_duration_ms * internal_sample_rate / 1000) as usize;
+                let mut pcm_silk_i16 = vec![0i16; internal_frame_size * self.channels];
+
+                let ret = self.silk_dec.decode(
+                    &mut rc,
+                    &mut pcm_silk_i16,
+                    silk::decode_frame::FLAG_DECODE_NORMAL,
+                    true,
+                    frame_duration_ms,
+                    internal_sample_rate,
+                );
+
+                // Convert SILK PCM to f32 at output rate
+                let mut silk_out = vec![0.0f32; frame_size * self.channels];
+                if ret > 0 {
+                    let decoded_samples = ret as usize;
+                    if self.sampling_rate == internal_sample_rate {
+                        let n = decoded_samples.min(frame_size);
+                        for i in 0..n {
+                            silk_out[i] = pcm_silk_i16[i] as f32 / 32768.0;
+                        }
+                    } else {
+                        // Resample SILK output to API rate
+                        if internal_sample_rate != self.prev_internal_rate {
+                            self.silk_resampler
+                                .init(internal_sample_rate, self.sampling_rate);
+                            self.prev_internal_rate = internal_sample_rate;
+                        }
+                        let ratio = self.sampling_rate as f64 / internal_sample_rate as f64;
+                        let out_len = ((decoded_samples as f64 * ratio) as usize).min(frame_size);
+                        let mut pcm_resampled = vec![0i16; out_len];
+                        self.silk_resampler.process(
+                            &mut pcm_resampled,
+                            &pcm_silk_i16[..decoded_samples],
+                            decoded_samples as i32,
+                        );
+                        for i in 0..out_len.min(frame_size) {
+                            silk_out[i] = pcm_resampled[i] as f32 / 32768.0;
+                        }
+                    }
+                }
+
+                // Step 2: Decode CELT high-frequency portion (start_band = 17)
+                let mut celt_out = vec![0.0f32; frame_size * self.channels];
+                // start_band = 17 matches the SWB/FB Hybrid crossover point
+                self.celt_dec
+                    .decode_with_start_band(payload_data, frame_size, &mut celt_out, 17);
+
+                // Step 3: Mix SILK (low-freq) and CELT (high-freq)
+                // In the proper Hybrid decoder, the SILK decoder reconstructs a 48kHz signal
+                // with only the low-frequency content, and CELT fills in the high-freq content.
+                // Since our SILK decoder operates at 16kHz and outputs a band-limited signal,
+                // the high-frequency content from CELT fills in the missing bands.
+                // We add them together (SILK low-band + CELT high-band).
+                let n = frame_size.min(output.len());
+                for i in 0..n {
+                    output[i] = silk_out[i] + celt_out[i];
+                    // Clamp to avoid clipping
+                    output[i] = output[i].clamp(-1.0, 1.0);
+                }
+
+                self.prev_mode = Some(OpusMode::Hybrid);
+                Ok(n)
             }
         }
     }
@@ -581,9 +775,19 @@ fn gen_toc(mode: OpusMode, frame_rate: i32, bandwidth: Bandwidth, channels: usiz
             (0x80 | (tmp << 5) | per) as u8
         }
         OpusMode::Hybrid => {
-            let bw = (bandwidth as i32 - Bandwidth::Superwideband as i32) << 4;
-            let per = (period - 2) << 3;
-            (0x60 | bw | per) as u8
+            // Hybrid configs: 16-19 = SWB, 20-23 = FB
+            // Period 0 = 10ms, period 1 = 20ms
+            // (Hybrid only supports 10ms and 20ms)
+            let base_config = if bandwidth == Bandwidth::Superwideband {
+                16
+            } else {
+                20
+            };
+            // period: 0 for 10ms, 1 for 20ms (we derived period from frame_rate above)
+            // At this point period=3 for 20ms (50 Hz frame rate after 3 doublings).
+            // But for Hybrid, period should be relative: 0=10ms, 1=20ms.
+            let hybrid_period = if frame_rate >= 100 { 0 } else { 1 }; // 100fps=10ms, 50fps=20ms
+            ((base_config + hybrid_period) << 3) as u8
         }
     };
 

@@ -83,7 +83,7 @@ pub fn silk_setup_complexity(ps_enc: &mut SilkEncoderState, complexity: i32) -> 
         cmn.shaping_lpc_order = 12;
         cmn.la_shape = 3 * cmn.fs_khz;
         cmn.n_states_delayed_decision = 1;
-        cmn.nlsf_mu_q20 = 0;
+        cmn.use_interpolated_nlsfs = 0;
         cmn.n_nlsf_survivors = 2;
         cmn.warping_q16 = 0;
     } else if complexity < 2 {
@@ -93,8 +93,28 @@ pub fn silk_setup_complexity(ps_enc: &mut SilkEncoderState, complexity: i32) -> 
         cmn.shaping_lpc_order = 14;
         cmn.la_shape = 5 * cmn.fs_khz;
         cmn.n_states_delayed_decision = 1;
-        cmn.nlsf_mu_q20 = 0;
+        cmn.use_interpolated_nlsfs = 0;
         cmn.n_nlsf_survivors = 3;
+        cmn.warping_q16 = 0;
+    } else if complexity < 3 {
+        cmn.pitch_estimation_complexity = SILK_PE_MIN_COMPLEX as i32;
+        cmn.pitch_estimation_threshold_q16 = (0.8f32 * 65536.0) as i32;
+        ps_enc.pitch_estimation_lpc_order = 6;
+        cmn.shaping_lpc_order = 12;
+        cmn.la_shape = 3 * cmn.fs_khz;
+        cmn.n_states_delayed_decision = 2;
+        cmn.use_interpolated_nlsfs = 0;
+        cmn.n_nlsf_survivors = 2;
+        cmn.warping_q16 = 0;
+    } else if complexity < 4 {
+        cmn.pitch_estimation_complexity = SILK_PE_MID_COMPLEX as i32;
+        cmn.pitch_estimation_threshold_q16 = (0.76f32 * 65536.0) as i32;
+        ps_enc.pitch_estimation_lpc_order = 8;
+        cmn.shaping_lpc_order = 14;
+        cmn.la_shape = 5 * cmn.fs_khz;
+        cmn.n_states_delayed_decision = 2;
+        cmn.use_interpolated_nlsfs = 0;
+        cmn.n_nlsf_survivors = 4;
         cmn.warping_q16 = 0;
     } else if complexity < 6 {
         cmn.pitch_estimation_complexity = SILK_PE_MID_COMPLEX as i32;
@@ -103,7 +123,7 @@ pub fn silk_setup_complexity(ps_enc: &mut SilkEncoderState, complexity: i32) -> 
         cmn.shaping_lpc_order = 16;
         cmn.la_shape = 5 * cmn.fs_khz;
         cmn.n_states_delayed_decision = 2;
-        cmn.nlsf_mu_q20 = 0;
+        cmn.use_interpolated_nlsfs = 1;
         cmn.n_nlsf_survivors = 6;
         cmn.warping_q16 = cmn.fs_khz * WARPING_MULTIPLIER_Q16;
     } else if complexity < 8 {
@@ -113,7 +133,7 @@ pub fn silk_setup_complexity(ps_enc: &mut SilkEncoderState, complexity: i32) -> 
         cmn.shaping_lpc_order = 20;
         cmn.la_shape = 5 * cmn.fs_khz;
         cmn.n_states_delayed_decision = 3;
-        cmn.nlsf_mu_q20 = 0;
+        cmn.use_interpolated_nlsfs = 1;
         cmn.n_nlsf_survivors = 8;
         cmn.warping_q16 = cmn.fs_khz * WARPING_MULTIPLIER_Q16;
     } else {
@@ -123,7 +143,7 @@ pub fn silk_setup_complexity(ps_enc: &mut SilkEncoderState, complexity: i32) -> 
         cmn.shaping_lpc_order = 24;
         cmn.la_shape = 5 * cmn.fs_khz;
         cmn.n_states_delayed_decision = MAX_DEL_DEC_STATES;
-        cmn.nlsf_mu_q20 = 0;
+        cmn.use_interpolated_nlsfs = 1;
         cmn.n_nlsf_survivors = 16;
         cmn.warping_q16 = cmn.fs_khz * WARPING_MULTIPLIER_Q16;
     }

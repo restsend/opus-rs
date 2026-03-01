@@ -137,7 +137,8 @@ pub fn silk_noise_shape_analysis_fix(
     let mut auto_corr = [0i32; MAX_SHAPE_LPC_ORDER + 1];
     let mut refl_coef_q16 = [0i32; MAX_SHAPE_LPC_ORDER];
     let mut ar_q24 = [0i32; MAX_SHAPE_LPC_ORDER];
-    let mut x_windowed = vec![0i16; ps_enc.s_cmn.shape_win_length as usize];
+    // Stack buffer: shape_win_length ≤ SUB_FRAME_LENGTH_MS*MAX_FS_KHZ + 2*LA_SHAPE_MAX = 80+160 = 240.
+    let mut x_windowed = [0i16; MAX_SUB_FRAME_LENGTH + 2 * LA_SHAPE_MAX];
 
     /* Point to start of first LPC analysis block */
     // x should be the buffer starting from x[0] - ps_enc.s_cmn.la_shape.
@@ -407,10 +408,21 @@ pub fn silk_noise_shape_analysis_fix(
             );
     } else {
         let b_q14 = silk_div32_16(21299, ps_enc.s_cmn.fs_khz);
-        ps_enc_ctrl.lf_shp_q14[0] =
-            (16384 - b_q14 - silk_smulwb(strength_q16, silk_smulwb(39322, b_q14 as i32) as i32))
-                << 16;
-        ps_enc_ctrl.lf_shp_q14[0] |= ((b_q14 - 16384) & 0xFFFF) as i32;
+        let lf_high = 16384 - b_q14 - silk_smulwb(strength_q16, silk_smulwb(39322, b_q14 as i32) as i32);
+        let lf_low_raw = b_q14 - 16384;
+        let lf_low_masked = lf_low_raw & 0xFFFF;
+        #[cfg(debug_assertions)]
+        if std::env::var("SILK_DEBUG_NSQ").is_ok() {
+            eprintln!("  [NSA] unvoiced: b_q14={} strength_q16={}", b_q14, strength_q16);
+            eprintln!("  [NSA] lf_high={} lf_low_raw={} lf_low_masked={} packed={:#010x}",
+                lf_high, lf_low_raw, lf_low_masked, (lf_high << 16) | lf_low_masked);
+        }
+        ps_enc_ctrl.lf_shp_q14[0] = lf_high << 16;
+        ps_enc_ctrl.lf_shp_q14[0] |= lf_low_masked;
+        #[cfg(debug_assertions)]
+        if std::env::var("SILK_DEBUG_NSQ").is_ok() {
+            eprintln!("  [NSA] lf_shp_q14[0] after assignment = {:#010x}", ps_enc_ctrl.lf_shp_q14[0]);
+        }
         for k in 1..ps_enc.s_cmn.nb_subfr as usize {
             ps_enc_ctrl.lf_shp_q14[k] = ps_enc_ctrl.lf_shp_q14[0];
         }

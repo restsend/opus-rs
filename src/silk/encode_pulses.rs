@@ -27,7 +27,8 @@ pub fn silk_encode_pulses(
     frame_length: usize,
 ) {
     let mut pulses_comb = [0i32; 8];
-    let mut abs_pulses = vec![0i32; frame_length + SHELL_CODEC_FRAME_LENGTH];
+    // Stack-allocated fixed-size buffers: frame_length ≤ MAX_FRAME_LENGTH (640).
+    let mut abs_pulses = [0i32; MAX_FRAME_LENGTH + SHELL_CODEC_FRAME_LENGTH];
 
     let iter = (frame_length + SHELL_CODEC_FRAME_LENGTH - 1) / SHELL_CODEC_FRAME_LENGTH;
 
@@ -35,17 +36,13 @@ pub fn silk_encode_pulses(
         abs_pulses[i] = pulses[i].abs() as i32;
     }
 
-    let mut sum_pulses = vec![0i32; iter];
-    let mut n_rshifts = vec![0i32; iter];
+    // iter ≤ MAX_FRAME_LENGTH / SHELL_CODEC_FRAME_LENGTH = 640 / 16 = 40.
+    let mut sum_pulses = [0i32; MAX_FRAME_LENGTH / SHELL_CODEC_FRAME_LENGTH];
+    let mut n_rshifts = [0i32; MAX_FRAME_LENGTH / SHELL_CODEC_FRAME_LENGTH];
 
     for i in 0..iter {
         let abs_pulses_ptr = &mut abs_pulses[i * SHELL_CODEC_FRAME_LENGTH..];
         n_rshifts[i] = 0;
-
-        // Debug: print the 16 pulses for this iteration
-        let frame_pulses: Vec<i32> = abs_pulses_ptr[..SHELL_CODEC_FRAME_LENGTH].to_vec();
-        let frame_sum: i32 = frame_pulses.iter().sum();
-        if frame_sum > 0 {}
 
         loop {
             let mut scale_down = combine_and_check(

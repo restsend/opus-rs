@@ -1,7 +1,7 @@
 use crate::silk::ana_filt_bank_1::silk_ana_filt_bank_1;
 use crate::silk::define::{
-    SILK_NO_ERROR, VAD_INTERNAL_SUBFRAMES, VAD_INTERNAL_SUBFRAMES_LOG2, VAD_N_BANDS,
-    VAD_NEGATIVE_OFFSET_Q5, VAD_NOISE_LEVEL_SMOOTH_COEF_Q16, VAD_NOISE_LEVELS_BIAS,
+    MAX_FRAME_LENGTH, SILK_NO_ERROR, VAD_INTERNAL_SUBFRAMES, VAD_INTERNAL_SUBFRAMES_LOG2,
+    VAD_N_BANDS, VAD_NEGATIVE_OFFSET_Q5, VAD_NOISE_LEVEL_SMOOTH_COEF_Q16, VAD_NOISE_LEVELS_BIAS,
     VAD_SNR_FACTOR_Q16, VAD_SNR_SMOOTH_COEF_Q18,
 };
 use crate::silk::lin2log::silk_lin2log;
@@ -127,9 +127,12 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
     // outL goes to X[0] (temporarily), outH goes to X[X_offset[2]]
     // Rust borrow checker requires split.
     let (x_part1, x_part2) = x.split_at_mut(x_offset[2]);
-    let x_in = x_part1.to_vec();
+    // Stack copy to avoid simultaneous mutable + immutable borrow on x_part1.
+    // Max decimated_framelength1 = MAX_FRAME_LENGTH/2 = 320 (when frame_length=640, i.e. 40ms@16kHz).
+    let mut x_in_buf1 = [0i16; MAX_FRAME_LENGTH / 2];
+    x_in_buf1[..decimated_framelength1].copy_from_slice(&x_part1[..decimated_framelength1]);
     silk_ana_filt_bank_1(
-        &x_in,
+        &x_in_buf1[..decimated_framelength1],
         &mut ps_silk_vad.ana_state1,
         x_part1,
         x_part2,
@@ -140,9 +143,12 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
     // Input is X[0..decimated_framelength2].
     // outL goes to X[0] (temporarily), outH goes to X[X_offset[1]]
     let (x_part1, x_part2) = x.split_at_mut(x_offset[1]);
-    let x_in = x_part1.to_vec();
+    // Stack copy to avoid simultaneous mutable + immutable borrow on x_part1.
+    // Max decimated_framelength2 = MAX_FRAME_LENGTH/4 = 160 (when frame_length=640, i.e. 40ms@16kHz).
+    let mut x_in_buf2 = [0i16; MAX_FRAME_LENGTH / 4];
+    x_in_buf2[..decimated_framelength2].copy_from_slice(&x_part1[..decimated_framelength2]);
     silk_ana_filt_bank_1(
-        &x_in,
+        &x_in_buf2[..decimated_framelength2],
         &mut ps_silk_vad.ana_state2,
         x_part1,
         x_part2,

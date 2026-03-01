@@ -19,10 +19,11 @@ pub fn silk_nlsf_encode(
     signal_type: i32,        /* I    Signal type: 0/1/2                          */
 ) -> i32 {
     let order = ps_nlsf_cb.order as usize;
-    let mut err_q24 = vec![0i32; ps_nlsf_cb.n_vectors as usize];
-    let mut temp_indices1 = vec![0i32; n_survivors];
-    let mut rd_q25 = vec![0i32; n_survivors];
-    let mut temp_indices2 = vec![0i8; n_survivors * MAX_LPC_ORDER];
+    // Stack buffers: n_vectors ≤ 32, n_survivors ≤ 16 (see control_codec.rs).
+    let mut err_q24 = [0i32; 32];
+    let mut temp_indices1 = [0i32; 16];
+    let mut rd_q25 = [0i32; 16];
+    let mut temp_indices2 = [0i8; 16 * MAX_LPC_ORDER];
 
     let mut res_q10 = [0i16; MAX_LPC_ORDER];
     let mut nlsf_tmp_q15: [i16; MAX_LPC_ORDER] = [0; MAX_LPC_ORDER];

@@ -273,7 +273,7 @@ pub fn silk_nlsf_vq(
             let diff_q15_m = (in_q15[m] as i32) - ((cb_ptr[m] as i32) << 7);
             let diffw_q24_m = silk_smulbb(diff_q15_m, w_ptr[m] as i32);
             sum_error_q24 = sum_error_q24.wrapping_add((diffw_q24_m - (pred_q24 >> 1)).abs());
-            pred_q24 = diffw_q24;
+            pred_q24 = diffw_q24_m;
         }
         err_q24[i] = sum_error_q24;
     }

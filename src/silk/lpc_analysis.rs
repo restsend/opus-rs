@@ -1,4 +1,5 @@
 use crate::silk::define::*;
+use crate::silk::interpolate::silk_interpolate;
 use crate::silk::macros::*;
 use crate::silk::nlsf::*;
 use crate::silk::sigproc_fix::*;
@@ -11,30 +12,171 @@ pub fn silk_find_lpc_fix(
     x: &[i16],
     min_inv_gain_q30: i32,
 ) {
-    let mut res_nrg = 0;
-    let mut res_nrg_q = 0;
+    let mut res_nrg: i32 = 0;
+    let mut res_nrg_q: i32 = 0;
     let mut a_q16 = [0i32; MAX_LPC_ORDER];
+    let d = ps_enc_c.predict_lpc_order as usize;
+    let subfr_length = (ps_enc_c.subfr_length + ps_enc_c.predict_lpc_order) as usize;
 
     /* Default: no interpolation */
     ps_enc_c.indices.nlsf_interp_coef_q2 = 4;
 
-    /* Burg analysis */
+    #[cfg(debug_assertions)]
+    if std::env::var("SILK_DEBUG_NLSF").is_ok() {
+        eprintln!(
+            "  [NLSF] find_lpc_fix: min_inv_gain_q30={} subfr_length={} nb_subfr={} d={} first_frame={}",
+            min_inv_gain_q30, subfr_length, ps_enc_c.nb_subfr, d, ps_enc_c.first_frame_after_reset
+        );
+        eprintln!("  [NLSF] lpc_in_pre[0..210]={:?}", &x[..210.min(x.len())]);
+    }
+
+    /* Burg AR analysis for the full frame */
     silk_burg_modified_fix(
         &mut res_nrg,
         &mut res_nrg_q,
         &mut a_q16,
         x,
         min_inv_gain_q30,
-        (ps_enc_c.subfr_length + ps_enc_c.predict_lpc_order) as usize,
+        subfr_length,
         ps_enc_c.nb_subfr as usize,
-        ps_enc_c.predict_lpc_order as usize,
+        d,
     );
 
-    /* NLSF interpolation is inactive for first frame or when disabled */
-    /* TODO: implement NLSF interpolation search for subsequent frames */
+    #[cfg(debug_assertions)]
+    if std::env::var("SILK_DEBUG_NLSF").is_ok() {
+        eprintln!("  [NLSF] burg_a_q16={:?}", &a_q16[..d]);
+    }
 
-    /* Convert to NLSF from full-frame AR coefficients */
-    silk_a2nlsf(nlsf_q15, &mut a_q16, ps_enc_c.predict_lpc_order as usize);
+    if ps_enc_c.use_interpolated_nlsfs != 0
+        && ps_enc_c.first_frame_after_reset == 0
+        && ps_enc_c.nb_subfr == MAX_NB_SUBFR as i32
+    {
+        /* Optimal solution for last 10 ms (second half): Burg on subframes 2..3 */
+        let mut res_tmp_nrg: i32 = 0;
+        let mut res_tmp_nrg_q: i32 = 0;
+        let mut a_tmp_q16 = [0i32; MAX_LPC_ORDER];
+        silk_burg_modified_fix(
+            &mut res_tmp_nrg,
+            &mut res_tmp_nrg_q,
+            &mut a_tmp_q16,
+            &x[2 * subfr_length..],
+            min_inv_gain_q30,
+            subfr_length,
+            2, /* nb_subfr = 2 (second half only) */
+            d,
+        );
+
+        /* Subtract second-half residual energy from full-frame energy.
+         * This leaves the first-half residual energy that we compare against
+         * interpolated candidates below. */
+        let shift = res_tmp_nrg_q - res_nrg_q;
+        if shift >= 0 {
+            if shift < 32 {
+                res_nrg = res_nrg - silk_rshift(res_tmp_nrg, shift);
+            }
+            /* else shift >= 32: res_tmp_nrg is negligible, keep res_nrg */
+        } else {
+            debug_assert!(shift > -32);
+            res_nrg = silk_rshift(res_nrg, -shift) - res_tmp_nrg;
+            res_nrg_q = res_tmp_nrg_q;
+        }
+
+        /* Convert second-half AR coefficients to NLSFs */
+        silk_a2nlsf(nlsf_q15, &mut a_tmp_q16, d);
+
+        /* Search over interpolation indices to find the one with lowest
+         * first-half residual energy */
+        let lpc_res_len = 2 * subfr_length;
+        // Stack buffer: max subfr_length = MAX_SUB_FRAME_LENGTH + MAX_LPC_ORDER = 96; max len = 192.
+        let mut lpc_res = [0i16; 2 * (MAX_SUB_FRAME_LENGTH + MAX_LPC_ORDER)];
+
+        for k in (0..=3).rev() {
+            /* Interpolate NLSFs for first half */
+            let nlsf0_q15 = silk_interpolate(&ps_enc_c.prev_nlsf_q15, nlsf_q15, k, d);
+
+            /* Convert to LPC for residual energy evaluation */
+            let mut a_tmp_q12 = [0i16; MAX_LPC_ORDER];
+            silk_nlsf2a(&mut a_tmp_q12, &nlsf0_q15, d);
+
+            /* Calculate residual energy with NLSF interpolation */
+            silk_lpc_analysis_filter(
+                &mut lpc_res,
+                x,
+                &a_tmp_q12,
+                lpc_res_len,
+                d,
+                0, // arch
+            );
+
+            let mut res_nrg0: i32 = 0;
+            let mut rshift0: i32 = 0;
+            silk_sum_sqr_shift(
+                &mut res_nrg0,
+                &mut rshift0,
+                &lpc_res[d..d + (subfr_length - d)],
+                subfr_length - d,
+            );
+
+            let mut res_nrg1: i32 = 0;
+            let mut rshift1: i32 = 0;
+            silk_sum_sqr_shift(
+                &mut res_nrg1,
+                &mut rshift1,
+                &lpc_res[d + subfr_length..d + subfr_length + (subfr_length - d)],
+                subfr_length - d,
+            );
+
+            /* Add subframe energies from first half frame */
+            let res_nrg_interp_q: i32;
+            let shift = rshift0 - rshift1;
+            if shift >= 0 {
+                res_nrg1 = silk_rshift(res_nrg1, shift);
+                res_nrg_interp_q = -rshift0;
+            } else {
+                res_nrg0 = silk_rshift(res_nrg0, -shift);
+                res_nrg_interp_q = -rshift1;
+            }
+            let res_nrg_interp = silk_add_sat32(res_nrg0, res_nrg1);
+
+            /* Compare with first half energy without NLSF interpolation,
+             * or best interpolated value so far */
+            let shift = res_nrg_interp_q - res_nrg_q;
+            let is_interp_lower = if shift >= 0 {
+                if shift < 32 {
+                    silk_rshift(res_nrg_interp, shift) < res_nrg
+                } else {
+                    false
+                }
+            } else {
+                if -shift < 32 {
+                    res_nrg_interp < silk_rshift(res_nrg, -shift)
+                } else {
+                    false
+                }
+            };
+
+            if is_interp_lower {
+                /* Interpolation has lower residual energy */
+                res_nrg = res_nrg_interp;
+                res_nrg_q = res_nrg_interp_q;
+                ps_enc_c.indices.nlsf_interp_coef_q2 = k as i8;
+            }
+        }
+    }
+
+    if ps_enc_c.indices.nlsf_interp_coef_q2 == 4 {
+        /* NLSF interpolation is currently inactive,
+         * calculate NLSFs from full frame AR coefficients */
+        silk_a2nlsf(nlsf_q15, &mut a_q16, d);
+    }
+
+    #[cfg(debug_assertions)]
+    if std::env::var("SILK_DEBUG_NLSF").is_ok() {
+        eprintln!(
+            "  [NLSF] nlsf_q15 before process_nlsfs={:?}",
+            &nlsf_q15[..d]
+        );
+    }
 }
 
 pub fn silk_residual_energy_fix(
@@ -59,7 +201,8 @@ pub fn silk_residual_energy_fix(
     debug_assert!((nb_subfr >> 1) * (MAX_NB_SUBFR as i32 >> 1) == nb_subfr);
 
     /* Filter input to create the LPC residual for each frame half, and measure subframe energies */
-    let mut lpc_res = vec![0i16; (MAX_NB_SUBFR >> 1) * offset];
+    // Stack buffer: max = (MAX_NB_SUBFR/2) * (MAX_LPC_ORDER + MAX_SUB_FRAME_LENGTH) = 2 * 96 = 192.
+    let mut lpc_res = [0i16; (MAX_NB_SUBFR / 2) * (MAX_LPC_ORDER + MAX_SUB_FRAME_LENGTH)];
 
     for i in 0..(nb_subfr as usize >> 1) {
         /* Calculate half frame LPC residual signal including preceding samples */
@@ -258,7 +401,7 @@ pub fn silk_burg_modified_fix(
         let mut tmp1 = c_first_row[n];
         let mut tmp2 = c_last_row[n];
         let mut num: i32 = 0;
-        let mut nrg: i32 = silk_add_sat32(ca_b[0], ca_f[0]);
+        let mut nrg: i32 = ca_b[0].wrapping_add(ca_f[0]);
         for k in 0..n {
             let atmp_qa = af_qa[k];
             let lz = (silk_clz32(atmp_qa.abs()) - 1).min(32 - QA);
@@ -273,8 +416,7 @@ pub fn silk_burg_modified_fix(
             );
             num = num.wrapping_add(((silk_smmul(ca_b[n - k], atmp1) as i64) << shift) as i32);
             nrg = nrg.wrapping_add(
-                ((silk_smmul(silk_add_sat32(ca_b[k + 1], ca_f[k + 1]), atmp1) as i64) << shift)
-                    as i32,
+                ((silk_smmul(ca_b[k + 1].wrapping_add(ca_f[k + 1]), atmp1) as i64) << shift) as i32,
             );
         }
         ca_f[n + 1] = tmp1;
