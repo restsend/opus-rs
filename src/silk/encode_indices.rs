@@ -56,7 +56,7 @@ pub fn silk_encode_indices(
     /****************/
     let cb = ps_enc_c.ps_nlsf_cb.expect("NLSF codebook not initialized");
     ps_range_enc.encode_icdf(ps_indices.nlsf_indices[0] as i32, &cb.cb1_icdf[((ps_indices.signal_type >> 1) as usize * cb.n_vectors as usize)..], 8);
-    
+
     let mut ec_ix = [0i16; MAX_LPC_ORDER];
     let mut pred_q8 = [0u8; MAX_LPC_ORDER];
     silk_nlsf_unpack(
@@ -65,7 +65,7 @@ pub fn silk_encode_indices(
         cb,
         ps_indices.nlsf_indices[0] as usize,
     );
-    
+
     for i in 0..cb.order as usize {
         if ps_indices.nlsf_indices[i + 1] >= NLSF_QUANT_MAX_AMPLITUDE as i8 {
             ps_range_enc.encode_icdf(2 * NLSF_QUANT_MAX_AMPLITUDE, &cb.ec_icdf[ec_ix[i] as usize..], 8);

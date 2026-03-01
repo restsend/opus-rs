@@ -625,7 +625,8 @@ fn alloc_trim_analysis(
 impl CeltEncoder {
     pub fn new(mode: &'static CeltMode, channels: usize) -> Self {
         let overlap = mode.overlap;
-        let syn_mem_size = channels * (2048 + overlap);
+        let channel_mem_size = 2048 + overlap;
+        let syn_mem_size = channels * channel_mem_size;
         Self {
             mode,
             channels,
@@ -1016,8 +1017,11 @@ impl CeltEncoder {
         // 8. Compute allocation
         let mut intensity = self.intensity;
         let mut pulses = vec![0i32; nb_ebands];
-        let mut fine_priority = vec![0i32; nb_ebands];
-        let mut ebits = vec![0i32; nb_ebands];
+        // For stereo, ebits and fine_priority need to be channels * nb_ebands for quant_fine_energy
+        let stereo = channels > 1;
+        let ebands_stereo = if stereo { nb_ebands * channels } else { nb_ebands };
+        let mut fine_priority = vec![0i32; ebands_stereo];
+        let mut ebits = vec![0i32; ebands_stereo];
         let mut balance = 0;
 
         self.last_coded_bands = clt_compute_allocation(
@@ -1382,8 +1386,10 @@ impl CeltDecoder {
         let mut dual_stereo_val = if channels == 2 { 1 } else { 0 };
         let mut balance = 0;
         let mut pulses = vec![0i32; nb_ebands];
-        let mut fine_priority = vec![0i32; nb_ebands];
-        let mut ebits = vec![0i32; nb_ebands];
+        // For stereo, ebits and fine_priority need to be channels * nb_ebands for unquant_fine_energy
+        let ebands_stereo = if channels > 1 { nb_ebands * channels } else { nb_ebands };
+        let mut fine_priority = vec![0i32; ebands_stereo];
+        let mut ebits = vec![0i32; ebands_stereo];
 
         let coded_bands = clt_compute_allocation(
             mode,

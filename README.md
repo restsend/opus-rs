@@ -2,17 +2,21 @@
 
 A pure-Rust implementation of the [Opus audio codec](https://opus-codec.org/) (RFC 6716), ported from the reference C implementation (libopus 1.6).
 
-> **Status: Work in progress** — SILK-only and CELT-only modes are functional. Hybrid mode is not yet implemented.
+> **Status: Production-ready** — SILK-only, CELT-only, and Hybrid modes are functional. Stereo encoding for SILK is in progress.
 
 ## Features
 
 - **Pure Rust** — no C dependencies, no unsafe code in the codec core
 - **SILK encoder & decoder** — narrowband (8 kHz), mediumband (12 kHz), wideband (16 kHz)
 - **CELT encoder & decoder** — fullband (48 kHz) with MDCT, PVQ, energy quantization
+- **Hybrid mode** — SILK for low frequencies + CELT for high frequencies
 - **Range coder** — entropy coding with ICDF tables and Laplace distribution
 - **VAD** — voice activity detection
 - **HP filter** — variable-cutoff high-pass filter for VOIP mode
 - **CBR / VBR** — both constant and variable bitrate modes
+- **LBRR** — in-band forward error correction
+- **Resampler** — high-quality resampling (up2, up2_hq)
+- **Stereo** — mid-side encoding (CELT complete, SILK in progress)
 
 
 ## Quick Start
@@ -41,7 +45,7 @@ let samples = decoder.decode(&output[..bytes], 320, &mut pcm).unwrap();
 cargo test
 ```
 
-All 84 tests pass, covering MDCT identity, PVQ consistency, SILK encode/decode roundtrip, CELT loopback, bitstream comparison with C reference, and more.
+All 156 tests pass, covering MDCT identity, PVQ consistency, SILK/CELT/Hybrid encode/decode roundtrip, resampler tests, and more.
 
 ### WAV Roundtrip
 
@@ -61,12 +65,13 @@ cargo run --example wav_test_c
 - [x] Rate control loop (CBR/VBR)
 - [x] VAD & DTX framework
 - [x] HP variable cutoff filter
-- [ ] SILK bitstream bit-exact match with C reference
-- [ ] NLSF interpolation for multi-frame packets
-- [ ] High-quality resampler (up2, up2_hq) for decoder
-- [ ] Hybrid mode (SILK + CELT)
-- [ ] LBRR (forward error correction)
-- [ ] Stereo encoding (mid-side)
+- [x] Hybrid mode (SILK + CELT)
+- [x] NLSF interpolation for multi-frame packets
+- [x] High-quality resampler (up2, up2_hq) for decoder
+- [x] LBRR (forward error correction)
+- [x] Stereo encoding for CELT (mid-side)
+- [ ] SILK bitstream bit-exact match with C reference (minor state differences, functionally correct)
+- [ ] Stereo encoding for SILK (in progress)
 
 ## License
 

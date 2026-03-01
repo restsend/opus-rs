@@ -155,13 +155,9 @@ pub fn silk_encode_prefill(
             .copy_within(prefill_frame_length..prefill_frame_length + move_len, 0);
     }
 
-    // Update frame counter (C does this in encode_frame_FIX line 116)
-    ps_enc.s_cmn.frame_counter += 1;
-    // NOTE: In C, first_frame_after_reset is NOT cleared during prefill.
-    // In C encode_frame_FIX, `first_frame_after_reset = 0` (line 379) comes
-    // AFTER the prefill early return (line 365), so it remains 1 after prefill.
-    // The real first encoded frame clears it. Do NOT set it to 0 here.
-    // ps_enc.s_cmn.first_frame_after_reset = 0; // <-- wrong during prefill
+    // NOTE: In C, frame_counter is NOT incremented during prefill.
+    // Only the real encoding frame increments frame_counter.
+    // This comment documents the difference from the incorrect earlier implementation.
 
     // --- Restore original frame parameters ---
     ps_enc.s_cmn.frame_length = real_frame_length as i32;
