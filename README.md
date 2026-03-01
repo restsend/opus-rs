@@ -93,28 +93,10 @@ Rust implementation uses complexity=0 (fast mode). Performance is comparable to 
 | autocorrelation       | ~0.5 µs        |
 | inner product         | ~0.2 µs        |
 
-## Roadmap
-
-- [x] SILK-only encode & decode (NB/MB/WB)
-- [x] CELT-only encode & decode (FB)
-- [x] Range coder (entropy coding)
-- [x] Rate control loop (CBR/VBR)
-- [x] VAD & DTX framework
-- [x] HP variable cutoff filter
-- [x] Hybrid mode (SILK + CELT)
-- [x] NLSF interpolation for multi-frame packets
-- [x] High-quality resampler (up2, up2_hq) for decoder
-- [x] LBRR (forward error correction)
-- [x] Stereo encoding for CELT (mid-side)
-- [x] Stereo encoding for SILK (mid channel encoding, stereo decoding)
-- [ ] SILK bitstream bit-exact match with C reference (minor encoder state differences, functionally correct)
-
 ## License
 
 This project is a clean-room Rust port of the Opus reference implementation. See [COPYING](COPYING) for the original Opus license (BSD-3-Clause).
 
 ## Links
 
-- **Repository**: <https://github.com/restsend/opus-rs>
-- **Opus specification**: [RFC 6716](https://www.rfc-editor.org/rfc/rfc6716)
-- **Reference C implementation**: <https://opus-codec.org/>
+- **Rustpbx**: <https://github.com/restsend/rustpbx>
