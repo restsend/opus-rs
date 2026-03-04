@@ -393,12 +393,26 @@ pub fn silk_sum_sqr_shift(energy: &mut i32, shift: &mut i32, x: &[i16], len: usi
 
 #[inline(always)]
 pub fn silk_inner_prod_aligned(ptr1: &[i16], ptr2: &[i16], len: usize) -> i32 {
-    ptr1[..len]
-        .iter()
-        .zip(&ptr2[..len])
-        .fold(0i32, |acc, (&a, &b)| {
-            acc.wrapping_add((a as i32).wrapping_mul(b as i32))
-        })
+    let ptr1 = &ptr1[..len];
+    let ptr2 = &ptr2[..len];
+    let mut i = 0;
+    let mut sum0 = 0i32;
+    let mut sum1 = 0i32;
+    let len4 = (len / 4) * 4;
+
+    // 2-way loop unrolling
+    while i < len4 {
+        sum0 = sum0.wrapping_add((ptr1[i] as i32).wrapping_mul(ptr2[i] as i32));
+        sum1 = sum1.wrapping_add((ptr1[i + 1] as i32).wrapping_mul(ptr2[i + 1] as i32));
+        i += 2;
+    }
+
+    while i < len {
+        sum0 = sum0.wrapping_add((ptr1[i] as i32).wrapping_mul(ptr2[i] as i32));
+        i += 1;
+    }
+
+    sum0.wrapping_add(sum1)
 }
 
 pub fn silk_corr_vector_fix(
@@ -560,13 +574,43 @@ pub fn silk_apply_sine_window(px_win: &mut [i16], px: &[i16], win_type: i32, len
     }
 }
 
+#[inline(always)]
 pub fn silk_pitch_xcorr(x: &[i16], y: &[i16], xcorr: &mut [i32], len: usize, max_pitch: usize) {
-    for i in 0..max_pitch {
-        let mut sum: i32 = 0;
-        for j in 0..len {
-            sum = silk_smlabb(sum, x[j] as i32, y[i + j] as i32);
+    // Ensure y has enough length
+    let y_len = y.len();
+    let effective_len = len.min(y_len.saturating_sub(max_pitch));
+
+    if effective_len < len {
+        for i in 0..max_pitch {
+            let mut sum: i32 = 0;
+            for j in 0..effective_len {
+                sum = silk_smlabb(sum, x[j] as i32, y[i + j] as i32);
+            }
+            xcorr[i] = sum;
         }
-        xcorr[i] = sum;
+        return;
+    }
+
+    // Main path with 2-way loop unrolling
+    for i in 0..max_pitch {
+        let mut sum0: i32 = 0;
+        let mut sum1: i32 = 0;
+        let y_offset = i;
+        let mut j = 0;
+        let len4 = (len / 4) * 4;
+
+        while j < len4 {
+            sum0 = silk_smlabb(sum0, x[j] as i32, y[y_offset + j] as i32);
+            sum1 = silk_smlabb(sum1, x[j + 1] as i32, y[y_offset + j + 1] as i32);
+            j += 2;
+        }
+
+        while j < len {
+            sum0 = silk_smlabb(sum0, x[j] as i32, y[y_offset + j] as i32);
+            j += 1;
+        }
+
+        xcorr[i] = sum0.wrapping_add(sum1);
     }
 }
 

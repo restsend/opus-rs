@@ -69,6 +69,11 @@ pub struct OpusEncoder {
     // HP filter state
     variable_hp_smth2_q15: i32,
     hp_mem: Vec<i32>, // [4] for stereo, [2] for mono
+    // Pre-allocated buffers for encoding (reuse across frames to avoid allocations)
+    buf_filtered: Vec<i16>,
+    buf_silk_input: Vec<i16>,
+    buf_stereo_mid: Vec<i16>,
+    buf_stereo_side: Vec<i16>,
 }
 
 impl OpusEncoder {
@@ -118,6 +123,11 @@ impl OpusEncoder {
             mode: opus_mode,
             variable_hp_smth2_q15,
             hp_mem: vec![0; channels * 2],
+            // Pre-allocated buffers (will be resized on first use)
+            buf_filtered: Vec::new(),
+            buf_silk_input: Vec::new(),
+            buf_stereo_mid: Vec::new(),
+            buf_stereo_side: Vec::new(),
         })
     }
 
@@ -250,13 +260,14 @@ impl OpusEncoder {
             // Convert from log scale to Hz
             let cutoff_hz = silk_log2lin(silk_rshift(self.variable_hp_smth2_q15, 8));
 
-            // Apply HP filter to input
-            let mut filtered_i16 = vec![0i16; frame_size * self.channels];
+            // Apply HP filter to input (reuse pre-allocated buffer)
+            let required_size = frame_size * self.channels;
+            self.buf_filtered.resize(required_size, 0);
             if self.application == Application::Voip {
                 hp_cutoff(
                     input,
                     cutoff_hz,
-                    &mut filtered_i16,
+                    &mut self.buf_filtered,
                     &mut self.hp_mem,
                     frame_size,
                     self.channels,
@@ -265,44 +276,44 @@ impl OpusEncoder {
             } else {
                 // No HP filter for non-VOIP, just convert
                 for (i, &x) in input.iter().enumerate() {
-                    filtered_i16[i] = (x * 32768.0).clamp(-32768.0, 32767.0) as i16;
+                    self.buf_filtered[i] = (x * 32768.0).clamp(-32768.0, 32767.0) as i16;
                 }
             }
 
-            let input_i16 = filtered_i16;
+            let input_i16 = &self.buf_filtered;
 
-            // Convert input to SILK format
+            // Convert input to SILK format (reuse pre-allocated buffers)
             // For SILK stereo: convert L/R to Mid (L+R)/2 and Side (L-R) for encoding.
             // For Hybrid mode: downsample from API rate to SILK's 16kHz internal rate.
-            let silk_input: Vec<i16> = if mode == OpusMode::SilkOnly && self.channels == 2 {
+            let silk_input: &[i16] = if mode == OpusMode::SilkOnly && self.channels == 2 {
                 // Convert interleaved stereo (L R L R ...) to Mid channel
                 // Mid = (L + R) / 2, Side = L - R
                 let frame_length = input_i16.len() / 2;
-                let mut mid = vec![0i16; frame_length];
-                let mut side = vec![0i16; frame_length];
+                self.buf_stereo_mid.resize(frame_length, 0);
+                self.buf_stereo_side.resize(frame_length, 0);
                 for i in 0..frame_length {
                     // L is at index 2*i, R is at index 2*i+1
                     let l = input_i16[2 * i] as i32;
                     let r = input_i16[2 * i + 1] as i32;
-                    mid[i] = ((l + r) / 2) as i16;
-                    side[i] = (l - r) as i16;
+                    self.buf_stereo_mid[i] = ((l + r) / 2) as i16;
+                    self.buf_stereo_side[i] = (l - r) as i16;
                 }
                 // Store side for later stereo encoding
-                self.silk_enc.stereo.side = side;
-                mid
+                self.silk_enc.stereo.side = self.buf_stereo_side.clone();
+                &self.buf_stereo_mid
             } else if mode == OpusMode::Hybrid && self.sampling_rate > 16000 {
                 // Downsample from API rate (24kHz or 48kHz) to 16kHz using SilkResampler
                 // Note: The silk encoder struct already has resampler_delay_buf for delay;
                 // here we use a local resampler for the downsampling step.
                 let downsample_ratio = self.sampling_rate / 16000;
                 let silk_frame_size = frame_size / downsample_ratio as usize;
-                let mut downsampled = vec![0i16; silk_frame_size];
+                self.buf_silk_input.resize(silk_frame_size, 0);
                 // Simple downsampling: take every Nth sample (low quality, but functional)
                 // A proper implementation would use the SilkResampler.
                 for i in 0..silk_frame_size {
-                    downsampled[i] = input_i16[i * downsample_ratio as usize];
+                    self.buf_silk_input[i] = input_i16[i * downsample_ratio as usize];
                 }
-                downsampled
+                &self.buf_silk_input
             } else {
                 input_i16
             };
@@ -336,7 +347,7 @@ impl OpusEncoder {
             };
             let ret = silk_encode(
                 &mut *self.silk_enc,
-                &silk_input,
+                silk_input,
                 silk_input.len(),
                 &mut rc,
                 &mut pn_bytes,

@@ -9,6 +9,7 @@ use crate::silk::sigproc_fix::*;
 use crate::silk::structs::*;
 use crate::silk::tables::*;
 
+#[inline(always)]
 pub fn silk_find_pred_coefs_fix(
     ps_enc: &mut SilkEncoderState,
     ps_enc_ctrl: &mut SilkEncoderControl,

@@ -112,6 +112,7 @@ pub fn limit_warped_coefs(
     }
 }
 
+#[inline(always)]
 pub fn silk_noise_shape_analysis_fix(
     ps_enc: &mut SilkEncoderState,
     ps_enc_ctrl: &mut SilkEncoderControl,

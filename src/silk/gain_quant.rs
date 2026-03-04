@@ -14,6 +14,7 @@ pub const SCALE_Q16: i32 =
 pub const INV_SCALE_Q16: i32 = 1907825;
 
 /* Gain scalar quantization with hysteresis, uniform on log scale */
+#[inline(always)]
 pub fn silk_gains_quant(
     ind: &mut [i8; MAX_NB_SUBFR], /* O    gain indices                                */
     gain_q16: &mut [i32; MAX_NB_SUBFR], /* I/O  gains (quantized out)                       */
@@ -220,6 +221,7 @@ fn silk_float_to_fixed_q7(f: f32) -> i32 {
 
 /// Compute unique identifier of gains vector.
 /// Equivalent to C `silk_gains_ID()` in gain_quant.c.
+#[inline(always)]
 pub fn silk_gains_id(ind: &[i8; MAX_NB_SUBFR], nb_subfr: i32) -> i32 {
     let mut gains_id: i32 = 0;
     for k in 0..nb_subfr as usize {
