@@ -95,8 +95,11 @@ Rust implementation uses complexity=0 (fast mode). Performance is comparable to 
 
 ## License
 
-This project is a clean-room Rust port of the Opus reference implementation. See [COPYING](COPYING) for the original Opus license (BSD-3-Clause).
+See [COPYING](COPYING) for the original Opus license (BSD-3-Clause).
 
 ## Links
 
-- **Rustpbx**: <https://github.com/restsend/rustpbx>
+- **RustPBX**: <https://github.com/restsend/rustpbx>
+- **RustRTC**: <https://github.com/restsend/rustrtc>
+- **Sip Stack**: <https://github.com/restsend/rsipstack>
+- **Rust Voice Agent**: <https://github.com/restsend/active-call>
