@@ -80,34 +80,35 @@ pub fn silk_encode_prefill(
     // C forces payloadSize_ms=10 for the prefill, giving frame_length = fs_kHz * 10.
     // Save the real frame_length and override for the duration of the prefill.
     let fs_khz = ps_enc.s_cmn.fs_khz as usize;
+
+    if fs_khz != 8 && fs_khz != 12 && fs_khz != 16 {
+        return;
+    }
+
     let prefill_frame_length = fs_khz * 10; // 10ms frame (80 samples @8kHz)
+
+    if samples.len() < prefill_frame_length {
+        return;
+    }
+
     let real_frame_length = ps_enc.s_cmn.frame_length as usize;
     let real_nb_subfr = ps_enc.s_cmn.nb_subfr;
     let real_subfr_length = ps_enc.s_cmn.subfr_length;
 
-    // Temporarily set to 10ms frame parameters (matching C's payloadSize_ms=10 override)
     ps_enc.s_cmn.frame_length = prefill_frame_length as i32;
-    // At 10ms we always have 2 subframes (5ms each)
     ps_enc.s_cmn.nb_subfr = 2;
     ps_enc.s_cmn.subfr_length = (prefill_frame_length / 2) as i32;
 
     let ltp_mem_length = ps_enc.s_cmn.ltp_mem_length as usize;
-    // LA_SHAPE_MS is always 5 (a compile-time constant in C), not the
-    // complexity-dependent la_shape field.
     let la_shape_ms_samples = 5 * fs_khz; // LA_SHAPE_MS * fs_kHz
 
-    // --- Step 1: VAD on unfiltered data ---
-    // C: silk_encode_do_VAD_Fxx(&psEnc->state_Fxx[0], activity)
-    //    which calls silk_VAD_GetSA_Q8_FIX on inputBuf+1 (same as our samples slice)
     let n = prefill_frame_length.min(samples.len());
     silk_vad_get_sa_q8(ps_enc, &samples[..n], prefill_frame_length);
 
-    // Silence forced: override VAD if needed (matching silk_encode_do_vad logic)
     let activity_threshold = crate::silk::define::SPEECH_ACTIVITY_DTX_THRES_Q8;
     if activity == 0 && ps_enc.s_cmn.speech_activity_q8 >= activity_threshold {
         ps_enc.s_cmn.speech_activity_q8 = activity_threshold - 1;
     }
-    // Update signal_type (C: silk_encode_do_VAD_FIX sets this)
     if ps_enc.s_cmn.speech_activity_q8 < activity_threshold {
         ps_enc.s_cmn.indices.signal_type = crate::silk::define::TYPE_NO_VOICE_ACTIVITY as i8;
         ps_enc.s_cmn.no_speech_counter += 1;
@@ -117,14 +118,10 @@ pub fn silk_encode_prefill(
         ps_enc.s_cmn.indices.signal_type = crate::silk::define::TYPE_UNVOICED as i8;
     }
 
-    // --- Step 2: LP variable cutoff filter ---
-    // Work on a local buffer (C uses inputBuf+1 in-place)
     let mut input_buf = [0i16; super::define::MAX_FRAME_LENGTH + 2];
-    // input_buf[0..2] = s_mid (overlap); for prefill these are zero (post-reset)
     input_buf[0] = ps_enc.stereo.s_mid[0];
     input_buf[1] = ps_enc.stereo.s_mid[1];
     input_buf[2..2 + n].copy_from_slice(&samples[..n]);
-    // Save new overlap
     ps_enc.stereo.s_mid[0] = input_buf[prefill_frame_length];
     ps_enc.stereo.s_mid[1] = input_buf[prefill_frame_length + 1];
     // Apply LP filter (modifies input_buf[1..])
@@ -134,9 +131,6 @@ pub fn silk_encode_prefill(
         prefill_frame_length,
     );
 
-    // --- Step 3: Copy filtered samples into x_buf ---
-    // C: silk_memcpy(x_frame + LA_SHAPE_MS * fs_kHz, inputBuf + 1, frame_length)
-    //    where x_frame = x_buf + ltp_mem_length
     let x_frame_idx = ltp_mem_length;
     let dst = x_frame_idx + la_shape_ms_samples;
     // Only write as many samples as we have (prefill_frame_length)
@@ -145,8 +139,6 @@ pub fn silk_encode_prefill(
             .copy_from_slice(&input_buf[1..1 + prefill_frame_length]);
     }
 
-    // --- Step 4: Update x_buf (shift left by prefill_frame_length) ---
-    // C: silk_memmove(x_buf, &x_buf[frame_length], (ltp_mem_length + LA_SHAPE_MS*fs_kHz))
     let move_len = ltp_mem_length + la_shape_ms_samples;
     if prefill_frame_length + move_len <= ps_enc.s_cmn.x_buf.len() {
         ps_enc
@@ -155,11 +147,6 @@ pub fn silk_encode_prefill(
             .copy_within(prefill_frame_length..prefill_frame_length + move_len, 0);
     }
 
-    // NOTE: In C, frame_counter is NOT incremented during prefill.
-    // Only the real encoding frame increments frame_counter.
-    // This comment documents the difference from the incorrect earlier implementation.
-
-    // --- Restore original frame parameters ---
     ps_enc.s_cmn.frame_length = real_frame_length as i32;
     ps_enc.s_cmn.nb_subfr = real_nb_subfr;
     ps_enc.s_cmn.subfr_length = real_subfr_length;
@@ -676,6 +663,13 @@ pub fn silk_encode(
         //   encode_frame uses inputBuf[1..frame_length+1]
         // delay_matrix_enc[rate][rate]: 8kHz=6, 12kHz=7, 16kHz=10
         let fs_in_khz = ps_enc.s_cmn.fs_khz as usize;
+
+        // Skip frame if input is too short (can happen with invalid frame sizes)
+        if raw_frame.len() < fs_in_khz {
+            sample_offset += frame_length;
+            continue;
+        }
+
         let input_delay: usize = match fs_in_khz {
             8 => 6,
             12 => 7,
@@ -687,6 +681,12 @@ pub fn silk_encode(
         let n_samp: usize = fs_in_khz - input_delay;
 
         let n = raw_frame.len();
+        // Validate frame size doesn't exceed maximum
+        if n > MAX_FRAME_LENGTH {
+            sample_offset += frame_length;
+            continue;
+        }
+
         let mut resampler_out = [0i16; MAX_FRAME_LENGTH];
 
         // Step 1: delayBuf[inputDelay..Fs_in_kHz] = in[0..nSamples]
@@ -698,10 +698,16 @@ pub fn silk_encode(
 
         // Step 3: out[Fs_out_kHz..n] = in[nSamples..]; length = inLen - Fs_in_kHz
         let rest_len = n - fs_in_khz;
-        resampler_out[fs_in_khz..n].copy_from_slice(&raw_frame[n_samp..n_samp + rest_len]);
+        let rest_end = n_samp + rest_len;
+        // Bounds check to prevent panic
+        if rest_end <= raw_frame.len() && n <= MAX_FRAME_LENGTH {
+            resampler_out[fs_in_khz..n].copy_from_slice(&raw_frame[n_samp..rest_end]);
+        }
 
         // Step 4: delayBuf[0..inputDelay] = in[n-inputDelay..n]
-        delay_buf[..input_delay].copy_from_slice(&raw_frame[n - input_delay..]);
+        if n >= input_delay {
+            delay_buf[..input_delay].copy_from_slice(&raw_frame[n - input_delay..]);
+        }
         ps_enc.resampler_delay_buf = delay_buf;
 
         // inputBuf[0..2] = sMid, inputBuf[2..2+n] = resampler_out

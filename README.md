@@ -83,30 +83,30 @@ cargo bench -- silk_burg_modified_fix  # LPC analysis
 
 | Sample Rate | Frame Size | Time per Frame | Throughput |
 |-------------|------------|-----------------|------------|
-| 8 kHz       | 20 ms      | 13.6 µs        | 22.4 MiB/s |
-| 16 kHz      | 20 ms      | 25.2 µs        | 24.2 MiB/s |
-| 16 kHz      | 10 ms      | 13.9 µs        | 22.0 MiB/s |
+| 8 kHz       | 20 ms      | 13.0 µs        | 23.5 MiB/s |
+| 16 kHz      | 20 ms      | 24.3 µs        | 25.1 MiB/s |
+| 16 kHz      | 10 ms      | 13.6 µs        | 22.4 MiB/s |
 
 ### SILK vs C Reference (libopus)
 
 | Config              | 8kHz/20ms | 16kHz/20ms | 16kHz/10ms |
 |---------------------|-----------|-------------|------------|
-| Rust (cx0)          | 15.1 µs  | 25.2 µs    | 13.9 µs   |
-| C libopus (cx0)     | 14.6 µs  | 18.3 µs    | 11.4 µs   |
-| C libopus (cx9)     | 67.7 µs  | 130.8 µs   | 66.2 µs   |
+| Rust (cx0)          | 13.0 µs  | 24.3 µs    | 13.6 µs   |
+| C libopus (cx0)     | 10.8 µs  | 18.3 µs    | 11.2 µs   |
+| C libopus (cx9)     | 62.2 µs  | 132.4 µs   | 66.6 µs   |
 
-Rust implementation uses complexity=0 (fast mode). Performance is comparable to C at the same complexity level. C at complexity=9 (default quality) is 4-5x slower.
+Rust implementation uses complexity=0 (fast mode). Performance is comparable to C at the same complexity level. C at complexity=9 (default quality) is 5-6x slower.
 
 ### SILK Core Algorithms
 
 | Function               | Time (16kHz WB) | Time (8kHz NB) |
 |-----------------------|-----------------|---------------|
-| burg_modified_fix     | 3.1 µs         | —             |
-| autocorrelation       | ~0.5 µs        | ~0.2 µs        |
-| inner product         | ~0.2 µs        | ~0.1 µs        |
-| pitch_analysis_core  | 7.5 µs         | 3.1 µs         |
-| nsq (voiced)          | 8.3 µs         | 4.4 µs         |
-| nsq (unvoiced)        | 6.9 µs         | 3.5 µs         |
+| burg_modified_fix     | 2.1 µs         | 0.93 µs       |
+| autocorrelation       | 1.8 µs         | 0.4 µs        |
+| inner product         | 0.1 µs         | 0.1 µs        |
+| pitch_analysis_core  | 7.4 µs         | 3.1 µs        |
+| nsq (voiced)          | 8.1 µs         | 4.2 µs        |
+| nsq (unvoiced)        | 6.8 µs         | 3.3 µs        |
 
 ## License
 
@@ -116,5 +116,5 @@ See [COPYING](COPYING) for the original Opus license (BSD-3-Clause).
 
 - **RustPBX**: <https://github.com/restsend/rustpbx>
 - **RustRTC**: <https://github.com/restsend/rustrtc>
-- **Sip Stack**: <https://github.com/restsend/rsipstack>
+- **SIP Stack**: <https://github.com/restsend/rsipstack>
 - **Rust Voice Agent**: <https://github.com/restsend/active-call>

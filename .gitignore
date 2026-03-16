@@ -2,3 +2,6 @@
 .DS_Store
 .vscode/tasks.json
 Cargo.lock
+fuzz/target
+fuzz/artifacts
+fuzz/corpus

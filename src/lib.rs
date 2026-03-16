@@ -164,7 +164,8 @@ impl OpusEncoder {
         frame_size: usize,
         output: &mut [u8],
     ) -> Result<usize, &'static str> {
-        if output.len() < 1 {
+        // Minimum output buffer size: 1 byte TOC + 1 byte frame count (for Code 3 packets)
+        if output.len() < 2 {
             return Err("Output buffer too small");
         }
 
@@ -206,11 +207,14 @@ impl OpusEncoder {
                For Hybrid mode, SILK operates at 16kHz internal rate regardless of
                the encoder's API sampling rate (24kHz or 48kHz). The input must be
                downsampled before passing to SILK.
+               For SilkOnly mode, SILK only supports 8, 12, or 16 kHz internal rates.
+               Sample rates above 16kHz are capped to 16kHz (WB mode).
             */
             let silk_fs_khz = if mode == OpusMode::Hybrid {
                 16 // SILK always uses 16kHz in Hybrid (SWB) mode
             } else {
-                self.sampling_rate / 1000
+                // Cap SILK internal rate to max 16kHz (WB)
+                self.sampling_rate.min(16000) / 1000
             };
             // SILK frame duration matches the API frame duration
             let frame_ms = (frame_size as i32 * 1000) / self.sampling_rate;
@@ -232,7 +236,9 @@ impl OpusEncoder {
                 self.down2_state_second = [0; 2];
                 self.down2_3_state = [0; 6];
 
-                let encoder_buffer = self.sampling_rate as usize / 100; // Fs/100 = 80 samples @8kHz
+                // Use SILK internal sample rate for prefill buffer size
+                let silk_internal_rate = silk_fs_khz * 1000;
+                let encoder_buffer = silk_internal_rate as usize / 100; // Fs/100 = 80 samples @8kHz
                 let prefill_zeros = vec![0i16; encoder_buffer];
                 silk_encode_prefill(
                     &mut *self.silk_enc,
@@ -437,8 +443,11 @@ impl OpusEncoder {
 
             let out_len = output.len();
             let written = 2 + frame_len;
-            for byte in output[written..target_total.min(out_len)].iter_mut() {
-                *byte = 0;
+            let fill_end = target_total.min(out_len);
+            if written < fill_end {
+                for byte in output[written..fill_end].iter_mut() {
+                    *byte = 0;
+                }
             }
 
             return Ok(target_total.min(out_len));

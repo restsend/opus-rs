@@ -90,20 +90,39 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
     // dec_framelength2 = sr/4
     // dec_framelength = sr/8
 
-    // We expect ps_enc.s_cmn.frame_length to be valid.
-    let frame_length = ps_enc.s_cmn.frame_length as usize;
+    // Use fs_khz to derive frame_length for VAD consistency.
+    // VAD operates on the internal SILK sample rate, and frame_length should
+    // correspond to the current frame duration (typically 10ms for prefill).
+    let fs_khz = ps_enc.s_cmn.fs_khz as usize;
+
+    // Validate fs_khz is reasonable (8, 12, or 16 kHz for SILK)
+    if fs_khz != 8 && fs_khz != 12 && fs_khz != 16 {
+        // Invalid sample rate for VAD
+        return 0;
+    }
+
+    // For VAD prefill, we use 10ms frame (fs_khz * 10 samples)
+    // This matches the prefill behavior in silk_encode_prefill
+    let frame_length = fs_khz * 10;
+
+    // Cache all derived values at the start to ensure consistency
     let decimated_framelength1 = frame_length >> 1;
     let decimated_framelength2 = frame_length >> 2;
     let decimated_framelength = frame_length >> 3;
 
-    // Offset calculation
-    let mut x_offset = [0usize; VAD_N_BANDS];
-    x_offset[0] = 0;
-    x_offset[1] = decimated_framelength + decimated_framelength2;
-    x_offset[2] = x_offset[1] + decimated_framelength;
-    x_offset[3] = x_offset[2] + decimated_framelength2;
+    // Offset calculation (store in array for later indexing)
+    let x_offset = [
+        0,
+        decimated_framelength + decimated_framelength2,
+        decimated_framelength + decimated_framelength2 + decimated_framelength,
+        decimated_framelength + decimated_framelength2 + decimated_framelength + decimated_framelength2,
+    ];
+    let x_offset_1 = x_offset[1];
+    let x_offset_2 = x_offset[2];
+    let x_offset_3 = x_offset[3];
 
-    let alloc_size = x_offset[3] + decimated_framelength1;
+    let alloc_size = x_offset_3 + decimated_framelength1;
+
     let mut x = vec![0i16; alloc_size];
 
     // Note: We need to handle slices carefully to mimic C pointer arithmetic
@@ -111,9 +130,9 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
     // ana_filt_bank_1(in, state, outL, outH, N)
 
     // 0-8 kHz to 0-4 kHz and 4-8 kHz
-    // outL goes to X[0] (temporarily), outH goes to X[X_offset[3]]
+    // outL goes to X[0] (temporarily), outH goes to X[X_offset_3]
     // But input is p_in which is separate.
-    let (x_low, x_high) = x.split_at_mut(x_offset[3]);
+    let (x_low, x_high) = x.split_at_mut(x_offset_3);
     silk_ana_filt_bank_1(
         p_in,
         &mut ps_silk_vad.ana_state,
@@ -124,9 +143,9 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
 
     // 0-4 kHz to 0-2 kHz and 2-4 kHz
     // Input is X[0..decimated_framelength1].
-    // outL goes to X[0] (temporarily), outH goes to X[X_offset[2]]
+    // outL goes to X[0] (temporarily), outH goes to X[X_offset_2]
     // Rust borrow checker requires split.
-    let (x_part1, x_part2) = x.split_at_mut(x_offset[2]);
+    let (x_part1, x_part2) = x.split_at_mut(x_offset_2);
     // Stack copy to avoid simultaneous mutable + immutable borrow on x_part1.
     // Max decimated_framelength1 = MAX_FRAME_LENGTH/2 = 320 (when frame_length=640, i.e. 40ms@16kHz).
     let mut x_in_buf1 = [0i16; MAX_FRAME_LENGTH / 2];
@@ -141,8 +160,8 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
 
     // 0-2 kHz to 0-1 kHz and 1-2 kHz
     // Input is X[0..decimated_framelength2].
-    // outL goes to X[0] (temporarily), outH goes to X[X_offset[1]]
-    let (x_part1, x_part2) = x.split_at_mut(x_offset[1]);
+    // outL goes to X[0] (temporarily), outH goes to X[X_offset_1]
+    let (x_part1, x_part2) = x.split_at_mut(x_offset_1);
     // Stack copy to avoid simultaneous mutable + immutable borrow on x_part1.
     // Max decimated_framelength2 = MAX_FRAME_LENGTH/4 = 160 (when frame_length=640, i.e. 40ms@16kHz).
     let mut x_in_buf2 = [0i16; MAX_FRAME_LENGTH / 4];

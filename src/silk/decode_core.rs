@@ -79,9 +79,6 @@ pub fn silk_decode_core(
             && ps_dec.indices.signal_type as i32 != TYPE_VOICED
             && k < MAX_NB_SUBFR / 2
         {
-            // Use modified LTP coefficients
-            let mut modified_b = [0i16; LTP_ORDER];
-            modified_b[LTP_ORDER / 2] = 8192; // 0.25 in Q14
             (TYPE_VOICED, ps_dec.lag_prev)
         } else {
             (signal_type as i32, ps_dec_ctrl.pitch_l[k])

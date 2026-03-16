@@ -69,6 +69,13 @@ impl MdctLookup {
         if window.len() < overlap {
             panic!("MDCT forward: window too short: window.len()={} but need overlap={}", window.len(), overlap);
         }
+        if output.len() < n2 * stride {
+            panic!("MDCT forward: output too short: output.len()={} but need n2*stride={}", output.len(), n2 * stride);
+        }
+        // Ensure we have enough trig data
+        if self.get_trig(shift).len() < n2 {
+            panic!("MDCT forward: trig table too short for shift={}", shift);
+        }
         let fft = &self.ffts[shift];
         let trig = self.get_trig(shift);
 
@@ -104,29 +111,42 @@ impl MdctLookup {
             // Runs for min(limit, n4) iterations
             let loop1_iters = limit.min(n4);
             for _ in 0..loop1_iters {
+                // Bounds checks for window access
+                let w1 = if wp1 < window.len() { window[wp1] } else { 0.0 };
+                let w2 = if wp2 < window.len() { window[wp2] } else { 0.0 };
+
                 // *yp++ = S_MUL(xp1[N2], *wp2) + S_MUL(*xp2, *wp1)
-                f[yp] = input[xp1 + n2] * window[wp2] + input[xp2] * window[wp1];
+                // Bounds checks for input access
+                let in1 = if xp1 + n2 < input.len() { input[xp1 + n2] } else { 0.0 };
+                let in2 = if xp2 < input.len() { input[xp2] } else { 0.0 };
+                f[yp] = in1 * w2 + in2 * w1;
                 yp += 1;
+
                 // *yp++ = S_MUL(*xp1, *wp1) - S_MUL(xp2[-N2], *wp2)
-                f[yp] = input[xp1] * window[wp1] - input[xp2 - n2] * window[wp2];
+                let in3 = if xp1 < input.len() { input[xp1] } else { 0.0 };
+                let in4 = if xp2 >= n2 && xp2 - n2 < input.len() { input[xp2 - n2] } else { 0.0 };
+                f[yp] = in3 * w1 - in4 * w2;
                 yp += 1;
+
                 xp1 += 2;
-                xp2 -= 2;
+                xp2 = xp2.saturating_sub(2);
                 wp1 += 2;
-                wp2 = wp2.wrapping_sub(2);
+                wp2 = wp2.saturating_sub(2);
             }
 
             // Loop 2: bare middle (no windowing)
             // Only runs if limit < mid (i.e., limit < n4 - limit, meaning limit < n4/2)
             for _ in limit..mid {
                 // *yp++ = *xp2
-                f[yp] = input[xp2];
+                let in1 = if xp2 < input.len() { input[xp2] } else { 0.0 };
+                f[yp] = in1;
                 yp += 1;
                 // *yp++ = *xp1
-                f[yp] = input[xp1];
+                let in2 = if xp1 < input.len() { input[xp1] } else { 0.0 };
+                f[yp] = in2;
                 yp += 1;
                 xp1 += 2;
-                xp2 -= 2;
+                xp2 = xp2.saturating_sub(2);
             }
 
             // Loop 3: windowed overlap tail
@@ -135,18 +155,28 @@ impl MdctLookup {
             // When limit < n4: mid=n4-limit, so loop3 does limit iters
             let loop3_iters = if mid > limit { n4 - mid } else { 0 };
             let mut wp1_l3 = 0usize;
-            let mut wp2_l3 = overlap - 1;
+            let mut wp2_l3 = overlap.saturating_sub(1);
             for _ in 0..loop3_iters {
+                // Bounds checks for window access
+                let w1 = if wp1_l3 < window.len() { window[wp1_l3] } else { 0.0 };
+                let w2 = if wp2_l3 < window.len() { window[wp2_l3] } else { 0.0 };
+
                 // *yp++ = -S_MUL(xp1[-N2], *wp1) + S_MUL(*xp2, *wp2)
-                f[yp] = -input[xp1 - n2] * window[wp1_l3] + input[xp2] * window[wp2_l3];
+                let in1 = if xp1 >= n2 && xp1 - n2 < input.len() { input[xp1 - n2] } else { 0.0 };
+                let in2 = if xp2 < input.len() { input[xp2] } else { 0.0 };
+                f[yp] = -in1 * w1 + in2 * w2;
                 yp += 1;
+
                 // *yp++ =  S_MUL(*xp1, *wp2) + S_MUL(xp2[N2], *wp1)
-                f[yp] = input[xp1] * window[wp2_l3] + input[xp2 + n2] * window[wp1_l3];
+                let in3 = if xp1 < input.len() { input[xp1] } else { 0.0 };
+                let in4 = if xp2 + n2 < input.len() { input[xp2 + n2] } else { 0.0 };
+                f[yp] = in3 * w2 + in4 * w1;
                 yp += 1;
+
                 xp1 += 2;
-                xp2 -= 2;
+                xp2 = xp2.saturating_sub(2);
                 wp1_l3 += 2;
-                wp2_l3 -= 2;
+                wp2_l3 = wp2_l3.saturating_sub(2);
             }
         }
 

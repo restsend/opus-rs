@@ -1,0 +1,59 @@
+[package]
+name = "opus-rs-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+opus-rs = { path = ".." }
+
+[dev-dependencies]
+
+[[bin]]
+name = "fuzz_encoder"
+path = "fuzz_targets/fuzz_encoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_decoder"
+path = "fuzz_targets/fuzz_decoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_roundtrip"
+path = "fuzz_targets/fuzz_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_silk_encoder"
+path = "fuzz_targets/fuzz_silk_encoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_celt_encoder"
+path = "fuzz_targets/fuzz_celt_encoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_overflow"
+path = "fuzz_targets/fuzz_overflow.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1

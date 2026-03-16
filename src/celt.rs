@@ -897,7 +897,7 @@ impl CeltEncoder {
 
         // 4. TF Analysis
         let mut tf_res = vec![0i32; nb_ebands];
-        let effective_bytes = (total_bits / 8) as usize;
+        let effective_bytes = ((total_bits / 8) as usize).max(1);
         let lambda = 80.max(20480 / effective_bytes + 2) as i32;
         let tf_select = tf_analysis(
             mode,
