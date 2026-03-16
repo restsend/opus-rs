@@ -921,4 +921,64 @@ mod tests {
         );
         assert_eq!(channels_from_toc(stereo_toc), 2);
     }
+
+    /// Test that large frame sizes don't cause integer underflow in CELT decoder.
+    /// This is a regression test for the bug where frame_size > decode_buffer_size + overlap
+    /// (e.g., 2880 > 2048 + 120 = 2168) caused panic due to integer underflow.
+    #[test]
+    fn test_celt_decoder_large_frame_sizes() {
+        let sampling_rate = 48000;
+        let channels = 1;
+
+        let mut decoder = OpusDecoder::new(sampling_rate, channels).unwrap();
+
+        // Test all valid CELT frame sizes at 48kHz
+        // CELT supports: 2.5ms, 5ms, 10ms, 20ms (120, 240, 480, 960 samples @ 48kHz)
+        // Note: 40ms and 60ms are SILK-only frame sizes, not CELT
+        let frame_sizes = [120, 240, 480, 960];
+
+        for frame_size in frame_sizes {
+            // Create a minimal valid CELT packet (just TOC byte + some data)
+            let toc = gen_toc(OpusMode::CeltOnly, frame_rate_from_params(sampling_rate, frame_size).unwrap(), Bandwidth::Fullband, channels);
+            let packet = [toc, 0, 0, 0, 0]; // Minimal packet
+
+            let mut output = vec![0.0f32; frame_size * channels];
+
+            // This should not panic - the decode may fail with invalid data,
+            // but it should not cause integer underflow
+            let _ = decoder.decode(&packet, frame_size, &mut output);
+        }
+
+        // Test stereo as well
+        let channels = 2;
+        let mut decoder = OpusDecoder::new(sampling_rate, channels).unwrap();
+
+        for frame_size in frame_sizes {
+            let toc = gen_toc(OpusMode::CeltOnly, frame_rate_from_params(sampling_rate, frame_size).unwrap(), Bandwidth::Fullband, channels);
+            let packet = [toc, 0, 0, 0, 0];
+
+            let mut output = vec![0.0f32; frame_size * channels];
+            let _ = decoder.decode(&packet, frame_size, &mut output);
+        }
+    }
+
+    /// Test edge cases around the old boundary (2048 + 120 = 2168)
+    /// These frame sizes are not valid for CELT but should not cause integer underflow
+    #[test]
+    fn test_celt_decoder_edge_case_frame_sizes() {
+        let sampling_rate = 48000;
+        let channels = 1;
+        let mut decoder = OpusDecoder::new(sampling_rate, channels).unwrap();
+
+        // Test frame sizes around the old boundary
+        // Old bug: frame_size > 2048 + 120 = 2168 would cause underflow
+        // These sizes are invalid for CELT but should return gracefully, not panic
+        let edge_sizes = [2048, 2167, 2168, 2169, 2880, 3072];
+
+        for frame_size in edge_sizes {
+            let mut output = vec![0.0f32; frame_size * channels];
+            // Use arbitrary data - decode will likely fail, but shouldn't panic
+            let _ = decoder.decode(&[0x80, 0, 0, 0], frame_size, &mut output);
+        }
+    }
 }

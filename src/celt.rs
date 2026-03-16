@@ -10,6 +10,13 @@ use crate::quant_bands::{
 use crate::range_coder::RangeCoder;
 use crate::rate::{BITRES, clt_compute_allocation};
 
+/// Maximum frame size supported by Opus: 60ms at 48kHz = 2880 samples
+/// We use 3072 to provide some safety margin
+#[allow(dead_code)]
+const MAX_FRAME_SIZE: usize = 2880;
+/// Decode buffer size must be at least MAX_FRAME_SIZE + overlap to avoid integer underflow
+const DECODE_BUFFER_SIZE: usize = 3072;
+
 const INV_TABLE: [u8; 128] = [
     255, 255, 156, 110, 86, 70, 59, 51, 45, 40, 37, 33, 31, 28, 26, 25, 23, 22, 21, 20, 19, 18, 17,
     16, 16, 15, 15, 14, 13, 13, 12, 12, 12, 12, 11, 11, 11, 10, 10, 10, 9, 9, 9, 9, 9, 9, 8, 8, 8,
@@ -1219,11 +1226,10 @@ pub struct CeltDecoder {
 impl CeltDecoder {
     pub fn new(mode: &'static CeltMode, channels: usize) -> Self {
         let overlap = mode.overlap;
-        let decode_buffer_size = 2048;
         Self {
             mode,
             channels,
-            decode_mem: vec![0.0; channels * (decode_buffer_size + overlap)],
+            decode_mem: vec![0.0; channels * (DECODE_BUFFER_SIZE + overlap)],
             old_band_e: vec![-28.0; mode.nb_ebands * channels],
             preemph_mem: vec![0.0; channels],
             prefilter_mem: vec![0.0; channels * COMBFILTER_MAXPERIOD],
@@ -1447,11 +1453,15 @@ impl CeltDecoder {
         let mut x = vec![0.0f32; frame_size * channels];
         let mut collapse_masks = vec![0u32; nb_ebands * channels];
 
+        // Validate frame_size to prevent integer underflow
+        if frame_size > DECODE_BUFFER_SIZE + overlap {
+            return 0;
+        }
+
         // Shift decode buffer BEFORE PVQ decode (matching C)
-        let decode_buffer_size = 2048;
         for c in 0..channels {
-            let channel_mem_offset = c * (decode_buffer_size + overlap);
-            for i in 0..decode_buffer_size - frame_size + overlap {
+            let channel_mem_offset = c * (DECODE_BUFFER_SIZE + overlap);
+            for i in 0..DECODE_BUFFER_SIZE - frame_size + overlap {
                 self.decode_mem[channel_mem_offset + i] =
                     self.decode_mem[channel_mem_offset + i + frame_size];
             }
@@ -1543,10 +1553,10 @@ impl CeltDecoder {
         let n = frame_size / b;
 
         for c in 0..channels {
-            let channel_mem_offset = c * (decode_buffer_size + overlap);
+            let channel_mem_offset = c * (DECODE_BUFFER_SIZE + overlap);
             // C: out_syn[c] = decode_mem[c] + decode_buffer_size - N
             // where N is the full frame size (not the block size n)
-            let out_syn_idx = decode_buffer_size - frame_size;
+            let out_syn_idx = DECODE_BUFFER_SIZE - frame_size;
 
             for i in 0..b {
                 let block_freq_idx = c * frame_size + i; // Interleaved start

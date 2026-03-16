@@ -55,5 +55,54 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "fuzz_celt_large_frame"
+path = "fuzz_targets/fuzz_celt_large_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_celt_decoder_boundary"
+path = "fuzz_targets/fuzz_celt_decoder_boundary.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_silk_decoder"
+path = "fuzz_targets/fuzz_silk_decoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_hybrid_mode"
+path = "fuzz_targets/fuzz_hybrid_mode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_encoder_boundary"
+path = "fuzz_targets/fuzz_encoder_boundary.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_multi_frame"
+path = "fuzz_targets/fuzz_multi_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_packet_parsing"
+path = "fuzz_targets/fuzz_packet_parsing.rs"
+test = false
+doc = false
+bench = false
+
 [profile.release]
 debug = 1
