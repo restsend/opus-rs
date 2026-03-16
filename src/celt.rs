@@ -654,13 +654,23 @@ impl CeltEncoder {
         self.encode_impl(pcm, frame_size, rc, 0)
     }
 
-    /// Encode with start_band support for Hybrid mode.
-    /// When start_band > 0, only bands from start_band..nb_ebands are quantized.
-    pub fn encode_with_start_band(&mut self, pcm: &[f32], frame_size: usize, rc: &mut RangeCoder, start_band: usize) {
+    pub fn encode_with_start_band(
+        &mut self,
+        pcm: &[f32],
+        frame_size: usize,
+        rc: &mut RangeCoder,
+        start_band: usize,
+    ) {
         self.encode_impl(pcm, frame_size, rc, start_band)
     }
 
-    fn encode_impl(&mut self, pcm: &[f32], frame_size: usize, rc: &mut RangeCoder, start_band: usize) {
+    fn encode_impl(
+        &mut self,
+        pcm: &[f32],
+        frame_size: usize,
+        rc: &mut RangeCoder,
+        start_band: usize,
+    ) {
         let mut max_pcm = 0.0f32;
         for i in 0..frame_size {
             max_pcm = max_pcm.max(pcm[i].abs());
@@ -694,20 +704,17 @@ impl CeltEncoder {
                 self.syn_mem[channel_offset + i] = self.syn_mem[channel_offset + i + frame_size];
             }
 
-            // Pre-emphasize and put into syn_mem (at the end)
             let mut m = self.preemph_mem[c];
             let coef = mode.preemph[0];
             for i in 0..frame_size {
                 let x = pcm[c * frame_size + i];
                 let val = x - m;
-                // We put it at the end of the 2048+overlap buffer
                 self.syn_mem[channel_offset + syn_mem_size - frame_size + i] = val;
                 m = x * coef;
             }
             self.preemph_mem[c] = m;
         }
 
-        // Prepare input buffer for transient_analysis: overlap + frame_size per channel
         let buf_stride = frame_size + overlap;
         let mut in_buf = vec![0.0f32; buf_stride * channels];
         for c in 0..channels {
@@ -739,7 +746,6 @@ impl CeltEncoder {
         let gain1 = 0.0f32;
         let pitch_index = 0usize;
 
-        // MDCT
         let mut freq = vec![0.0f32; frame_size * channels];
         let (shift, b) = if is_transient {
             (mode.max_lm, 1 << lm)
@@ -750,12 +756,6 @@ impl CeltEncoder {
 
         for c in 0..channels {
             let channel_offset = c * syn_mem_size;
-            // MDCT needs n + overlap samples
-            // New samples are at [syn_mem_size - frame_size, syn_mem_size)
-            // Historical samples are at [syn_mem_size - frame_size - overlap, syn_mem_size - frame_size)
-            // So MDCT reads from [syn_mem_size - frame_size - overlap, syn_mem_size - frame_size + n)
-            // For block i (where i*n are the sample positions within current frame):
-            // Read from [syn_mem_size - frame_size - overlap + i*n, syn_mem_size - frame_size - overlap + i*n + n + overlap)
             let mdct_base = syn_mem_size - frame_size - overlap;
 
             if c == 0 && b == 1 && channels == 1 {
@@ -857,7 +857,7 @@ impl CeltEncoder {
                 let c_offset = c * buf_stride;
                 for i in 0..b {
                     mode.mdct.forward(
-                        &in_buf[c_offset + overlap / 2 + i * n..c_offset + buf_stride],
+                        &in_buf[c_offset + i * n..c_offset + buf_stride],
                         &mut freq[c * frame_size + i..],
                         mode.window,
                         overlap,
@@ -1013,7 +1013,11 @@ impl CeltEncoder {
         let mut pulses = vec![0i32; nb_ebands];
         // For stereo, ebits and fine_priority need to be channels * nb_ebands for quant_fine_energy
         let stereo = channels > 1;
-        let ebands_stereo = if stereo { nb_ebands * channels } else { nb_ebands };
+        let ebands_stereo = if stereo {
+            nb_ebands * channels
+        } else {
+            nb_ebands
+        };
         let mut fine_priority = vec![0i32; ebands_stereo];
         let mut ebits = vec![0i32; ebands_stereo];
         let mut balance = 0;
@@ -1239,11 +1243,23 @@ impl CeltDecoder {
     /// Decode with start_band support for Hybrid mode.
     /// `start_band > 0` means this CELT frame only contains data for bands
     /// from start_band..nb_ebands; the lower bands come from SILK.
-    pub fn decode_with_start_band(&mut self, compressed: &[u8], frame_size: usize, pcm: &mut [f32], start_band: usize) -> usize {
+    pub fn decode_with_start_band(
+        &mut self,
+        compressed: &[u8],
+        frame_size: usize,
+        pcm: &mut [f32],
+        start_band: usize,
+    ) -> usize {
         self.decode_impl(compressed, frame_size, pcm, start_band)
     }
 
-    fn decode_impl(&mut self, compressed: &[u8], frame_size: usize, pcm: &mut [f32], start_band: usize) -> usize {
+    fn decode_impl(
+        &mut self,
+        compressed: &[u8],
+        frame_size: usize,
+        pcm: &mut [f32],
+        start_band: usize,
+    ) -> usize {
         let mode = self.mode;
         let channels = self.channels;
         let nb_ebands = mode.nb_ebands;
@@ -1314,7 +1330,14 @@ impl CeltDecoder {
         );
 
         let mut tf_res = vec![0i32; nb_ebands];
-        tf_decode(start_band, nb_ebands, is_transient, &mut tf_res, lm as i32, &mut rc);
+        tf_decode(
+            start_band,
+            nb_ebands,
+            is_transient,
+            &mut tf_res,
+            lm as i32,
+            &mut rc,
+        );
 
         // Spread decision (C order: after TF, before dynalloc)
         let spread_decision = if rc.tell() + 4 <= total_bits {
@@ -1381,7 +1404,11 @@ impl CeltDecoder {
         let mut balance = 0;
         let mut pulses = vec![0i32; nb_ebands];
         // For stereo, ebits and fine_priority need to be channels * nb_ebands for unquant_fine_energy
-        let ebands_stereo = if channels > 1 { nb_ebands * channels } else { nb_ebands };
+        let ebands_stereo = if channels > 1 {
+            nb_ebands * channels
+        } else {
+            nb_ebands
+        };
         let mut fine_priority = vec![0i32; ebands_stereo];
         let mut ebits = vec![0i32; ebands_stereo];
 

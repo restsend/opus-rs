@@ -4,7 +4,7 @@ use opus_rs::mdct::MdctLookup;
 fn test_mdct_roundtrip() {
     let frame_size = 960;
     let overlap = 120;
-    let n = frame_size * 2;
+    let n = frame_size * 2; // 1920 - MDCT size
     let mdct = MdctLookup::new(n, 0);
 
     let mut window = vec![0.0f32; overlap];
@@ -25,18 +25,23 @@ fn test_mdct_roundtrip() {
     let mut pcm_out = vec![0.0f32; frame_size * num_frames];
 
     for f in 0..num_frames {
-        let mut in_buf = vec![0.0f32; n];
+        // MDCT forward needs n + overlap samples
+        let mut in_buf = vec![0.0f32; n + overlap];
         in_buf[..60].copy_from_slice(&history_enc);
         in_buf[60..60 + 960].copy_from_slice(&pcm_in[f * frame_size..(f + 1) * frame_size]);
         in_buf[1020..1080]
             .copy_from_slice(&pcm_in[(f + 1) * frame_size..(f + 1) * frame_size + 60]);
+        // Fill the remaining overlap region
+        in_buf[1080..n + overlap]
+            .copy_from_slice(&pcm_in[(f + 1) * frame_size + 60..(f + 1) * frame_size + 60 + (n + overlap - 1080)]);
 
         let mut spectrum = vec![0.0f32; frame_size];
         mdct.forward(&in_buf, &mut spectrum, &window, overlap, 0, 1);
 
         history_enc.copy_from_slice(&pcm_in[(f + 1) * frame_size - 60..(f + 1) * frame_size]);
 
-        let mut out_buf = vec![0.0f32; n];
+        // MDCT backward outputs n + overlap samples
+        let mut out_buf = vec![0.0f32; n + overlap];
         out_buf[..60].copy_from_slice(&history_dec);
         mdct.backward(&spectrum, &mut out_buf, &window, overlap, 0, 1);
 

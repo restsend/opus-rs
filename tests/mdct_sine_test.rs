@@ -5,17 +5,19 @@ mod tests {
 
     #[test]
     fn test_mdct_sine_wave() {
-        let mdct = MdctLookup::new(2 * 120 * 8, 3);
+        let n = 2 * 120 * 8; // 1920
+        let mdct = MdctLookup::new(n, 3);
         let overlap = 120;
-        
-        // Create sine wave exactly like loopback test (f * frame_size + i) * 0.1
-        let frame_size = 960;
-        let f = 0; // first frame
-        let mut input = vec![0.0f32; 1080];
-        for i in 0..1080 {
-            input[i] = ((f * frame_size + i) as f32 * 0.1).sin();
+
+        // Create sine wave
+        // MDCT forward needs n + overlap samples
+        let frame_size = n / 2; // 960
+        let input_size = n + overlap; // 2040
+        let mut input = vec![0.0f32; input_size];
+        for i in 0..input_size {
+            input[i] = (i as f32 * 0.1).sin();
         }
-        
+
         // Opus window (120 point)
         let window_120 = [
             6.7286966e-05, 0.00060551348, 0.001681597, 0.0032947962, 0.0054439943,
@@ -43,20 +45,20 @@ mod tests {
             0.99970802, 0.99981248, 0.99988613, 0.99993565, 0.99996697,
             0.99998518, 0.99999457, 0.99999859, 0.99999982, 1.0
         ];
-        
+
         eprintln!("window_120 length: {}", window_120.len());
         eprintln!("input length: {}", input.len());
-        
-        let mut freq = vec![0.0f32; 960];
+
+        let mut freq = vec![0.0f32; frame_size];
         mdct.forward(
             &input,
             &mut freq,
             &window_120,
             overlap,
-            0, // shift=0 for 960-point
+            0, // shift=0 for full-size MDCT
             1, // stride=1
         );
-        
+
         let mut max_val = 0.0f32;
         for i in 0..100 {
             max_val = max_val.max(freq[i].abs());
@@ -64,7 +66,7 @@ mod tests {
         eprintln!("MDCT output[0..10]: {:?}", &freq[0..10]);
         eprintln!("MDCT output max in first 100: {:.6}", max_val);
         eprintln!("MDCT output[0]: {:.6}, [1]: {:.6}", freq[0], freq[1]);
-        
+
         // The magnitude should be reasonable (not 0.001)
         assert!(max_val > 0.01, "Output too small");
     }

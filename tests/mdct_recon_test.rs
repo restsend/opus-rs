@@ -3,7 +3,7 @@ use opus_rs::mdct::MdctLookup;
 #[test]
 fn test_mdct_recon_simple() {
     let frame_size = 480;
-    let n = 2 * frame_size;
+    let n = 2 * frame_size; // 960
     let overlap = 120;
     let lookup = MdctLookup::new(n, 0);
 
@@ -13,7 +13,8 @@ fn test_mdct_recon_simple() {
         window[i] = x.sin();
     }
 
-    let total_in = frame_size + overlap;
+    // MDCT forward needs n + overlap samples
+    let total_in = n + overlap; // 960 + 120 = 1080
     let mut in_data = vec![0.0f32; total_in];
     for i in 0..total_in {
         in_data[i] = (i as f32 * 0.1).sin();
@@ -22,7 +23,8 @@ fn test_mdct_recon_simple() {
     let mut freq = vec![0.0f32; frame_size];
     lookup.forward(&in_data, &mut freq, &window, overlap, 0, 1);
 
-    let mut out = vec![0.0f32; frame_size + overlap];
+    // MDCT backward outputs n + overlap samples
+    let mut out = vec![0.0f32; n + overlap];
     lookup.backward(&freq, &mut out, &window, overlap, 0, 1);
 
     // Check signs/order manually

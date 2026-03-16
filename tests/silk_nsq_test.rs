@@ -21,6 +21,24 @@ fn create_wb_encoder_state() -> SilkEncoderStateCommon {
     s
 }
 
+/// Create a 8kHz narrowband encoder state for testing
+fn create_nb_encoder_state() -> SilkEncoderStateCommon {
+    let mut s = SilkEncoderStateCommon::default();
+    s.fs_khz = 8;
+    s.nb_subfr = 4;
+    s.subfr_length = 40; // 5ms * 8kHz
+    s.frame_length = 160; // 20ms * 8kHz
+    s.ltp_mem_length = 160; // PE_LTP_MEM_LENGTH_MS * fs_khz = 20 * 8
+    s.predict_lpc_order = 10;
+    s.shaping_lpc_order = 16;
+    s.first_frame_after_reset = 1;
+    s.indices.nlsf_interp_coef_q2 = 4; // No interpolation
+    s.indices.signal_type = TYPE_UNVOICED as i8;
+    s.indices.quant_offset_type = 0;
+    s.n_states_delayed_decision = 1;
+    s
+}
+
 /// Generate synthetic unvoiced (noise-like) input
 fn generate_unvoiced_input(length: usize) -> Vec<i16> {
     let mut rng: u32 = 12345;
@@ -377,4 +395,203 @@ fn test_nsq_gain_scaling() {
     );
 
     println!("✅ NSQ gain scaling test passed");
+}
+
+/// Helper function to run silk_nsq and return the output
+fn run_nsq_and_capture(
+    s_cmn: &SilkEncoderStateCommon,
+    input: &[i16],
+    pred_coef_q12: &[i16],
+    ltp_coef_q14: &[i16],
+    ar_q13: &[i16],
+    harm_shape_gain_q14: &[i32],
+    tilt_q14: &[i32],
+    lf_shp_q14: &[i32],
+    gains_q16: &[i32],
+    pitch_l: &[i32],
+    lambda_q10: i32,
+    ltp_scale_q14: i32,
+) -> (Vec<i8>, SilkNSQState) {
+    let mut nsq = SilkNSQState::default();
+    nsq.prev_gain_q16 = 65536;
+    if s_cmn.indices.signal_type == TYPE_VOICED as i8 {
+        nsq.prev_sig_type = TYPE_VOICED as i8;
+    }
+
+    let mut pulses = vec![0i8; s_cmn.frame_length as usize];
+
+    silk_nsq(
+        s_cmn,
+        &mut nsq,
+        &s_cmn.indices,
+        input,
+        &mut pulses,
+        pred_coef_q12,
+        ltp_coef_q14,
+        ar_q13,
+        harm_shape_gain_q14,
+        tilt_q14,
+        lf_shp_q14,
+        gains_q16,
+        pitch_l,
+        lambda_q10,
+        ltp_scale_q14,
+    );
+
+    (pulses, nsq)
+}
+
+/// Consistency test: ensures optimization doesn't change output
+/// These expected values are captured from the reference implementation
+#[test]
+fn test_nsq_consistency_unvoiced_wb() {
+    let s_cmn = create_wb_encoder_state();
+    let input = generate_unvoiced_input(s_cmn.frame_length as usize);
+
+    let pred_coef_q12 = create_pred_coefs();
+    let ltp_coef_q14 = vec![0i16; MAX_NB_SUBFR * LTP_ORDER];
+    let ar_q13 = create_ar_shaping(s_cmn.nb_subfr as usize);
+    let harm_shape_gain_q14 = vec![0i32; MAX_NB_SUBFR];
+    let tilt_q14 = vec![0i32; MAX_NB_SUBFR];
+    let lf_shp_q14 = vec![0i32; MAX_NB_SUBFR];
+    let gains_q16 = vec![65536i32; MAX_NB_SUBFR];
+    let pitch_l = vec![0i32; MAX_NB_SUBFR];
+    let lambda_q10 = 1024;
+    let ltp_scale_q14 = 16384;
+
+    let (pulses, nsq) = run_nsq_and_capture(
+        &s_cmn, &input, &pred_coef_q12, &ltp_coef_q14, &ar_q13,
+        &harm_shape_gain_q14, &tilt_q14, &lf_shp_q14, &gains_q16,
+        &pitch_l, lambda_q10, ltp_scale_q14,
+    );
+
+    // Reference output captured from original implementation
+    // Sum of pulses for quick verification
+    let pulse_sum: i64 = pulses.iter().map(|&p| p as i64).sum();
+    let pulse_sq_sum: i64 = pulses.iter().map(|&p| (p as i64) * (p as i64)).sum();
+
+    println!("Unvoiced WB consistency: pulse_sum={}, pulse_sq_sum={}", pulse_sum, pulse_sq_sum);
+    println!("NSQ state after: lag_prev={}, rand_seed={}", nsq.lag_prev, nsq.rand_seed);
+
+    // These values should remain constant after optimization
+    // If they change, the optimization broke correctness
+    assert_eq!(pulse_sum, -560, "Pulse sum mismatch - optimization may have broken correctness");
+    assert_eq!(pulse_sq_sum, 288800, "Pulse square sum mismatch - optimization may have broken correctness");
+    assert_eq!(nsq.lag_prev, 0, "lag_prev mismatch");
+}
+
+#[test]
+fn test_nsq_consistency_voiced_wb() {
+    let mut s_cmn = create_wb_encoder_state();
+    s_cmn.indices.signal_type = TYPE_VOICED as i8;
+    s_cmn.first_frame_after_reset = 0;
+
+    let pitch = 100;
+    let input = generate_voiced_input(s_cmn.frame_length as usize, pitch);
+
+    let pred_coef_q12 = create_pred_coefs();
+    let mut ltp_coef_q14 = vec![0i16; MAX_NB_SUBFR * LTP_ORDER];
+    for k in 0..s_cmn.nb_subfr as usize {
+        ltp_coef_q14[k * LTP_ORDER + 2] = 8192;
+    }
+    let ar_q13 = create_ar_shaping(s_cmn.nb_subfr as usize);
+    let harm_shape_gain_q14 = vec![4096i32; MAX_NB_SUBFR];
+    let tilt_q14 = vec![0i32; MAX_NB_SUBFR];
+    let lf_shp_q14 = vec![0i32; MAX_NB_SUBFR];
+    let gains_q16 = vec![65536i32; MAX_NB_SUBFR];
+    let pitch_l = vec![pitch as i32; MAX_NB_SUBFR];
+    let lambda_q10 = 1024;
+    let ltp_scale_q14 = 16384;
+
+    let (pulses, nsq) = run_nsq_and_capture(
+        &s_cmn, &input, &pred_coef_q12, &ltp_coef_q14, &ar_q13,
+        &harm_shape_gain_q14, &tilt_q14, &lf_shp_q14, &gains_q16,
+        &pitch_l, lambda_q10, ltp_scale_q14,
+    );
+
+    let pulse_sum: i64 = pulses.iter().map(|&p| p as i64).sum();
+    let pulse_sq_sum: i64 = pulses.iter().map(|&p| (p as i64) * (p as i64)).sum();
+
+    println!("Voiced WB consistency: pulse_sum={}, pulse_sq_sum={}", pulse_sum, pulse_sq_sum);
+    println!("NSQ state after: lag_prev={}, rand_seed={}", nsq.lag_prev, nsq.rand_seed);
+
+    // Reference values
+    assert_eq!(pulse_sum, -758, "Pulse sum mismatch");
+    assert_eq!(pulse_sq_sum, 297572, "Pulse square sum mismatch");
+    assert_eq!(nsq.lag_prev, 100, "lag_prev mismatch");
+}
+
+#[test]
+fn test_nsq_consistency_unvoiced_nb() {
+    let s_cmn = create_nb_encoder_state();
+    let input = generate_unvoiced_input(s_cmn.frame_length as usize);
+
+    let pred_coef_q12 = create_pred_coefs();
+    let ltp_coef_q14 = vec![0i16; MAX_NB_SUBFR * LTP_ORDER];
+    let ar_q13 = create_ar_shaping(s_cmn.nb_subfr as usize);
+    let harm_shape_gain_q14 = vec![0i32; MAX_NB_SUBFR];
+    let tilt_q14 = vec![0i32; MAX_NB_SUBFR];
+    let lf_shp_q14 = vec![0i32; MAX_NB_SUBFR];
+    let gains_q16 = vec![65536i32; MAX_NB_SUBFR];
+    let pitch_l = vec![0i32; MAX_NB_SUBFR];
+    let lambda_q10 = 1024;
+    let ltp_scale_q14 = 16384;
+
+    let (pulses, nsq) = run_nsq_and_capture(
+        &s_cmn, &input, &pred_coef_q12, &ltp_coef_q14, &ar_q13,
+        &harm_shape_gain_q14, &tilt_q14, &lf_shp_q14, &gains_q16,
+        &pitch_l, lambda_q10, ltp_scale_q14,
+    );
+
+    let pulse_sum: i64 = pulses.iter().map(|&p| p as i64).sum();
+    let pulse_sq_sum: i64 = pulses.iter().map(|&p| (p as i64) * (p as i64)).sum();
+
+    println!("Unvoiced NB consistency: pulse_sum={}, pulse_sq_sum={}", pulse_sum, pulse_sq_sum);
+    println!("NSQ state after: lag_prev={}, rand_seed={}", nsq.lag_prev, nsq.rand_seed);
+
+    // Reference values
+    assert_eq!(pulse_sum, -580, "Pulse sum mismatch");
+    assert_eq!(pulse_sq_sum, 145000, "Pulse square sum mismatch");
+    assert_eq!(nsq.lag_prev, 0, "lag_prev mismatch");
+}
+
+#[test]
+fn test_nsq_consistency_voiced_nb() {
+    let mut s_cmn = create_nb_encoder_state();
+    s_cmn.indices.signal_type = TYPE_VOICED as i8;
+    s_cmn.first_frame_after_reset = 0;
+
+    let pitch = 50; // lower pitch for NB
+    let input = generate_voiced_input(s_cmn.frame_length as usize, pitch);
+
+    let pred_coef_q12 = create_pred_coefs();
+    let mut ltp_coef_q14 = vec![0i16; MAX_NB_SUBFR * LTP_ORDER];
+    for k in 0..s_cmn.nb_subfr as usize {
+        ltp_coef_q14[k * LTP_ORDER + 2] = 8192;
+    }
+    let ar_q13 = create_ar_shaping(s_cmn.nb_subfr as usize);
+    let harm_shape_gain_q14 = vec![4096i32; MAX_NB_SUBFR];
+    let tilt_q14 = vec![0i32; MAX_NB_SUBFR];
+    let lf_shp_q14 = vec![0i32; MAX_NB_SUBFR];
+    let gains_q16 = vec![65536i32; MAX_NB_SUBFR];
+    let pitch_l = vec![pitch as i32; MAX_NB_SUBFR];
+    let lambda_q10 = 1024;
+    let ltp_scale_q14 = 16384;
+
+    let (pulses, nsq) = run_nsq_and_capture(
+        &s_cmn, &input, &pred_coef_q12, &ltp_coef_q14, &ar_q13,
+        &harm_shape_gain_q14, &tilt_q14, &lf_shp_q14, &gains_q16,
+        &pitch_l, lambda_q10, ltp_scale_q14,
+    );
+
+    let pulse_sum: i64 = pulses.iter().map(|&p| p as i64).sum();
+    let pulse_sq_sum: i64 = pulses.iter().map(|&p| (p as i64) * (p as i64)).sum();
+
+    println!("Voiced NB consistency: pulse_sum={}, pulse_sq_sum={}", pulse_sum, pulse_sq_sum);
+    println!("NSQ state after: lag_prev={}, rand_seed={}", nsq.lag_prev, nsq.rand_seed);
+
+    // Reference values
+    assert_eq!(pulse_sum, -254, "Pulse sum mismatch");
+    assert_eq!(pulse_sq_sum, 148438, "Pulse square sum mismatch");
+    assert_eq!(nsq.lag_prev, 50, "lag_prev mismatch");
 }

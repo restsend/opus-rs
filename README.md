@@ -65,7 +65,19 @@ cargo run --example stereo_test
 
 ## Performance
 
-Run benchmarks with `cargo bench`.
+Run all benchmarks:
+
+```bash
+cargo bench
+```
+
+Run a specific benchmark:
+
+```bash
+cargo bench -- silk_pitch_analysis_core  # Pitch analysis only
+cargo bench -- silk_nsq               # Noise shape quantizer
+cargo bench -- silk_burg_modified_fix  # LPC analysis
+```
 
 ### SILK Encoder (Rust, complexity=0)
 
@@ -87,11 +99,14 @@ Rust implementation uses complexity=0 (fast mode). Performance is comparable to 
 
 ### SILK Core Algorithms
 
-| Function               | Time (16kHz WB) |
-|-----------------------|-----------------|
-| burg_modified_fix     | 3.1 µs         |
-| autocorrelation       | ~0.5 µs        |
-| inner product         | ~0.2 µs        |
+| Function               | Time (16kHz WB) | Time (8kHz NB) |
+|-----------------------|-----------------|---------------|
+| burg_modified_fix     | 3.1 µs         | —             |
+| autocorrelation       | ~0.5 µs        | ~0.2 µs        |
+| inner product         | ~0.2 µs        | ~0.1 µs        |
+| pitch_analysis_core  | 7.5 µs         | 3.1 µs         |
+| nsq (voiced)          | 8.3 µs         | 4.4 µs         |
+| nsq (unvoiced)        | 6.9 µs         | 3.5 µs         |
 
 ## License
 

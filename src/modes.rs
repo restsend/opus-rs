@@ -93,7 +93,8 @@ impl CeltMode {
     pub fn new_48000_960_120() -> Self {
         let short_mdct_size = 120;
         let nb_short_mdcts = 8;
-        let max_lm = 3usize;
+        // max_lm=4 to support transient frames with 8 blocks (120 samples each)
+        let max_lm = 4usize;
         let mdct = MdctLookup::new(2 * short_mdct_size * nb_short_mdcts, max_lm);
         Self {
             fs: 48000,
