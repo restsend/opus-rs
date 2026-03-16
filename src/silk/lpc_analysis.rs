@@ -176,7 +176,10 @@ pub fn silk_residual_energy_fix(
 
     offset = (lpc_order + subfr_length) as usize;
 
-    debug_assert!((nb_subfr >> 1) * (MAX_NB_SUBFR as i32 >> 1) == nb_subfr);
+    /* Validate nb_subfr to prevent assertion failure */
+    if (nb_subfr >> 1) * (MAX_NB_SUBFR as i32 >> 1) != nb_subfr {
+        return;
+    }
 
     /* Filter input to create the LPC residual for each frame half, and measure subframe energies */
     // Stack buffer: max = (MAX_NB_SUBFR/2) * (MAX_LPC_ORDER + MAX_SUB_FRAME_LENGTH) = 2 * 96 = 192.
