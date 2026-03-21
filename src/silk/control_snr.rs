@@ -1,12 +1,3 @@
-/// Control SNR of residual quantizer.
-/// Port of silk/control_SNR.c
-///
-/// These tables hold SNR values divided by 21 (so they fit in 8 bits)
-/// for different target bitrates spaced at 400 bps interval. The first
-/// 10 values are omitted (0-4 kb/s) because they're all zeros.
-/// These tables were obtained by running different SNRs through the
-/// encoder and measuring the active bitrate.
-
 static SILK_TARGET_RATE_NB_21: [u8; 107] = [
     0, 15, 39, 52, 61, 68, 74, 79, 84, 88, 92, 95, 99, 102, 105, 108, 111, 114, 117, 119, 122, 124,
     126, 129, 131, 133, 135, 137, 139, 142, 143, 145, 147, 149, 151, 153, 155, 157, 158, 160, 162,
@@ -43,8 +34,6 @@ static SILK_TARGET_RATE_WB_21: [u8; 191] = [
 use crate::silk::define::SILK_NO_ERROR;
 use crate::silk::structs::SilkEncoderStateCommon;
 
-/// Control SNR of residual quantizer.
-/// Maps target bitrate to internal SNR_dB_Q7.
 pub fn silk_control_snr(ps_enc: &mut SilkEncoderStateCommon, target_rate_bps: i32) -> i32 {
     ps_enc.target_rate_bps = target_rate_bps;
 

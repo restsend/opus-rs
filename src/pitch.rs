@@ -26,7 +26,7 @@ pub fn pitch_xcorr(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitc
 
 fn celt_fir5(x: &mut [f32], num: &[f32], n: usize) {
     let mut mem = [0.0f32; 5];
-    // num is lpc2, size 5.
+
     let num0 = num[0];
     let num1 = num[1];
     let num2 = num[2];
@@ -52,60 +52,41 @@ fn celt_fir5(x: &mut [f32], num: &[f32], n: usize) {
 }
 
 pub fn pitch_downsample(
-    x: &[&[f32]], // Multichannel input
+    x: &[&[f32]],
     x_lp: &mut [f32],
-    len: usize, // Length of x_lp
-    c: usize,   // Number of channels
+    len: usize,
+    c: usize,
     factor: usize,
 ) {
-    // Corresponds to pitch_downsample in celt/pitch.c
-    let offset = factor / 2;
-    // Opus `pitch_downsample` signature has `len`.
-    // In `celt_pitch_xcorr` it calls `pitch_downsample(x, x_lp, len, C, 4, arch)`.
-    // In `pitch_downsample` C impl:
-    // for (i=1; i<len; i++) ...
-    // The `len` param passed into `pitch_downsample` seems to be the OUTPUT length?
-    // Wait, let's check `celt/celt_encoder.c`.
-    // `pitch_downsample(in, pitch_buf, NB_PITCH_EXTRACT, C, 4, arch);`
-    // NB_PITCH_EXTRACT = PITCH_MAX + PITCH_BUF_SIZE.
-    // It seems `len` is the number of samples to produce in `x_lp`?
-    // In `pitch.c`:
-    // for (i=1; i<len; i++) x_lp[i] = ...
-    // So yes, `len` is the length of `x_lp`.
 
-    // Safety
+    let offset = factor / 2;
+
     if x_lp.len() < len {
         return;
     }
 
-    // 1. Downsampling
     for i in 1..len {
         let mut val = 0.0f32;
         for k in 0..c {
-            // formula: .25*x[factors*i - offset] + .25*x[factors*i+offset] + .5*x[factors*i]
-            let x_k = x[k];
-            // Check bounds
-            let idx_m = factor * i - offset; // 4*i - 2
-            let idx_p = factor * i + offset; // 4*i + 2
-            let idx_c = factor * i; // 4*i
 
-            // Assume x is padded/long enough?
-            // In C, `celt_pitch_xcorr` calls `pitch_downsample` with `x` being the input.
-            // We need to be careful with indices.
+            let x_k = x[k];
+
+            let idx_m = factor * i - offset;
+            let idx_p = factor * i + offset;
+            let idx_c = factor * i;
+
             if idx_p < x_k.len() {
                 val += 0.25 * x_k[idx_m] + 0.25 * x_k[idx_p] + 0.5 * x_k[idx_c];
             }
         }
         x_lp[i] = val;
     }
-    // i=0 case
+
     {
         let mut val = 0.0f32;
         for k in 0..c {
             let x_k = x[k];
-            // x_lp[0] = .25f*x[0][offset] + .5f*x[0][0];
-            // (first term x[0][-offset] is out of bounds so assumed 0 or handled? No, C starts at offset)
-            // C code: x_lp[0] = .25f*x[0][offset] + .5f*x[0][0];
+
             let idx_offset = offset;
             let idx_0 = 0;
             if idx_offset < x_k.len() {
@@ -115,36 +96,25 @@ pub fn pitch_downsample(
         x_lp[0] = val;
     }
 
-    // 2. Autocorrelation on x_lp
     let mut ac = [0.0f32; 5];
     autocorr(&x_lp[0..len], &mut ac, None, 0, 4, len);
 
-    // 3. Noise floor
     ac[0] *= 1.0001;
 
-    // 4. Lag windowing
-    // ac[i] -= ac[i]*(.008f*i)*(.008f*i);
     for i in 1..=4 {
         let f = 0.008 * (i as f32);
         ac[i] -= ac[i] * f * f;
     }
 
-    // 5. LPC
     let mut lpc_coeffs = [0.0f32; 4];
     lpc(&mut lpc_coeffs, &ac, 4);
 
-    // 6. Bandwidth expansion
     let mut tmp = 1.0f32;
     for i in 0..4 {
-        tmp *= 0.9; // QCONST16(.9f, 15) is 0.9.
+        tmp *= 0.9;
         lpc_coeffs[i] *= tmp;
     }
 
-    // 7. Add a zero (pre-emphasis-ish)
-    // lpc2[0] = lpc[0] + 0.8
-    // lpc2[1] = lpc[1] + 0.8*lpc[0]
-    // ...
-    // lpc2[4] = 0.8*lpc[3]
     let c1 = 0.8f32;
     let mut lpc2 = [0.0f32; 5];
     lpc2[0] = lpc_coeffs[0] + c1;
@@ -153,7 +123,6 @@ pub fn pitch_downsample(
     lpc2[3] = lpc_coeffs[3] + c1 * lpc_coeffs[2];
     lpc2[4] = c1 * lpc_coeffs[3];
 
-    // 8. FIR Filter
     celt_fir5(x_lp, &lpc2, len);
 }
 
@@ -203,8 +172,6 @@ fn find_best_pitch(
 pub fn pitch_search(x_lp: &[f32], y: &[f32], mut len: usize, mut max_pitch: usize) -> usize {
     let mut best_pitch = [0, 0];
 
-    // Downsample by 2 again (it was already downsampled by 4 in pitch_downsample)
-    // So this is 8x downsampling relative to original.
     max_pitch >>= 1;
     len >>= 1;
     let lag = len + max_pitch;
@@ -220,12 +187,10 @@ pub fn pitch_search(x_lp: &[f32], y: &[f32], mut len: usize, mut max_pitch: usiz
         y_lp4[j] = y[2 * j];
     }
 
-    /* Coarse search with 4x decimation (of the input to this function, so 8x total) */
     pitch_xcorr(&x_lp4, &y_lp4, &mut xcorr, len >> 1, max_pitch >> 1);
 
     find_best_pitch(&xcorr, &y_lp4, len >> 1, max_pitch >> 1, &mut best_pitch);
 
-    /* Finer search with 2x decimation (4x total) */
     for i in 0..max_pitch {
         xcorr[i] = -1.0;
         if (i as i32 - 2 * best_pitch[0] as i32).abs() > 2
@@ -241,7 +206,6 @@ pub fn pitch_search(x_lp: &[f32], y: &[f32], mut len: usize, mut max_pitch: usiz
 
     find_best_pitch(&xcorr, y, len, max_pitch, &mut best_pitch);
 
-    /* Refine by pseudo-interpolation */
     let mut offset = 0;
     if best_pitch[0] > 0 && best_pitch[0] < max_pitch - 1 {
         let a = xcorr[best_pitch[0] - 1];
@@ -282,7 +246,6 @@ pub fn remove_doubling(
     prev_period /= 2;
     n /= 2;
 
-    // x += max_period
     let x_target = &x[max_period..];
 
     if *t0_ptr >= max_period {

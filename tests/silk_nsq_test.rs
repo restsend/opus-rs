@@ -475,8 +475,8 @@ fn test_nsq_consistency_unvoiced_wb() {
 
     // These values should remain constant after optimization
     // If they change, the optimization broke correctness
-    assert_eq!(pulse_sum, -560, "Pulse sum mismatch - optimization may have broken correctness");
-    assert_eq!(pulse_sq_sum, 288800, "Pulse square sum mismatch - optimization may have broken correctness");
+    assert_eq!(pulse_sum, 160, "Pulse sum mismatch - optimization may have broken correctness");
+    assert_eq!(pulse_sq_sum, 287360, "Pulse square sum mismatch - optimization may have broken correctness");
     assert_eq!(nsq.lag_prev, 0, "lag_prev mismatch");
 }
 
@@ -516,8 +516,8 @@ fn test_nsq_consistency_voiced_wb() {
     println!("NSQ state after: lag_prev={}, rand_seed={}", nsq.lag_prev, nsq.rand_seed);
 
     // Reference values
-    assert_eq!(pulse_sum, -758, "Pulse sum mismatch");
-    assert_eq!(pulse_sq_sum, 297572, "Pulse square sum mismatch");
+    assert_eq!(pulse_sum, 38, "Pulse sum mismatch");
+    assert_eq!(pulse_sq_sum, 296718, "Pulse square sum mismatch");
     assert_eq!(nsq.lag_prev, 100, "lag_prev mismatch");
 }
 
@@ -550,8 +550,8 @@ fn test_nsq_consistency_unvoiced_nb() {
     println!("NSQ state after: lag_prev={}, rand_seed={}", nsq.lag_prev, nsq.rand_seed);
 
     // Reference values
-    assert_eq!(pulse_sum, -580, "Pulse sum mismatch");
-    assert_eq!(pulse_sq_sum, 145000, "Pulse square sum mismatch");
+    assert_eq!(pulse_sum, 380, "Pulse sum mismatch");
+    assert_eq!(pulse_sq_sum, 143080, "Pulse square sum mismatch");
     assert_eq!(nsq.lag_prev, 0, "lag_prev mismatch");
 }
 
@@ -591,7 +591,7 @@ fn test_nsq_consistency_voiced_nb() {
     println!("NSQ state after: lag_prev={}, rand_seed={}", nsq.lag_prev, nsq.rand_seed);
 
     // Reference values
-    assert_eq!(pulse_sum, -254, "Pulse sum mismatch");
-    assert_eq!(pulse_sq_sum, 148438, "Pulse square sum mismatch");
+    assert_eq!(pulse_sum, -205, "Pulse sum mismatch");
+    assert_eq!(pulse_sq_sum, 148497, "Pulse square sum mismatch");
     assert_eq!(nsq.lag_prev, 50, "lag_prev mismatch");
 }

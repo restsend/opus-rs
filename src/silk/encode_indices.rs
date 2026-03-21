@@ -11,7 +11,7 @@ pub fn silk_encode_indices(
     encode_lbrr: bool,
     cond_coding: i32,
 ) {
-    // Copy indices to avoid borrow conflicts when we mutate ec_prev* fields below
+
     let ps_indices = if encode_lbrr {
         ps_enc_c.s_cmn.indices_lbrr[frame_index]
     } else {
@@ -19,9 +19,6 @@ pub fn silk_encode_indices(
     };
     let ps_indices = &ps_indices;
 
-    /*******************************************/
-    /* Encode signal type and quantizer offset */
-    /*******************************************/
     let type_offset = 2 * ps_indices.signal_type + ps_indices.quant_offset_type;
     if encode_lbrr || type_offset >= 2 {
         ps_range_enc.encode_icdf((type_offset - 2) as i32, &SILK_TYPE_OFFSET_VAD_ICDF, 8);
@@ -29,20 +26,15 @@ pub fn silk_encode_indices(
         ps_range_enc.encode_icdf(type_offset as i32, &SILK_TYPE_OFFSET_NO_VAD_ICDF, 8);
     }
 
-    /****************/
-    /* Encode gains */
-    /****************/
-    /* first subframe */
     if cond_coding == CODE_CONDITIONALLY {
-        /* conditional coding */
+
         ps_range_enc.encode_icdf(ps_indices.gains_indices[0] as i32, &SILK_DELTA_GAIN_ICDF, 8);
     } else {
-        /* independent coding, in two stages: MSB bits followed by 3 LSBs */
+
         ps_range_enc.encode_icdf((ps_indices.gains_indices[0] >> 3) as i32, &SILK_GAIN_ICDF[ps_indices.signal_type as usize], 8);
         ps_range_enc.encode_icdf((ps_indices.gains_indices[0] & 7) as i32, &SILK_UNIFORM8_ICDF, 8);
     }
 
-    /* remaining subframes */
     for i in 1..ps_enc_c.s_cmn.nb_subfr as usize {
         ps_range_enc.encode_icdf(
             ps_indices.gains_indices[i] as i32,
@@ -51,9 +43,6 @@ pub fn silk_encode_indices(
         );
     }
 
-    /****************/
-    /* Encode NLSFs */
-    /****************/
     let cb = ps_enc_c.ps_nlsf_cb.expect("NLSF codebook not initialized");
     ps_range_enc.encode_icdf(ps_indices.nlsf_indices[0] as i32, &cb.cb1_icdf[((ps_indices.signal_type >> 1) as usize * cb.n_vectors as usize)..], 8);
 
@@ -78,7 +67,6 @@ pub fn silk_encode_indices(
         }
     }
 
-    /* Encode NLSF interpolation factor */
     if ps_enc_c.s_cmn.nb_subfr == MAX_NB_SUBFR as i32 {
         ps_range_enc.encode_icdf(
             ps_indices.nlsf_interp_coef_q2 as i32,
@@ -88,27 +76,28 @@ pub fn silk_encode_indices(
     }
 
     if ps_indices.signal_type == TYPE_VOICED as i8 {
-        /****************/
-        /* Encode pitch */
-        /****************/
-        /* Lag index */
+
         let mut encode_absolute_lag_index = true;
         if cond_coding == CODE_CONDITIONALLY && ps_enc_c.s_cmn.ec_prev_signal_type == TYPE_VOICED {
-            /* Delta Encoding */
+
             let mut delta_lag_index = ps_indices.lag_index as i32 - ps_enc_c.s_cmn.ec_prev_lag_index as i32;
             if delta_lag_index < -8 || delta_lag_index > 11 {
                 delta_lag_index = 0;
             } else {
                 delta_lag_index += 9;
-                encode_absolute_lag_index = false; /* Only use delta */
+                encode_absolute_lag_index = false;
             }
             ps_range_enc.encode_icdf(delta_lag_index, &SILK_PITCH_DELTA_ICDF, 8);
         }
         if encode_absolute_lag_index {
-            /* Absolute lag index */
-            let pitch_high_bits = ps_indices.lag_index as i32 / (ps_enc_c.s_cmn.fs_khz / 2);
-            let pitch_low_bits =
-                ps_indices.lag_index as i32 - pitch_high_bits * (ps_enc_c.s_cmn.fs_khz / 2);
+            let half_fs = ps_enc_c.s_cmn.fs_khz / 2;
+            // Clamp lag_index so pitch_high_bits fits in SILK_PITCH_LAG_ICDF (32 entries)
+            // and pitch_low_bits fits in the low-bits table (fs_khz/2 entries).
+            let max_lag_index = (SILK_PITCH_LAG_ICDF.len() as i32 - 1) * half_fs + (half_fs - 1);
+            let lag_index = (ps_indices.lag_index as i32).min(max_lag_index);
+
+            let pitch_high_bits = lag_index / half_fs;
+            let pitch_low_bits = lag_index - pitch_high_bits * half_fs;
             ps_range_enc.encode_icdf(pitch_high_bits, &SILK_PITCH_LAG_ICDF, 8);
 
             let low_bits_icdf = match ps_enc_c.s_cmn.fs_khz {
@@ -121,7 +110,6 @@ pub fn silk_encode_indices(
         }
         ps_enc_c.s_cmn.ec_prev_lag_index = ps_indices.lag_index;
 
-        /* Contour index */
         let contour_icdf = if ps_enc_c.s_cmn.nb_subfr == 2 {
             if ps_enc_c.s_cmn.fs_khz == 8 {
                 &SILK_PITCH_CONTOUR_10_MS_NB_ICDF[..]
@@ -137,13 +125,8 @@ pub fn silk_encode_indices(
         };
         ps_range_enc.encode_icdf(ps_indices.contour_index as i32, contour_icdf, 8);
 
-        /********************/
-        /* Encode LTP gains */
-        /********************/
-        /* Periodicity index */
         ps_range_enc.encode_icdf(ps_indices.per_index as i32, &SILK_LTP_PER_INDEX_ICDF, 8);
 
-        /* Codebook indices */
         for k in 0..ps_enc_c.s_cmn.nb_subfr as usize {
             ps_range_enc.encode_icdf(
                 ps_indices.ltp_index[k] as i32,
@@ -152,9 +135,6 @@ pub fn silk_encode_indices(
             );
         }
 
-        /**********************/
-        /* Encode LTP scaling */
-        /**********************/
         if cond_coding == CODE_INDEPENDENTLY {
             ps_range_enc.encode_icdf(ps_indices.ltp_scale_index as i32, &SILK_LTPSCALE_ICDF, 8);
         }
@@ -162,19 +142,16 @@ pub fn silk_encode_indices(
 
     ps_enc_c.s_cmn.ec_prev_signal_type = ps_indices.signal_type as i32;
 
-    /* Encode seed */
     ps_range_enc.encode_icdf(ps_indices.seed as i32, &SILK_UNIFORM4_ICDF, 8);
 }
 
-/// Encode stereo prediction parameters
-/// Called after encoding the mid channel, before encoding the side channel
 pub fn silk_encode_stereo(
     ps_range_enc: &mut RangeCoder,
     side_idx: i8,
     pred_idx: i8,
     only_middle: i8,
 ) {
-    // Encode whether we're only encoding mid (mono)
+
     ps_range_enc.encode_icdf(
         only_middle as i32,
         &SILK_STEREO_ONLY_CODE_MID_ICDF,
@@ -182,11 +159,9 @@ pub fn silk_encode_stereo(
     );
 
     if only_middle == 0 {
-        // Encode the joint stereo index
-        // The joint index is computed as: (side_idx * 5 + (pred_idx >> 2))
-        // This gives values 0-19, but the table has 25 entries for compatibility
+
         let i = (side_idx as i32).min(4);
-        let j = (pred_idx as i32) >> 2; // 0-3
+        let j = (pred_idx as i32) >> 2;
         let joint_idx = i * 5 + j;
 
         ps_range_enc.encode_icdf(joint_idx, &SILK_STEREO_PRED_JOINT_ICDF, 8);

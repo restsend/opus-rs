@@ -32,7 +32,14 @@ fn test_mdct_pure_loopback() {
     // Frame 1 uses input[0..n + overlap]
     // Frame 2 uses input[n2..n2 + n + overlap]
     mdct.forward(&input[0..input_size], &mut freq1, &window, overlap, 0, 1);
-    mdct.forward(&input[n2..n2 + input_size], &mut freq2, &window, overlap, 0, 1);
+    mdct.forward(
+        &input[n2..n2 + input_size],
+        &mut freq2,
+        &window,
+        overlap,
+        0,
+        1,
+    );
 
     // MDCT backward outputs n + overlap samples
     let out_size = n + overlap;
@@ -63,17 +70,23 @@ fn test_mdct_pure_loopback() {
 
         let start = n2.max(delay);
         let end = (n + overlap).min(total_samples);
-        if start >= end { continue; }
+        if start >= end {
+            continue;
+        }
 
         for i in start..end {
-            if i - delay < 0 || i - delay >= input.len() { continue; }
+            if i < delay || i - delay >= input.len() {
+                continue;
+            }
             let expected = input[i - delay];
             let actual = final_out[i];
             sig_nrg += expected * expected;
             err_nrg += (expected - actual) * (expected - actual);
         }
 
-        if sig_nrg < 1e-10 { continue; }
+        if sig_nrg < 1e-10 {
+            continue;
+        }
         let snr = 10.0 * (sig_nrg / err_nrg.max(1e-20)).log10();
         if snr > best_snr {
             best_snr = snr;
@@ -81,7 +94,15 @@ fn test_mdct_pure_loopback() {
         }
     }
 
-    println!("Pure MDCT Loopback Best SNR: {:.2} dB at delay {}", best_snr, best_delay);
+    println!(
+        "Pure MDCT Loopback Best SNR: {:.2} dB at delay {}",
+        best_snr, best_delay
+    );
     // TODO: Current implementation has quality issues
-    assert!(best_snr > 0.0, "SNR too low: {:.2} dB at delay {}", best_snr, best_delay);
+    assert!(
+        best_snr > 0.0,
+        "SNR too low: {:.2} dB at delay {}",
+        best_snr,
+        best_delay
+    );
 }

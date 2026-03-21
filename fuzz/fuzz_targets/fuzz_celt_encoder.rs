@@ -1,6 +1,3 @@
-//! Fuzz test for CELT encoder specifically
-//! Focuses on CELT-only mode with various sample rates and frame sizes
-
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -31,10 +28,10 @@ fuzz_target!(|data: &[u8]| {
     // CELT frame sizes depend on sample rate
     // At 48kHz: 120 (2.5ms), 240 (5ms), 480 (10ms), 960 (20ms)
     let frame_size = match data[2] % 4 {
-        0 => sampling_rate as usize / 400,  // 2.5ms
-        1 => sampling_rate as usize / 200,  // 5ms
-        2 => sampling_rate as usize / 100,  // 10ms
-        _ => sampling_rate as usize / 50,   // 20ms
+        0 => sampling_rate as usize / 400, // 2.5ms
+        1 => sampling_rate as usize / 200, // 5ms
+        2 => sampling_rate as usize / 100, // 10ms
+        _ => sampling_rate as usize / 50,  // 20ms
     };
 
     // Skip invalid frame sizes
@@ -82,7 +79,11 @@ fuzz_target!(|data: &[u8]| {
             // Silence with occasional clicks
             4 => {
                 let idx = (i + 6) % data.len();
-                if data[idx] > 250 { 0.9 } else { 0.001 * (data[idx] as f32 - 128.0) / 128.0 }
+                if data[idx] > 250 {
+                    0.9
+                } else {
+                    0.001 * (data[idx] as f32 - 128.0) / 128.0
+                }
             }
             // Amplitude modulated
             5 => {
@@ -98,7 +99,13 @@ fuzz_target!(|data: &[u8]| {
             // Extreme values
             _ => {
                 let idx = (i + 6) % data.len();
-                if data[idx] > 200 { 0.99 } else if data[idx] < 55 { -0.99 } else { 0.0 }
+                if data[idx] > 200 {
+                    0.99
+                } else if data[idx] < 55 {
+                    -0.99
+                } else {
+                    0.0
+                }
             }
         };
         // Ensure no NaN/Inf

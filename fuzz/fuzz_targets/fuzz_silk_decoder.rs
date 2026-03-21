@@ -1,6 +1,3 @@
-//! Fuzz test for SILK decoder
-//! Tests SILK decoding with various frame sizes and packet configurations
-
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -24,10 +21,10 @@ fuzz_target!(|data: &[u8]| {
 
         // SILK frame sizes: 10, 20, 40, 60 ms
         let frame_sizes: Vec<usize> = vec![
-            (sampling_rate as i64 * 10 / 1000) as usize,  // 10ms
-            (sampling_rate as i64 * 20 / 1000) as usize,  // 20ms
-            (sampling_rate as i64 * 40 / 1000) as usize,  // 40ms
-            (sampling_rate as i64 * 60 / 1000) as usize,  // 60ms
+            (sampling_rate as i64 * 10 / 1000) as usize, // 10ms
+            (sampling_rate as i64 * 20 / 1000) as usize, // 20ms
+            (sampling_rate as i64 * 40 / 1000) as usize, // 40ms
+            (sampling_rate as i64 * 60 / 1000) as usize, // 60ms
         ];
 
         for frame_size in frame_sizes {
@@ -61,11 +58,11 @@ fuzz_target!(|data: &[u8]| {
 
         // Test boundary frame sizes for SILK
         let boundary_sizes: Vec<usize> = vec![
-            sampling_rate as usize / 100,      // 10ms
-            sampling_rate as usize / 50,       // 20ms
-            sampling_rate as usize / 25,       // 40ms
-            sampling_rate as usize * 3 / 50,   // 60ms
-            sampling_rate as usize / 25 + 1,   // Just over 40ms
+            sampling_rate as usize / 100,        // 10ms
+            sampling_rate as usize / 50,         // 20ms
+            sampling_rate as usize / 25,         // 40ms
+            sampling_rate as usize * 3 / 50,     // 60ms
+            sampling_rate as usize / 25 + 1,     // Just over 40ms
             sampling_rate as usize * 3 / 50 + 1, // Just over 60ms
         ];
 

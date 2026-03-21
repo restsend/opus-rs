@@ -1,15 +1,13 @@
 use crate::silk::macros::*;
 
 pub const SILK_RESAMPLER_DOWN2_0: i32 = 9872;
-pub const SILK_RESAMPLER_DOWN2_1: i32 = 39809 - 65536; // -25727
+pub const SILK_RESAMPLER_DOWN2_1: i32 = 39809 - 65536;
 
-pub const SILK_RESAMPLER_2_3_COEFS_LQ: [i16; 6] = [-2797, -651, 4690, 15537, 23281, 26844];
+pub const SILK_RESAMPLER_2_3_COEFS_LQ: [i16; 6] = [-2797, -6507, 4697, 10739, 1567, 8276];
 
-/// Allpass-based 2x upsampler coefficients (3rd-order, two branches)
 const SILK_RESAMPLER_UP2_HQ_0: [i16; 3] = [1746, 14986, (39083 - 65536) as i16];
 const SILK_RESAMPLER_UP2_HQ_1: [i16; 3] = [6854, 25769, (55542 - 65536) as i16];
 
-/// FIR interpolation table for 12-phase polyphase filter (RESAMPLER_ORDER_FIR_12 = 8)
 const SILK_RESAMPLER_FRAC_FIR_12: [[i16; 4]; 12] = [
     [189, -600, 617, 30567],
     [117, -159, -1070, 29704],
@@ -28,16 +26,13 @@ const SILK_RESAMPLER_FRAC_FIR_12: [[i16; 4]; 12] = [
 const RESAMPLER_MAX_BATCH_SIZE_MS: i32 = 10;
 const RESAMPLER_ORDER_FIR_12: usize = 8;
 
-/// Decoder delay compensation table: delay_matrix_dec[rateID_in][rateID_out]
-/// rateID: 8kHz=0, 12kHz=1, 16kHz=2, 24kHz=3, 48kHz=4
 const DELAY_MATRIX_DEC: [[i8; 6]; 3] = [
-    /*        8   12  16  24  48  96 */
-    /* 8 */ [4, 0, 2, 0, 0, 0],
-    /* 12 */ [0, 9, 4, 7, 4, 4],
-    /* 16 */ [0, 3, 12, 7, 7, 7],
+
+     [4, 0, 2, 0, 0, 0],
+     [0, 9, 4, 7, 4, 4],
+     [0, 3, 12, 7, 7, 7],
 ];
 
-/// Resampling mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ResamplerMode {
     Copy,
@@ -45,26 +40,25 @@ enum ResamplerMode {
     IirFir,
 }
 
-/// Full SILK resampler state for decoder path
 #[derive(Clone)]
 pub struct SilkResampler {
-    /// IIR state for up2_HQ [6]
+
     s_iir: [i32; 6],
-    /// FIR state buffer
+
     s_fir: [i16; RESAMPLER_ORDER_FIR_12],
-    /// Delay buffer
+
     delay_buf: [i16; 48],
-    /// Input delay (samples)
+
     input_delay: i32,
-    /// Input rate in kHz
+
     fs_in_khz: i32,
-    /// Output rate in kHz
+
     fs_out_khz: i32,
-    /// Batch size (input samples per batch)
+
     batch_size: i32,
-    /// invRatio_Q16 for FIR interpolation
+
     inv_ratio_q16: i32,
-    /// Resampling mode
+
     mode: ResamplerMode,
 }
 
@@ -85,19 +79,19 @@ impl Default for SilkResampler {
 }
 
 fn rate_id(rate_hz: i32) -> usize {
-    // Maps [8000, 12000, 16000, 24000, 48000] → [0, 1, 2, 3, 4]
+
     match rate_hz {
         8000 => 0,
         12000 => 1,
         16000 => 2,
         24000 => 3,
         48000 => 4,
-        _ => 5, // 96000
+        _ => 5,
     }
 }
 
 impl SilkResampler {
-    /// Initialize resampler for decoder path (fs_in: SILK internal, fs_out: API rate)
+
     pub fn init(&mut self, fs_hz_in: i32, fs_hz_out: i32) -> i32 {
         *self = Self::default();
 
@@ -116,21 +110,20 @@ impl SilkResampler {
         if fs_hz_out == fs_hz_in {
             self.mode = ResamplerMode::Copy;
         } else if fs_hz_out == fs_hz_in * 2 {
-            // Direct 2x upsample (e.g. 12→24)
+
             self.mode = ResamplerMode::Up2HQ;
         } else {
-            // Up2_HQ followed by FIR interpolation (e.g. 8→48, 16→48, 8→24, 16→24)
+
             self.mode = ResamplerMode::IirFir;
         }
 
-        // Compute invRatio_Q16
         let up2x = if self.mode == ResamplerMode::IirFir {
             1
         } else {
             0
         };
         self.inv_ratio_q16 = ((((fs_hz_in as i64) << (14 + up2x)) / fs_hz_out as i64) << 2) as i32;
-        // Round up
+
         while silk_smulww(self.inv_ratio_q16, fs_hz_out) < (fs_hz_in << up2x) {
             self.inv_ratio_q16 += 1;
         }
@@ -138,7 +131,6 @@ impl SilkResampler {
         0
     }
 
-    /// Resample a block of input samples
     pub fn process(&mut self, out: &mut [i16], input: &[i16], in_len: i32) -> i32 {
         if in_len < self.fs_in_khz {
             return -1;
@@ -146,7 +138,6 @@ impl SilkResampler {
 
         let n_samples = self.fs_in_khz - self.input_delay;
 
-        // Copy to delay buffer
         self.delay_buf[self.input_delay as usize..self.fs_in_khz as usize]
             .copy_from_slice(&input[..n_samples as usize]);
 
@@ -183,7 +174,6 @@ impl SilkResampler {
             }
         }
 
-        // Copy last samples to delay buffer for next call
         let delay = self.input_delay as usize;
         if delay > 0 {
             let src_start = (in_len as usize).saturating_sub(delay);
@@ -213,14 +203,11 @@ impl SilkResampler {
         while remaining > 0 {
             let n_samples_in = remaining.min(self.batch_size) as usize;
 
-            // Allocate buffer for up2_HQ output + FIR overlap
             let buf_len = 2 * n_samples_in + RESAMPLER_ORDER_FIR_12;
             let mut buf = vec![0i16; buf_len];
 
-            // Copy FIR state to start of buffer
             buf[..RESAMPLER_ORDER_FIR_12].copy_from_slice(&self.s_fir);
 
-            // Upsample 2x
             silk_resampler_private_up2_hq(
                 &mut self.s_iir,
                 &mut buf[RESAMPLER_ORDER_FIR_12..],
@@ -228,8 +215,7 @@ impl SilkResampler {
                 n_samples_in as i32,
             );
 
-            // FIR interpolation
-            let max_index_q16 = (n_samples_in as i32) << 17; // << (16+1) because 2x upsampled
+            let max_index_q16 = (n_samples_in as i32) << 17;
             let index_increment_q16 = self.inv_ratio_q16;
 
             let mut index_q16 = 0i32;
@@ -288,12 +274,12 @@ impl SilkResampler {
             remaining -= n_samples_in as i32;
 
             if remaining > 0 {
-                // Copy last part of buffer to FIR state
+
                 self.s_fir.copy_from_slice(
                     &buf[2 * n_samples_in..2 * n_samples_in + RESAMPLER_ORDER_FIR_12],
                 );
             } else {
-                // Save FIR state for next call
+
                 self.s_fir.copy_from_slice(
                     &buf[2 * n_samples_in..2 * n_samples_in + RESAMPLER_ORDER_FIR_12],
                 );
@@ -302,67 +288,57 @@ impl SilkResampler {
     }
 }
 
-/// Allpass-based 2x upsampler, high quality
-/// Uses 3rd-order allpass filters for the 2x upsampling
 pub fn silk_resampler_private_up2_hq(
-    s: &mut [i32],   // I/O State vector [6]
-    out: &mut [i16], // O Output signal [2 * len]
-    input: &[i16],   // I Input signal [len]
-    len: i32,        // I Number of input samples
+    s: &mut [i32],
+    out: &mut [i16],
+    input: &[i16],
+    len: i32,
 ) {
     for k in 0..len as usize {
-        // Convert to Q10
+
         let in32 = (input[k] as i32) << 10;
 
-        // First all-pass section for even output sample
         let y = in32 - s[0];
         let x = silk_smulwb(y, SILK_RESAMPLER_UP2_HQ_0[0] as i32);
         let out32_1 = s[0] + x;
         s[0] = in32 + x;
 
-        // Second all-pass section for even output sample
         let y = out32_1 - s[1];
         let x = silk_smulwb(y, SILK_RESAMPLER_UP2_HQ_0[1] as i32);
         let out32_2 = s[1] + x;
         s[1] = out32_1 + x;
 
-        // Third all-pass section for even output sample
         let y = out32_2 - s[2];
         let x = silk_smlawb(y, y, SILK_RESAMPLER_UP2_HQ_0[2] as i32);
         let out32_1 = s[2] + x;
         s[2] = out32_2 + x;
 
-        // Store even output sample
         out[2 * k] = silk_sat16(silk_rshift_round(out32_1, 10)) as i16;
 
-        // First all-pass section for odd output sample
         let y = in32 - s[3];
         let x = silk_smulwb(y, SILK_RESAMPLER_UP2_HQ_1[0] as i32);
         let out32_1 = s[3] + x;
         s[3] = in32 + x;
 
-        // Second all-pass section for odd output sample
         let y = out32_1 - s[4];
         let x = silk_smulwb(y, SILK_RESAMPLER_UP2_HQ_1[1] as i32);
         let out32_2 = s[4] + x;
         s[4] = out32_1 + x;
 
-        // Third all-pass section for odd output sample
         let y = out32_2 - s[5];
         let x = silk_smlawb(y, y, SILK_RESAMPLER_UP2_HQ_1[2] as i32);
         let out32_1 = s[5] + x;
         s[5] = out32_2 + x;
 
-        // Store odd output sample
         out[2 * k + 1] = silk_sat16(silk_rshift_round(out32_1, 10)) as i16;
     }
 }
 
 pub fn silk_resampler_down2(
-    s: &mut [i32],   // I/O State vector [2]
-    out: &mut [i16], // O Output signal [floor(len/2)]
-    input: &[i16],   // I Input signal [len]
-    in_len: i32,     // I Number of input samples
+    s: &mut [i32],
+    out: &mut [i16],
+    input: &[i16],
+    in_len: i32,
 ) {
     let len2 = in_len >> 1;
     let mut in32: i32;
@@ -370,38 +346,33 @@ pub fn silk_resampler_down2(
     let mut y: i32;
     let mut x: i32;
 
-    /* Internal variables and state are in Q10 format */
     for k in 0..len2 as usize {
-        /* Convert to Q10 */
+
         in32 = (input[2 * k] as i32) << 10;
 
-        /* All-pass section for even input sample */
         y = in32.wrapping_sub(s[0]);
         x = silk_smlawb(y, y, SILK_RESAMPLER_DOWN2_1 as i32);
         out32 = s[0].wrapping_add(x);
         s[0] = in32.wrapping_add(x);
 
-        /* Convert to Q10 */
         in32 = (input[2 * k + 1] as i32) << 10;
 
-        /* All-pass section for odd input sample, and add to output of previous section */
         y = in32.wrapping_sub(s[1]);
         x = silk_smulwb(y, SILK_RESAMPLER_DOWN2_0 as i32);
         out32 = out32.wrapping_add(s[1]);
         out32 = out32.wrapping_add(x);
         s[1] = in32.wrapping_add(x);
 
-        /* Add, convert back to int16 and store to output */
         out[k] = silk_sat16(silk_rshift_round(out32, 11)) as i16;
     }
 }
 
 pub fn silk_resampler_private_ar2(
-    s: &mut [i32],      // I/O State vector [2]
-    out_q8: &mut [i32], // O Output signal [len]
-    input: &[i16],      // I Input signal [len]
-    a_q14: &[i16],      // I AR coefficients [2]
-    len: i32,           // I Number of samples
+    s: &mut [i32],
+    out_q8: &mut [i32],
+    input: &[i16],
+    a_q14: &[i16],
+    len: i32,
 ) {
     let mut out32: i32;
     for k in 0..len as usize {
@@ -416,10 +387,10 @@ const RESAMPLER_MAX_BATCH_SIZE_IN: i32 = 480;
 const ORDER_FIR: usize = 4;
 
 pub fn silk_resampler_down2_3(
-    s: &mut [i32],   // I/O State vector [6]
-    out: &mut [i16], // O Output signal [floor(2*len/3)]
-    input: &[i16],   // I Input signal [len]
-    in_len: i32,     // I Number of input samples
+    s: &mut [i32],
+    out: &mut [i16],
+    input: &[i16],
+    in_len: i32,
 ) {
     let mut n_samples_in: i32;
     let mut counter: i32;
@@ -429,13 +400,11 @@ pub fn silk_resampler_down2_3(
     let mut out_idx = 0;
     let mut remaining_len = in_len;
 
-    /* Copy buffered samples to start of buffer */
     buf[0..ORDER_FIR].copy_from_slice(&s[0..ORDER_FIR]);
 
     while remaining_len > 0 {
         n_samples_in = remaining_len.min(RESAMPLER_MAX_BATCH_SIZE_IN);
 
-        /* Second-order AR filter (output in Q8) */
         silk_resampler_private_ar2(
             &mut s[ORDER_FIR..ORDER_FIR + 2],
             &mut buf[ORDER_FIR..ORDER_FIR + n_samples_in as usize],
@@ -444,11 +413,10 @@ pub fn silk_resampler_down2_3(
             n_samples_in,
         );
 
-        /* Interpolate filtered signal */
         let mut buf_ptr = 0;
         counter = n_samples_in;
         while counter > 2 {
-            /* Inner product */
+
             res_q6 = silk_smulwb(buf[buf_ptr], SILK_RESAMPLER_2_3_COEFS_LQ[2] as i32);
             res_q6 = silk_smlawb(
                 res_q6,
@@ -466,7 +434,6 @@ pub fn silk_resampler_down2_3(
                 SILK_RESAMPLER_2_3_COEFS_LQ[4] as i32,
             );
 
-            /* Scale down, saturate and store in output array */
             out[out_idx] = silk_sat16(silk_rshift_round(res_q6, 6)) as i16;
             out_idx += 1;
 
@@ -487,7 +454,6 @@ pub fn silk_resampler_down2_3(
                 SILK_RESAMPLER_2_3_COEFS_LQ[2] as i32,
             );
 
-            /* Scale down, saturate and store in output array */
             out[out_idx] = silk_sat16(silk_rshift_round(res_q6, 6)) as i16;
             out_idx += 1;
 
@@ -499,12 +465,12 @@ pub fn silk_resampler_down2_3(
         remaining_len -= n_samples_in;
 
         if remaining_len > 0 {
-            /* More iterations to do; copy last part of filtered signal to beginning of buffer */
+
             for i in 0..ORDER_FIR {
                 buf[i] = buf[n_samples_in as usize + i];
             }
         } else {
-            /* Copy last part of filtered signal to the state for the next call */
+
             s[0..ORDER_FIR]
                 .copy_from_slice(&buf[n_samples_in as usize..n_samples_in as usize + ORDER_FIR]);
             break;

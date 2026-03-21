@@ -64,9 +64,9 @@ pub const SILK_NLSF_CB2_SELECT_NB_MB: [u8; 160] = [
 ];
 
 pub const SILK_NLSF_CB2_ICDF_NB_MB: [u8; 72] = [
-    255, 254, 253, 244, 12, 3, 2, 1, 0, 255, 254, 252, 224, 38, 3, 2, 1, 0, 255, 254, 251, 209, 57,
-    4, 2, 1, 0, 255, 254, 244, 195, 69, 4, 2, 1, 0, 255, 251, 232, 184, 84, 7, 2, 1, 0, 255, 254,
-    240, 186, 86, 14, 2, 1, 0, 255, 254, 239, 178, 91, 30, 5, 1, 0, 255, 248, 227, 177, 100, 19, 2,
+    255, 254, 253, 238, 14, 3, 2, 1, 0, 255, 254, 252, 218, 35, 3, 2, 1, 0, 255, 254, 250, 208, 59,
+    4, 2, 1, 0, 255, 254, 246, 194, 71, 10, 2, 1, 0, 255, 252, 236, 183, 82, 8, 2, 1, 0, 255, 252,
+    235, 180, 90, 17, 2, 1, 0, 255, 248, 224, 171, 97, 30, 4, 1, 0, 255, 254, 236, 173, 95, 37, 7,
     1, 0,
 ];
 
@@ -88,8 +88,8 @@ pub const SILK_NLSF_DELTA_MIN_NB_MB_Q15: [i16; 11] = [
 pub const SILK_NLSF_CB_NB_MB: NLSFCodebook = NLSFCodebook {
     n_vectors: 32,
     order: 10,
-    quant_step_size_q16: 11796,     // 0.18 in Q16
-    inv_quant_step_size_q6: 356,    // 1.0/0.18 in Q6
+    quant_step_size_q16: 11796,
+    inv_quant_step_size_q6: 356,
     cb1_nlsf_q8: &SILK_NLSF_CB1_NB_MB_Q8,
     cb1_wght_q9: &SILK_NLSF_CB1_WGHT_NB_MB_Q9,
     cb1_icdf: &SILK_NLSF_CB1_ICDF_NB_MB,
@@ -99,8 +99,6 @@ pub const SILK_NLSF_CB_NB_MB: NLSFCodebook = NLSFCodebook {
     ec_rates_q5: &SILK_NLSF_CB2_BITS_NB_MB_Q5,
     delta_min_q15: &SILK_NLSF_DELTA_MIN_NB_MB_Q15,
 };
-
-// WB Codebook
 
 pub const SILK_NLSF_CB1_WB_Q8: [u8; 512] = [
     7, 23, 38, 54, 69, 85, 100, 116, 131, 147, 162, 178, 193, 208, 223, 239, 13, 25, 41, 55, 69, 83,
@@ -212,8 +210,8 @@ pub const SILK_NLSF_DELTA_MIN_WB_Q15: [i16; 17] = [
 pub const SILK_NLSF_CB_WB: NLSFCodebook = NLSFCodebook {
     n_vectors: 32,
     order: 16,
-    quant_step_size_q16: 9830,      // 0.15 in Q16
-    inv_quant_step_size_q6: 427,    // 1.0/0.15 in Q6
+    quant_step_size_q16: 9830,
+    inv_quant_step_size_q6: 427,
     cb1_nlsf_q8: &SILK_NLSF_CB1_WB_Q8,
     cb1_wght_q9: &SILK_NLSF_CB1_WGHT_WB_Q9,
     cb1_icdf: &SILK_NLSF_CB1_ICDF_WB,

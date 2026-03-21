@@ -1,6 +1,3 @@
-//! Fuzz test for multi-frame encoding/decoding
-//! Tests processing multiple consecutive frames to catch state-related bugs
-
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -48,10 +45,10 @@ fuzz_target!(|data: &[u8]| {
 
     // Frame size
     let frame_size = match data[5] % 4 {
-        0 => sampling_rate as usize / 400,  // 2.5ms
-        1 => sampling_rate as usize / 200,  // 5ms
-        2 => sampling_rate as usize / 100,  // 10ms
-        _ => sampling_rate as usize / 50,   // 20ms
+        0 => sampling_rate as usize / 400, // 2.5ms
+        1 => sampling_rate as usize / 200, // 5ms
+        2 => sampling_rate as usize / 100, // 10ms
+        _ => sampling_rate as usize / 50,  // 20ms
     };
 
     if frame_size == 0 || frame_size > 2880 {
@@ -93,15 +90,27 @@ fuzz_target!(|data: &[u8]| {
                 }
                 // Silence then loud
                 3 => {
-                    if frame_idx < num_frames / 2 { 0.0 } else { raw / 128.0 }
+                    if frame_idx < num_frames / 2 {
+                        0.0
+                    } else {
+                        raw / 128.0
+                    }
                 }
                 // Loud then silence
                 4 => {
-                    if frame_idx < num_frames / 2 { raw / 128.0 } else { 0.0 }
+                    if frame_idx < num_frames / 2 {
+                        raw / 128.0
+                    } else {
+                        0.0
+                    }
                 }
                 // Alternating patterns
                 5 => {
-                    if frame_idx % 2 == 0 { 0.5 } else { -0.5 }
+                    if frame_idx % 2 == 0 {
+                        0.5
+                    } else {
+                        -0.5
+                    }
                 }
                 // Random
                 6 => (raw - 128.0) / 128.0,

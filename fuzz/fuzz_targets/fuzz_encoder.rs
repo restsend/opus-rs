@@ -1,6 +1,3 @@
-//! Fuzz test for OpusEncoder
-//! Tests encoding with various input patterns to detect overflows and panics
-
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

@@ -1,11 +1,5 @@
-/// Second order ARMA filter (biquad), alternative implementation.
-/// Port of silk/biquad_alt.c
-///
-/// Can handle slowly varying filter coefficients.
 use crate::silk::macros::*;
 
-/// Second order ARMA filter, alternative implementation (stride 1).
-/// Direct Form II Transposed (uses 2-element state vector).
 pub fn silk_biquad_alt_stride1(
     input: &[i16],
     b_q28: &[i32; 3],
@@ -37,7 +31,6 @@ pub fn silk_biquad_alt_stride1(
     }
 }
 
-/// Second order ARMA filter, stride 2 (for stereo).
 pub fn silk_biquad_alt_stride2(
     input: &[i16],
     b_q28: &[i32; 3],

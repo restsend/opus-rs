@@ -1,6 +1,3 @@
-//! Fuzz test for OpusDecoder
-//! Tests decoding with arbitrary byte patterns to detect overflows and panics
-
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

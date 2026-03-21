@@ -1,11 +1,3 @@
-//! Fuzz test for CELT decoder boundary conditions
-//! Tests various edge cases including:
-//! - Empty/minimal packets
-//! - Maximum frame sizes
-//! - Invalid TOC bytes
-//! - Corrupted packet data
-//! - Boundary values around decode buffer size
-
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -66,13 +58,13 @@ fuzz_target!(|data: &[u8]| {
     // Test 3: Boundary frame sizes around DECODE_BUFFER_SIZE (3072)
     // Original bug was at 2048 + 120 = 2168
     let boundary_sizes: Vec<usize> = vec![
-        2047, 2048, 2049,      // Around old buffer size
-        2167, 2168, 2169,      // Around old boundary
-        2879, 2880, 2881,      // Around max valid Opus frame
-        3071, 3072, 3073,      // Around new buffer size
-        3191, 3192, 3193,      // Around new buffer + overlap
-        4095, 4096, 4097,      // Much larger
-        5759, 5760, 5761,      // Around absolute max
+        2047, 2048, 2049, // Around old buffer size
+        2167, 2168, 2169, // Around old boundary
+        2879, 2880, 2881, // Around max valid Opus frame
+        3071, 3072, 3073, // Around new buffer size
+        3191, 3192, 3193, // Around new buffer + overlap
+        4095, 4096, 4097, // Much larger
+        5759, 5760, 5761, // Around absolute max
     ];
 
     for frame_size in boundary_sizes {
@@ -93,9 +85,9 @@ fuzz_target!(|data: &[u8]| {
 
     // Test 5: Large packets with various sizes
     let large_packets: Vec<Vec<u8>> = vec![
-        vec![0x98; 100],   // 100 bytes of CELT header
-        vec![0x98; 1000],  // 1000 bytes
-        vec![0x98; 4000],  // Near max packet size
+        vec![0x98; 100],  // 100 bytes of CELT header
+        vec![0x98; 1000], // 1000 bytes
+        vec![0x98; 4000], // Near max packet size
     ];
 
     for packet in &large_packets {

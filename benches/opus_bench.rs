@@ -5,9 +5,9 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 // Configure Criterion for faster benchmarks
 fn configure_criterion() -> Criterion {
     Criterion::default()
-        .sample_size(20)           // Reduce from default 100 to 20 iterations
-        .measurement_time(std::time::Duration::from_millis(500))  // 500ms per bench
-        .warm_up_time(std::time::Duration::from_millis(100))      // 100ms warmup
+        .sample_size(20) // Reduce from default 100 to 20 iterations
+        .measurement_time(std::time::Duration::from_millis(500)) // 500ms per bench
+        .warm_up_time(std::time::Duration::from_millis(100)) // 100ms warmup
 }
 use opus_rs::silk::define::*;
 use opus_rs::silk::lpc_analysis::silk_burg_modified_fix;
@@ -17,11 +17,8 @@ use opus_rs::silk::sigproc_fix::{
     silk_autocorr, silk_inner_prod_aligned, silk_lpc_analysis_filter,
 };
 use opus_rs::silk::structs::*;
-use opus_rs::{Application, OpusEncoder};
+use opus_rs::{Application, OpusDecoder, OpusEncoder};
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-/// 440 Hz sine wave at the given sample rate.
 fn sine_i16(samples: usize, sample_rate: u32, freq: u32) -> Vec<i16> {
     (0..samples)
         .map(|i| {
@@ -40,8 +37,6 @@ fn sine_f32(samples: usize, sample_rate: u32, freq: u32) -> Vec<f32> {
         })
         .collect()
 }
-
-// ── 1. Full SILK-only encoder (most representative) ──────────────────────────
 
 fn bench_opus_encode_silk(c: &mut Criterion) {
     let mut group = c.benchmark_group("opus_encode_silk");
@@ -71,12 +66,9 @@ fn bench_opus_encode_silk(c: &mut Criterion) {
     group.finish();
 }
 
-// ── 2. Burg modified LPC analysis ────────────────────────────────────────────
-
 fn bench_burg_modified(c: &mut Criterion) {
     let mut group = c.benchmark_group("silk_burg_modified_fix");
 
-    // Typical SILK 16 kHz: d=16, subfr_length=80+16=96, nb_subfr=4  (320+64 samples)
     for &(d, subfr_length, nb_subfr) in &[
         (10usize, 50usize, 4usize), // 8 kHz NB
         (16, 96, 4),                // 16 kHz WB
@@ -113,8 +105,6 @@ fn bench_burg_modified(c: &mut Criterion) {
     group.finish();
 }
 
-// ── 3. Autocorrelation ────────────────────────────────────────────────────────
-
 fn bench_autocorr(c: &mut Criterion) {
     let mut group = c.benchmark_group("silk_autocorr");
 
@@ -143,8 +133,6 @@ fn bench_autocorr(c: &mut Criterion) {
     group.finish();
 }
 
-// ── 4. Inner product ──────────────────────────────────────────────────────────
-
 fn bench_inner_prod(c: &mut Criterion) {
     let mut group = c.benchmark_group("silk_inner_prod_aligned");
 
@@ -161,12 +149,9 @@ fn bench_inner_prod(c: &mut Criterion) {
     group.finish();
 }
 
-// ── 5. LPC analysis filter ────────────────────────────────────────────────────
-
 fn bench_lpc_analysis_filter(c: &mut Criterion) {
     let mut group = c.benchmark_group("silk_lpc_analysis_filter");
 
-    // Typical params: order=16, len=320
     for &(order, len) in &[(10usize, 320usize), (16, 320), (16, 640)] {
         let x = sine_i16(len + order, 16000, 440);
         let a_q12: Vec<i16> = (0..order).map(|i| (i as i16 * 128) as i16).collect();
@@ -194,8 +179,6 @@ fn bench_lpc_analysis_filter(c: &mut Criterion) {
     group.finish();
 }
 
-// ── 6. CELT-only encoder ──────────────────────────────────────────────────────
-
 fn bench_opus_encode_celt(c: &mut Criterion) {
     let mut group = c.benchmark_group("opus_encode_celt");
 
@@ -222,11 +205,6 @@ fn bench_opus_encode_celt(c: &mut Criterion) {
     group.finish();
 }
 
-// ── 7. SILK encoder vs C (opusic-sys) side-by-side ───────────────────────────
-// Rust encoder uses complexity=0 (fast mode); two C variants are benchmarked:
-//   "c_cx0"  – C at complexity=0 (same as Rust)
-//   "c_cx9"  – C at complexity=9 (default production quality)
-
 fn bench_silk_vs_c(c: &mut Criterion) {
     let mut group = c.benchmark_group("silk_vs_c");
 
@@ -237,7 +215,6 @@ fn bench_silk_vs_c(c: &mut Criterion) {
 
         group.throughput(Throughput::Bytes(frame_size as u64 * 2));
 
-        // ── Rust encoder (complexity=0) ───────────────────────────────────────
         group.bench_with_input(
             BenchmarkId::new(format!("rust/{sample_rate}Hz/{frame_ms}ms"), "cx0"),
             &(sample_rate, frame_size),
@@ -253,7 +230,6 @@ fn bench_silk_vs_c(c: &mut Criterion) {
             },
         );
 
-        // ── C encoder – complexity=0 (fair comparison) ────────────────────────
         group.bench_with_input(
             BenchmarkId::new(format!("c_cx0/{sample_rate}Hz/{frame_ms}ms"), "cx0"),
             &(sample_rate, frame_size),
@@ -281,7 +257,6 @@ fn bench_silk_vs_c(c: &mut Criterion) {
             },
         );
 
-        // ── C encoder – complexity=9 (default production quality) ─────────────
         group.bench_with_input(
             BenchmarkId::new(format!("c_cx9/{sample_rate}Hz/{frame_ms}ms"), "cx9"),
             &(sample_rate, frame_size),
@@ -313,9 +288,6 @@ fn bench_silk_vs_c(c: &mut Criterion) {
     group.finish();
 }
 
-// ── 8. SILK NSQ (Noise Shape Quantizer) ───────────────────────────────────────
-
-/// Generate synthetic unvoiced (noise-like) input
 fn generate_unvoiced_input(length: usize) -> Vec<i16> {
     let mut rng: u32 = 12345;
     let mut out = vec![0i16; length];
@@ -326,7 +298,6 @@ fn generate_unvoiced_input(length: usize) -> Vec<i16> {
     out
 }
 
-/// Generate synthetic voiced (periodic) input
 fn generate_voiced_input(length: usize, pitch: usize) -> Vec<i16> {
     let mut out = vec![0i16; length];
     for i in 0..length {
@@ -337,7 +308,6 @@ fn generate_voiced_input(length: usize, pitch: usize) -> Vec<i16> {
     out
 }
 
-/// Create basic AR shaping coefficients (mild spectral tilt)
 fn create_ar_shaping(nb_subfr: usize) -> Vec<i16> {
     let mut ar = vec![0i16; nb_subfr * MAX_SHAPE_LPC_ORDER];
     for k in 0..nb_subfr {
@@ -347,7 +317,6 @@ fn create_ar_shaping(nb_subfr: usize) -> Vec<i16> {
     ar
 }
 
-/// Create basic LPC prediction coefficients
 fn create_pred_coefs() -> Vec<i16> {
     let mut coefs = vec![0i16; 2 * MAX_LPC_ORDER];
     coefs[0] = 3686; // 0.9 in Q12
@@ -360,7 +329,6 @@ fn create_pred_coefs() -> Vec<i16> {
 fn bench_silk_nsq(c: &mut Criterion) {
     let mut group = c.benchmark_group("silk_nsq");
 
-    // Test configurations: (sample_rate_khz, signal_type, frame_ms)
     let configs: &[(i32, &str, usize)] = &[
         (16, "unvoiced", 20),
         (16, "voiced", 20),
@@ -497,7 +465,8 @@ fn bench_silk_pitch_analysis_core(c: &mut Criterion) {
     ];
 
     for &(fs_khz, nb_subfr, sig_type) in configs {
-        let frame_samples = (PE_LTP_MEM_LENGTH_MS + nb_subfr * PE_SUBFR_LENGTH_MS) * fs_khz as usize;
+        let frame_samples =
+            (PE_LTP_MEM_LENGTH_MS + nb_subfr * PE_SUBFR_LENGTH_MS) * fs_khz as usize;
 
         let input: Vec<i16> = if sig_type == "voiced" {
             // Pitch period in samples (e.g., 100Hz fundamental at 16kHz = 160 samples)
@@ -515,7 +484,14 @@ fn bench_silk_pitch_analysis_core(c: &mut Criterion) {
         group.throughput(Throughput::Elements(frame_samples as u64));
         group.bench_with_input(
             BenchmarkId::new(format!("{}kHz/{}subfr", fs_khz, nb_subfr), sig_type),
-            &(fs_khz, nb_subfr, prev_lag, search_thres1_q16, search_thres2_q13, complexity),
+            &(
+                fs_khz,
+                nb_subfr,
+                prev_lag,
+                search_thres1_q16,
+                search_thres2_q13,
+                complexity,
+            ),
             |b, &(fs_khz, nb_subfr, prev_lag, thres1, thres2, cx)| {
                 b.iter(|| {
                     let mut pitch_out = [0i32; MAX_NB_SUBFR];
@@ -544,6 +520,93 @@ fn bench_silk_pitch_analysis_core(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_opus_vs_c(c: &mut Criterion) {
+    let mut group = c.benchmark_group("opus_vs_c");
+
+    for &(sample_rate, frame_ms, app_str) in &[
+        (8000u32, 20usize, "voip"),
+        (16000u32, 20usize, "voip"),
+        (16000u32, 10usize, "voip"),
+        (48000u32, 20usize, "audio"),
+        (48000u32, 10usize, "audio"),
+    ] {
+        let frame_size = sample_rate as usize * frame_ms / 1000;
+        let input = sine_f32(frame_size, sample_rate, 440);
+
+        group.throughput(Throughput::Bytes(frame_size as u64 * 2));
+
+        group.bench_with_input(
+            BenchmarkId::new(format!("rust/{sample_rate}Hz/{frame_ms}ms"), app_str),
+            &(sample_rate, frame_size),
+            |b, &(sr, fs)| {
+                let app = if sr == 48000 {
+                    Application::Audio
+                } else {
+                    Application::Voip
+                };
+                let mut enc = OpusEncoder::new(sr as i32, 1, app).unwrap();
+                enc.bitrate_bps = if sr == 48000 { 64_000 } else { 20_000 };
+                enc.complexity = 0;
+                let mut dec = OpusDecoder::new(sr as i32, 1).unwrap();
+                let mut output = vec![0u8; 1024];
+                let mut pcm = vec![0.0f32; fs];
+                b.iter(|| {
+                    let len = enc
+                        .encode(black_box(&input), fs, black_box(&mut output))
+                        .unwrap();
+                    dec.decode(black_box(&output[..len]), fs, black_box(&mut pcm))
+                        .unwrap();
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new(format!("c/{sample_rate}Hz/{frame_ms}ms"), app_str),
+            &(sample_rate, frame_size),
+            |b, &(sr, fs)| {
+                use opusic_sys::*;
+                let mut err = 0i32;
+                let enc =
+                    unsafe { opus_encoder_create(sr as i32, 1, OPUS_APPLICATION_VOIP, &mut err) };
+                assert_eq!(err, OPUS_OK);
+                let dec = unsafe { opus_decoder_create(sr as i32, 1, &mut err) };
+                assert_eq!(err, OPUS_OK);
+                unsafe {
+                    opus_encoder_ctl(enc, OPUS_SET_BITRATE_REQUEST, 20_000i32);
+                    opus_encoder_ctl(enc, OPUS_SET_COMPLEXITY_REQUEST, 0i32);
+                }
+                let mut output = vec![0u8; 1024];
+                let mut pcm = vec![0.0f32; fs];
+                b.iter(|| unsafe {
+                    let len = opus_encode_float(
+                        enc,
+                        black_box(input.as_ptr()),
+                        fs as i32,
+                        output.as_mut_ptr(),
+                        output.len() as i32,
+                    );
+                    if len > 0 {
+                        opus_decode_float(
+                            dec,
+                            black_box(output.as_ptr()),
+                            len,
+                            pcm.as_mut_ptr(),
+                            fs as i32,
+                            0,
+                        );
+                    }
+                });
+                unsafe {
+                    opus_encoder_destroy(enc);
+                    opus_decoder_destroy(dec);
+                }
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = configure_criterion();
@@ -557,5 +620,6 @@ criterion_group! {
         bench_opus_encode_celt,
         bench_silk_nsq,
         bench_silk_pitch_analysis_core,
+        bench_opus_vs_c,
 }
 criterion_main!(benches);

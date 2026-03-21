@@ -176,7 +176,7 @@ pub fn celt_pvq_u(n: u32, k: u32) -> u32 {
 
 #[inline]
 pub fn celt_pvq_v(_n: u32, _k: u32) -> u32 {
-    // This was used for something else, but we don't need it if we use ncwrs
+
     0
 }
 
@@ -236,7 +236,7 @@ pub fn icwrs(n: u32, k: u32, y: &[i32]) -> u32 {
 }
 
 pub fn cwrsi(n: u32, k: u32, mut i: u32, y: &mut [i32]) {
-    // Special case for n=1
+
     if n == 1 {
         let s = -(i as i32);
         let val = ((k as i32) + s) ^ s;
@@ -302,7 +302,6 @@ pub fn decode_pulses(y: &mut [i32], n: u32, k: u32, rc: &mut RangeCoder) {
     let ft = celt_pvq_u(n, k);
     let fl = rc.dec_uint(ft);
 
-    // Debug first few decodes
     use std::sync::atomic::{AtomicU32, Ordering};
     static DEBUG_COUNT: AtomicU32 = AtomicU32::new(0);
     let count = DEBUG_COUNT.fetch_add(1, Ordering::Relaxed);

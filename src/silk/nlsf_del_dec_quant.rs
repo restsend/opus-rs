@@ -4,7 +4,6 @@ use crate::silk::define::{
 };
 use crate::silk::macros::{silk_limit, silk_mla, silk_smlabb, silk_smulbb};
 
-/// Delayed-decision quantizer for NLSF residuals
 pub fn silk_nlsf_del_dec_quant(
     indices: &mut [i8],
     x_q10: &[i16],
@@ -82,7 +81,6 @@ pub fn silk_nlsf_del_dec_quant(
             );
             ind[j][i] = ind_tmp as i8;
 
-            /* compute outputs for ind_tmp and ind_tmp + 1 */
             out0_q10 = out0_q10_table[(ind_tmp + NLSF_QUANT_MAX_AMPLITUDE_EXT) as usize];
             out1_q10 = out1_q10_table[(ind_tmp + NLSF_QUANT_MAX_AMPLITUDE_EXT) as usize];
 
@@ -91,7 +89,6 @@ pub fn silk_nlsf_del_dec_quant(
             prev_out_q10[j] = out0_q10 as i16;
             prev_out_q10[j + n_states] = out1_q10 as i16;
 
-            /* compute RD for ind_tmp and ind_tmp + 1 */
             if ind_tmp + 1 >= NLSF_QUANT_MAX_AMPLITUDE {
                 if ind_tmp + 1 == NLSF_QUANT_MAX_AMPLITUDE {
                     rate0_q5 = rates_q5_ptr[(ind_tmp + NLSF_QUANT_MAX_AMPLITUDE) as usize] as i32;
@@ -131,7 +128,7 @@ pub fn silk_nlsf_del_dec_quant(
         }
 
         if n_states <= NLSF_QUANT_DEL_DEC_STATES / 2 {
-            /* double number of states and copy */
+
             for j in 0..n_states {
                 ind[j + n_states][i] = ind[j][i] + 1;
             }
@@ -140,14 +137,14 @@ pub fn silk_nlsf_del_dec_quant(
                 ind[j][i] = ind[j - n_states][i];
             }
         } else {
-            /* sort lower and upper half of rd_q25, pairwise */
+
             for j in 0..NLSF_QUANT_DEL_DEC_STATES {
                 if rd_q25[j] > rd_q25[j + NLSF_QUANT_DEL_DEC_STATES] {
                     rd_max_q25[j] = rd_q25[j];
                     rd_min_q25[j] = rd_q25[j + NLSF_QUANT_DEL_DEC_STATES];
                     rd_q25[j] = rd_min_q25[j];
                     rd_q25[j + NLSF_QUANT_DEL_DEC_STATES] = rd_max_q25[j];
-                    /* swap prev_out values */
+
                     let tmp = prev_out_q10[j];
                     prev_out_q10[j] = prev_out_q10[j + NLSF_QUANT_DEL_DEC_STATES];
                     prev_out_q10[j + NLSF_QUANT_DEL_DEC_STATES] = tmp;
@@ -159,7 +156,6 @@ pub fn silk_nlsf_del_dec_quant(
                 }
             }
 
-            /* compare the highest RD values of the winning half with the lowest one in the losing half, and copy if necessary */
             loop {
                 min_max_q25 = i32::MAX;
                 max_min_q25 = 0;
@@ -178,7 +174,7 @@ pub fn silk_nlsf_del_dec_quant(
                 if min_max_q25 >= max_min_q25 {
                     break;
                 }
-                /* copy ind_min_max to ind_max_min */
+
                 ind_sort[ind_max_min] = ind_sort[ind_min_max] ^ NLSF_QUANT_DEL_DEC_STATES;
                 rd_q25[ind_max_min] = rd_q25[ind_min_max + NLSF_QUANT_DEL_DEC_STATES];
                 prev_out_q10[ind_max_min] = prev_out_q10[ind_min_max + NLSF_QUANT_DEL_DEC_STATES];
@@ -186,14 +182,13 @@ pub fn silk_nlsf_del_dec_quant(
                 rd_max_q25[ind_min_max] = i32::MAX;
                 ind[ind_max_min] = ind[ind_min_max];
             }
-            /* increment index if it comes from the upper half */
+
             for j in 0..NLSF_QUANT_DEL_DEC_STATES {
                 ind[j][i] += (ind_sort[j] >> NLSF_QUANT_DEL_DEC_STATES_LOG2) as i8;
             }
         }
     }
 
-    /* last sample: find winner, copy indices and return RD value */
     ind_tmp = 0;
     min_q25 = i32::MAX;
     for j in 0..2 * NLSF_QUANT_DEL_DEC_STATES {
@@ -205,7 +200,7 @@ pub fn silk_nlsf_del_dec_quant(
     for i in 0..order as usize {
         indices[i] = ind[(ind_tmp & (NLSF_QUANT_DEL_DEC_STATES as i32 - 1)) as usize][i];
     }
-    indices[order as usize - 1] += (ind_tmp >> NLSF_QUANT_DEL_DEC_STATES_LOG2) as i8;
+    indices[0] += (ind_tmp >> NLSF_QUANT_DEL_DEC_STATES_LOG2) as i8;
 
     min_q25
 }

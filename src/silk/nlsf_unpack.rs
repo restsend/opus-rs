@@ -2,7 +2,6 @@ use crate::silk::define::NLSF_QUANT_MAX_AMPLITUDE;
 use crate::silk::macros::silk_smulbb;
 use crate::silk::structs::NLSFCodebook;
 
-/// Unpack predictor values and indices for entropy coding tables
 pub fn silk_nlsf_unpack(
     ec_ix: &mut [i16],
     pred_q8: &mut [u8],

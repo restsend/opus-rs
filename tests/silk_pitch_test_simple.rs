@@ -3,7 +3,6 @@ use opus_rs::silk::pitch_analysis::silk_pitch_analysis_core;
 use std::f32::consts::PI;
 
 #[test]
-#[ignore = "pitch analysis returns unvoiced for this synthetic sawtooth - needs investigation"]
 fn test_pitch_analysis_voiced_periodic() {
     let fs_khz = 16;
     let nb_subfr = 4;

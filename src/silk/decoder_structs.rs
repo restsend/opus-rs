@@ -1,7 +1,6 @@
 use crate::silk::define::*;
 use crate::silk::structs::{NLSFCodebook, SideInfoIndices};
 
-/// CNG (Comfort Noise Generation) state
 #[derive(Clone)]
 pub struct SilkCNGState {
     pub cng_exc_buf_q14: [i32; MAX_FRAME_LENGTH],
@@ -25,7 +24,6 @@ impl Default for SilkCNGState {
     }
 }
 
-/// PLC (Packet Loss Concealment) state
 #[derive(Clone, Default)]
 pub struct SilkPLCState {
     pub pitch_l_q8: i32,
@@ -44,7 +42,6 @@ pub struct SilkPLCState {
     pub enable_deep_plc: i32,
 }
 
-/// SILK decoder state
 #[derive(Clone)]
 pub struct SilkDecoderState {
     pub prev_gain_q16: i32,
@@ -116,7 +113,6 @@ impl Default for SilkDecoderState {
     }
 }
 
-/// Decoder control structure
 #[derive(Clone, Default)]
 pub struct SilkDecoderControl {
     pub pitch_l: [i32; MAX_NB_SUBFR],

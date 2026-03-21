@@ -1,6 +1,3 @@
-//! Fuzz test for SILK encoder specifically
-//! Focuses on SILK-only mode with various edge cases
-
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -68,13 +65,27 @@ fuzz_target!(|data: &[u8]| {
             // Sine wave
             0 => (2.0 * std::f32::consts::PI * (i as f32 % 100.0) / 100.0).sin() * 0.5,
             // White noise
-            1 => ((data[(i % (data.len() - 8).max(1)) + 8] as f32 - 128.0) / 128.0).clamp(-1.0, 1.0),
+            1 => {
+                ((data[(i % (data.len() - 8).max(1)) + 8] as f32 - 128.0) / 128.0).clamp(-1.0, 1.0)
+            }
             // Impulses
-            2 => if i % 100 == 0 { 0.9 } else { 0.0 },
+            2 => {
+                if i % 100 == 0 {
+                    0.9
+                } else {
+                    0.0
+                }
+            }
             // DC offset
             3 => 0.5,
             // Alternating
-            4 => if i % 2 == 0 { 0.3 } else { -0.3 },
+            4 => {
+                if i % 2 == 0 {
+                    0.3
+                } else {
+                    -0.3
+                }
+            }
             // Random from data
             _ => {
                 let idx = (i + 8) % data.len();

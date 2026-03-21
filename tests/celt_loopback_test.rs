@@ -56,11 +56,9 @@ fn test_celt_loopback() {
         }
     }
 
-    // Check various delays. Frame-based CELT should have 0 delay if history is handled correctly.
     let mut best_snr = -100.0f32;
     let mut best_delay = 0;
 
-    // Start comparison after some frames to let history settle
     let start_idx = 4 * frame_size;
     let end_idx = 10 * frame_size;
 
@@ -121,11 +119,7 @@ fn test_celt_loopback() {
     // C reference also gets ~4-5 dB SNR under these test conditions
     // Current implementation achieves ~2-3 dB, needs improvement
     // TODO: Improve CELT quality to match C reference (>4 dB)
-    assert!(
-        best_snr > 0.0,
-        "SNR too low: {:.2} dB",
-        best_snr
-    );
+    assert!(best_snr > 0.0, "SNR too low: {:.2} dB", best_snr);
 }
 
 fn calculate_snr(all_in: &[f32], all_out: &[f32], delay: usize, start: usize, end: usize) -> f32 {

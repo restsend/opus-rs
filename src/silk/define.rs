@@ -5,11 +5,10 @@ pub const SILK_NO_ERROR: i32 = 0;
 
 pub const MAX_FRAMES_PER_PACKET: usize = 3;
 
-/* VAD / DTX thresholds */
-pub const NB_SPEECH_FRAMES_BEFORE_DTX: i32 = 10; /* eq 200 ms */
-pub const MAX_CONSECUTIVE_DTX: i32 = 20; /* eq 400 ms */
-/* SPEECH_ACTIVITY_DTX_THRES = 0.05f => Q8 = floor(0.05 * 256) = 12 */
-pub const SPEECH_ACTIVITY_DTX_THRES_Q8: i32 = 13; /* SILK_FIX_CONST(0.05, 8) */
+pub const NB_SPEECH_FRAMES_BEFORE_DTX: i32 = 10;
+pub const MAX_CONSECUTIVE_DTX: i32 = 20;
+
+pub const SPEECH_ACTIVITY_DTX_THRES_Q8: i32 = 13;
 
 pub const MIN_TARGET_RATE_BPS: i32 = 5000;
 pub const MAX_TARGET_RATE_BPS: i32 = 80000;
@@ -54,26 +53,22 @@ pub const VAD_SNR_SMOOTH_COEF_Q18: i32 = 4096;
 pub const NSQ_LPC_BUF_LENGTH: usize = MAX_LPC_ORDER;
 pub const DECISION_DELAY: usize = 40;
 pub const QUANT_LEVEL_ADJUST_Q10: i32 = 80;
-pub const NSQ_MAX_STATES_OPERATING: usize = 2;
+pub const NSQ_MAX_STATES_OPERATING: usize = 4;
 
 pub const NLSF_QUANT_MAX_AMPLITUDE: i32 = 4;
 pub const NLSF_QUANT_MAX_AMPLITUDE_EXT: i32 = 10;
-pub const NLSF_QUANT_LEVEL_ADJ: i32 = 102; // 0.1 in Q10
+pub const NLSF_QUANT_LEVEL_ADJ: i32 = 102;
 pub const NLSF_QUANT_DEL_DEC_STATES: usize = 4;
 pub const NLSF_QUANT_DEL_DEC_STATES_LOG2: usize = 2;
 
-/* Interpolation points */
 pub const INTERP_NUM_STATES: usize = 5;
 
-/* Signal types */
 pub const TYPE_NO_VOICE_ACTIVITY: i32 = 0;
 pub const TYPE_UNVOICED: i32 = 1;
 pub const TYPE_VOICED: i32 = 2;
 
-/* Conditionally coding types */
 pub const CODE_INDEPENDENTLY_NO_LTP_SCALING: i32 = 2;
 
-/* Pitch estimation */
 pub const SILK_PE_MIN_COMPLEX: usize = 0;
 pub const SILK_PE_MID_COMPLEX: usize = 1;
 pub const SILK_PE_MAX_COMPLEX: usize = 2;
@@ -118,17 +113,15 @@ pub const PE_MIN_LAG: usize = PE_MIN_LAG_MS * PE_MAX_FS_KHZ;
 pub const PE_D_SRCH_LENGTH: usize = 24;
 pub const PE_NB_STAGE3_LAGS: usize = 5;
 
-pub const PE_SHORTLAG_BIAS_Q13: i32 = 1638; // 0.2 in Q13
-pub const PE_PREVLAG_BIAS_Q13: i32 = 1638; // 0.2 in Q13
-pub const PE_FLATCONTOUR_BIAS_Q13: i32 = 410; // 0.05 in Q13
+pub const PE_SHORTLAG_BIAS_Q13: i32 = 1638;
+pub const PE_PREVLAG_BIAS_Q13: i32 = 1638;
+pub const PE_FLATCONTOUR_BIAS_Q13: i32 = 410;
 
-/* Conditional coding types */
 pub const COND_ALPHA_MIN_Q15: i32 = 25000;
 pub const COND_ALPHA_MAX_Q15: i32 = 31000;
 
-pub const FIND_LPC_COND_FAC_Q31: i32 = 21475; // 1e-5 in Q31
+pub const FIND_LPC_COND_FAC_Q31: i32 = 21475;
 
-/* Gain quantization */
 pub const CODE_INDEPENDENTLY: i32 = 0;
 pub const CODE_CONDITIONALLY: i32 = 1;
 pub const CODE_INFORMATION: i32 = 2;

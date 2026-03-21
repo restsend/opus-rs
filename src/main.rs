@@ -5,7 +5,7 @@ fn main() {
 
     let channels = 1;
     let sampling_rate = 48000;
-    let frame_size = 480; // 10ms
+    let frame_size = 480;
     let mut encoder = OpusEncoder::new(sampling_rate, channels, Application::Audio).expect("Failed to create encoder");
     let mut decoder = OpusDecoder::new(sampling_rate, channels).expect("Failed to create decoder");
 
@@ -16,7 +16,7 @@ fn main() {
     println!("Encoding {} frames ({}ms total)...", num_frames, num_frames * 10);
 
     for f in 0..num_frames {
-        // Generate a sine wave
+
         let mut input = vec![0.0f32; frame_size];
         let freq = 440.0;
         for i in 0..frame_size {
@@ -38,11 +38,10 @@ fn main() {
 
     println!("Finished encoding/decoding.");
 
-    // Calculate SNR for various delays
     let mut best_snr = -100.0;
     let mut best_delay = 0;
     let overlap = 120;
-    
+
     for delay in (0..frame_size + overlap).step_by(1) {
         let mut signal_pow = 0.0;
         let mut noise_pow = 0.0;
@@ -59,7 +58,7 @@ fn main() {
             best_delay = delay;
         }
     }
-    
+
     println!("Best SNR: {:.2} dB at delay {} samples", best_snr, best_delay);
 
     if best_snr < 20.0 {

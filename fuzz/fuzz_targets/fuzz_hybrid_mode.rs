@@ -1,6 +1,3 @@
-//! Fuzz test for Hybrid mode (SILK + CELT)
-//! Tests the hybrid mode where lower bands are from SILK and upper bands from CELT
-
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -36,8 +33,8 @@ fuzz_target!(|data: &[u8]| {
 
         // Hybrid frame sizes: typically 10ms or 20ms
         let frame_sizes: Vec<usize> = vec![
-            sampling_rate as usize / 100,  // 10ms
-            sampling_rate as usize / 50,   // 20ms
+            sampling_rate as usize / 100, // 10ms
+            sampling_rate as usize / 50,  // 20ms
         ];
 
         for frame_size in &frame_sizes {
@@ -89,7 +86,11 @@ fuzz_target!(|data: &[u8]| {
                     4 => 0.1,
                     // Impulses
                     _ => {
-                        if i % (frame_size / 10) == 0 { 0.8 } else { 0.0 }
+                        if i % (frame_size / 10) == 0 {
+                            0.8
+                        } else {
+                            0.0
+                        }
                     }
                 };
 

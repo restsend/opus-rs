@@ -1,10 +1,5 @@
-// WAV file encoder/decoder test
-use opus_rs::range_coder::RangeCoder;
-use opus_rs::silk::control_codec::silk_control_encoder;
-use opus_rs::silk::dec_api::SilkDecoder;
-use opus_rs::silk::enc_api::silk_encode;
-use opus_rs::silk::init_decoder::silk_decoder_set_fs;
-use opus_rs::silk::init_encoder::silk_init_encoder;
+// WAV file encoder/decoder test using OpusEncoder/OpusDecoder
+use opus_rs::{Application, OpusDecoder, OpusEncoder};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -15,6 +10,7 @@ struct WavHeader {
     sample_rate: u32,
     #[allow(unused)]
     bits_per_sample: u16,
+    #[allow(unused)]
     num_channels: u16,
     #[allow(unused)]
     data_size: u32,
@@ -25,8 +21,7 @@ fn read_wav(path: &Path) -> (WavHeader, Vec<i16>) {
 
     // Read RIFF header
     let mut riff = [0u8; 12];
-    file.read_exact(&mut riff)
-        .expect("Failed to read RIFF header");
+    file.read_exact(&mut riff).expect("Failed to read RIFF header");
     assert!(&riff[0..4] == b"RIFF", "Not a valid WAV file");
     assert!(&riff[8..12] == b"WAVE", "Not a valid WAV file");
 
@@ -47,8 +42,7 @@ fn read_wav(path: &Path) -> (WavHeader, Vec<i16>) {
 
     // Read data chunk
     let mut data_header = [0u8; 8];
-    file.read_exact(&mut data_header)
-        .expect("Failed to read data header");
+    file.read_exact(&mut data_header).expect("Failed to read data header");
     assert!(&data_header[0..4] == b"data", "Invalid data chunk");
 
     let data_size = u32::from_le_bytes([
@@ -94,7 +88,7 @@ fn read_wav(path: &Path) -> (WavHeader, Vec<i16>) {
     (header, samples)
 }
 
-fn write_wav(path: &Path, header: &WavHeader, samples: &[i16]) {
+fn write_wav(path: &Path, sample_rate: u32, num_channels: u16, samples: &[i16]) {
     let mut file = File::create(path).expect("Failed to create WAV file");
 
     let data_size = (samples.len() * 2) as u32;
@@ -107,15 +101,15 @@ fn write_wav(path: &Path, header: &WavHeader, samples: &[i16]) {
 
     // fmt chunk
     file.write_all(b"fmt ").unwrap();
-    file.write_all(&16u32.to_le_bytes()).unwrap(); // chunk size
-    file.write_all(&1u16.to_le_bytes()).unwrap(); // audio format (PCM)
-    file.write_all(&header.num_channels.to_le_bytes()).unwrap();
-    file.write_all(&header.sample_rate.to_le_bytes()).unwrap();
-    let byte_rate = header.sample_rate * header.num_channels as u32 * 2;
+    file.write_all(&16u32.to_le_bytes()).unwrap();
+    file.write_all(&1u16.to_le_bytes()).unwrap();
+    file.write_all(&num_channels.to_le_bytes()).unwrap();
+    file.write_all(&sample_rate.to_le_bytes()).unwrap();
+    let byte_rate = sample_rate * num_channels as u32 * 2;
     file.write_all(&byte_rate.to_le_bytes()).unwrap();
-    let block_align = header.num_channels * 2;
+    let block_align = num_channels * 2;
     file.write_all(&block_align.to_le_bytes()).unwrap();
-    file.write_all(&16u16.to_le_bytes()).unwrap(); // bits per sample
+    file.write_all(&16u16.to_le_bytes()).unwrap();
 
     // data chunk
     file.write_all(b"data").unwrap();
@@ -129,117 +123,128 @@ fn write_wav(path: &Path, header: &WavHeader, samples: &[i16]) {
     println!("Wrote WAV: {} samples to {:?}", samples.len(), path);
 }
 
+// Simple linear interpolation resampler
+// Converts samples from src_rate to dst_rate
+fn resample_linear(samples: &[i16], src_rate: u32, dst_rate: u32) -> Vec<i16> {
+    if src_rate == dst_rate {
+        return samples.to_vec();
+    }
+
+    // Calculate the ratio
+    let ratio = src_rate as f64 / dst_rate as f64;
+    let dst_len = (samples.len() as f64 / ratio).round() as usize;
+
+    let mut resampled = Vec::with_capacity(dst_len);
+
+    for i in 0..dst_len {
+        let src_pos = i as f64 * ratio;
+        let src_idx = src_pos as usize;
+        let frac = src_pos - src_idx as f64;
+
+        if src_idx >= samples.len() {
+            break;
+        }
+
+        let sample = if src_idx + 1 < samples.len() {
+            let s0 = samples[src_idx] as f64;
+            let s1 = samples[src_idx + 1] as f64;
+            (s0 + (s1 - s0) * frac).round() as i16
+        } else {
+            samples[src_idx]
+        };
+
+        resampled.push(sample);
+    }
+
+    resampled
+}
+
 fn main() {
-    let input_path = Path::new("fixtures/hello_book_course_zh_16k.wav");
-    let encoded_path = Path::new("fixtures/encoded.silk");
+    let input_arg = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "fixtures/answer_16k.wav".to_string());
+    let input_path = Path::new(&input_arg);
+    let encoded_path = Path::new("fixtures/encoded.opus");
     let decoded_path = Path::new("fixtures/decoded.wav");
+
+    println!("Input file: {:?}", input_path);
 
     // Read input WAV
     println!("\n=== Reading input WAV ===");
     let (header, samples) = read_wav(input_path);
 
-    // Resample to 16kHz if needed
-    let target_sample_rate = 16000u32;
-    let sample_rate = header.sample_rate;
-
-    let mut input_samples: Vec<i16> = if sample_rate != target_sample_rate {
-        println!(
-            "Warning: Sample rate {} != {}, using as-is",
-            sample_rate, target_sample_rate
-        );
-        samples
+    // Determine target sample rate for Opus (must be 8000/12000/16000/24000/48000)
+    let src_rate = header.sample_rate;
+    let target_rate: u32 = if [8000, 12000, 16000, 24000, 48000].contains(&src_rate) {
+        src_rate
     } else {
-        samples
+        // For arbitrary rates, resample to 16kHz (good for speech)
+        println!(
+            "Note: Sample rate {} not natively supported by Opus, will resample to 16000 Hz",
+            src_rate
+        );
+        16000
+    };
+
+    // Resample if necessary
+    let input_samples: Vec<i16> = if src_rate != target_rate {
+        resample_linear(&samples, src_rate, target_rate)
+    } else {
+        samples.clone()
     };
 
     // Take only first 10 seconds for testing
-    let max_samples = target_sample_rate as usize * 10;
-    if input_samples.len() > max_samples {
+    let max_samples = target_rate as usize * 10;
+    let input_samples = if input_samples.len() > max_samples {
         println!("Truncating to {} samples (10 seconds)", max_samples);
-        input_samples.truncate(max_samples);
-    }
+        &input_samples[..max_samples]
+    } else {
+        &input_samples[..]
+    };
 
-    // Encode parameters
-    let frame_size_ms = 20;
-    let frame_samples = (target_sample_rate as usize) * frame_size_ms / 1000;
-    let bitrate = 10000; // 10 kbps
-    let complexity = 1;
+    // Convert i16 to f32 for OpusEncoder (normalized to [-1, 1])
+    let frame_size = (target_rate as usize) * 20 / 1000; // 20ms frame
+    let bitrate = 20000; // 20 kbps - better quality than 10kbps
 
     println!("\n=== Encoding ===");
-    println!(
-        "Frame size: {} ms ({} samples)",
-        frame_size_ms, frame_samples
-    );
+    println!("Target sample rate: {} Hz", target_rate);
+    println!("Frame size: {} samples (20ms)", frame_size);
     println!("Bitrate: {} bps", bitrate);
-    println!("Complexity: {}", complexity);
 
     // Initialize encoder
-    let mut enc_state = Default::default();
-    silk_init_encoder(&mut enc_state, 0);
-    silk_control_encoder(
-        &mut enc_state,
-        (target_sample_rate / 1000) as i32,
-        frame_size_ms as i32,
-        bitrate,
-        complexity,
-    );
-    println!("Encoder frame_length = {}", enc_state.s_cmn.frame_length);
-    println!("Encoder nb_subfr = {}", enc_state.s_cmn.nb_subfr);
+    let mut encoder = OpusEncoder::new(target_rate as i32, 1, Application::Voip)
+        .expect("Failed to create encoder");
+    encoder.bitrate_bps = bitrate;
+    encoder.use_cbr = true;
+    encoder.complexity = 5; // Medium complexity for better quality
 
     // Initialize decoder
-    let mut dec = SilkDecoder::new();
-    silk_decoder_set_fs(
-        &mut dec.channel_state[0],
-        (target_sample_rate / 1000) as i32,
-        target_sample_rate as i32,
-    );
-    println!(
-        "Decoder frame_length = {}",
-        dec.channel_state[0].frame_length
-    );
-    println!("Decoder nb_subfr = {}", dec.channel_state[0].nb_subfr);
+    let mut decoder = OpusDecoder::new(target_rate as i32, 1)
+        .expect("Failed to create decoder");
 
     // Encode frame by frame
     let mut all_payload: Vec<u8> = Vec::new();
-    let mut frame_count = 0;
+    let mut frame_count = 0usize;
 
-    // Encode frame by frame using silk_encode
-    // Each call to silk_encode processes one packet worth of frames
-    let mut sample_offset = 0;
-    while sample_offset < input_samples.len() {
-        let remaining = input_samples.len() - sample_offset;
-        if remaining < frame_samples {
-            break; // Not enough samples for a full frame
-        }
+    let mut sample_offset = 0usize;
+    while sample_offset + frame_size <= input_samples.len() {
+        // Convert i16 to f32
+        let frame: Vec<f32> = input_samples[sample_offset..sample_offset + frame_size]
+            .iter()
+            .map(|&s| s as f32 / 32768.0)
+            .collect();
 
-        let frame_data = &input_samples[sample_offset..sample_offset + frame_samples];
+        let mut encoded = vec![0u8; 512];
+        let len = encoder.encode(&frame, frame_size, &mut encoded).unwrap();
+        encoded.truncate(len);
 
-        let mut rc = RangeCoder::new_encoder(1024);
-        let mut n_bytes: i32 = 0;
-        silk_encode(
-            &mut enc_state,
-            frame_data,
-            frame_samples,
-            &mut rc,
-            &mut n_bytes,
-            bitrate,
-            (bitrate * frame_size_ms as i32) / 8,
-            0,
-            1, // activity = 1 (active speech)
-        );
+        // Store as [len:u16][payload...]
+        let len_u16 = len as u16;
+        all_payload.write_all(&len_u16.to_le_bytes()).unwrap();
+        all_payload.write_all(&encoded).unwrap();
 
-        rc.done();
-        let payload = rc.finish();
-
-        if !payload.is_empty() {
-            // Write frame length (2 bytes) + payload
-            let len = payload.len() as u16;
-            all_payload.write_all(&len.to_le_bytes()).unwrap();
-            all_payload.write_all(&payload).unwrap();
-            frame_count += 1;
-        }
-
-        sample_offset += frame_samples;
+        frame_count += 1;
+        sample_offset += frame_size;
     }
 
     println!(
@@ -256,8 +261,8 @@ fn main() {
     println!("\n=== Decoding ===");
 
     let mut decoded_samples: Vec<i16> = Vec::new();
-    let mut pos = 0;
-    let mut decoded_frames = 0;
+    let mut pos = 0usize;
+    let mut decoded_frames = 0usize;
 
     while pos + 2 <= all_payload.len() {
         let len = u16::from_le_bytes([all_payload[pos], all_payload[pos + 1]]) as usize;
@@ -270,74 +275,40 @@ fn main() {
         let payload = &all_payload[pos..pos + len];
         pos += len;
 
-        // Decode
-        let mut dec_rc = RangeCoder::new_decoder(payload.to_vec());
-        let mut output: Vec<i16> = vec![0; frame_samples];
-        let n = dec.decode(&mut dec_rc, &mut output, 0, true, 20, 16000);
+        let mut output = vec![0.0f32; frame_size];
+        let n = decoder.decode(payload, frame_size, &mut output).unwrap();
 
-        if n > 0 {
-            decoded_samples.extend_from_slice(&output[..n as usize]);
-            decoded_frames += 1;
+        // Convert f32 back to i16
+        for &s in &output[..n] {
+            decoded_samples.push((s * 32768.0).clamp(-32768.0, 32767.0) as i16);
         }
+
+        decoded_frames += 1;
     }
 
     println!(
-        "Decoded {} frames, {} samples",
+        "Decoded {} frames, {} samples ({:.1} s)",
         decoded_frames,
-        decoded_samples.len()
+        decoded_samples.len(),
+        decoded_samples.len() as f64 / target_rate as f64
     );
 
-    // Save decoded WAV
-    let mut out_header = header.clone();
-    out_header.sample_rate = target_sample_rate;
-    write_wav(decoded_path, &out_header, &decoded_samples);
-
-    // Summary and SNR calculation
-    println!("\n=== Summary ===");
-    println!("Input:  {} samples", input_samples.len());
-    println!("Output: {} samples", decoded_samples.len());
-
-    // Dump samples from frame 65 (active) to see the actual signal shape
-    let dump_frame = 65;
-    let dump_start = dump_frame * frame_samples;
-    println!("\nFrame {} sample dump (first 20 samples):", dump_frame);
-    println!("  i  |  input  |  output  |  error");
-    for i in 0..20 {
-        let idx = dump_start + i;
-        let inp = input_samples[idx];
-        let out = decoded_samples[idx];
-        println!(
-            "  {:3} | {:6} | {:6} | {:6}",
-            i,
-            inp,
-            out,
-            out as i32 - inp as i32
-        );
-    }
-
-    // Cross-correlation to find delay
+    // SNR calculation with cross-correlation delay search (BEFORE resampling)
     let compare_len = input_samples.len().min(decoded_samples.len());
-    let active_start = 63 * frame_samples; // first active region
-    let active_end = (80 * frame_samples).min(compare_len);
-    let active_inp: Vec<f64> = input_samples[active_start..active_end]
-        .iter()
-        .map(|&s| s as f64)
-        .collect();
-    let active_out: Vec<f64> = decoded_samples[active_start..active_end]
-        .iter()
-        .map(|&s| s as f64)
-        .collect();
+    let active_start = 63 * frame_size;
+    let active_end = (80 * frame_size).min(compare_len);
 
-    let max_delay = 320; // check up to 320 samples delay
     let mut best_corr = f64::NEG_INFINITY;
-    let mut best_delay: i32 = 0;
+    let mut best_delay = 0i32;
+    let max_delay = 320i32;
+
     for delay in -max_delay..=max_delay {
-        let mut corr = 0.0;
+        let mut corr = 0.0f64;
         let mut count = 0usize;
-        for i in 0..active_inp.len() {
+        for i in active_start..active_end {
             let j = i as i32 + delay;
-            if j >= 0 && (j as usize) < active_out.len() {
-                corr += active_inp[i] * active_out[j as usize];
+            if j >= 0 && (j as usize) < decoded_samples.len() {
+                corr += input_samples[i] as f64 * decoded_samples[j as usize] as f64;
                 count += 1;
             }
         }
@@ -349,16 +320,18 @@ fn main() {
             best_delay = delay;
         }
     }
+
     println!(
-        "\nBest delay (cross-correlation): {} samples ({:.1} ms)",
+        "Best delay (cross-correlation): {} samples ({:.1} ms)",
         best_delay,
-        best_delay as f64 / 16.0
+        best_delay as f64 * 1000.0 / target_rate as f64
     );
 
     // Compute delay-compensated SNR
     let delay = best_delay;
     let mut signal_energy = 0.0f64;
     let mut noise_energy = 0.0f64;
+
     for i in 0..compare_len {
         let j = i as i32 + delay;
         if j >= 0 && (j as usize) < compare_len {
@@ -369,20 +342,46 @@ fn main() {
             noise_energy += err * err;
         }
     }
-    let snr_compensated = if noise_energy > 0.0 {
+
+    let snr = if noise_energy > 0.0 {
         10.0 * (signal_energy / noise_energy).log10()
     } else {
         999.0
     };
-    println!("Delay-compensated SNR: {:.2} dB", snr_compensated);
+    println!("Delay-compensated SNR: {:.2} dB", snr);
 
-    // Also compute gain ratio
-    let mut sum_inp_sq = 0.0f64;
-    let mut sum_out_sq = 0.0f64;
-    for i in active_start..active_end {
-        sum_inp_sq += (input_samples[i] as f64).powi(2);
-        sum_out_sq += (decoded_samples[i] as f64).powi(2);
+    // Sample dump for frame 65
+    let dump_frame = 65usize;
+    let dump_start = dump_frame * frame_size;
+    if dump_start + 20 <= input_samples.len().min(decoded_samples.len()) {
+        println!("\nFrame {} sample dump (first 20 samples):", dump_frame);
+        println!("  i  |  input  |  output  |  error");
+        for i in 0..20 {
+            let idx = dump_start + i;
+            let inp = input_samples[idx];
+            let out = decoded_samples[idx];
+            println!(
+                "  {:3} | {:6} | {:6} | {:6}",
+                i,
+                inp,
+                out,
+                out as i32 - inp as i32
+            );
+        }
     }
-    let gain_ratio = (sum_out_sq / sum_inp_sq.max(1.0)).sqrt();
-    println!("Output/input gain ratio (active region): {:.3}", gain_ratio);
+
+    // If we resampled, convert decoded output back to original rate
+    let final_samples: Vec<i16> = if src_rate != target_rate {
+        resample_linear(&decoded_samples, target_rate, src_rate)
+    } else {
+        decoded_samples
+    };
+
+    // Save decoded WAV
+    write_wav(decoded_path, src_rate, 1, &final_samples);
+
+    // Summary
+    println!("\n=== Summary ===");
+    println!("Input:  {} samples ({} Hz)", input_samples.len(), target_rate);
+    println!("Output: {} samples ({} Hz)", final_samples.len(), src_rate);
 }

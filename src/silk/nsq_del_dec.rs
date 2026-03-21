@@ -73,8 +73,9 @@ fn silk_nsq_del_dec_scale_states(
     let inv_gain_q31 = silk_inverse32_varq(gains_q16[subfr].max(1), 47);
 
     let inv_gain_q26 = silk_rshift_round(inv_gain_q31, 5);
-    for i in 0..ps_enc_c.subfr_length as usize {
-        x_sc_q10[i] = silk_smulww(x16[i] as i32, inv_gain_q26);
+    let n = ps_enc_c.subfr_length as usize;
+    for (x_out, &x_in) in x_sc_q10[..n].iter_mut().zip(x16[..n].iter()) {
+        *x_out = silk_smulww(x_in as i32, inv_gain_q26);
     }
 
     if nsq.rewhite_flag != 0 {
@@ -96,11 +97,11 @@ fn silk_nsq_del_dec_scale_states(
             nsq.s_ltp_shp_q14[i] = silk_smulww(gain_adj_q16, nsq.s_ltp_shp_q14[i]);
         }
 
-        if signal_type == TYPE_VOICED as i32 && nsq.rewhite_flag == 0 {
-            for i in (nsq.s_ltp_buf_idx as usize - lag - LTP_ORDER / 2)
-                ..(nsq.s_ltp_buf_idx as usize - decision_delay as usize)
-            {
-                s_ltp_q15[i] = silk_smulww(gain_adj_q16, s_ltp_q15[i]);
+        if signal_type == TYPE_VOICED && nsq.rewhite_flag == 0 {
+            let ltp_start = nsq.s_ltp_buf_idx as usize - lag - LTP_ORDER / 2;
+            let ltp_end = nsq.s_ltp_buf_idx as usize - decision_delay as usize;
+            for v in s_ltp_q15[ltp_start..ltp_end].iter_mut() {
+                *v = silk_smulww(gain_adj_q16, *v);
             }
         }
 
@@ -131,8 +132,9 @@ fn silk_noise_shape_quantizer_short_prediction(
     a_q12: &[i16],
     predict_lpc_order: i32,
 ) -> i32 {
-    let mut out = silk_smulwb(ps_lpc_q14[idx], a_q12[0] as i32);
-    for j in 1..predict_lpc_order as usize {
+
+    let mut out = silk_rshift(predict_lpc_order, 1);
+    for j in 0..predict_lpc_order as usize {
         out = silk_smlawb(out, ps_lpc_q14[idx - j], a_q12[j] as i32);
     }
     out
@@ -166,18 +168,21 @@ pub fn silk_noise_shape_quantizer_del_dec(
     n_states_delayed_decision: i32,
     smpl_buf_idx: &mut i32,
     decision_delay: i32,
+    _frame_counter: i32,
 ) {
     let mut ps_sample_state = [[NSQSampleStruct::default(); 2]; NSQ_MAX_STATES_OPERATING];
     let gain_q10 = silk_rshift(gain_q16, 6);
-    // Ensure n_states_delayed_decision doesn't exceed array bounds
+
     let n_states = (n_states_delayed_decision as usize).min(NSQ_MAX_STATES_OPERATING);
+
+    let pred_lag_ptr_base = nsq.s_ltp_buf_idx - lag + LTP_ORDER as i32 / 2;
+    let shp_lag_ptr_base = nsq.s_ltp_shp_buf_idx - lag + HARM_SHAPE_FIR_TAPS as i32 / 2;
 
     for i in 0..length {
         let idx = i as usize;
         let mut ltp_pred_q14 = 0;
-        if signal_type == TYPE_VOICED as i32 {
-            let pred_lag_idx_calc = nsq.s_ltp_buf_idx - lag + LTP_ORDER as i32 / 2 + i;
-            // Bounds check to prevent underflow
+        if signal_type == TYPE_VOICED {
+            let pred_lag_idx_calc = pred_lag_ptr_base + i;
             if pred_lag_idx_calc >= LTP_ORDER as i32 && pred_lag_idx_calc < s_ltp_q15.len() as i32 {
                 let pred_lag_idx = pred_lag_idx_calc as usize;
                 ltp_pred_q14 = 2;
@@ -192,8 +197,7 @@ pub fn silk_noise_shape_quantizer_del_dec(
 
         let mut n_ltp_q14 = 0;
         if lag > 0 {
-            let shp_lag_idx_calc = nsq.s_ltp_shp_buf_idx - lag + HARM_SHAPE_FIR_TAPS as i32 / 2 + i;
-            // Bounds check to prevent underflow
+            let shp_lag_idx_calc = shp_lag_ptr_base + i;
             if shp_lag_idx_calc >= HARM_SHAPE_FIR_TAPS as i32 && shp_lag_idx_calc < nsq.s_ltp_shp_q14.len() as i32 {
                 let shp_lag_idx = shp_lag_idx_calc as usize;
                 n_ltp_q14 = silk_smulwb(
@@ -264,7 +268,6 @@ pub fn silk_noise_shape_quantizer_del_dec(
             n_ar_q14 = silk_smlawb(n_ar_q14, ps_dd.lf_ar_q14, tilt_q14);
             n_ar_q14 = silk_lshift(n_ar_q14, 2);
 
-            // Bounds check for smpl_buf_idx access
             let smpl_idx = (*smpl_buf_idx as usize).min(DECISION_DELAY - 1);
             let mut n_lf_q14 = silk_smulwb(ps_dd.shape_q14[smpl_idx], lf_shp_q14);
             n_lf_q14 = silk_smlawt(n_lf_q14, ps_dd.lf_ar_q14, lf_shp_q14);
@@ -410,8 +413,9 @@ pub fn silk_noise_shape_quantizer_del_dec(
                 max_state.seed = min_state.seed;
                 max_state.seed_init = min_state.seed_init;
                 max_state.rd_q10 = min_state.rd_q10;
-                ps_sample_state[rd_max_ind][0] = ps_sample_state[rd_min_ind][1];
             }
+
+            ps_sample_state[rd_max_ind][0] = ps_sample_state[rd_min_ind][1];
         }
 
         let ps_dd = &ps_del_dec[winner_ind];
@@ -451,7 +455,7 @@ pub fn silk_noise_shape_quantizer_del_dec(
             let ps_dd = &mut ps_del_dec[k];
             ps_dd.lf_ar_q14 = ps_ss.lf_ar_q14;
             ps_dd.diff_q14 = ps_ss.diff_q14;
-            // Bounds check for s_lpc_q14 access
+
             let lpc_idx = NSQ_LPC_BUF_LENGTH + idx;
             if lpc_idx < ps_dd.s_lpc_q14.len() {
                 ps_dd.s_lpc_q14[lpc_idx] = ps_ss.xq_q14;
@@ -482,6 +486,7 @@ pub fn silk_nsq_del_dec(
     ps_common: &SilkEncoderStateCommon,
     ps_nsq: &mut SilkNSQState,
     ps_indices: &SideInfoIndices,
+
     x16: &[i16],
     pulses: &mut [i8],
     pred_coef_q12: &[i16],
@@ -494,7 +499,7 @@ pub fn silk_nsq_del_dec(
     pitch_l: &[i32],
     lambda_q10: i32,
     ltp_scale_q14: i32,
-) {
+) -> i32 {
     let mut x_sc_q10 = [0i32; MAX_SUB_FRAME_LENGTH];
     let mut delayed_ga_q10 = [0i32; DECISION_DELAY];
     let mut s_ltp_q15 = [0i32; LTP_MEM_LENGTH_MS * MAX_FS_KHZ + MAX_FRAME_LENGTH];
@@ -503,7 +508,6 @@ pub fn silk_nsq_del_dec(
 
     let mut lag = ps_nsq.lag_prev;
 
-    // Ensure n_states_delayed_decision doesn't exceed array bounds
     let n_states = (ps_common.n_states_delayed_decision as usize).min(NSQ_MAX_STATES_OPERATING);
 
     for k in 0..n_states {
@@ -513,7 +517,7 @@ pub fn silk_nsq_del_dec(
         ps_dd.rd_q10 = 0;
         ps_dd.lf_ar_q14 = ps_nsq.s_lf_ar_q14;
         ps_dd.diff_q14 = ps_nsq.s_diff_shp_q14;
-        // Bounds check for s_ltp_shp_q14 access
+
         if ps_common.ltp_mem_length > 0 {
             ps_dd.shape_q14[0] = ps_nsq.s_ltp_shp_q14[ps_common.ltp_mem_length as usize - 1];
         }
@@ -529,7 +533,7 @@ pub fn silk_nsq_del_dec(
 
     if ps_indices.signal_type as i32 == TYPE_VOICED {
         for k in 0..ps_common.nb_subfr as usize {
-            // Ensure we have a valid minimum to prevent negative indices
+
             let pitch_constraint = pitch_l[k] - LTP_ORDER as i32 / 2 - 1;
             if pitch_constraint > 0 {
                 decision_delay = decision_delay.min(pitch_constraint);
@@ -542,17 +546,14 @@ pub fn silk_nsq_del_dec(
         }
     }
 
-    // Ensure decision_delay is at least 1 to prevent index underflow
-    decision_delay = decision_delay.max(1);
-
     let lsf_interpolation_flag = if ps_indices.nlsf_interp_coef_q2 == 4 {
         0
     } else {
         1
     };
 
-    ps_nsq.s_ltp_shp_buf_idx = ps_common.ltp_mem_length as i32;
-    ps_nsq.s_ltp_buf_idx = ps_common.ltp_mem_length as i32;
+    ps_nsq.s_ltp_shp_buf_idx = ps_common.ltp_mem_length;
+    ps_nsq.s_ltp_buf_idx = ps_common.ltp_mem_length;
 
     let mut x_ptr = 0;
     let mut pulses_ptr = 0;
@@ -561,11 +562,11 @@ pub fn silk_nsq_del_dec(
 
     for k in 0..ps_common.nb_subfr as usize {
         let a_q12 = &pred_coef_q12
-            [((k >> 1) | (1 - lsf_interpolation_flag as usize)) * MAX_LPC_ORDER as usize..];
-        let b_q14 = &ltp_coef_q14[k * LTP_ORDER as usize..];
-        let ar_shp_q13 = &ar_q13[k * MAX_SHAPE_LPC_ORDER as usize..];
+            [((k >> 1) | (1 - lsf_interpolation_flag as usize)) * MAX_LPC_ORDER..];
+        let b_q14 = &ltp_coef_q14[k * LTP_ORDER..];
+        let ar_shp_q13 = &ar_q13[k * MAX_SHAPE_LPC_ORDER..];
 
-        let harm_shape_gain = harm_shape_gain_q14[k] as i32;
+        let harm_shape_gain = harm_shape_gain_q14[k];
         let mut harm_shape_fir_packed_q14 = silk_rshift(harm_shape_gain, 2);
         harm_shape_fir_packed_q14 |= silk_lshift(silk_rshift(harm_shape_gain, 1), 16);
 
@@ -613,19 +614,18 @@ pub fn silk_nsq_del_dec(
                     subfr_nsq = 0;
                 }
 
-                // Ensure start_idx doesn't underflow
                 let start_idx_calc = ps_common.ltp_mem_length
                     - lag
                     - ps_common.predict_lpc_order
                     - LTP_ORDER as i32 / 2;
                 if start_idx_calc < 0 {
-                    // Invalid lag value, skip this section
+
                     continue;
                 }
                 let start_idx = start_idx_calc as usize;
                 let xq_start = start_idx + k * ps_common.subfr_length as usize;
                 let filter_len = ps_common.ltp_mem_length as usize - start_idx;
-                // Bounds check for all array accesses
+
                 if start_idx + filter_len > s_ltp.len() || xq_start + filter_len > ps_nsq.xq.len() {
                     continue;
                 }
@@ -687,6 +687,7 @@ pub fn silk_nsq_del_dec(
             ps_common.n_states_delayed_decision as i32,
             &mut smpl_buf_idx,
             decision_delay,
+            ps_common.frame_counter as i32,
         );
 
         x_ptr += ps_common.subfr_length as usize;
@@ -709,10 +710,41 @@ pub fn silk_nsq_del_dec(
     ps_nsq.s_diff_shp_q14 = ps_dd.diff_q14;
     ps_nsq.lag_prev = pitch_l[ps_common.nb_subfr as usize - 1];
 
+    let gain_q10_final = silk_rshift(gains_q16[ps_common.nb_subfr as usize - 1], 6);
+    let mut last_smple_idx =
+        (smpl_buf_idx + decision_delay) as i32;
+    for i in 0..decision_delay {
+        last_smple_idx = (last_smple_idx - 1 + DECISION_DELAY as i32) % DECISION_DELAY as i32;
+        let pulse_idx = (pulses_ptr as i32 + i - decision_delay) as isize;
+        let xq_idx = (xq_ptr as i32 + i - decision_delay) as isize;
+        if pulse_idx >= 0 && (pulse_idx as usize) < pulses.len() {
+            pulses[pulse_idx as usize] =
+                silk_rshift_round(ps_dd.q_q10[last_smple_idx as usize], 10) as i8;
+        }
+        if xq_idx >= 0 && (xq_idx as usize) < ps_nsq.xq.len() {
+            ps_nsq.xq[xq_idx as usize] = silk_sat16(silk_rshift_round(
+                silk_smulww(ps_dd.xq_q14[last_smple_idx as usize], gain_q10_final),
+                8,
+            )) as i16;
+        }
+        let shp_idx = (ps_nsq.s_ltp_shp_buf_idx - decision_delay + i) as isize;
+        if shp_idx >= 0 && (shp_idx as usize) < ps_nsq.s_ltp_shp_q14.len() {
+            ps_nsq.s_ltp_shp_q14[shp_idx as usize] =
+                ps_dd.shape_q14[last_smple_idx as usize];
+        }
+    }
+
+    let subfr_len = ps_common.subfr_length as usize;
+    ps_nsq.s_lpc_q14[..NSQ_LPC_BUF_LENGTH]
+        .copy_from_slice(&ps_dd.s_lpc_q14[subfr_len..subfr_len + NSQ_LPC_BUF_LENGTH]);
+    ps_nsq.s_ar2_q14.copy_from_slice(&ps_dd.s_ar2_q14);
+
     let ltp_mem_len = ps_common.ltp_mem_length as usize;
     let frame_len = ps_common.frame_length as usize;
     ps_nsq.xq.copy_within(frame_len..frame_len + ltp_mem_len, 0);
     ps_nsq
         .s_ltp_shp_q14
         .copy_within(frame_len..frame_len + ltp_mem_len, 0);
+
+    ps_del_dec[winner_ind].seed_init
 }

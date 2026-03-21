@@ -68,6 +68,7 @@ pub fn pulses2bits(m: &CeltMode, band: usize, mut lm: i32, pulses: i32) -> i32 {
     (cache[pulses as usize] as i32) + 1
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn clt_compute_allocation(
     m: &CeltMode,
     start: usize,
@@ -127,11 +128,11 @@ pub fn clt_compute_allocation(
             c << BITRES,
             ((3 * (m.e_bands[j + 1] - m.e_bands[j]) as i32) << (lm + BITRES)) >> 4,
         );
-        trim_offset[j] = c
+        trim_offset[j] = (c
             * (m.e_bands[j + 1] - m.e_bands[j]) as i32
             * (alloc_trim - 5 - lm)
             * (end - j - 1) as i32
-            * (1 << (lm + BITRES))
+            * (1 << (lm + BITRES)))
             >> 6;
         if (m.e_bands[j + 1] - m.e_bands[j]) << lm == 1 {
             trim_offset[j] -= c << BITRES;
@@ -229,6 +230,7 @@ pub fn clt_compute_allocation(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn interp_bits2pulses(
     m: &CeltMode,
     start: usize,
@@ -257,7 +259,7 @@ fn interp_bits2pulses(
 ) -> i32 {
     let mut psum: i32;
     let mut lo = 0;
-    let mut hi = 1 << 6; // ALLOC_STEPS
+    let mut hi = 1 << 6;
     let alloc_floor = c << BITRES;
     let stereo = if c > 1 { 1 } else { 0 };
     let log_m = lm << BITRES;
@@ -269,7 +271,7 @@ fn interp_bits2pulses(
         psum = 0;
         let mut done = false;
         for j in (start..end).rev() {
-            let tmp = bits1[j] + (mid * bits2[j] >> 6);
+            let tmp = bits1[j] + ((mid * bits2[j]) >> 6);
             if tmp >= thresh[j] || done {
                 done = true;
                 psum += min(tmp, cap[j]);
@@ -288,7 +290,7 @@ fn interp_bits2pulses(
     psum = 0;
     let mut done = false;
     for j in (start..end).rev() {
-        let mut tmp = bits1[j] + (lo * bits2[j] >> 6);
+        let mut tmp = bits1[j] + ((lo * bits2[j]) >> 6);
         if tmp < thresh[j] && !done {
             if tmp >= alloc_floor {
                 tmp = alloc_floor;
@@ -331,7 +333,7 @@ fn interp_bits2pulses(
                     0
                 };
                 if coded_bands <= start + 2
-                    || (band_bits > (depth_threshold * band_width << lm << BITRES) >> 4
+                    || (band_bits > ((depth_threshold * band_width) << lm << BITRES) >> 4
                         && (j as i32) <= signal_bandwidth)
                 {
                     rc.encode_bit_logp(true, 1);
@@ -361,7 +363,6 @@ fn interp_bits2pulses(
         coded_bands -= 1;
     }
 
-    // Intensity and dual stereo
     let mut intensity_rsv_final = intensity_rsv;
     if intensity_rsv_final > 0 {
         if encode {
@@ -398,12 +399,12 @@ fn interp_bits2pulses(
     let nb_samples = (m.e_bands[coded_bands] - m.e_bands[start]) as i32;
     let percoeff = left / nb_samples;
     left -= nb_samples * percoeff;
-    for j in start..coded_bands {
-        bits[j] += percoeff * (m.e_bands[j + 1] - m.e_bands[j]) as i32;
+    for (j, bits_j) in bits[start..coded_bands].iter_mut().enumerate().map(|(i, v)| (i + start, v)) {
+        *bits_j += percoeff * (m.e_bands[j + 1] - m.e_bands[j]) as i32;
     }
-    for j in start..coded_bands {
+    for (j, bits_j) in bits[start..coded_bands].iter_mut().enumerate().map(|(i, v)| (i + start, v)) {
         let tmp = min(left, (m.e_bands[j + 1] - m.e_bands[j]) as i32);
-        bits[j] += tmp;
+        *bits_j += tmp;
         left -= tmp;
     }
 
@@ -430,9 +431,9 @@ fn interp_bits2pulses(
                 offset += den << BITRES >> 2;
             }
 
-            if bits[j] + offset < den * 2 << BITRES {
+            if bits[j] + offset < (den * 2) << BITRES {
                 offset += nc_log_n >> 2;
-            } else if bits[j] + offset < den * 3 << BITRES {
+            } else if bits[j] + offset < (den * 3) << BITRES {
                 offset += nc_log_n >> 3;
             }
 
@@ -448,7 +449,7 @@ fn interp_bits2pulses(
             } else {
                 0
             };
-            bits[j] -= c * ebits[j] << BITRES;
+            bits[j] -= (c * ebits[j]) << BITRES;
             balance = excess;
         } else {
             let excess = max(0, bit - (c << BITRES));
@@ -461,7 +462,7 @@ fn interp_bits2pulses(
         if balance > 0 {
             let extra_fine = min(balance >> (stereo + BITRES), MAX_FINE_BITS - ebits[j]);
             ebits[j] += extra_fine;
-            let extra_bits = extra_fine * c << BITRES;
+            let extra_bits = (extra_fine * c) << BITRES;
             fine_priority[j] = if extra_bits >= balance { 1 } else { 0 };
             balance -= extra_bits;
         }

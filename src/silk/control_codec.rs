@@ -2,23 +2,17 @@ use crate::silk::define::*;
 use crate::silk::structs::*;
 use crate::silk::tables_nlsf::*;
 
-// Constants from C silk/define.h
 pub const FIND_PITCH_LPC_WIN_MS: i32 = 20 + (LA_PITCH_MS as i32 * 2);
 pub const FIND_PITCH_LPC_WIN_MS_2_SF: i32 = 10 + (LA_PITCH_MS as i32 * 2);
 pub const MAX_DEL_DEC_STATES: i32 = 4;
 pub const LA_SHAPE_MAX: i32 = LA_SHAPE_MS as i32 * MAX_FS_KHZ as i32;
 pub const SHAPE_LPC_WIN_MAX: i32 = 15 * MAX_FS_KHZ as i32;
 
-// Warping multiplier in Q16 (from tuning_parameters: WARPING_MULTIPLIER = 0.015)
-// 0.015 * 65536 = 983
 pub const WARPING_MULTIPLIER_Q16: i32 = 983;
 
-/// Setup sampling-rate-dependent encoder parameters.
-/// Equivalent to C silk_setup_fs().
 pub fn silk_setup_fs(ps_enc: &mut SilkEncoderState, fs_khz: i32, packet_size_ms: i32) -> i32 {
     let cmn = &mut ps_enc.s_cmn;
 
-    /* Set packet size params */
     if packet_size_ms <= 10 {
         cmn.n_frames_per_packet = 1;
         cmn.nb_subfr = if packet_size_ms == 10 { 2 } else { 1 };
@@ -32,13 +26,11 @@ pub fn silk_setup_fs(ps_enc: &mut SilkEncoderState, fs_khz: i32, packet_size_ms:
     }
     cmn.packet_size_ms = packet_size_ms;
 
-    /* Set internal sampling frequency */
     if cmn.fs_khz != fs_khz {
-        /* Reset state on FS change */
+
         ps_enc.s_nsq = SilkNSQState::default();
         cmn.prev_nlsf_q15 = [0; MAX_LPC_ORDER];
 
-        /* Initialize non-zero parameters */
         cmn.prev_lag = 100;
         cmn.first_frame_after_reset = 1;
         ps_enc.s_shape.last_gain_index = 10;
@@ -60,7 +52,7 @@ pub fn silk_setup_fs(ps_enc: &mut SilkEncoderState, fs_khz: i32, packet_size_ms:
         cmn.frame_length = cmn.subfr_length * cmn.nb_subfr;
         cmn.ltp_mem_length = LTP_MEM_LENGTH_MS as i32 * fs_khz;
         cmn.la_pitch = LA_PITCH_MS as i32 * fs_khz;
-        // max_pitch_lag not in struct yet, but should be 18 * fs_khz
+
         if cmn.nb_subfr == MAX_NB_SUBFR as i32 {
             cmn.pitch_lpc_win_length = FIND_PITCH_LPC_WIN_MS * fs_khz;
         } else {
@@ -71,8 +63,6 @@ pub fn silk_setup_fs(ps_enc: &mut SilkEncoderState, fs_khz: i32, packet_size_ms:
     SILK_NO_ERROR
 }
 
-/// Setup complexity-dependent encoder parameters.
-/// Equivalent to C silk_setup_complexity().
 pub fn silk_setup_complexity(ps_enc: &mut SilkEncoderState, complexity: i32) -> i32 {
     let cmn = &mut ps_enc.s_cmn;
 
@@ -148,7 +138,6 @@ pub fn silk_setup_complexity(ps_enc: &mut SilkEncoderState, complexity: i32) -> 
         cmn.warping_q16 = cmn.fs_khz * WARPING_MULTIPLIER_Q16;
     }
 
-    /* Do not allow higher pitch estimation LPC order than predict LPC order */
     ps_enc.pitch_estimation_lpc_order =
         ps_enc.pitch_estimation_lpc_order.min(cmn.predict_lpc_order);
     cmn.shape_win_length = SUB_FRAME_LENGTH_MS as i32 * cmn.fs_khz + 2 * cmn.la_shape;
@@ -157,8 +146,6 @@ pub fn silk_setup_complexity(ps_enc: &mut SilkEncoderState, complexity: i32) -> 
     SILK_NO_ERROR
 }
 
-/// Initialize encoder for a given configuration.
-/// Combines silk_setup_fs + silk_setup_complexity + SNR setup.
 pub fn silk_control_encoder(
     ps_enc: &mut SilkEncoderState,
     fs_khz: i32,

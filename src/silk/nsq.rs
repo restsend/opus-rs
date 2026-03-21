@@ -36,10 +36,8 @@ pub fn silk_nsq(
 
     nsq.rand_seed = ps_indices.seed as i32;
 
-    /* Set unvoiced lag to the previous one, overwrite later for voiced */
     lag = nsq.lag_prev as usize;
 
-    /* Interpolation status */
     if ps_indices.nlsf_interp_coef_q2 == 4 {
         lsf_interpolation_flag = 0;
     } else {
@@ -61,9 +59,8 @@ pub fn silk_nsq(
         if ps_indices.signal_type == TYPE_VOICED as i8 {
             lag = pitch_l[k] as usize;
 
-            /* Re-whitening */
             if (k & (3 - (lsf_interpolation_flag << 1) as usize)) == 0 {
-                /* C: start_idx = ltp_mem_length - lag - predictLPCOrder - LTP_ORDER/2 */
+
                 let start_idx_signed = ps_enc_c.ltp_mem_length
                     - lag as i32
                     - ps_enc_c.predict_lpc_order
@@ -77,14 +74,13 @@ pub fn silk_nsq(
                     a_q12,
                     (ps_enc_c.ltp_mem_length as usize) - start_idx,
                     ps_enc_c.predict_lpc_order as usize,
-                    0, // arch
+                    0,
                 );
                 nsq.rewhite_flag = 1;
                 nsq.s_ltp_buf_idx = ps_enc_c.ltp_mem_length as i32;
             }
         }
 
-        /* Noise shape parameters */
         harm_shape_fir_packed_q14 = harm_shape_gain_q14[k] >> 2;
         harm_shape_fir_packed_q14 |= (harm_shape_gain_q14[k] >> 1) << 16;
 
@@ -131,16 +127,13 @@ pub fn silk_nsq(
 
     nsq.lag_prev = pitch_l[ps_enc_c.nb_subfr as usize - 1];
 
-    /* Save quantized speech and noise shaping signals */
     let frame_length = ps_enc_c.frame_length as usize;
     let ltp_mem_length = ps_enc_c.ltp_mem_length as usize;
 
-    // xq move
     let mut tmp_xq = [0i16; MAX_FRAME_LENGTH * 2];
     tmp_xq[..ltp_mem_length].copy_from_slice(&nsq.xq[frame_length..frame_length + ltp_mem_length]);
     nsq.xq[..ltp_mem_length].copy_from_slice(&tmp_xq[..ltp_mem_length]);
 
-    // sLTP_shp_Q14 move
     let mut tmp_ltp_shp = [0i32; MAX_FRAME_LENGTH * 2];
     tmp_ltp_shp[..ltp_mem_length]
         .copy_from_slice(&nsq.s_ltp_shp_q14[frame_length..frame_length + ltp_mem_length]);
@@ -166,16 +159,14 @@ pub fn silk_nsq_scale_states(
 
     let mut inv_gain_q31 = silk_inverse32_varq(if gains_q16[k] > 1 { gains_q16[k] } else { 1 }, 47);
 
-    /* Scale input */
     let inv_gain_q26 = silk_rshift_round(inv_gain_q31, 5);
     for i in 0..subfr_length {
         x_sc_q10[i] = silk_smulww(x16[i] as i32, inv_gain_q26);
     }
 
-    /* After rewhitening the LTP state is un-scaled, so scale with inv_gain_Q31 */
     if nsq.rewhite_flag != 0 {
         if k == 0 {
-            /* Do LTP downscaling */
+
             inv_gain_q31 = silk_lshift(silk_smulwb(inv_gain_q31, ltp_scale_q14), 2);
         }
         let start = (nsq.s_ltp_buf_idx as usize)
@@ -186,7 +177,6 @@ pub fn silk_nsq_scale_states(
         }
     }
 
-    /* Adjust for changing gain */
     if gains_q16[k] != nsq.prev_gain_q16 {
         let gain_adj_q16 = silk_div32_varq(
             nsq.prev_gain_q16,
@@ -194,13 +184,11 @@ pub fn silk_nsq_scale_states(
             16,
         );
 
-        /* Scale long-term shaping state */
         let shp_start = (nsq.s_ltp_shp_buf_idx - ltp_mem_length as i32) as usize;
         for i in shp_start..nsq.s_ltp_shp_buf_idx as usize {
             nsq.s_ltp_shp_q14[i] = silk_smulww(gain_adj_q16, nsq.s_ltp_shp_q14[i]);
         }
 
-        /* Scale long-term prediction state */
         if signal_type == TYPE_VOICED as i32 && nsq.rewhite_flag == 0 {
             let ltp_start = (nsq.s_ltp_buf_idx as usize)
                 .wrapping_sub(lag)
@@ -213,7 +201,6 @@ pub fn silk_nsq_scale_states(
         nsq.s_lf_ar_q14 = silk_smulww(gain_adj_q16, nsq.s_lf_ar_q14);
         nsq.s_diff_shp_q14 = silk_smulww(gain_adj_q16, nsq.s_diff_shp_q14);
 
-        /* Scale short-term prediction and shaping states */
         for i in 0..NSQ_LPC_BUF_LENGTH {
             nsq.s_lpc_q14[i] = silk_smulww(gain_adj_q16, nsq.s_lpc_q14[i]);
         }
@@ -221,16 +208,11 @@ pub fn silk_nsq_scale_states(
             nsq.s_ar2_q14[i] = silk_smulww(gain_adj_q16, nsq.s_ar2_q14[i]);
         }
 
-        /* Save inverse gain */
         nsq.prev_gain_q16 = gains_q16[k];
     }
 
-    /* Save signal type for next subframe */
     nsq.prev_sig_type = signal_type as i8;
 }
-
-/// Noise shape feedback loop - matches C silk_NSQ_noise_shape_feedback_loop_c
-/// Shifts data0 value into data1 shift register and computes weighted sum
 
 #[inline(always)]
 fn silk_nsq_noise_shape_feedback_loop(
@@ -239,7 +221,7 @@ fn silk_nsq_noise_shape_feedback_loop(
     coef: &[i16],
     order: usize,
 ) -> i32 {
-    // SAFETY: order ≤ MAX_SHAPE_LPC_ORDER ≤ data1.len() and coef.len()
+
     unsafe {
         let mut tmp2 = data0_val;
         let mut tmp1 = *data1.get_unchecked(0);
@@ -260,7 +242,7 @@ fn silk_nsq_noise_shape_feedback_loop(
         }
         *data1.get_unchecked_mut(order - 1) = tmp1;
         out = silk_smlawb(out, tmp1, *coef.get_unchecked(order - 1) as i32);
-        /* Q11 -> Q12 */
+
         out <<= 1;
         out
     }
@@ -290,11 +272,9 @@ fn silk_noise_shape_quantizer(
 ) {
     let gain_q10 = gain_q16 >> 6;
 
-    /* Compute base indices for lagged access (before loop, as in C) */
     let shp_lag_base = (nsq.s_ltp_shp_buf_idx as usize).wrapping_sub(lag) + HARM_SHAPE_FIR_TAPS / 2;
     let pred_lag_base = (nsq.s_ltp_buf_idx as usize).wrapping_sub(lag) + LTP_ORDER / 2;
 
-    // Optimize for the common case: split into voiced and unvoiced paths
     if signal_type == TYPE_VOICED as i32 {
         silk_noise_shape_quantizer_voiced(
             nsq,
@@ -338,16 +318,14 @@ fn silk_noise_shape_quantizer(
         );
     }
 
-    /* Update LPC synth buffer */
     nsq.s_lpc_q14
         .copy_within(subfr_length..subfr_length + NSQ_LPC_BUF_LENGTH, 0);
 }
 
-/// Optimized LPC prediction with loop unrolling for order 10 (narrowband)
 #[inline(always)]
 fn lpc_pred_order10(s_lpc: &[i32], a_q12: &[i16], idx: usize) -> i32 {
-    let mut pred = 5i32; // order >> 1
-    // SAFETY: idx and a_q12 bounds are guaranteed by caller
+    let mut pred = 5i32;
+
     unsafe {
         pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx), *a_q12.get_unchecked(0) as i32);
         pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 1), *a_q12.get_unchecked(1) as i32);
@@ -363,11 +341,10 @@ fn lpc_pred_order10(s_lpc: &[i32], a_q12: &[i16], idx: usize) -> i32 {
     pred
 }
 
-/// Optimized LPC prediction with loop unrolling for order 16 (wideband)
 #[inline(always)]
 fn lpc_pred_order16(s_lpc: &[i32], a_q12: &[i16], idx: usize) -> i32 {
-    let mut pred = 8i32; // order >> 1
-    // SAFETY: idx and a_q12 bounds are guaranteed by caller
+    let mut pred = 8i32;
+
     unsafe {
         pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx), *a_q12.get_unchecked(0) as i32);
         pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 1), *a_q12.get_unchecked(1) as i32);
@@ -389,7 +366,6 @@ fn lpc_pred_order16(s_lpc: &[i32], a_q12: &[i16], idx: usize) -> i32 {
     pred
 }
 
-/// Generic LPC prediction for other orders
 #[inline(always)]
 fn lpc_pred_generic(s_lpc: &[i32], a_q12: &[i16], idx: usize, order: usize) -> i32 {
     let mut pred = (order as i32) >> 1;
@@ -448,10 +424,9 @@ fn silk_noise_shape_quantizer_voiced(
     let mut s_lf_ar_shp_q14: i32;
 
     for i in 0..subfr_length {
-        /* Generate dither */
+
         nsq.rand_seed = silk_rand(nsq.rand_seed);
 
-        /* Short-term prediction with optimized unrolled loop */
         let ps_lpc_idx = NSQ_LPC_BUF_LENGTH - 1 + i;
         lpc_pred_q10 = if predict_lpc_order == 16 {
             lpc_pred_order16(&nsq.s_lpc_q14, a_q12, ps_lpc_idx)
@@ -461,7 +436,6 @@ fn silk_noise_shape_quantizer_voiced(
             lpc_pred_generic(&nsq.s_lpc_q14, a_q12, ps_lpc_idx, predict_lpc_order)
         };
 
-        /* Long-term prediction - always for voiced */
         ltp_pred_q13 = 2;
         ltp_pred_q13 = silk_smlawb(ltp_pred_q13, s_ltp_q15[pred_lag_base + i], b_q14[0] as i32);
         ltp_pred_q13 = silk_smlawb(ltp_pred_q13, s_ltp_q15[pred_lag_base + i - 1], b_q14[1] as i32);
@@ -469,7 +443,6 @@ fn silk_noise_shape_quantizer_voiced(
         ltp_pred_q13 = silk_smlawb(ltp_pred_q13, s_ltp_q15[pred_lag_base + i - 3], b_q14[3] as i32);
         ltp_pred_q13 = silk_smlawb(ltp_pred_q13, s_ltp_q15[pred_lag_base + i - 4], b_q14[4] as i32);
 
-        /* Noise shape feedback */
         n_ar_q12 = silk_nsq_noise_shape_feedback_loop(
             nsq.s_diff_shp_q14,
             &mut nsq.s_ar2_q14,
@@ -481,11 +454,9 @@ fn silk_noise_shape_quantizer_voiced(
         n_lf_q12 = silk_smulwb(nsq.s_ltp_shp_q14[(nsq.s_ltp_shp_buf_idx - 1) as usize], lf_shp_q14);
         n_lf_q12 = silk_smlawt(n_lf_q12, nsq.s_lf_ar_q14, lf_shp_q14);
 
-        /* Combine prediction and noise shaping signals */
         tmp1 = (lpc_pred_q10 << 2).wrapping_sub(n_ar_q12);
         tmp1 = tmp1.wrapping_sub(n_lf_q12);
 
-        /* Voiced path: always has lag > 0 */
         let shp_idx = shp_lag_base + i;
         n_ltp_q13 = silk_smulwb(
             silk_add_sat32(nsq.s_ltp_shp_q14[shp_idx], nsq.s_ltp_shp_q14[shp_idx - 2]),
@@ -500,13 +471,11 @@ fn silk_noise_shape_quantizer_voiced(
 
         r_q10 = x_sc_q10[i] - tmp1;
 
-        /* Flip sign depending on dither */
         if nsq.rand_seed < 0 {
             r_q10 = -r_q10;
         }
         r_q10 = silk_limit_32(r_q10, -(31 << 10), 30 << 10);
 
-        /* Quantization */
         q1_q10 = r_q10 - offset_q10;
         q1_q0 = q1_q10 >> 10;
         if lambda_q10 > 2048 {
@@ -554,20 +523,16 @@ fn silk_noise_shape_quantizer_voiced(
 
         pulses[i] = silk_rshift_round(q1_q10, 10) as i8;
 
-        /* Excitation */
         exc_q14 = q1_q10 << 4;
         if nsq.rand_seed < 0 {
             exc_q14 = -exc_q14;
         }
 
-        /* Add predictions */
         lpc_exc_q14 = silk_add_lshift32(exc_q14, ltp_pred_q13, 1);
         xq_q14 = lpc_exc_q14.wrapping_add(lpc_pred_q10 << 4);
 
-        /* Scale XQ back to normal level before saving */
         nsq.xq[xq_offset + i] = silk_sat16(silk_rshift_round(silk_smulww(xq_q14, gain_q10), 8)) as i16;
 
-        /* Update states */
         nsq.s_lpc_q14[NSQ_LPC_BUF_LENGTH + i] = xq_q14;
         nsq.s_diff_shp_q14 = xq_q14.wrapping_sub(x_sc_q10[i] << 4);
         s_lf_ar_shp_q14 = nsq.s_diff_shp_q14.wrapping_sub(n_ar_q12 << 2);
@@ -578,7 +543,6 @@ fn silk_noise_shape_quantizer_voiced(
         nsq.s_ltp_shp_buf_idx += 1;
         nsq.s_ltp_buf_idx += 1;
 
-        /* Make dither dependent on quantized signal */
         nsq.rand_seed = nsq.rand_seed.wrapping_add(pulses[i] as i32);
     }
 }
@@ -618,10 +582,9 @@ fn silk_noise_shape_quantizer_unvoiced(
     let mut s_lf_ar_shp_q14: i32;
 
     for i in 0..subfr_length {
-        /* Generate dither */
+
         nsq.rand_seed = silk_rand(nsq.rand_seed);
 
-        /* Short-term prediction with optimized unrolled loop */
         let ps_lpc_idx = NSQ_LPC_BUF_LENGTH - 1 + i;
         lpc_pred_q10 = if predict_lpc_order == 16 {
             lpc_pred_order16(&nsq.s_lpc_q14, a_q12, ps_lpc_idx)
@@ -631,10 +594,8 @@ fn silk_noise_shape_quantizer_unvoiced(
             lpc_pred_generic(&nsq.s_lpc_q14, a_q12, ps_lpc_idx, predict_lpc_order)
         };
 
-        /* No LTP for unvoiced */
         let ltp_pred_q13: i32 = 0;
 
-        /* Noise shape feedback */
         n_ar_q12 = silk_nsq_noise_shape_feedback_loop(
             nsq.s_diff_shp_q14,
             &mut nsq.s_ar2_q14,
@@ -646,22 +607,18 @@ fn silk_noise_shape_quantizer_unvoiced(
         n_lf_q12 = silk_smulwb(nsq.s_ltp_shp_q14[(nsq.s_ltp_shp_buf_idx - 1) as usize], lf_shp_q14);
         n_lf_q12 = silk_smlawt(n_lf_q12, nsq.s_lf_ar_q14, lf_shp_q14);
 
-        /* Combine prediction and noise shaping signals */
         tmp1 = (lpc_pred_q10 << 2).wrapping_sub(n_ar_q12);
         tmp1 = tmp1.wrapping_sub(n_lf_q12);
 
-        /* Unvoiced path: no lag processing */
         tmp1 = silk_rshift_round(tmp1, 2);
 
         r_q10 = x_sc_q10[i] - tmp1;
 
-        /* Flip sign depending on dither */
         if nsq.rand_seed < 0 {
             r_q10 = -r_q10;
         }
         r_q10 = silk_limit_32(r_q10, -(31 << 10), 30 << 10);
 
-        /* Quantization */
         q1_q10 = r_q10 - offset_q10;
         q1_q0 = q1_q10 >> 10;
         if lambda_q10 > 2048 {
@@ -709,20 +666,16 @@ fn silk_noise_shape_quantizer_unvoiced(
 
         pulses[i] = silk_rshift_round(q1_q10, 10) as i8;
 
-        /* Excitation */
         exc_q14 = q1_q10 << 4;
         if nsq.rand_seed < 0 {
             exc_q14 = -exc_q14;
         }
 
-        /* Add predictions */
         lpc_exc_q14 = silk_add_lshift32(exc_q14, ltp_pred_q13, 1);
         xq_q14 = lpc_exc_q14.wrapping_add(lpc_pred_q10 << 4);
 
-        /* Scale XQ back to normal level before saving */
         nsq.xq[xq_offset + i] = silk_sat16(silk_rshift_round(silk_smulww(xq_q14, gain_q10), 8)) as i16;
 
-        /* Update states */
         nsq.s_lpc_q14[NSQ_LPC_BUF_LENGTH + i] = xq_q14;
         nsq.s_diff_shp_q14 = xq_q14.wrapping_sub(x_sc_q10[i] << 4);
         s_lf_ar_shp_q14 = nsq.s_diff_shp_q14.wrapping_sub(n_ar_q12 << 2);
@@ -733,7 +686,6 @@ fn silk_noise_shape_quantizer_unvoiced(
         nsq.s_ltp_shp_buf_idx += 1;
         nsq.s_ltp_buf_idx += 1;
 
-        /* Make dither dependent on quantized signal */
         nsq.rand_seed = nsq.rand_seed.wrapping_add(pulses[i] as i32);
     }
 }

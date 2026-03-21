@@ -31,9 +31,9 @@ impl RangeCoder {
             end_offs: 0,
             end_window: 0,
             nend_bits: 0,
-            nbits_total: 33, // EC_CODE_BITS + 1
+            nbits_total: 33,
             offs: 0,
-            rng: 1 << 31, // EC_CODE_TOP
+            rng: 1 << 31,
             val: 0,
             ext: 0,
             rem: -1,
@@ -71,13 +71,19 @@ impl RangeCoder {
         while self.rng <= EC_CODE_BOT {
             self.nbits_total += EC_SYM_BITS as i32;
             self.rng <<= EC_SYM_BITS;
+            if self.rng == 0 {
+                debug_assert!(false, "normalize_decoder: rng=0 after shift, corrupt bitstream");
+                self.error = 1;
+                self.rng = 1;
+                return;
+            }
 
             let sym = self.rem;
             self.rem = self.read_byte() as i32;
 
             let combined_sym = ((sym << EC_SYM_BITS) | self.rem) >> (EC_SYM_BITS - EC_CODE_EXTRA);
             self.val = ((self.val << EC_SYM_BITS)
-                + (EC_SYM_MAX as u32 & !combined_sym as u32) as u64)
+                + (EC_SYM_MAX & !combined_sym as u32) as u64)
                 & (EC_CODE_TOP as u64 - 1);
         }
     }
@@ -153,7 +159,7 @@ impl RangeCoder {
         let mut used = self.nend_bits;
         if used < bits as i32 {
             loop {
-                // Read byte from end: buf[storage - ++end_offs]
+
                 let byte = if self.end_offs < self.storage {
                     self.end_offs += 1;
                     self.buf[(self.storage - self.end_offs) as usize]
@@ -234,6 +240,11 @@ impl RangeCoder {
     }
 
     fn normalize_encoder(&mut self) {
+        if self.rng == 0 {
+            self.error = 1;
+            self.rng = 1;
+            return;
+        }
         while self.rng <= EC_CODE_BOT {
             self.carry_out((self.val >> EC_CODE_SHIFT) as i32);
             self.val = (self.val << EC_SYM_BITS) & (EC_CODE_TOP as u64 - 1);
@@ -259,10 +270,24 @@ impl RangeCoder {
         if s > 0 {
             let val = icdf[(s - 1) as usize] as u32;
             self.val += (self.rng as u64) - (r as u64 * val as u64);
-            let diff = val - icdf[s as usize] as u32;
+            // The last symbol uses an implicit lower bound of 0
+            let lower = icdf.get(s as usize).copied().unwrap_or(0) as u32;
+            let diff = val - lower;
+            debug_assert!(
+                diff > 0,
+                "encode_icdf: zero-probability symbol s={s}, icdf={icdf:?}, ftb={ftb} \
+                 (icdf[{prev}]={val} == icdf[{s}]={lower})",
+                prev = s - 1,
+            );
             self.rng = r * diff;
         } else {
             let val = icdf[s as usize] as u32;
+            let full = 1u32 << ftb;
+            debug_assert!(
+                val < full,
+                "encode_icdf: zero-probability symbol s=0, icdf={icdf:?}, ftb={ftb} \
+                 (icdf[0]={val} == 2^ftb={full}, symbol has zero probability)"
+            );
             self.rng -= r * val;
         }
         self.normalize_encoder();
@@ -334,13 +359,13 @@ impl RangeCoder {
             let mut i = 1;
             while fs_val > 0 && i < val {
                 fs_val *= 2;
-                fl += fs_val + 2; // 2 * LAPLACE_MINP
-                fs_val = (fs_val as i32 * decay >> 15) as u32;
+                fl += fs_val + 2;
+                fs_val = ((fs_val as i32 * decay) >> 15) as u32;
                 i += 1;
             }
 
             if fs_val == 0 {
-                let ndi_max = (32768 - fl + 1 - 1) >> 0;
+                let ndi_max = 32768 - fl + 1 - 1;
                 let ndi_max = (ndi_max as i32 - s) >> 1;
                 let di = (val - i).min(ndi_max - 1);
                 fl += (2 * di + 1 + s) as u32;
@@ -355,8 +380,8 @@ impl RangeCoder {
     }
 
     fn laplace_get_freq1(&self, fs0: u32, decay: i32) -> u32 {
-        let ft = 32768 - 1 * (2 * 16) - fs0; // LAPLACE_MINP=1, LAPLACE_NMIN=16
-        (ft as i32 * (16384 - decay) >> 15) as u32
+        let ft = 32768 - (2 * 16) - fs0;
+        ((ft as i32 * (16384 - decay)) >> 15) as u32
     }
 
     pub fn laplace_decode(&mut self, fs: u32, decay: i32) -> i32 {
@@ -373,7 +398,7 @@ impl RangeCoder {
             while fs_val > 1 && fm >= fl + 2 * fs_val {
                 fs_val *= 2;
                 fl += fs_val;
-                fs_val = ((fs_val as i32 - 2) * decay >> 15) as u32 + 1;
+                fs_val = (((fs_val as i32 - 2) * decay) >> 15) as u32 + 1;
                 val += 1;
             }
 
@@ -404,30 +429,27 @@ impl RangeCoder {
         }
     }
 
-    /// Patch the initial bits of the range-coded stream.
-    /// Used by SILK to retroactively insert VAD/LBRR flags at the start.
-    /// Equivalent to C `ec_enc_patch_initial_bits`.
     pub fn patch_initial_bits(&mut self, val: u32, nbits: u32) {
         let shift = EC_SYM_BITS - nbits;
         let mask = ((1u32 << nbits) - 1) << shift;
         if self.offs > 0 {
-            // The first byte has been finalized
+
             self.buf[0] = ((self.buf[0] as u32 & !mask) | (val << shift)) as u8;
         } else if self.rem >= 0 {
-            // The first byte is still awaiting carry propagation
+
             self.rem = ((self.rem as u32 & !mask) | (val << shift)) as i32;
         } else if self.rng <= (EC_CODE_TOP >> nbits) {
-            // The renormalization loop has never been run
+
             let mask64 = (mask as u64) << EC_CODE_SHIFT;
             self.val = (self.val & !mask64) | ((val as u64) << (EC_CODE_SHIFT + shift));
         } else {
-            // The encoder hasn't even encoded nbits of data yet
+
             self.error = -1;
         }
     }
 
     pub fn done(&mut self) {
-        let ilog = 32 - self.rng.leading_zeros(); // Matches C EC_ILOG(rng)
+        let ilog = 32 - self.rng.leading_zeros();
         let mut l = (EC_CODE_BITS - ilog) as i32;
         let mut msk = (EC_CODE_TOP as u64 - 1) >> l;
         let mut end = (self.val + msk) & !msk;
@@ -457,7 +479,7 @@ impl RangeCoder {
         }
 
         if self.error == 0 {
-            // Clear excess space
+
             for i in self.offs..(self.storage - self.end_offs) {
                 self.buf[i as usize] = 0;
             }
@@ -468,7 +490,7 @@ impl RangeCoder {
                 } else {
                     let idx = (self.storage - self.end_offs - 1) as usize;
                     self.buf[idx] |= window as u8;
-                    // Count the byte containing remaining bits as part of end_offs
+
                     self.end_offs += 1;
                 }
             }
@@ -477,10 +499,7 @@ impl RangeCoder {
 
     pub fn finish(&mut self) -> Vec<u8> {
         self.done();
-        // The buffer is written from both ends:
-        // - buf[0..offs]: entropy coded data (from start)
-        // - buf[storage-end_offs..storage]: bit-packed data (from end)
-        // After done(), end_offs includes any byte containing remaining bits
+
         let mut result = Vec::with_capacity((self.offs + self.end_offs) as usize);
         result.extend_from_slice(&self.buf[0..self.offs as usize]);
         result.extend_from_slice(
@@ -514,7 +533,7 @@ mod tests {
     #[test]
     fn test_icdf_consistency() {
         let mut enc = RangeCoder::new_encoder(1024);
-        let icdf = [2, 1, 0]; // ftb=2, ft=4
+        let icdf = [2, 1, 0];
         enc.encode_icdf(0, &icdf, 2);
         enc.encode_icdf(1, &icdf, 2);
         enc.encode_icdf(2, &icdf, 2);
@@ -531,14 +550,64 @@ mod tests {
         assert_eq!(s2, 2);
     }
 
+    /// encode_icdf 的最后一个符号（s == icdf.len() - 1）之前会 panic（index OOB），
+    /// 修复后应当正确编解码为最后一个符号索引。
+    #[test]
+    fn test_icdf_last_symbol_no_oob() {
+        // ftb=8 → 总频率 256
+        // 3 个符号，每个频率约 85，均不为 0
+        // icdf 语义：icdf[i] = (总频率 - 前 i+1 个符号的累积频率)
+        // symbol 0: 256 - 86 = 170  → icdf[0] = 170
+        // symbol 1: 170 - 85 = 85   → icdf[1] = 85
+        // symbol 2: 85  - 85 = 0    → icdf[2] = 0  (最后必须为 0)
+        let icdf: &[u8] = &[170, 85, 0];
+        let ftb = 8u32;
+
+        // 对每个符号做一次 encode → done → decode，验证无 panic 且往返正确
+        for sym in 0..3i32 {
+            let mut enc = RangeCoder::new_encoder(256);
+            enc.encode_icdf(sym, icdf, ftb); // sym==2 之前会 OOB panic
+            enc.done();
+            let data = enc.buf[..enc.offs as usize].to_vec();
+
+            let mut dec = RangeCoder::new_decoder(data);
+            let decoded = dec.decode_icdf(icdf, ftb);
+            assert_eq!(decoded, sym, "往返失败: 编码 symbol={sym} 解码得 {decoded}");
+        }
+    }
+
+    /// decode_icdf 在 icdf 末尾不为 0 时会死循环/OOB；
+    /// 用标准（末尾为 0）的表验证解码器正常终止。
+    #[test]
+    fn test_icdf_decode_terminates() {
+        // 使用真实 Opus 风格的 ICDF 表（末尾必须为 0）
+        // ftb=8，总频率=256；四个等概率符号各占 64
+        let icdf: &[u8] = &[192, 128, 64, 0];
+        let ftb = 8u32;
+
+        let symbols = [0i32, 1, 2, 3];
+        let mut enc = RangeCoder::new_encoder(256);
+        for &s in &symbols {
+            enc.encode_icdf(s, icdf, ftb);
+        }
+        enc.done();
+        let data = enc.buf[..enc.offs as usize].to_vec();
+
+        let mut dec = RangeCoder::new_decoder(data);
+        for &expected in &symbols {
+            let got = dec.decode_icdf(icdf, ftb);
+            assert_eq!(got, expected, "解码器输出 {got}，期望 {expected}");
+        }
+    }
+
     #[test]
     fn test_bits_only() {
         let mut enc = RangeCoder::new_encoder(1024);
 
-        enc.enc_bits(1, 1); // 1 bit: value 1
-        enc.enc_bits(5, 3); // 3 bits: value 5 (101)
-        enc.enc_bits(7, 3); // 3 bits: value 7 (111)
-        enc.enc_bits(0, 2); // 2 bits: value 0 (00)
+        enc.enc_bits(1, 1);
+        enc.enc_bits(5, 3);
+        enc.enc_bits(7, 3);
+        enc.enc_bits(0, 2);
 
         let data = enc.finish();
         let mut dec = RangeCoder::new_decoder(data);
@@ -558,13 +627,12 @@ mod tests {
     fn test_interleaved_bits_entropy() {
         let mut enc = RangeCoder::new_encoder(1024);
 
-        // 1. Bit
         enc.enc_bits(1, 1);
-        // 2. Entropy
+
         enc.encode(10, 20, 100);
-        // 3. Bit
+
         enc.enc_bits(5, 3);
-        // 4. Entropy
+
         enc.encode(50, 60, 100);
 
         let data = enc.finish();
@@ -579,8 +647,8 @@ mod tests {
         dec.update(50, 60, 100);
 
         assert_eq!(b1, 1);
-        assert!(d1 >= 10 && d1 < 20, "d1={} expected in [10, 20)", d1);
+        assert!((10..20).contains(&d1), "d1={} expected in [10, 20)", d1);
         assert_eq!(b2, 5);
-        assert!(d2 >= 50 && d2 < 60, "d2={} expected in [50, 60)", d2);
+        assert!((50..60).contains(&d2), "d2={} expected in [50, 60)", d2);
     }
 }

@@ -263,13 +263,12 @@ pub fn silk_nlsf_vq(
         let w_ptr = &pwght_q9[i * lpc_order..];
 
         for m in (0..lpc_order).step_by(2).rev() {
-            // Index m + 1
+
             let diff_q15 = (in_q15[m + 1] as i32) - ((cb_ptr[m + 1] as i32) << 7);
             let diffw_q24 = silk_smulbb(diff_q15, w_ptr[m + 1] as i32);
             sum_error_q24 = sum_error_q24.wrapping_add((diffw_q24 - (pred_q24 >> 1)).abs());
             pred_q24 = diffw_q24;
 
-            // Index m
             let diff_q15_m = (in_q15[m] as i32) - ((cb_ptr[m] as i32) << 7);
             let diffw_q24_m = silk_smulbb(diff_q15_m, w_ptr[m] as i32);
             sum_error_q24 = sum_error_q24.wrapping_add((diffw_q24_m - (pred_q24 >> 1)).abs());
@@ -340,17 +339,15 @@ pub fn silk_nlsf2a(a_q12: &mut [i16], nlsf: &[i16], d: usize) {
 }
 
 pub fn silk_nlsf_vq_weights_laroia(p_w_q5: &mut [i16], p_nlsf_q15: &[i16], d: usize) {
-    /* NLSF_W_Q = 2, so 1 << (15 + NLSF_W_Q) = 1 << 17 = 131072 */
+
     const NUMER: i32 = 1 << 17;
 
-    /* First value: weight[0] = 1/nlsf[0] + 1/(nlsf[1]-nlsf[0]) */
     let mut tmp1_int = (p_nlsf_q15[0] as i32).max(1);
     tmp1_int = silk_div32_16(NUMER, tmp1_int);
     let mut tmp2_int = ((p_nlsf_q15[1] - p_nlsf_q15[0]) as i32).max(1);
     tmp2_int = silk_div32_16(NUMER, tmp2_int);
     p_w_q5[0] = silk_limit(tmp1_int + tmp2_int, 0, i16::MAX as i32) as i16;
 
-    /* Main loop: handle pairs (step by 2) */
     let mut k = 1;
     while k < d - 1 {
         tmp1_int = ((p_nlsf_q15[k + 1] - p_nlsf_q15[k]) as i32).max(1);
@@ -364,7 +361,6 @@ pub fn silk_nlsf_vq_weights_laroia(p_w_q5: &mut [i16], p_nlsf_q15: &[i16], d: us
         k += 2;
     }
 
-    /* Last value: weight[D-1] = 1/(32768-nlsf[D-1]) + prev_term */
     tmp1_int = ((32767 - p_nlsf_q15[d - 1]) as i32).max(1);
     tmp1_int = silk_div32_16(NUMER, tmp1_int);
     p_w_q5[d - 1] = silk_limit(tmp2_int + tmp1_int, 0, i16::MAX as i32) as i16;
@@ -378,32 +374,28 @@ pub fn silk_process_nlsfs(
     let do_interp: i32;
     let mut nlsf_interp_q15 = [0i16; MAX_LPC_ORDER];
     let mut p_cb = &SILK_NLSF_CB_WB;
-    if ps_enc.s_cmn.fs_khz == 8 {
+    if ps_enc.s_cmn.fs_khz == 8 || ps_enc.s_cmn.fs_khz == 12 {
         p_cb = &SILK_NLSF_CB_NB_MB;
     }
 
     let order = ps_enc.s_cmn.predict_lpc_order as usize;
-    /* NLSF_mu = 0.003 - 0.001 * speech_activity (matching C process_NLSFs.c) */
-    /* SILK_FIX_CONST(0.003, 20) = 3145, SILK_FIX_CONST(-0.001, 28) = -268435 */
-    let mut nlsf_mu_q20 = silk_smlawb(3145, -268435, ps_enc.s_cmn.speech_activity_q8);
-    /* Multiply by 1.5 for 10 ms packets (nb_subfr == 2) */
+
+    let mut nlsf_mu_q20 = silk_smlawb(3146, -268434, ps_enc.s_cmn.speech_activity_q8);
+
     if ps_enc.s_cmn.nb_subfr == 2 {
         nlsf_mu_q20 = nlsf_mu_q20 + silk_rshift(nlsf_mu_q20, 1);
     }
     let interp_coef_q2 = ps_enc.s_cmn.indices.nlsf_interp_coef_q2 as i32;
     let use_interp = ps_enc.s_cmn.use_interpolated_nlsfs != 0;
 
-    /* NLSF stabilization */
     silk_nlsf_stabilize(nlsf_q15, p_cb.delta_min_q15, order);
 
-    /* Calculate weights */
     let mut w_q5 = [0i16; MAX_LPC_ORDER];
     silk_nlsf_vq_weights_laroia(&mut w_q5, nlsf_q15, order);
 
-    /* Update NLSF weights for interpolated NLSFs */
     do_interp = (use_interp && interp_coef_q2 < 4) as i32;
     if do_interp != 0 {
-        /* Calculate the interpolated NLSF vector for the first half */
+
         let prev_nlsf_q15 = ps_enc.s_cmn.prev_nlsf_q15;
         for i in 0..order {
             nlsf_interp_q15[i] = prev_nlsf_q15[i]
@@ -413,11 +405,9 @@ pub fn silk_process_nlsfs(
                 ) as i16;
         }
 
-        /* Calculate first half NLSF weights for the interpolated NLSFs */
         let mut w0_q5 = [0i16; MAX_LPC_ORDER];
         silk_nlsf_vq_weights_laroia(&mut w0_q5, &nlsf_interp_q15, order);
 
-        /* Update NLSF weights with contribution from first half */
         let i_sqr_q15 = silk_lshift(silk_smulbb(interp_coef_q2, interp_coef_q2), 11);
         for i in 0..order {
             w_q5[i] = silk_rshift(w_q5[i] as i32, 1) as i16
@@ -425,23 +415,20 @@ pub fn silk_process_nlsfs(
         }
     }
 
-    /* NLSF quantization - nlsf_q15 is both input and output */
-    /* w_q5 already contains Q2 weights (output of silk_NLSF_VQ_weights_laroia where NLSF_W_Q=2) */
     silk_nlsf_encode(
         &mut ps_enc.s_cmn.indices.nlsf_indices,
         nlsf_q15,
         p_cb,
-        &w_q5, /* Q2 weights, matching C's pNLSFW_QW passed directly */
+        &w_q5,
         nlsf_mu_q20,
         ps_enc.s_cmn.n_nlsf_survivors as usize,
         ps_enc.s_cmn.indices.signal_type as i32,
     );
 
-    /* Convert quantized NLSFs to LPC */
     silk_nlsf2a(&mut ps_enc_ctrl.pred_coef_q12[1], nlsf_q15, order);
 
     if do_interp != 0 {
-        /* Calculate the interpolated, quantized LSF vector for the first half */
+
         let prev_nlsf_q15 = ps_enc.s_cmn.prev_nlsf_q15;
         for i in 0..order {
             nlsf_interp_q15[i] = prev_nlsf_q15[i]
@@ -450,14 +437,13 @@ pub fn silk_process_nlsfs(
                     2,
                 ) as i16;
         }
-        /* Convert back to LPC coefficients */
+
         silk_nlsf2a(&mut ps_enc_ctrl.pred_coef_q12[0], &nlsf_interp_q15, order);
     } else {
-        /* Copy LPC coefficients for first half from second half */
+
         let (first, second) = ps_enc_ctrl.pred_coef_q12.split_at_mut(1);
         first[0][..order].copy_from_slice(&second[0][..order]);
     }
 
-    /* Copy quantized NLSFs to previous for next frame */
     ps_enc.s_cmn.prev_nlsf_q15[..order].copy_from_slice(&nlsf_q15[..order]);
 }

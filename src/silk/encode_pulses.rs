@@ -27,7 +27,7 @@ pub fn silk_encode_pulses(
     frame_length: usize,
 ) {
     let mut pulses_comb = [0i32; 8];
-    // Stack-allocated fixed-size buffers: frame_length ≤ MAX_FRAME_LENGTH (640).
+
     let mut abs_pulses = [0i32; MAX_FRAME_LENGTH + SHELL_CODEC_FRAME_LENGTH];
 
     let iter = (frame_length + SHELL_CODEC_FRAME_LENGTH - 1) / SHELL_CODEC_FRAME_LENGTH;
@@ -36,7 +36,6 @@ pub fn silk_encode_pulses(
         abs_pulses[i] = pulses[i].abs() as i32;
     }
 
-    // iter ≤ MAX_FRAME_LENGTH / SHELL_CODEC_FRAME_LENGTH = 640 / 16 = 40.
     let mut sum_pulses = [0i32; MAX_FRAME_LENGTH / SHELL_CODEC_FRAME_LENGTH];
     let mut n_rshifts = [0i32; MAX_FRAME_LENGTH / SHELL_CODEC_FRAME_LENGTH];
 
@@ -89,7 +88,6 @@ pub fn silk_encode_pulses(
         }
     }
 
-    /* Rate level */
     let mut min_sum_bits_q5 = i32::MAX;
     let mut rate_level_index = 0;
     for k in 0..N_RATE_LEVELS - 1 {
@@ -113,7 +111,6 @@ pub fn silk_encode_pulses(
         8,
     );
 
-    /* Sum-Weighted-Pulses Encoding */
     let cdf_ptr = &SILK_PULSES_PER_BLOCK_ICDF[rate_level_index];
     for i in 0..iter {
         if n_rshifts[i] == 0 {
@@ -135,7 +132,6 @@ pub fn silk_encode_pulses(
         }
     }
 
-    /* Shell Encoding */
     for i in 0..iter {
         if sum_pulses[i] > 0 {
             silk_shell_encoder(
@@ -145,7 +141,6 @@ pub fn silk_encode_pulses(
         }
     }
 
-    /* LSB Encoding */
     for i in 0..iter {
         if n_rshifts[i] > 0 {
             let n_ls = n_rshifts[i] - 1;
@@ -161,20 +156,17 @@ pub fn silk_encode_pulses(
         }
     }
 
-    /* Encode Signs */
-    // Select ICDF table offset based on signalType and quantOffsetType:
-    // i = 7 * (quantOffsetType + signalType * 2)
     let icdf_offset = (7 * (quant_offset_type + signal_type * 2)) as usize;
     for i in 0..iter {
         let p = sum_pulses[i];
         if p > 0 {
-            // Select probability from table using clamped (p & 0x1F) as index
+
             let icdf0 = SILK_SIGN_ICDF[icdf_offset + ((p & 0x1F) as usize).min(6)];
             let icdf = [icdf0, 0u8];
             for j in 0..SHELL_CODEC_FRAME_LENGTH {
                 let pulse = pulses[i * SHELL_CODEC_FRAME_LENGTH + j];
                 if pulse != 0 {
-                    // silk_enc_map: positive → 1, negative → 0
+
                     let mapped = if pulse > 0 { 1i32 } else { 0i32 };
                     ps_range_enc.encode_icdf(mapped, &icdf, 8);
                 }

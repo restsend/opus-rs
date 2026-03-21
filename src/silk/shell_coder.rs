@@ -25,7 +25,6 @@ pub fn silk_shell_encoder(ps_range_enc: &mut RangeCoder, pulses0: &[i32]) {
     let mut pulses3 = [0i32; 2];
     let mut pulses4 = [0i32; 1];
 
-    /* this function operates on one shell code frame of 16 pulses */
     combine_pulses(&mut pulses1, pulses0, 8);
     combine_pulses(&mut pulses2, &pulses1, 4);
     combine_pulses(&mut pulses3, &pulses2, 2);

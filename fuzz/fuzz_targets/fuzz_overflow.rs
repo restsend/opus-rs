@@ -1,6 +1,3 @@
-//! Fuzz test for overflow and boundary conditions
-//! Focuses on edge cases that might cause integer overflow
-
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -67,14 +64,14 @@ fuzz_target!(|data: &[u8]| {
     // Determine frame size - test edge cases
     // Use valid frame sizes based on sampling rate
     let frame_size = match data[6] % 8 {
-        0 => sampling_rate as usize / 400,  // 2.5ms
-        1 => sampling_rate as usize / 200,  // 5ms
-        2 => sampling_rate as usize / 100,  // 10ms
-        3 => sampling_rate as usize / 50,   // 20ms
-        4 => sampling_rate as usize / 25,   // 40ms
-        5 => sampling_rate as usize / 16,   // 60ms
-        6 => sampling_rate as usize / 100,  // 10ms (valid)
-        _ => sampling_rate as usize / 50,   // 20ms (valid)
+        0 => sampling_rate as usize / 400, // 2.5ms
+        1 => sampling_rate as usize / 200, // 5ms
+        2 => sampling_rate as usize / 100, // 10ms
+        3 => sampling_rate as usize / 50,  // 20ms
+        4 => sampling_rate as usize / 25,  // 40ms
+        5 => sampling_rate as usize / 16,  // 60ms
+        6 => sampling_rate as usize / 100, // 10ms (valid)
+        _ => sampling_rate as usize / 50,  // 20ms (valid)
     };
 
     // Skip if frame_size is 0 or too small (SILK needs at least 80 samples for 8kHz)
@@ -132,7 +129,7 @@ fuzz_target!(|data: &[u8]| {
 
     // Encode with small output buffer to test buffer handling
     let output_size = match data[8] % 5 {
-        0 => 1,    // Very small
+        0 => 1, // Very small
         1 => 10,
         2 => 100,
         3 => 1000,

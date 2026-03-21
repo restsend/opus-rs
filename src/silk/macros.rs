@@ -3,7 +3,6 @@ pub fn silk_rshift64(a: i64, shift: i32) -> i64 {
     a >> shift
 }
 
-/// silk_LSHIFT_SAT32: left shift with saturation to i32 range
 #[inline(always)]
 pub fn silk_lshift_sat32(a: i32, shift: i32) -> i32 {
     let result = (a as i64) << shift;
@@ -73,11 +72,32 @@ pub fn silk_div32_16(a: i32, b: i32) -> i32 {
 }
 
 #[inline(always)]
-pub fn silk_div32_varq(vin: i32, vdiv: i32, qout: i32) -> i32 {
-    if vdiv == 0 {
-        return i32::MAX;
+pub fn silk_div32_varq(a32: i32, b32: i32, qres: i32) -> i32 {
+
+    debug_assert!(b32 != 0);
+    debug_assert!(qres >= 0);
+
+    let a_headrm = if a32 == 0 { 31 } else { (a32.wrapping_abs().leading_zeros() as i32) - 1 };
+    let a32_nrm = if a_headrm >= 0 { a32 << a_headrm } else { a32 >> (-a_headrm) };
+    let b_headrm = if b32 == 0 { 31 } else { (b32.wrapping_abs().leading_zeros() as i32) - 1 };
+    let b32_nrm = if b_headrm >= 0 { b32 << b_headrm } else { b32 >> (-b_headrm) };
+
+    let b32_inv = silk_div32_16(i32::MAX >> 2, b32_nrm >> 16);
+
+    let mut result = silk_smulwb(a32_nrm, b32_inv);
+
+    let a32_nrm2 = a32_nrm.wrapping_sub((silk_smmul(b32_nrm, result) as u32).wrapping_shl(3) as i32);
+
+    result = silk_smlawb(result, a32_nrm2, b32_inv);
+
+    let lshift = 29 + a_headrm - b_headrm - qres;
+    if lshift < 0 {
+        silk_lshift_sat32(result, -lshift)
+    } else if lshift < 32 {
+        result >> lshift
+    } else {
+        0
     }
-    (((vin as i64) << qout) / (vdiv as i64)) as i32
 }
 
 #[inline(always)]
@@ -181,11 +201,29 @@ pub fn silk_clz64(a: i64) -> i32 {
 }
 
 #[inline(always)]
-pub fn silk_inverse32_varq(vin: i32, qout: i32) -> i32 {
-    if vin == 0 {
+pub fn silk_inverse32_varq(b32: i32, qres: i32) -> i32 {
+    if b32 == 0 {
         return i32::MAX;
     }
-    ((1i64 << qout) / (vin as i64)) as i32
+
+    let b_headrm = (b32.wrapping_abs().leading_zeros() as i32) - 1;
+    let b32_nrm = if b_headrm >= 0 { b32 << b_headrm } else { b32 >> (-b_headrm) };
+
+    let b32_inv = silk_div32_16(i32::MAX >> 2, b32_nrm >> 16);
+
+    let result = b32_inv << 16;
+
+    let err_q32 = ((1i32 << 29) - silk_smulwb(b32_nrm, b32_inv)) << 3;
+    let result = silk_smlaww(result, err_q32, b32_inv);
+
+    let lshift = 61 - b_headrm - qres;
+    if lshift <= 0 {
+        silk_lshift_sat32(result, -lshift)
+    } else if lshift < 32 {
+        result >> lshift
+    } else {
+        0
+    }
 }
 
 #[inline(always)]
@@ -210,13 +248,11 @@ pub fn silk_sqrt_approx(x: i32) -> i32 {
     if (lz & 1) != 0 {
         y = 32768;
     } else {
-        y = 46214; /* 46214 = sqrt(2) * 32768 */
+        y = 46214;
     }
 
-    /* get scaling right */
     y >>= lz >> 1;
 
-    /* increment using fractional part of input */
     y = silk_smlawb(y, y, silk_smulbb(213, frac_q7));
 
     y
@@ -274,8 +310,7 @@ pub fn silk_add_sat32(a: i32, b: i32) -> i32 {
 
 #[inline(always)]
 pub fn silk_rand(seed: i32) -> i32 {
-    // silk_MLA_ovflw(RAND_INCREMENT, seed, RAND_MULTIPLIER)
-    // Uses wrapping (unsigned) arithmetic, matching C's silk_ADD32_ovflw
+
     (907633515u32.wrapping_add((seed as u32).wrapping_mul(196314165u32))) as i32
 }
 
@@ -350,7 +385,7 @@ pub fn silk_lin2log(gain_q16: i32) -> i32 {
     let mut lz = 0;
     let mut frac_q7 = 0;
     silk_clz_frac(gain_q16, &mut lz, &mut frac_q7);
-    // Piece-wise parabolic approximation (matching C's silk/lin2log.c)
+
     silk_smlawb(frac_q7, silk_mul(frac_q7, 128 - frac_q7), 179) + silk_lshift(31 - lz, 7)
 }
 
@@ -364,7 +399,7 @@ pub fn silk_log2lin(log_gain_q7: i32) -> i32 {
     }
     let out = silk_lshift(1, log_gain_q7 >> 7);
     let frac_q7 = log_gain_q7 & 0x7F;
-    // Piece-wise parabolic approximation (matching C's silk/log2lin.c)
+
     let val = silk_smlawb(frac_q7, silk_smulbb(frac_q7, 128 - frac_q7), -174);
     if log_gain_q7 < 2048 {
         silk_add_rshift32(out, silk_mul(out, val), 7)

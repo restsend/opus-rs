@@ -1,6 +1,3 @@
-//! Fuzz test for encoder boundary conditions
-//! Tests various edge cases that might cause overflows or panics in the encoder
-
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -16,7 +13,11 @@ fuzz_target!(|data: &[u8]| {
 
     for &sampling_rate in &sample_rates {
         for &channels in &[1, 2] {
-            for &application in &[Application::Voip, Application::Audio, Application::RestrictedLowDelay] {
+            for &application in &[
+                Application::Voip,
+                Application::Audio,
+                Application::RestrictedLowDelay,
+            ] {
                 let mut encoder = match OpusEncoder::new(sampling_rate, channels, application) {
                     Ok(e) => e,
                     Err(_) => continue,
@@ -24,14 +25,9 @@ fuzz_target!(|data: &[u8]| {
 
                 // Test extreme bitrate values
                 let bitrates = [
-                    500,      // Very low
-                    6000,     // Minimum recommended
-                    16000,
-                    32000,
-                    64000,
-                    128000,
-                    256000,
-                    510000,   // Maximum
+                    500,  // Very low
+                    6000, // Minimum recommended
+                    16000, 32000, 64000, 128000, 256000, 510000, // Maximum
                 ];
                 encoder.bitrate_bps = bitrates[data[0] as usize % bitrates.len()];
 
@@ -40,7 +36,7 @@ fuzz_target!(|data: &[u8]| {
                     0 => 0,
                     1 => 5,
                     2 => 10,
-                    3 => -1,  // Invalid, should be handled
+                    3 => -1, // Invalid, should be handled
                     _ => (data[1] % 11) as i32,
                 };
 
@@ -49,8 +45,8 @@ fuzz_target!(|data: &[u8]| {
                     0 => 0,
                     1 => 50,
                     2 => 100,
-                    3 => -1,   // Invalid
-                    _ => 101,  // Invalid
+                    3 => -1,  // Invalid
+                    _ => 101, // Invalid
                 };
 
                 // Test FEC settings
@@ -92,7 +88,9 @@ fuzz_target!(|data: &[u8]| {
                             // High frequency
                             6 => {
                                 let t = i as f32 / sampling_rate as f32;
-                                (2.0 * std::f32::consts::PI * (sampling_rate as f32 / 4.0) * t).sin() * 0.3
+                                (2.0 * std::f32::consts::PI * (sampling_rate as f32 / 4.0) * t)
+                                    .sin()
+                                    * 0.3
                             }
                             // Random from data
                             7 => {
@@ -100,11 +98,23 @@ fuzz_target!(|data: &[u8]| {
                                 (data[idx] as f32 - 128.0) / 128.0
                             }
                             // Impulses
-                            8 => if i % 50 == 0 { 0.9 } else { 0.0 },
+                            8 => {
+                                if i % 50 == 0 {
+                                    0.9
+                                } else {
+                                    0.0
+                                }
+                            }
                             // Sawtooth
                             9 => ((i as f32 / 100.0) % 1.0 - 0.5) * 2.0,
                             // Square wave
-                            10 => if i % 100 < 50 { 0.5 } else { -0.5 },
+                            10 => {
+                                if i % 100 < 50 {
+                                    0.5
+                                } else {
+                                    -0.5
+                                }
+                            }
                             // Near overflow
                             _ => {
                                 let idx = (i + 6) % data.len();

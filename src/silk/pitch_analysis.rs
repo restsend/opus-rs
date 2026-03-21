@@ -41,23 +41,15 @@ pub fn silk_find_pitch_lags_fix(
 
     let buf_len = la_pitch + frame_length + ltp_mem_length;
 
-    /*************************************/
-    /* Estimate LPC AR coefficients      */
-    /*************************************/
-
-    /* Calculate windowed signal */
     let mut wsig = [0i16; PE_MAX_FRAME_LENGTH];
     let x_ptr_start = buf_len - pitch_lpc_win_length;
 
-    /* First la_pitch samples: sine-rise window */
     silk_apply_sine_window(&mut wsig[..], &x[x_ptr_start..], 1, la_pitch);
 
-    /* Middle un-windowed samples */
     let mid_len = pitch_lpc_win_length - 2 * la_pitch;
     wsig[la_pitch..la_pitch + mid_len]
         .copy_from_slice(&x[x_ptr_start + la_pitch..x_ptr_start + la_pitch + mid_len]);
 
-    /* Last la_pitch samples: sine-fall window */
     let last_start = pitch_lpc_win_length - la_pitch;
     silk_apply_sine_window(
         &mut wsig[last_start..],
@@ -66,7 +58,6 @@ pub fn silk_find_pitch_lags_fix(
         la_pitch,
     );
 
-    /* Calculate autocorrelation sequence */
     let mut auto_corr = [0i32; MAX_FIND_PITCH_LPC_ORDER + 1];
     let mut scale = 0i32;
     silk_autocorr(
@@ -77,55 +68,40 @@ pub fn silk_find_pitch_lags_fix(
         pitch_lpc_order + 1,
     );
 
-    /* Add white noise, as fraction of energy */
-    // FIND_PITCH_WHITE_NOISE_FRACTION = 1e-3 in Q16: SILK_FIX_CONST(0.001, 16) = round(0.001 * 65536 + 0.5) = 66
     auto_corr[0] = silk_smlawb(auto_corr[0], auto_corr[0], 66) + 1;
 
-    /* Calculate the reflection coefficients using Schur */
     let mut rc_q15 = [0i16; MAX_FIND_PITCH_LPC_ORDER];
     let res_nrg = silk_schur(&mut rc_q15, &auto_corr, pitch_lpc_order);
 
-    /* Prediction gain */
     ps_enc_ctrl.pred_gain_q16 = silk_div32_varq(auto_corr[0], res_nrg.max(1), 16);
 
-    /* Convert reflection coefficients to prediction coefficients */
     let mut a_q24 = [0i32; MAX_FIND_PITCH_LPC_ORDER];
     silk_k2a(&mut a_q24, &rc_q15, pitch_lpc_order);
 
-    /* Convert from 32 bit Q24 to 16 bit Q12 coefs */
     let mut a_q12 = [0i16; MAX_FIND_PITCH_LPC_ORDER];
     for i in 0..pitch_lpc_order {
         a_q12[i] = silk_sat16(a_q24[i] >> 12) as i16;
     }
 
-    /* Do BWE */
-    // FIND_PITCH_BANDWIDTH_EXPANSION = 0.99, Q16 = 64881
     silk_bwexpander(&mut a_q12, pitch_lpc_order, 64881);
 
-    /*****************************************/
-    /* LPC analysis filtering                */
-    /*****************************************/
     silk_lpc_analysis_filter(res, x, &a_q12, buf_len, pitch_lpc_order, 0);
 
     if ps_enc.s_cmn.indices.signal_type != TYPE_NO_VOICE_ACTIVITY as i8
         && ps_enc.s_cmn.first_frame_after_reset == 0
     {
-        /* Threshold for pitch estimator */
-        // thrhld_Q13 = SILK_FIX_CONST(0.6, 13) = 4915
+
         let mut thrhld_q13: i32 = 4915;
-        // SILK_FIX_CONST(-0.004, 13) = -33
+
         thrhld_q13 = silk_smlabb(thrhld_q13, -33, pitch_lpc_order as i32);
-        // SILK_FIX_CONST(-0.1, 21) = -209715
+
         thrhld_q13 = silk_smlawb(thrhld_q13, -209715, ps_enc.s_cmn.speech_activity_q8);
-        // SILK_FIX_CONST(-0.15, 13) = -1229
+
         thrhld_q13 = silk_smlabb(thrhld_q13, -1229, ps_enc.s_cmn.prev_signal_type >> 1);
-        // SILK_FIX_CONST(-0.1, 14) = -1638
+
         thrhld_q13 = silk_smlawb(thrhld_q13, -1638, ps_enc.s_cmn.input_tilt_q15);
         thrhld_q13 = silk_sat16(thrhld_q13) as i32;
 
-        /*****************************************/
-        /* Call pitch estimator                  */
-        /*****************************************/
         let mut ltp_corr_q15 = ps_enc.ltp_corr_q15;
         if silk_pitch_analysis_core(
             res,
@@ -181,11 +157,10 @@ pub fn silk_pitch_analysis_core(
     let min_lag = PE_MIN_LAG_MS * fs_khz as usize;
     let max_lag = PE_MAX_LAG_MS * fs_khz as usize;
 
-    /* Downscale input if necessary */
     let mut energy = 0i32;
     let mut shift = 0i32;
     silk_sum_sqr_shift(&mut energy, &mut shift, frame_unscaled, frame_length);
-    shift += 3 - (31 - energy.leading_zeros() as i32); // at least two bits headroom
+    shift += 3 - silk_clz32(energy);
 
     let frame: &[i16];
     if shift > 0 {
@@ -198,7 +173,6 @@ pub fn silk_pitch_analysis_core(
         frame = &frame_unscaled[..frame_length];
     }
 
-    /* Resample from input sampled at Fs_kHz to 8 kHz */
     let frame_8khz: &[i16];
     if fs_khz == 16 {
         filt_state[0..2].fill(0);
@@ -218,7 +192,6 @@ pub fn silk_pitch_analysis_core(
         frame_8khz = frame;
     }
 
-    /* Decimate again to 4 kHz */
     filt_state[0..2].fill(0);
     let frame_4khz_sub =
         unsafe { std::slice::from_raw_parts_mut(frame_4khz.as_mut_ptr(), frame_length_4khz) };
@@ -229,14 +202,10 @@ pub fn silk_pitch_analysis_core(
         frame_length_8khz as i32,
     );
 
-    /* Low-pass filter */
     for i in (1..frame_length_4khz).rev() {
         frame_4khz[i] = silk_add_sat16(frame_4khz[i], frame_4khz[i - 1]);
     }
 
-    /******************************************************************************
-     * FIRST STAGE, operating in 4 khz
-     ******************************************************************************/
     let mut c = [0i16; PE_MAX_NB_SUBFR * CSTRIDE_4KHZ];
     let mut xcorr32 = [0i32; MAX_LAG_4KHZ - MIN_LAG_4KHZ + 1];
 
@@ -288,14 +257,14 @@ pub fn silk_pitch_analysis_core(
     let mut c_combined = [0i16; CSTRIDE_4KHZ];
     if nb_subfr == PE_MAX_NB_SUBFR {
         for i in (MIN_LAG_4KHZ..=MAX_LAG_4KHZ).rev() {
-            let mut sum = c[0 * CSTRIDE_4KHZ + (i - MIN_LAG_4KHZ)] as i32
+            let mut sum = c[i - MIN_LAG_4KHZ] as i32
                 + c[1 * CSTRIDE_4KHZ + (i - MIN_LAG_4KHZ)] as i32;
             sum = silk_smlawb(sum, sum, (-(i as i32) << 4) as i32);
             c_combined[i - MIN_LAG_4KHZ] = sum as i16;
         }
     } else {
         for i in (MIN_LAG_4KHZ..=MAX_LAG_4KHZ).rev() {
-            let mut sum = (c[0 * CSTRIDE_4KHZ + (i - MIN_LAG_4KHZ)] as i32) << 1;
+            let mut sum = (c[i - MIN_LAG_4KHZ] as i32) << 1;
             sum = silk_smlawb(sum, sum, (-(i as i32) << 4) as i32);
             c_combined[i - MIN_LAG_4KHZ] = sum as i16;
         }
@@ -312,7 +281,7 @@ pub fn silk_pitch_analysis_core(
     );
 
     if (c_combined[0] as i32) < 3277 {
-        // SILK_FIX_CONST( 0.2, 14 )
+
         pitch_out[0..nb_subfr].fill(0);
         *ltp_corr_q15 = 0;
         *lag_index = 0;
@@ -348,9 +317,6 @@ pub fn silk_pitch_analysis_core(
         }
     }
 
-    /**********************************************************************************
-     ** SECOND STAGE, operating at 8 kHz, on lag sections with high correlation
-     *************************************************************************************/
     let mut c_8khz = [0i16; PE_MAX_NB_SUBFR * CSTRIDE_8KHZ];
     let mut target_ptr_8khz_idx = PE_LTP_MEM_LENGTH_MS * 8;
     for k in 0..nb_subfr {
@@ -425,11 +391,7 @@ pub fn silk_pitch_analysis_core(
                     &SILK_CB_LAGS_STAGE2_10_MS[i]
                 };
                 let d_subfr = d + lag_cb_ptr_curr[j] as i32;
-                // Boundary check: ensure d_subfr is within valid range for c_8khz
-                // Valid range for c_8khz index is [0, CSTRIDE_8KHZ-1]
-                // Index = d_subfr - (MIN_LAG_8KHZ - 2)
-                // So d_subfr must be in [MIN_LAG_8KHZ - 2, MIN_LAG_8KHZ - 2 + CSTRIDE_8KHZ - 1]
-                // = [MIN_LAG_8KHZ - 2, MIN_LAG_8KHZ + CSTRIDE_8KHZ - 3]
+
                 let min_lag = MIN_LAG_8KHZ as i32 - 2;
                 let max_lag = MIN_LAG_8KHZ as i32 + CSTRIDE_8KHZ as i32 - 3;
                 if d_subfr >= min_lag && d_subfr <= max_lag {
@@ -438,7 +400,7 @@ pub fn silk_pitch_analysis_core(
                         cc[j] += c_8khz[i * CSTRIDE_8KHZ + idx] as i32;
                     }
                 }
-                // If out of range, skip (C code may also skip or use default values)
+
             }
         }
 
@@ -453,18 +415,18 @@ pub fn silk_pitch_analysis_core(
 
         let lag_log2_q7 = silk_lin2log(d);
         let mut cc_max_new_b =
-            cc0_max_new - silk_rshift(silk_smulbb((nb_subfr * 410) as i32, lag_log2_q7), 7); // 410 is SILK_FIX_CONST( PE_SHORTLAG_BIAS, 13 )
+            cc0_max_new - silk_rshift(silk_smulbb((nb_subfr * 410) as i32, lag_log2_q7), 7);
 
         if prev_lag_8khz > 0 {
             let mut delta_lag_log2_sqr_q7 = lag_log2_q7 - prev_lag_log2_q7;
             delta_lag_log2_sqr_q7 =
                 silk_rshift(silk_smulbb(delta_lag_log2_sqr_q7, delta_lag_log2_sqr_q7), 7);
             let mut prev_lag_bias_q13 =
-                silk_rshift(silk_smulbb((nb_subfr * 1638) as i32, *ltp_corr_q15), 15); // 1638 is SILK_FIX_CONST( PE_PREVLAG_BIAS, 13 )
+                silk_rshift(silk_smulbb((nb_subfr * 1638) as i32, *ltp_corr_q15), 15);
             prev_lag_bias_q13 = silk_div32(
                 silk_mul(prev_lag_bias_q13, delta_lag_log2_sqr_q7),
                 delta_lag_log2_sqr_q7 + 64,
-            ); // 64 is SILK_FIX_CONST( 0.5, 7 )
+            );
             cc_max_new_b -= prev_lag_bias_q13;
         }
 
@@ -551,7 +513,7 @@ pub fn silk_pitch_analysis_core(
         );
 
         let mut lag_counter = 0;
-        let contour_bias_q15 = silk_div32_16(1638, (lag as i16).into()); // 1638 is SILK_FIX_CONST( PE_FLATCONTOUR_BIAS, 15 )
+        let contour_bias_q15 = silk_div32_16(1638, (lag as i16).into());
 
         let energy_target = silk_inner_prod_aligned(
             &frame[PE_LTP_MEM_LENGTH_MS * fs_khz as usize..],
@@ -602,7 +564,7 @@ pub fn silk_pitch_analysis_core(
         *lag_index = (lag_new - min_lag as i32) as i16;
         *contour_index = cb_i_max as i8;
     } else {
-        /* fs_khz == 8 */
+
         for k in 0..nb_subfr {
             let lag_cb_ptr_curr: &[i8] = if nb_subfr == PE_MAX_NB_SUBFR {
                 &SILK_CB_LAGS_STAGE2[k]

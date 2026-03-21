@@ -466,9 +466,7 @@ fn test_silk_stereo_speech() {
 }
 
 /// Test CELT-only stereo
-/// Note: Temporarily disabled due to MDCT size mismatch in transient mode
 #[test]
-#[ignore]
 fn test_stereo_celt_only() {
     let sample_rate = 48000;
     let channels = 2;

@@ -60,6 +60,7 @@ pub const SPREAD_LIGHT: i32 = 1;
 pub const SPREAD_NORMAL: i32 = 2;
 pub const SPREAD_AGGRESSIVE: i32 = 3;
 
+#[allow(clippy::too_many_arguments)]
 pub fn spreading_decision(
     m: &CeltMode,
     x_buf: &[f32],
@@ -83,7 +84,7 @@ pub fn spreading_decision(
     }
 
     for c in 0..channels {
-        for i in 0..end {
+        for (i, &sw) in spread_weight[..end].iter().enumerate() {
             let n = m_val * (m.e_bands[i + 1] as usize - m.e_bands[i] as usize);
             if n <= 8 {
                 continue;
@@ -93,8 +94,8 @@ pub fn spreading_decision(
             let offset = m_val * m.e_bands[i] as usize + c * n0;
             let x = &x_buf[offset..offset + n];
 
-            for j in 0..n {
-                let x2n = x[j] * x[j] * (n as f32);
+            for xv in x.iter().copied() {
+                let x2n = xv * xv * (n as f32);
                 if x2n < 0.25 {
                     tcount[0] += 1;
                 }
@@ -113,8 +114,8 @@ pub fn spreading_decision(
             let tmp = (if 2 * tcount[2] >= (n as i32) { 1 } else { 0 })
                 + (if 2 * tcount[1] >= (n as i32) { 1 } else { 0 })
                 + (if 2 * tcount[0] >= (n as i32) { 1 } else { 0 });
-            sum += tmp * spread_weight[i];
-            nb_bands += spread_weight[i];
+            sum += tmp * sw;
+            nb_bands += sw;
         }
     }
 
@@ -165,8 +166,8 @@ pub fn haar1(x: &mut [f32], n0: usize, stride: usize) {
     let n = n0 >> 1;
     for i in 0..stride {
         for j in 0..n {
-            let tmp1 = 0.70710678 * x[stride * 2 * j + i];
-            let tmp2 = 0.70710678 * x[stride * (2 * j + 1) + i];
+            let tmp1 = std::f32::consts::FRAC_1_SQRT_2 * x[stride * 2 * j + i];
+            let tmp2 = std::f32::consts::FRAC_1_SQRT_2 * x[stride * (2 * j + 1) + i];
             x[stride * 2 * j + i] = tmp1 + tmp2;
             x[stride * (2 * j + 1) + i] = tmp1 - tmp2;
         }
@@ -187,7 +188,7 @@ pub fn compute_qn(n: usize, b: i32, offset: i32, pulse_cap: i32, stereo: bool) -
     } else {
         let val = EXP2_TABLE8[(qb & 0x7) as usize] as i32;
         let shift = 14 - (qb >> BITRES);
-        let raw = if shift >= 0 && shift < 32 {
+        let raw = if (0..32).contains(&shift) {
             val >> shift
         } else {
             0
@@ -226,6 +227,7 @@ pub struct SplitCtx {
     pub qalloc: i32,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn compute_theta(
     ctx: &mut BandCtx,
     sctx: &mut SplitCtx,
@@ -310,7 +312,7 @@ pub fn compute_theta(
                 if fs < (x0 + 1) as u32 * p0 as u32 {
                     itheta = fs as i32 / p0;
                 } else {
-                    itheta = (x0 + 1) as i32 + (fs as i32 - (x0 + 1) * p0);
+                    itheta = (x0 + 1) + (fs as i32 - (x0 + 1) * p0);
                 }
                 let fl = if itheta <= x0 {
                     p0 * itheta
@@ -340,22 +342,22 @@ pub fn compute_theta(
                     qn + 1 - itheta
                 };
                 let fl = if itheta <= (qn >> 1) {
-                    itheta * (itheta + 1) >> 1
+                    (itheta * (itheta + 1)) >> 1
                 } else {
-                    ft - ((qn + 1 - itheta) * (qn + 2 - itheta) >> 1)
+                    ft - (((qn + 1 - itheta) * (qn + 2 - itheta)) >> 1)
                 };
                 ctx.rc.encode(fl as u32, (fl + fs) as u32, ft as u32);
             } else {
                 let fm = ctx.rc.decode(ft as u32) as i32;
-                if fm < ((qn >> 1) * ((qn >> 1) + 1) >> 1) {
+                if fm < (((qn >> 1) * ((qn >> 1) + 1)) >> 1) {
                     itheta = (((8 * fm + 1) as f32).sqrt() as i32 - 1) >> 1;
-                    let fl = itheta * (itheta + 1) >> 1;
+                    let fl = (itheta * (itheta + 1)) >> 1;
                     let fs = itheta + 1;
                     ctx.rc.update(fl as u32, (fl + fs) as u32, ft as u32);
                 } else {
                     itheta = (2 * (qn + 1) - (((8 * (ft - fm - 1) + 1) as f32).sqrt() as i32)) >> 1;
                     let fs = qn + 1 - itheta;
-                    let fl = ft - ((qn + 1 - itheta) * (qn + 2 - itheta) >> 1);
+                    let fl = ft - (((qn + 1 - itheta) * (qn + 2 - itheta)) >> 1);
                     ctx.rc.update(fl as u32, (fl + fs) as u32, ft as u32);
                 }
             }
@@ -386,7 +388,7 @@ pub fn compute_theta(
     }
 
     sctx.itheta = itheta;
-    sctx.qalloc = ((ctx.rc.tell() << 3) - tell_start) as i32;
+    sctx.qalloc = (ctx.rc.tell() << 3) - tell_start;
 
     if itheta == 0 {
         sctx.imid = 32767;
@@ -409,6 +411,7 @@ pub fn compute_theta(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 #[inline(never)]
 pub fn quant_partition(
     ctx: &mut BandCtx,
@@ -446,7 +449,6 @@ pub fn quant_partition(
             false,
             &mut fill_mut,
         );
-        // sctx.imid = sctx.itheta;
 
         ctx.remaining_bits -= sctx.qalloc;
         let mbits = (0).max((b_mut - sctx.delta) / 2).min(b_mut);
@@ -510,7 +512,7 @@ pub fn quant_partition(
                 fill_mut,
             );
         }
-        return cm;
+        cm
     } else {
         let q = bits2pulses(ctx.m, ctx.i, lm, b);
         let curr_bits = pulses2bits(ctx.m, ctx.i, lm, q);
@@ -534,7 +536,7 @@ pub fn quant_partition(
             }
         } else {
             if ctx.resynth {
-                let mut seed = ctx.rc.tell() as u32; // Just a dummy seed for now.
+                let mut seed = ctx.rc.tell() as u32;
                 if let Some(ref lb) = lowband {
                     for j in 0..n {
                         seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
@@ -546,9 +548,9 @@ pub fn quant_partition(
                             };
                     }
                 } else {
-                    for j in 0..n {
+                    for xv in x[..n].iter_mut() {
                         seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
-                        x[j] = ((seed as i32 >> 20) as f32) / 16384.0;
+                        *xv = ((seed as i32 >> 20) as f32) / 16384.0;
                     }
                 }
                 renormalise_vector(x, n, gain);
@@ -660,6 +662,7 @@ fn quant_band_n1(
     1
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn quant_band(
     ctx: &mut BandCtx,
     x: &mut [f32],
@@ -691,12 +694,10 @@ pub fn quant_band(
         recombine = tf_change_local;
     }
 
-    // Make a mutable copy of lowband for transforms
     let mut lowband_buf: Option<Vec<f32>> = lowband.map(|lb| lb.to_vec());
 
     static BIT_INTERLEAVE_TABLE: [u8; 16] = [0, 1, 1, 1, 2, 3, 3, 3, 2, 3, 3, 3, 2, 3, 3, 3];
 
-    // Band recombining to increase frequency resolution
     for k in 0..recombine {
         if ctx.encode {
             haar1(x, n >> k, 1 << k);
@@ -710,7 +711,6 @@ pub fn quant_band(
     b_blocks >>= recombine;
     n_b <<= recombine;
 
-    // Increasing the time resolution
     while n_b & 1 == 0 && tf_change_local < 0 {
         if ctx.encode {
             haar1(x, n_b, b_blocks as usize);
@@ -728,7 +728,6 @@ pub fn quant_band(
     let b0_after = b_blocks;
     let n_b0 = n_b;
 
-    // Reorganize samples in time order
     if b_blocks > 1 {
         if ctx.encode {
             deinterleave_hadamard(
@@ -754,13 +753,12 @@ pub fn quant_band(
         n,
         b,
         b_blocks,
-        lowband_buf.as_mut().map(|v| v.as_mut_slice()),
+        lowband_buf.as_deref_mut(),
         lm,
         gain,
         fill,
     );
 
-    // Undo transforms in resynth
     if ctx.resynth {
         let mut cm = cm;
 
@@ -773,7 +771,6 @@ pub fn quant_band(
             );
         }
 
-        // Undo time-freq changes
         let mut n_b_undo = n_b0;
         let mut b_undo = b0_after;
         for _ in 0..time_divide {
@@ -794,11 +791,8 @@ pub fn quant_band(
         let mut b_final = b0_after;
         b_final <<= recombine;
 
-        // Scale output for later folding
         if let Some(lb_out) = lowband_out {
-            // C: n = celt_sqrt(SHL32(EXTEND32(N0),22)) — in float this is sqrt(N0 * (1<<22))
-            // But in float: EXTEND32 = identity, SHL32 = identity, so n = sqrt(N0)
-            // Actually C uses celt_sqrt which is different... but in float mode celt_sqrt is just sqrtf
+
             let scale = (n0 as f32).sqrt();
             for j in 0..n0 {
                 lb_out[j] = scale * x[j];
@@ -820,6 +814,7 @@ pub fn stereo_merge(x: &mut [f32], y: &mut [f32], mid: f32, side: f32, n: usize)
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn quant_band_stereo(
     ctx: &mut BandCtx,
     x: &mut [f32],
@@ -837,15 +832,14 @@ pub fn quant_band_stereo(
         return quant_band_n1(ctx, x, Some(y), lowband_out);
     }
 
-    if ctx.encode {
-        if ctx.band_e[ctx.i] < MIN_STEREO_ENERGY
-            || ctx.band_e[ctx.m.nb_ebands + ctx.i] < MIN_STEREO_ENERGY
-        {
-            if ctx.band_e[ctx.i] > ctx.band_e[ctx.m.nb_ebands + ctx.i] {
-                y.copy_from_slice(x);
-            } else {
-                x.copy_from_slice(y);
-            }
+    if ctx.encode
+        && (ctx.band_e[ctx.i] < MIN_STEREO_ENERGY
+            || ctx.band_e[ctx.m.nb_ebands + ctx.i] < MIN_STEREO_ENERGY)
+    {
+        if ctx.band_e[ctx.i] > ctx.band_e[ctx.m.nb_ebands + ctx.i] {
+            y.copy_from_slice(x);
+        } else {
+            x.copy_from_slice(y);
         }
     }
 
@@ -1025,14 +1019,15 @@ pub fn quant_band_stereo(
     if ctx.resynth {
         stereo_merge(x, y, mid_gain, side_gain, n);
         if sctx.inv {
-            for i in 0..n {
-                y[i] = -y[i];
+            for yv in y[..n].iter_mut() {
+                *yv = -*yv;
             }
         }
     }
     cm
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn quant_all_bands(
     encode: bool,
     m: &CeltMode,
@@ -1060,11 +1055,9 @@ pub fn quant_all_bands(
     let c_channels = if y.is_some() { 2 } else { 1 };
     let m_val = 1usize << lm as usize;
 
-    // Norm array for storing decoded band coefficients (for band folding)
     let norm_offset = m_val * (m.e_bands[start] as usize);
     let norm_size = m_val * (m.e_bands[m.nb_ebands - 1] as usize) - norm_offset;
     let mut norm = vec![0.0f32; norm_size];
-    // TODO: norm2 for stereo second channel
 
     let mut lowband_offset: usize = 0;
     let mut update_lowband = true;
@@ -1075,7 +1068,6 @@ pub fn quant_all_bands(
         let n = m_val * ((m.e_bands[i + 1] - m.e_bands[i]) as usize);
         let last = i == end - 1;
 
-        // Use tell_frac for fractional bit precision (matches C's ec_tell_frac)
         let tell = rc.tell_frac();
         if i != start {
             balance_val -= tell;
@@ -1088,10 +1080,8 @@ pub fn quant_all_bands(
             b = 0i32.max(16383i32.min((remaining_bits + 1).min(pulses[i] + curr_balance)));
         }
 
-        // Norm position for this band in the norm array
         let norm_pos = m_val * (m.e_bands[i] as usize) - norm_offset;
 
-        // Update lowband_offset for band folding
         let band_start = m_val * (m.e_bands[i] as usize);
         let bands_start = m_val * (m.e_bands[start] as usize);
         if resynth
@@ -1103,12 +1093,9 @@ pub fn quant_all_bands(
 
         let tf_change = tf_res[i];
 
-        // Compute effective_lowband and collapse masks from fold region
         let mut effective_lowband: i32 = -1;
         let mut x_cm: u32;
         let mut y_cm: u32;
-
-        if n <= 64 && i < 5 {}
 
         if lowband_offset != 0 && (spread != SPREAD_AGGRESSIVE || b_blocks > 1 || tf_change < 0) {
             effective_lowband = 0i32.max(
@@ -1116,7 +1103,6 @@ pub fn quant_all_bands(
             );
             let el_abs = effective_lowband as usize + norm_offset;
 
-            // Find fold region: bands overlapping [el_abs, el_abs+n)
             let mut fold_start = lowband_offset;
             loop {
                 if fold_start == 0 {
@@ -1164,7 +1150,6 @@ pub fn quant_all_bands(
             *dual_stereo = false;
         }
 
-        // Prepare lowband scratch (clone from norm for folding)
         let mut lowband_scratch: Option<Vec<f32>> = if effective_lowband >= 0 {
             let lb_start = effective_lowband as usize;
             let lb_end = lb_start + n;
@@ -1180,7 +1165,7 @@ pub fn quant_all_bands(
         let x_slice = &mut x[offset..offset + n];
         if *dual_stereo {
             let y_slice = &mut y.as_mut().unwrap()[offset..offset + n];
-            let lb_x = lowband_scratch.as_mut().map(|v| v.as_mut_slice());
+            let lb_x = lowband_scratch.as_deref_mut();
             let lb_out_x = if !last && norm_pos + n <= norm.len() {
                 Some(&mut norm[norm_pos..norm_pos + n])
             } else {
@@ -1213,7 +1198,7 @@ pub fn quant_all_bands(
         } else {
             if let Some(y_all) = y.as_mut() {
                 let y_slice = &mut y_all[offset..offset + n];
-                let lb = lowband_scratch.as_mut().map(|v| v.as_mut_slice());
+                let lb = lowband_scratch.as_deref_mut();
                 let lb_out = if !last && norm_pos + n <= norm.len() {
                     Some(&mut norm[norm_pos..norm_pos + n])
                 } else {
@@ -1234,7 +1219,7 @@ pub fn quant_all_bands(
                 );
                 y_cm = x_cm;
             } else {
-                let lb = lowband_scratch.as_mut().map(|v| v.as_mut_slice());
+                let lb = lowband_scratch.as_deref_mut();
                 let lb_out = if !last && norm_pos + n <= norm.len() {
                     Some(&mut norm[norm_pos..norm_pos + n])
                 } else {
@@ -1250,13 +1235,10 @@ pub fn quant_all_bands(
             collapse_masks[i * c_channels + 1] = y_cm;
         }
 
-        // CRITICAL: Update balance (was completely missing!)
         balance_val += pulses[i] + tell;
 
-        // Track whether previous band had enough quality for folding
         update_lowband = b > ((n as i32) << BITRES);
 
-        // After first band, no longer avoid split noise
         avoid_split_noise = false;
     }
     *balance = balance_val;
@@ -1336,6 +1318,7 @@ pub fn normalise_bands(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn denormalise_bands(
     m: &CeltMode,
     x: &[f32],
@@ -1368,15 +1351,16 @@ pub fn celt_lcg_rand(seed: u32) -> u32 {
 
 pub fn renormalise_vector(x: &mut [f32], n: usize, gain: f32) {
     let mut e = 1e-15f32;
-    for i in 0..n {
-        e += x[i] * x[i];
+    for &xv in x[..n].iter() {
+        e += xv * xv;
     }
     let norm = gain / e.sqrt();
-    for i in 0..n {
-        x[i] *= norm;
+    for xv in x[..n].iter_mut() {
+        *xv *= norm;
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn anti_collapse(
     m: &CeltMode,
     x_buf: &mut [f32],
@@ -1395,7 +1379,7 @@ pub fn anti_collapse(
     for i in start..end {
         let n0 = (m.e_bands[i + 1] - m.e_bands[i]) as usize;
         let depth = if n0 > 0 {
-            (1 + pulses[i]) / n0 as i32 >> lm
+            ((1 + pulses[i]) / n0 as i32) >> lm
         } else {
             0
         };
@@ -1421,10 +1405,10 @@ pub fn anti_collapse(
 
             let mut r = 2.0 * (-e_diff).exp2();
             if lm == 3 {
-                r *= 1.41421356f32;
+                r *= std::f32::consts::SQRT_2;
             }
             r = r.min(thresh);
-            r = r * sqrt_1;
+            r *= sqrt_1;
 
             let x_offset = c * size + ((m.e_bands[i] as usize) << lm);
             let mut renormalize = false;

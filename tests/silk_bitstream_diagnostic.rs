@@ -13,17 +13,17 @@ use opus_rs::silk::init_decoder::silk_decoder_set_fs;
 fn decode_silk_params(payload: &[u8], fs_khz: i32) {
     let mut rc = RangeCoder::new_decoder(payload.to_vec());
 
-    // 1. VAD/LBRR flags
+    // 1. VAD/LBRR flags (C uses ec_dec_bit_logp(1) for each bit)
     let n_frames_per_packet = 1;
-    let n_flag_bits = n_frames_per_packet + 1;
-    let icdf_val = (256 - (256 >> n_flag_bits)) as u8;
-    let icdf = [icdf_val, 0u8];
-    let flags = rc.decode_icdf(&icdf, 8);
-    let vad_flag = (flags >> 1) & 1;
-    let lbrr_flag = flags & 1;
+    let mut vad_flag = 0i32;
+    for _ in 0..n_frames_per_packet {
+        let v = rc.decode_bit_logp(1);
+        vad_flag = if v { 1 } else { 0 };
+    }
+    let lbrr_flag = if rc.decode_bit_logp(1) { 1i32 } else { 0 };
     println!(
-        "  VAD/LBRR: vad={} lbrr={} (flags={})",
-        vad_flag, lbrr_flag, flags
+        "  VAD/LBRR: vad={} lbrr={}",
+        vad_flag, lbrr_flag
     );
 
     // 2. Decode indices using properly initialized decoder state
@@ -154,4 +154,40 @@ fn test_silk_bitstream_diagnostic() {
 
     println!("\n=== Decoding C SILK parameters ===");
     decode_silk_params(c_silk, 8);
+}
+
+#[test]
+fn test_decode_exact_compare_frame0() {
+    // Decode the C reference frame 0 from bitstream_exact_compare test
+    // (complexity=10, 12kbps, NB 8kHz)
+    // Full C reference frame 0: 0b018455a4e3c2206bd13d16c0f1d332bbe6fca978f3eac09e538202d180
+    // After skipping TOC (0x0b) and count byte (0x01), SILK payload starts at byte 2
+    let c_silk_hex = "8455a4e3c2206bd13d16c0f1d332bbe6fca978f3eac09e538202d180";
+    let c_silk: Vec<u8> = (0..c_silk_hex.len()).step_by(2)
+        .map(|i| u8::from_str_radix(&c_silk_hex[i..i+2], 16).unwrap())
+        .collect();
+    
+    println!("=== Decoding C exact_compare frame 0 (complexity=10, 12kbps) ===");
+    decode_silk_params(&c_silk, 8);
+    
+    // Also decode corresponding Rust frame 0 for comparison
+    use opus_rs::{Application, OpusEncoder};
+    let mut encoder = OpusEncoder::new(8000, 1, Application::Voip).expect("Failed");
+    encoder.bitrate_bps = 12000;
+    encoder.use_cbr = true;
+    encoder.complexity = 10;
+    
+    let mut input = vec![0.0f32; 160];
+    for i in 0..160 {
+        let val = (2.0f64 * std::f64::consts::PI * 440.0 * i as f64 / 8000.0).sin();
+        let i16_val = (val * 16383.0) as i16;
+        input[i] = i16_val as f32 / 32768.0;
+    }
+    
+    let mut pkt_buf = vec![0u8; 200];
+    let pkt_len = encoder.encode(&input, 160, &mut pkt_buf).expect("Encode failed");
+    let rust_silk = &pkt_buf[2..pkt_len];  // Skip TOC + count byte
+    
+    println!("\n=== Decoding Rust exact_compare frame 0 ===");
+    decode_silk_params(rust_silk, 8);
 }

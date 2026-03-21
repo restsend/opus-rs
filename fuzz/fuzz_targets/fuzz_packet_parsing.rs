@@ -1,6 +1,3 @@
-//! Fuzz test for packet parsing and TOC byte handling
-//! Tests all possible TOC byte configurations and packet structures
-
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -45,10 +42,7 @@ fuzz_target!(|data: &[u8]| {
                     }
                 } else if (toc >> 5) & 0x03 == 0x03 {
                     // Hybrid mode: 10 or 20 ms
-                    vec![
-                        sampling_rate as usize / 100,
-                        sampling_rate as usize / 50,
-                    ]
+                    vec![sampling_rate as usize / 100, sampling_rate as usize / 50]
                 } else {
                     // SILK mode: 10, 20, 40, 60 ms
                     let silk_config = (toc >> 3) & 0x03;

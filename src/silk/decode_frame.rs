@@ -6,12 +6,10 @@ use crate::silk::decode_pulses::silk_decode_pulses;
 use crate::silk::decoder_structs::{SilkDecoderControl, SilkDecoderState};
 use crate::silk::define::*;
 
-/// Decode frame flags
 pub const FLAG_DECODE_NORMAL: i32 = 0;
 pub const FLAG_PACKET_LOST: i32 = 1;
 pub const FLAG_DECODE_LBRR: i32 = 2;
 
-/// Decode a SILK frame
 pub fn silk_decode_frame(
     ps_dec: &mut SilkDecoderState,
     ps_range_dec: &mut RangeCoder,
@@ -24,7 +22,6 @@ pub fn silk_decode_frame(
     let mut ps_dec_ctrl = SilkDecoderControl::new();
     ps_dec_ctrl.ltp_scale_q14 = 0;
 
-    /* Safety checks */
     debug_assert!(l > 0 && l <= MAX_FRAME_LENGTH);
 
     if lost_flag == FLAG_DECODE_NORMAL
@@ -33,7 +30,6 @@ pub fn silk_decode_frame(
     {
         let mut pulses: [i16; MAX_FRAME_LENGTH] = [0; MAX_FRAME_LENGTH];
 
-        /* Decode quantization indices of side info */
         silk_decode_indices(
             ps_dec,
             ps_range_dec,
@@ -42,9 +38,6 @@ pub fn silk_decode_frame(
             cond_coding,
         );
 
-        // Debug output for indices
-
-        /* Decode quantization indices of excitation */
         silk_decode_pulses(
             ps_range_dec,
             &mut pulses,
@@ -53,30 +46,24 @@ pub fn silk_decode_frame(
             ps_dec.frame_length,
         );
 
-        /* Decode parameters and pulse signal */
         silk_decode_parameters(ps_dec, &mut ps_dec_ctrl, cond_coding);
 
-        /* Run inverse NSQ */
         silk_decode_core(ps_dec, &ps_dec_ctrl, p_out, &pulses);
 
-        /* Update output buffer */
         let mv_len = ps_dec.ltp_mem_length - ps_dec.frame_length;
         ps_dec.out_buf.rotate_left(ps_dec.frame_length as usize);
         ps_dec.out_buf[mv_len as usize..mv_len as usize + l].copy_from_slice(&p_out[..l]);
 
-        /* Update PLC state (simplified - just copy state) */
         ps_dec.loss_cnt = 0;
         ps_dec.prev_signal_type = ps_dec.indices.signal_type as i32;
 
-        /* A frame has been decoded without errors */
         ps_dec.first_frame_after_reset = 0;
     } else {
-        /* Handle packet loss by extrapolation (simplified - just output zeros) */
+
         for i in 0..l {
             p_out[i] = 0;
         }
 
-        /* Update output buffer */
         let mv_len = ps_dec.ltp_mem_length - ps_dec.frame_length;
         ps_dec.out_buf.rotate_left(ps_dec.frame_length as usize);
         ps_dec.out_buf[mv_len as usize..mv_len as usize + l].copy_from_slice(&p_out[..l]);
@@ -84,11 +71,9 @@ pub fn silk_decode_frame(
         ps_dec.loss_cnt += 1;
     }
 
-    /* Update some decoder state variables */
     ps_dec.lag_prev = ps_dec_ctrl.pitch_l[ps_dec.nb_subfr as usize - 1];
 
-    /* Set output frame length */
     *p_n = l as i32;
 
-    0 // SILK_NO_ERROR
+    0
 }

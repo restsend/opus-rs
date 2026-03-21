@@ -10,11 +10,9 @@ use crate::quant_bands::{
 use crate::range_coder::RangeCoder;
 use crate::rate::{BITRES, clt_compute_allocation};
 
-/// Maximum frame size supported by Opus: 60ms at 48kHz = 2880 samples
-/// We use 3072 to provide some safety margin
 #[allow(dead_code)]
 const MAX_FRAME_SIZE: usize = 2880;
-/// Decode buffer size must be at least MAX_FRAME_SIZE + overlap to avoid integer underflow
+
 const DECODE_BUFFER_SIZE: usize = 3072;
 
 const INV_TABLE: [u8; 128] = [
@@ -25,6 +23,7 @@ const INV_TABLE: [u8; 128] = [
     3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2,
 ];
 
+#[allow(clippy::too_many_arguments)]
 fn transient_analysis(
     input: &[f32],
     len: usize,
@@ -51,7 +50,6 @@ fn transient_analysis(
         let mut mem0 = 0.0f32;
         let mut mem1 = 0.0f32;
 
-        // High-pass filter
         for i in 0..len {
             let x = input[c * len + i];
             let y = mem0 + x;
@@ -61,10 +59,7 @@ fn transient_analysis(
             tmp[i] = y;
         }
 
-        // First 12 samples are bad
-        for i in 0..12 {
-            tmp[i] = 0.0;
-        }
+        tmp[..12].fill(0.0);
 
         let mut mean = 0.0f32;
         mem0 = 0.0f32;
@@ -110,20 +105,21 @@ fn transient_analysis(
         mask_metric = 0.0;
     }
 
-    *tf_estimate = (mask_metric - 150.0).clamp(0.0, 1.0); // Rough estimate
+    *tf_estimate = (mask_metric - 150.0).clamp(0.0, 1.0);
 
     is_transient
 }
 
 fn l1_metric(tmp: &[f32], n: usize, lm: i32, bias: f32) -> f32 {
     let mut l1 = 0.0f32;
-    for i in 0..n {
-        l1 += tmp[i].abs();
+    for &tv in tmp[..n].iter() {
+        l1 += tv.abs();
     }
-    // l1 = l1 * 16384.0; // Fixed-point artifact?
+
     l1 + (lm as f32) * bias * l1
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tf_analysis(
     mode: &CeltMode,
     len: usize,
@@ -142,7 +138,7 @@ fn tf_analysis(
 
     let bias = 0.04 * (-0.25f32).max(0.5 - tf_estimate);
 
-    for i in 0..len {
+    for (i, metric_i) in metric[..len].iter_mut().enumerate() {
         let n = ((mode.e_bands[i + 1] - mode.e_bands[i]) as usize) << lm;
         let narrow = (mode.e_bands[i + 1] - mode.e_bands[i]) == 1;
         let offset = tf_chan * n0 + ((mode.e_bands[i] as usize) << lm);
@@ -175,24 +171,24 @@ fn tf_analysis(
         }
 
         if is_transient {
-            metric[i] = 2 * best_level;
+            *metric_i = 2 * best_level;
         } else {
-            metric[i] = -2 * best_level;
+            *metric_i = -2 * best_level;
         }
 
-        if narrow && (metric[i] == 0 || metric[i] == -2 * lm) {
-            metric[i] -= 1;
+        if narrow && (*metric_i == 0 || *metric_i == -2 * lm) {
+            *metric_i -= 1;
         }
     }
 
     let mut tf_select = 0;
-    let importance = vec![1.0f32; len]; // FIXME: use real importance
+    let importance = vec![1.0f32; len];
     let mut selcost = [0.0f32; 2];
 
     for sel in 0..2 {
         let mut cost0 = importance[0]
             * ((metric[0]
-                - 2 * TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + 2 * sel + 0]
+                - 2 * TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + 2 * sel]
                     as i32) as f32)
                 .abs();
         let mut cost1 = importance[0]
@@ -209,7 +205,7 @@ fn tf_analysis(
                 + importance[i]
                     * ((metric[i]
                         - 2 * TF_SELECT_TABLE[lm as usize]
-                            [4 * (is_transient as usize) + 2 * sel + 0]
+                            [4 * (is_transient as usize) + 2 * sel]
                             as i32) as f32)
                         .abs();
             cost1 = curr1
@@ -229,7 +225,7 @@ fn tf_analysis(
 
     let mut cost0 = importance[0]
         * ((metric[0]
-            - 2 * TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + 2 * tf_select + 0]
+            - 2 * TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + 2 * tf_select]
                 as i32) as f32)
             .abs();
     let mut cost1 = importance[0]
@@ -248,7 +244,7 @@ fn tf_analysis(
             + importance[i]
                 * ((metric[i]
                     - 2 * TF_SELECT_TABLE[lm as usize]
-                        [4 * (is_transient as usize) + 2 * tf_select + 0]
+                        [4 * (is_transient as usize) + 2 * tf_select]
                         as i32) as f32)
                     .abs();
         cost1 = curr1
@@ -279,28 +275,27 @@ fn tf_encode(
     let mut budget = rc.storage as i32 * 8;
     let mut tell = rc.tell();
 
-    // Reserve space to code the tf_select decision (matching C)
-    let tf_select_rsv = if lm > 0 && tell + logp + 1 <= budget {
+    let tf_select_rsv = if lm > 0 && tell + logp < budget {
         1
     } else {
         0
     };
     budget -= tf_select_rsv;
 
-    for i in start..end {
+    for tf_res_i in tf_res[start..end].iter_mut() {
         if tell + logp <= budget {
-            rc.encode_bit_logp(tf_res[i] ^ curr != 0, logp as u32);
+            rc.encode_bit_logp(*tf_res_i ^ curr != 0, logp as u32);
             tell = rc.tell();
-            curr = tf_res[i];
+            curr = *tf_res_i;
             tf_changed |= curr;
         } else {
-            tf_res[i] = curr;
+            *tf_res_i = curr;
         }
         logp = if is_transient { 4 } else { 5 };
     }
 
     if tf_select_rsv != 0
-        && TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + 0 + (tf_changed as usize)]
+        && TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + (tf_changed as usize)]
             != TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + 2 + (tf_changed as usize)]
     {
         rc.encode_bit_logp(tf_select != 0, 1);
@@ -308,10 +303,9 @@ fn tf_encode(
         tf_select = 0;
     }
 
-    // Apply TF_SELECT_TABLE to finalize tf_res (matching C)
-    for i in start..end {
-        tf_res[i] = TF_SELECT_TABLE[lm as usize]
-            [4 * (is_transient as usize) + 2 * (tf_select as usize) + (tf_res[i] as usize)]
+    for tf_res_i in tf_res[start..end].iter_mut() {
+        *tf_res_i = TF_SELECT_TABLE[lm as usize]
+            [4 * (is_transient as usize) + 2 * (tf_select as usize) + (*tf_res_i as usize)]
             as i32;
     }
 
@@ -332,14 +326,14 @@ fn tf_decode(
     let budget = rc.storage as i32 * 8;
     let mut tell = rc.tell();
 
-    let tf_select_rsv = if lm > 0 && tell + logp + 1 <= budget {
+    let tf_select_rsv = if lm > 0 && tell + logp < budget {
         1
     } else {
         0
     };
     let budget = budget - tf_select_rsv;
 
-    for i in start..end {
+    for tf_res_i in tf_res[start..end].iter_mut() {
         if tell + logp <= budget {
             curr ^= if rc.decode_bit_logp(logp as u32) {
                 1
@@ -349,22 +343,22 @@ fn tf_decode(
             tell = rc.tell();
             tf_changed |= curr;
         }
-        tf_res[i] = curr;
+        *tf_res_i = curr;
         logp = if is_transient { 4 } else { 5 };
     }
 
     let mut tf_select = 0;
     let _budget = budget + tf_select_rsv;
     if tf_select_rsv > 0
-        && TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + 0 + (tf_changed as usize)]
+        && TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + (tf_changed as usize)]
             != TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + 2 + (tf_changed as usize)]
     {
         tf_select = if rc.decode_bit_logp(1) { 1 } else { 0 };
     }
 
-    for i in start..end {
-        tf_res[i] = TF_SELECT_TABLE[lm as usize]
-            [4 * (is_transient as usize) + 2 * (tf_select as usize) + (tf_res[i] as usize)]
+    for tf_res_i in tf_res[start..end].iter_mut() {
+        *tf_res_i = TF_SELECT_TABLE[lm as usize]
+            [4 * (is_transient as usize) + 2 * (tf_select as usize) + (*tf_res_i as usize)]
             as i32;
     }
 }
@@ -386,7 +380,7 @@ fn stereo_analysis(m: &CeltMode, x: &[f32], lm: i32, n0: usize) -> bool {
         }
     }
 
-    sum_ms *= 0.707107f32;
+    sum_ms *= std::f32::consts::FRAC_1_SQRT_2;
     let mut thetas = 13;
     if lm <= 1 {
         thetas -= 8;
@@ -402,11 +396,12 @@ const COMBFILTER_MINPERIOD: usize = 15;
 const COMBFILTER_MAXPERIOD: usize = 1024;
 
 const PREFILTER_GAINS: [[f32; 3]; 3] = [
-    [0.306640625, 0.2170410156, 0.1296386719],
-    [0.4638671875, 0.2680664062, 0.0],
-    [0.7998046875, 0.1000976562, 0.0],
+    [0.306_640_6, 0.217_041, 0.129_638_7],
+    [0.463_867_2, 0.268_066_4, 0.0],
+    [0.799_804_7, 0.100_097_7, 0.0],
 ];
 
+#[allow(clippy::too_many_arguments)]
 fn comb_filter_const(
     y: &mut [f32],
     x: &[f32],
@@ -439,6 +434,7 @@ fn comb_filter_const(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn comb_filter(
     y: &mut [f32],
     x: &[f32],
@@ -456,9 +452,7 @@ fn comb_filter(
 ) {
     if g0 == 0.0 && g1 == 0.0 {
         if x_idx != y_idx || !std::ptr::eq(x.as_ptr(), y.as_ptr()) {
-            for i in 0..n {
-                y[y_idx + i] = x[x_idx + i];
-            }
+            y[y_idx..y_idx + n].copy_from_slice(&x[x_idx..x_idx + n]);
         }
         return;
     }
@@ -504,9 +498,7 @@ fn comb_filter(
 
     if i < n {
         if g1 == 0.0 {
-            for j in i..n {
-                y[y_idx + j] = x[x_idx + j];
-            }
+            y[y_idx + i..y_idx + n].copy_from_slice(&x[x_idx + i..x_idx + n]);
         } else {
             comb_filter_const(y, x, y_idx + i, x_idx + i, t1, n - i, g10, g11, g12);
         }
@@ -516,8 +508,8 @@ fn comb_filter(
 pub struct CeltEncoder {
     mode: &'static CeltMode,
     channels: usize,
-    syn_mem: Vec<f32>,        // Size = channels * (2048 + overlap)
-    enc_decode_mem: Vec<f32>, // Separate synthesis buffer for encoder resynth
+    syn_mem: Vec<f32>,
+    enc_decode_mem: Vec<f32>,
     old_band_e: Vec<f32>,
     preemph_mem: Vec<f32>,
     tonal_average: i32,
@@ -561,6 +553,7 @@ fn hysteresis_decision(val: i32, thresholds: &[i32], hysteresis: &[i32], prev: i
     res
 }
 
+#[allow(clippy::too_many_arguments)]
 fn alloc_trim_analysis(
     mode: &CeltMode,
     x: &[f32],
@@ -679,18 +672,15 @@ impl CeltEncoder {
         start_band: usize,
     ) {
         let mut max_pcm = 0.0f32;
-        for i in 0..frame_size {
-            max_pcm = max_pcm.max(pcm[i].abs());
+        for &pv in pcm[..frame_size].iter() {
+            max_pcm = max_pcm.max(pv.abs());
         }
-
-        if frame_size == 960 {}
 
         let mode = self.mode;
         let channels = self.channels;
         let nb_ebands = mode.nb_ebands;
         let overlap = mode.overlap;
 
-        // Calculate LM
         let mut lm = 0;
         while (mode.short_mdct_size << lm) != frame_size {
             lm += 1;
@@ -699,14 +689,13 @@ impl CeltEncoder {
             }
         }
         if (mode.short_mdct_size << lm) != frame_size {
-            lm = 0; // Default or error
+            lm = 0;
         }
 
         let syn_mem_size = 2048 + overlap;
         for c in 0..channels {
             let channel_offset = c * syn_mem_size;
 
-            // Shift history
             for i in 0..syn_mem_size - frame_size {
                 self.syn_mem[channel_offset + i] = self.syn_mem[channel_offset + i + frame_size];
             }
@@ -727,7 +716,7 @@ impl CeltEncoder {
         for c in 0..channels {
             let channel_offset = c * syn_mem_size;
             let in_buf_offset = c * buf_stride;
-            // Copy: overlap history + current frame
+
             let src_start = syn_mem_size - frame_size - overlap;
             in_buf[in_buf_offset..in_buf_offset + buf_stride].copy_from_slice(
                 &self.syn_mem[channel_offset + src_start..channel_offset + syn_mem_size],
@@ -743,10 +732,10 @@ impl CeltEncoder {
             channels,
             &mut tf_estimate,
             &mut tf_chan,
-            false, // allow_weak_transients
+            false,
             &mut weak_transient,
-            0.0, // tone_freq (not used)
-            0.0, // toneishness (not used)
+            0.0,
+            0.0,
         );
 
         let pf_on = false;
@@ -774,24 +763,20 @@ impl CeltEncoder {
             }
 
             for i in 0..b {
-                // Output is interleaved: out[b + c*N*B] where b is block index
+
                 mode.mdct.forward(
                     &self.syn_mem[channel_offset + mdct_base + i * n..],
                     &mut freq[c * frame_size + i..],
                     mode.window,
                     overlap,
-                    shift as usize,
-                    b as usize, // stride
+                    shift,
+                    b,
                 );
             }
         }
 
         let mut band_e = vec![0.0f32; nb_ebands * channels];
-        compute_band_energies(mode, &freq, &mut band_e, nb_ebands, channels, lm as usize);
-
-        if frame_size == 960 {}
-
-        if frame_size == 960 && channels == 1 {}
+        compute_band_energies(mode, &freq, &mut band_e, nb_ebands, channels, lm);
 
         let mut x = vec![0.0f32; frame_size * channels];
         normalise_bands(
@@ -804,9 +789,8 @@ impl CeltEncoder {
             (1 << lm) as usize,
         );
 
-        // Normalized bands frequency coefficients
         if channels == 1 {
-            let _ = freq[0]; // prevent compiler warning for unused freq
+            let _ = freq[0];
         }
 
         let mut band_log_e = vec![0.0f32; nb_ebands * channels];
@@ -819,19 +803,15 @@ impl CeltEncoder {
             channels,
         );
 
-        // Use the full buffer size for total_bits calculation
-        // This matches the C behavior when encoder is initialized with a large buffer
         let total_bits = (rc.buf.len() * 8) as i32;
         let mut error = vec![0.0f32; nb_ebands * channels];
 
-        // 0. Silence flag (C order: first thing written)
         let tell = rc.tell();
-        let silence = false; // We're encoding real audio
+        let silence = false;
         if tell == 1 {
             rc.encode_bit_logp(silence, 15);
         }
 
-        // 1. Pitch parameters
         if !silence && rc.tell() + 16 <= total_bits {
             rc.encode_bit_logp(pf_on, 1);
             if pf_on {
@@ -847,7 +827,6 @@ impl CeltEncoder {
             }
         }
 
-        // 2. Transient bit
         let mut short_blocks = false;
         if lm > 0 && rc.tell() + 3 <= total_bits {
             rc.encode_bit_logp(is_transient, 3);
@@ -857,7 +836,7 @@ impl CeltEncoder {
         }
 
         if short_blocks {
-            // Re-compute MDCT with short blocks
+
             let b = 1 << lm;
             let n = frame_size / b;
             for c in 0..channels {
@@ -868,13 +847,13 @@ impl CeltEncoder {
                         &mut freq[c * frame_size + i..],
                         mode.window,
                         overlap,
-                        mode.max_lm as usize,
-                        b as usize,
+                        mode.max_lm,
+                        b,
                     );
                 }
             }
-            // And re-normalise
-            compute_band_energies(mode, &freq, &mut band_e, nb_ebands, channels, lm as usize);
+
+            compute_band_energies(mode, &freq, &mut band_e, nb_ebands, channels, lm);
             normalise_bands(
                 mode,
                 &freq,
@@ -886,30 +865,28 @@ impl CeltEncoder {
             );
         }
 
-        // 3. Coarse energy
-        let intra_ener = false; // For now assuming no forced intra except transient
+        let intra_ener = false;
         quant_coarse_energy(
             mode,
             start_band,
             nb_ebands,
-            &mut band_log_e,
+            &band_log_e,
             &mut self.old_band_e,
             (total_bits << 3) as u32,
             &mut error,
             rc,
             channels,
-            lm as usize,
+            lm,
             is_transient || intra_ener,
         );
 
-        // 4. TF Analysis
         let mut tf_res = vec![0i32; nb_ebands];
         let effective_bytes = ((total_bits / 8) as usize).max(1);
         let lambda = 80.max(20480 / effective_bytes + 2) as i32;
         let tf_select = tf_analysis(
             mode,
             nb_ebands,
-            is_transient, // Use the detected transient flag
+            is_transient,
             &mut tf_res,
             lambda,
             &x,
@@ -928,7 +905,6 @@ impl CeltEncoder {
             rc,
         );
 
-        // 5. Spread decision (must come after TF, before dynalloc, matching C order)
         let mut dual_stereo_val = if channels == 2 {
             stereo_analysis(mode, &x, lm as i32, frame_size) as i32
         } else {
@@ -947,7 +923,6 @@ impl CeltEncoder {
             self.intensity = self.intensity.clamp(0, nb_ebands as i32);
         }
 
-        // Spread decision - encode BEFORE dynalloc and trim (C order)
         if rc.tell() + 4 <= total_bits {
             let update_hf = lm == mode.max_lm;
             let spread_weights = vec![32i32; nb_ebands];
@@ -969,10 +944,9 @@ impl CeltEncoder {
             self.spread_decision = SPREAD_NORMAL;
         }
 
-        // 6. Dynalloc encoding (per-band boost flags)
         let mut cap = vec![0i32; nb_ebands];
-        for i in 0..nb_ebands {
-            cap[i] = (mode.cache.caps[nb_ebands * (2 * lm + channels - 1) + i] as i32 + 64)
+        for (i, cap_i) in cap.iter_mut().enumerate() {
+            *cap_i = (mode.cache.caps[nb_ebands * (2 * lm + channels - 1) + i] as i32 + 64)
                 * channels as i32
                 * 2;
         }
@@ -986,7 +960,7 @@ impl CeltEncoder {
                 let dynalloc_loop_logp = dynalloc_logp;
                 let boost = 0i32;
                 let tell_frac = rc.tell() << BITRES;
-                // Encoder: offsets are all 0, so we always write flag=0 and break
+
                 if tell_frac + (dynalloc_loop_logp << BITRES) < total_bits_bitres - total_boost
                     && boost < cap[i]
                 {
@@ -996,7 +970,6 @@ impl CeltEncoder {
             }
         }
 
-        // 7. Alloc trim (after spread and dynalloc, matching C order)
         let alloc_trim = alloc_trim_analysis(
             mode,
             &x,
@@ -1015,10 +988,9 @@ impl CeltEncoder {
             rc.encode_icdf(alloc_trim, &TRIM_ICDF, 7);
         }
 
-        // 8. Compute allocation
         let mut intensity = self.intensity;
         let mut pulses = vec![0i32; nb_ebands];
-        // For stereo, ebits and fine_priority need to be channels * nb_ebands for quant_fine_energy
+
         let stereo = channels > 1;
         let ebands_stereo = if stereo {
             nb_ebands * channels
@@ -1062,7 +1034,6 @@ impl CeltEncoder {
             channels,
         );
 
-        // Spread decision already encoded above (after TF)
         let mut collapse_masks = vec![0u32; nb_ebands * channels];
         let (x_split, y_split) = x.split_at_mut(frame_size);
         let y_opt = if channels == 2 { Some(y_split) } else { None };
@@ -1099,13 +1070,11 @@ impl CeltEncoder {
             &mut error,
             &ebits,
             &fine_priority,
-            (total_bits - rc.tell() as i32) << 3,
+            (total_bits - rc.tell()) << 3,
             rc,
             channels,
         );
 
-        // Encoder synthesis: reconstruct the signal after PVQ to update overlap state.
-        // This ensures the encoder and decoder have the same overlap for subsequent frames.
         {
             let mut band_amp_synth = vec![0.0f32; nb_ebands * channels];
             log2amp(
@@ -1134,7 +1103,6 @@ impl CeltEncoder {
             let syn_n = frame_size / syn_b;
             let decode_buf_size = 2048;
 
-            // Shift the encoder's decode_mem
             for c in 0..channels {
                 let co = c * syn_mem_size;
                 for i in 0..decode_buf_size - frame_size + overlap {
@@ -1142,7 +1110,6 @@ impl CeltEncoder {
                 }
             }
 
-            // MDCT backward into enc_decode_mem
             for c in 0..channels {
                 let co = c * syn_mem_size;
                 let out_syn_idx = decode_buf_size - frame_size;
@@ -1152,8 +1119,8 @@ impl CeltEncoder {
                         &mut self.enc_decode_mem[co + out_syn_idx + bi * syn_n..],
                         mode.window,
                         overlap,
-                        syn_shift as usize,
-                        syn_b as usize,
+                        syn_shift,
+                        syn_b,
                     );
                 }
             }
@@ -1182,10 +1149,8 @@ impl CeltEncoder {
             self.prefilter_gain = 0.0;
         }
 
-        // self.old_band_e.copy_from_slice(&band_log_e); // REMOVED: keep quantized history
-
         let syn_mem_size = 2048 + overlap;
-        // History and prefilter_mem updates
+
         for c in 0..channels {
             let channel_offset = c * syn_mem_size;
             let n = frame_size;
@@ -1211,7 +1176,7 @@ impl CeltEncoder {
 pub struct CeltDecoder {
     mode: &'static CeltMode,
     channels: usize,
-    decode_mem: Vec<f32>, // Size = channels * (2048 + overlap)
+    decode_mem: Vec<f32>,
     old_band_e: Vec<f32>,
     preemph_mem: Vec<f32>,
     prefilter_mem: Vec<f32>,
@@ -1246,9 +1211,6 @@ impl CeltDecoder {
         self.decode_impl(compressed, frame_size, pcm, 0)
     }
 
-    /// Decode with start_band support for Hybrid mode.
-    /// `start_band > 0` means this CELT frame only contains data for bands
-    /// from start_band..nb_ebands; the lower bands come from SILK.
     pub fn decode_with_start_band(
         &mut self,
         compressed: &[u8],
@@ -1271,7 +1233,6 @@ impl CeltDecoder {
         let nb_ebands = mode.nb_ebands;
         let overlap = mode.overlap;
 
-        // Calculate LM
         let mut lm = 0;
         while (mode.short_mdct_size << lm) != frame_size {
             lm += 1;
@@ -1280,23 +1241,18 @@ impl CeltDecoder {
             }
         }
         if (mode.short_mdct_size << lm) != frame_size {
-            lm = 0; // Default or error
+            lm = 0;
         }
 
         let mut rc = RangeCoder::new_decoder(compressed.to_vec());
         let total_bits = (compressed.len() * 8) as i32;
 
-        // Silence check (C order: first thing after init)
         let tell = rc.tell();
         let mut silence = false;
         if tell >= total_bits {
             silence = true;
         } else if tell == 1 {
             silence = rc.decode_bit_logp(15);
-        }
-        if silence {
-            // Pretend we've read all the remaining bits
-            // (skip to end of packet)
         }
 
         let mut pf_on = false;
@@ -1331,7 +1287,7 @@ impl CeltDecoder {
             (total_bits << 3) as u32,
             &mut rc,
             channels,
-            lm as usize,
+            lm,
             is_transient || intra_ener,
         );
 
@@ -1345,22 +1301,19 @@ impl CeltDecoder {
             &mut rc,
         );
 
-        // Spread decision (C order: after TF, before dynalloc)
         let spread_decision = if rc.tell() + 4 <= total_bits {
-            rc.decode_icdf(&SPREAD_ICDF, 5) as i32
+            rc.decode_icdf(&SPREAD_ICDF, 5)
         } else {
             SPREAD_NORMAL
         };
 
-        // Cap init
         let mut cap = vec![0i32; nb_ebands];
-        for i in 0..nb_ebands {
-            cap[i] = (mode.cache.caps[nb_ebands * (2 * lm + channels - 1) + i] as i32 + 64)
+        for (i, cap_i) in cap.iter_mut().enumerate() {
+            *cap_i = (mode.cache.caps[nb_ebands * (2 * lm + channels - 1) + i] as i32 + 64)
                 * channels as i32
                 * 2;
         }
 
-        // Dynalloc decoding (C order: after spread, before trim)
         let mut offsets = vec![0i32; nb_ebands];
         let mut dynalloc_logp = 6i32;
         let mut total_bits_bitres = total_bits << BITRES;
@@ -1388,11 +1341,10 @@ impl CeltDecoder {
             }
         }
 
-        // Alloc trim (C order: after dynalloc)
         let alloc_trim = if (rc.tell() << BITRES) + (6 << BITRES) <= total_bits_bitres {
             rc.decode_icdf(&TRIM_ICDF, 7)
         } else {
-            5 // Default trim
+            5
         };
         let anti_collapse_rsv = if is_transient && lm >= 2 {
             let remaining = (total_bits << BITRES) - (rc.tell() << BITRES) - 1;
@@ -1409,7 +1361,7 @@ impl CeltDecoder {
         let mut dual_stereo_val = if channels == 2 { 1 } else { 0 };
         let mut balance = 0;
         let mut pulses = vec![0i32; nb_ebands];
-        // For stereo, ebits and fine_priority need to be channels * nb_ebands for unquant_fine_energy
+
         let ebands_stereo = if channels > 1 {
             nb_ebands * channels
         } else {
@@ -1453,12 +1405,10 @@ impl CeltDecoder {
         let mut x = vec![0.0f32; frame_size * channels];
         let mut collapse_masks = vec![0u32; nb_ebands * channels];
 
-        // Validate frame_size to prevent integer underflow
         if frame_size > DECODE_BUFFER_SIZE + overlap {
             return 0;
         }
 
-        // Shift decode buffer BEFORE PVQ decode (matching C)
         for c in 0..channels {
             let channel_mem_offset = c * (DECODE_BUFFER_SIZE + overlap);
             for i in 0..DECODE_BUFFER_SIZE - frame_size + overlap {
@@ -1497,10 +1447,9 @@ impl CeltDecoder {
             true,
         );
 
-        // Anti-collapse
         let mut anti_collapse_on = false;
         if anti_collapse_rsv > 0 {
-            anti_collapse_on = rc.dec_bits(1) != 0; // raw bit, not logp
+            anti_collapse_on = rc.dec_bits(1) != 0;
         }
 
         unquant_energy_finalise(
@@ -1510,7 +1459,7 @@ impl CeltDecoder {
             &mut self.old_band_e,
             &ebits,
             &fine_priority,
-            (total_bits - rc.tell() as i32) << 3,
+            (total_bits - rc.tell()) << 3,
             &mut rc,
             channels,
         );
@@ -1554,12 +1503,11 @@ impl CeltDecoder {
 
         for c in 0..channels {
             let channel_mem_offset = c * (DECODE_BUFFER_SIZE + overlap);
-            // C: out_syn[c] = decode_mem[c] + decode_buffer_size - N
-            // where N is the full frame size (not the block size n)
+
             let out_syn_idx = DECODE_BUFFER_SIZE - frame_size;
 
             for i in 0..b {
-                let block_freq_idx = c * frame_size + i; // Interleaved start
+                let block_freq_idx = c * frame_size + i;
                 let block_out_idx = channel_mem_offset + out_syn_idx + i * n;
                 let available_len = self.decode_mem.len() - block_out_idx;
                 if available_len < n + overlap {
@@ -1577,19 +1525,15 @@ impl CeltDecoder {
                     &mut self.decode_mem[block_out_idx..],
                     mode.window,
                     overlap,
-                    shift as usize,
-                    b as usize,
+                    shift,
+                    b,
                 );
             }
 
             let mut pcm_frame = vec![0.0f32; frame_size];
-            // After MDCT backward, samples are at decode_mem[out_syn_idx..]
-            // because MDCT backward OLA'd the tail of the previous frame.
-            for i in 0..frame_size {
-                pcm_frame[i] = self.decode_mem[channel_mem_offset + out_syn_idx + i];
-            }
 
-            // Post-filter (pitch filter)
+            pcm_frame.copy_from_slice(&self.decode_mem[channel_mem_offset + out_syn_idx..channel_mem_offset + out_syn_idx + frame_size]);
+
             if pf_on || self.prefilter_gain > 0.0 {
                 let mut filtered = vec![0.0f32; frame_size];
                 let mut post = vec![0.0f32; frame_size + COMBFILTER_MAXPERIOD];
@@ -1614,13 +1558,10 @@ impl CeltDecoder {
                     overlap,
                 );
                 pcm_frame.copy_from_slice(&filtered);
-                // In C, post-filtered samples are written back to decode_mem
-                for i in 0..frame_size {
-                    self.decode_mem[channel_mem_offset + out_syn_idx + i] = pcm_frame[i];
-                }
+
+                self.decode_mem[channel_mem_offset + out_syn_idx..channel_mem_offset + out_syn_idx + frame_size].copy_from_slice(&pcm_frame);
             }
 
-            // Update prefilter_mem with the samples AFTER post-filtering
             let mut new_mem = vec![0.0f32; COMBFILTER_MAXPERIOD];
             if frame_size >= COMBFILTER_MAXPERIOD {
                 new_mem.copy_from_slice(&pcm_frame[frame_size - COMBFILTER_MAXPERIOD..frame_size]);
@@ -1634,7 +1575,6 @@ impl CeltDecoder {
             self.prefilter_mem[c * COMBFILTER_MAXPERIOD..(c + 1) * COMBFILTER_MAXPERIOD]
                 .copy_from_slice(&new_mem);
 
-            // De-preemphasis
             let coef = mode.preemph[0];
             let mut m = self.preemph_mem[c];
             for i in 0..frame_size {
