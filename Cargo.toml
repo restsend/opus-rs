@@ -26,11 +26,13 @@ harness = false
 [profile.release]
 lto = "thin"
 codegen-units = 1
+debug = true
 
 [profile.bench]
 inherits = "release"
 lto = "thin"
 codegen-units = 1
+debug = true
 
 # Profile for fuzz testing with overflow checks enabled
 [profile.fuzz]

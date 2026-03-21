@@ -371,12 +371,16 @@ pub fn silk_inner_prod_aligned(ptr1: &[i16], ptr2: &[i16], len: usize) -> i32 {
     let mut i = 0;
     let mut sum0 = 0i32;
     let mut sum1 = 0i32;
+    let mut sum2 = 0i32;
+    let mut sum3 = 0i32;
     let len4 = (len / 4) * 4;
 
     while i < len4 {
         sum0 = sum0.wrapping_add((ptr1[i] as i32).wrapping_mul(ptr2[i] as i32));
         sum1 = sum1.wrapping_add((ptr1[i + 1] as i32).wrapping_mul(ptr2[i + 1] as i32));
-        i += 2;
+        sum2 = sum2.wrapping_add((ptr1[i + 2] as i32).wrapping_mul(ptr2[i + 2] as i32));
+        sum3 = sum3.wrapping_add((ptr1[i + 3] as i32).wrapping_mul(ptr2[i + 3] as i32));
+        i += 4;
     }
 
     while i < len {
@@ -385,6 +389,8 @@ pub fn silk_inner_prod_aligned(ptr1: &[i16], ptr2: &[i16], len: usize) -> i32 {
     }
 
     sum0.wrapping_add(sum1)
+        .wrapping_add(sum2)
+        .wrapping_add(sum3)
 }
 
 pub fn silk_corr_vector_fix(
@@ -551,6 +557,8 @@ pub fn silk_pitch_xcorr(x: &[i16], y: &[i16], xcorr: &mut [i32], len: usize, max
     for (i, xcorr_val) in xcorr[..max_pitch].iter_mut().enumerate() {
         let mut sum0: i32 = 0;
         let mut sum1: i32 = 0;
+        let mut sum2: i32 = 0;
+        let mut sum3: i32 = 0;
         let y_offset = i;
         let mut j = 0;
         let len4 = (len / 4) * 4;
@@ -558,7 +566,9 @@ pub fn silk_pitch_xcorr(x: &[i16], y: &[i16], xcorr: &mut [i32], len: usize, max
         while j < len4 {
             sum0 = silk_smlabb(sum0, x[j] as i32, y[y_offset + j] as i32);
             sum1 = silk_smlabb(sum1, x[j + 1] as i32, y[y_offset + j + 1] as i32);
-            j += 2;
+            sum2 = silk_smlabb(sum2, x[j + 2] as i32, y[y_offset + j + 2] as i32);
+            sum3 = silk_smlabb(sum3, x[j + 3] as i32, y[y_offset + j + 3] as i32);
+            j += 4;
         }
 
         while j < len {
@@ -566,7 +576,7 @@ pub fn silk_pitch_xcorr(x: &[i16], y: &[i16], xcorr: &mut [i32], len: usize, max
             j += 1;
         }
 
-        *xcorr_val = sum0.wrapping_add(sum1);
+        *xcorr_val = sum0.wrapping_add(sum1).wrapping_add(sum2).wrapping_add(sum3);
     }
 }
 

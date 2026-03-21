@@ -302,15 +302,7 @@ pub fn decode_pulses(y: &mut [i32], n: u32, k: u32, rc: &mut RangeCoder) {
     let ft = celt_pvq_u(n, k);
     let fl = rc.dec_uint(ft);
 
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static DEBUG_COUNT: AtomicU32 = AtomicU32::new(0);
-    let count = DEBUG_COUNT.fetch_add(1, Ordering::Relaxed);
-
-    if count < 10 {}
-
     cwrsi(n, k, fl, y);
-
-    if count < 10 {}
 }
 
 pub fn pvq_search(x: &[f32], y: &mut [i32], k: i32, n: usize) {
@@ -457,16 +449,10 @@ pub fn alg_quant(
     gain: f32,
     resynth: bool,
 ) -> u32 {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static DEBUG_COUNT: AtomicU32 = AtomicU32::new(0);
-    let count = DEBUG_COUNT.fetch_add(1, Ordering::Relaxed);
-
     let mut y = vec![0i32; n];
     exp_rotation(x, n, 1, stride, k, spread);
     pvq_search(x, &mut y, k, n);
     let mask = extract_collapse_mask(&y, n, stride);
-
-    if count < 20 {}
 
     encode_pulses(&y, n as u32, k as u32, rc);
 
@@ -496,16 +482,8 @@ pub fn alg_unquant(
     rc: &mut RangeCoder,
     gain: f32,
 ) -> u32 {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static DEBUG_COUNT: AtomicU32 = AtomicU32::new(0);
-    let count = DEBUG_COUNT.fetch_add(1, Ordering::Relaxed);
-
-    if count < 20 {}
-
     let mut y = vec![0i32; n];
     decode_pulses(&mut y, n as u32, k as u32, rc);
-
-    if count < 5 {}
 
     let mask = extract_collapse_mask(&y, n, stride);
     for i in 0..n {
