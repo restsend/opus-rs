@@ -193,15 +193,6 @@ fn main() {
         samples.clone()
     };
 
-    // Take only first 10 seconds for testing
-    let max_samples = target_rate as usize * 10;
-    let input_samples = if input_samples.len() > max_samples {
-        println!("Truncating to {} samples (10 seconds)", max_samples);
-        &input_samples[..max_samples]
-    } else {
-        &input_samples[..]
-    };
-
     // Convert i16 to f32 for OpusEncoder (normalized to [-1, 1])
     let frame_size = (target_rate as usize) * 20 / 1000; // 20ms frame
     let bitrate = 20000; // 20 kbps - better quality than 10kbps

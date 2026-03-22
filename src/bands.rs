@@ -566,7 +566,8 @@ pub fn quant_partition(
 
 pub fn deinterleave_hadamard(x: &mut [f32], n0: usize, stride: usize, hadamard: bool) {
     let n = n0 * stride;
-    let mut tmp = vec![0.0f32; n];
+    let mut tmp_buf = [0.0f32; MAX_PVQ_N];
+    let tmp = &mut tmp_buf[..n];
     if hadamard {
         let offset = match stride {
             2 => 0,
@@ -593,7 +594,8 @@ pub fn deinterleave_hadamard(x: &mut [f32], n0: usize, stride: usize, hadamard: 
 
 pub fn interleave_hadamard(x: &mut [f32], n0: usize, stride: usize, hadamard: bool) {
     let n = n0 * stride;
-    let mut tmp = vec![0.0f32; n];
+    let mut tmp_buf = [0.0f32; MAX_PVQ_N];
+    let tmp = &mut tmp_buf[..n];
     if hadamard {
         let offset = match stride {
             2 => 0,

@@ -2,6 +2,8 @@ use crate::modes::CeltMode;
 use crate::range_coder::RangeCoder;
 use std::cmp::{max, min};
 
+const MAX_EBANDS: usize = 21;
+
 pub const BITRES: i32 = 3;
 pub const FINE_OFFSET: i32 = 21;
 pub const QTHETA_OFFSET: i32 = 4;
@@ -120,8 +122,10 @@ pub fn clt_compute_allocation(
         }
     }
 
-    let mut thresh = vec![0; nb_ebands];
-    let mut trim_offset = vec![0; nb_ebands];
+    let mut thresh_buf = [0i32; MAX_EBANDS];
+    let thresh = &mut thresh_buf[..nb_ebands];
+    let mut trim_offset_buf = [0i32; MAX_EBANDS];
+    let trim_offset = &mut trim_offset_buf[..nb_ebands];
 
     for j in start..end {
         thresh[j] = max(
@@ -172,8 +176,10 @@ pub fn clt_compute_allocation(
     let hi_final = lo as usize;
     let lo_final = (lo - 1) as usize;
 
-    let mut bits1 = vec![0; nb_ebands];
-    let mut bits2 = vec![0; nb_ebands];
+    let mut bits1_buf = [0i32; MAX_EBANDS];
+    let bits1 = &mut bits1_buf[..nb_ebands];
+    let mut bits2_buf = [0i32; MAX_EBANDS];
+    let bits2 = &mut bits2_buf[..nb_ebands];
 
     for j in start..end {
         let n = (m.e_bands[j + 1] - m.e_bands[j]) as i32;
@@ -264,7 +270,8 @@ fn interp_bits2pulses(
     let stereo = if c > 1 { 1 } else { 0 };
     let log_m = lm << BITRES;
 
-    let mut bits = vec![0; m.nb_ebands];
+    let mut bits_buf = [0i32; MAX_EBANDS];
+    let bits = &mut bits_buf[..m.nb_ebands];
 
     for _ in 0..6 {
         let mid = (lo + hi) >> 1;

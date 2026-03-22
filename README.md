@@ -45,7 +45,7 @@ let samples = decoder.decode(&output[..bytes], 320, &mut pcm).unwrap();
 cargo test
 ```
 
-All 156 tests pass, covering MDCT identity, PVQ consistency, SILK/CELT/Hybrid encode/decode roundtrip, resampler tests, and more.
+All 181 tests pass, covering MDCT identity, PVQ consistency, SILK/CELT/Hybrid encode/decode roundtrip, resampler tests, and more.
 
 ### WAV Roundtrip
 
@@ -81,32 +81,41 @@ cargo bench -- silk_burg_modified_fix  # LPC analysis
 
 ### SILK Encoder (Rust, complexity=0)
 
-| Sample Rate | Frame Size | Time per Frame | Throughput |
-|-------------|------------|-----------------|------------|
-| 8 kHz       | 20 ms      | 13.0 µs        | 23.5 MiB/s |
-| 16 kHz      | 20 ms      | 24.3 µs        | 25.1 MiB/s |
-| 16 kHz      | 10 ms      | 13.6 µs        | 22.4 MiB/s |
+| Sample Rate | Frame Size | Time per Frame | Throughput  |
+|-------------|------------|----------------|-------------|
+| 8 kHz       | 20 ms      | 13.3 µs        | 23.0 MiB/s  |
+| 16 kHz      | 20 ms      | 24.3 µs        | 25.2 MiB/s  |
+| 16 kHz      | 10 ms      | 13.9 µs        | 22.0 MiB/s  |
 
-### SILK vs C Reference (libopus, complexity=0)
+### CELT Encoder (Rust, 48 kHz)
+
+| Frame Size | Time per Frame | Throughput  |
+|------------|----------------|-------------|
+| 20 ms      | 102.4 µs       | 17.9 MiB/s  |
+| 10 ms      | 63.3 µs        | 14.5 MiB/s  |
+| 5 ms       | 39.2 µs        | 11.7 MiB/s  |
+
+### SILK vs C Reference (encoder only, complexity=0)
 
 | Config           | 8kHz/20ms | 16kHz/20ms | 16kHz/10ms |
-|------------------|-----------|-------------|------------|
-| Rust (cx0)       | 13.3 µs   | 25.2 µs     | 13.9 µs    |
-| C libopus (cx0)  | 10.9 µs   | 18.4 µs     | 11.3 µs    |
+|------------------|-----------|------------|------------|
+| Rust (cx0)       | 13.3 µs   | 24.2 µs    | 13.9 µs    |
+| C libopus (cx0)  | 11.0 µs   | 18.5 µs    | 11.3 µs    |
+| C faster by      | 1.21×     | 1.31×      | 1.23×      |
 
-Both use complexity=0 (fast mode). The C float implementation is ~20-30% faster than Rust's fixed-point implementation. Note: Rust uses fixed-point (Q-domain integer arithmetic) while the C reference uses floating-point.
+Both use complexity=0 (fast mode). Rust fixed-point is ~20-30% slower than C floating-point.
 
 ### Full Opus Encoder + Decoder Roundtrip (complexity=0)
 
 | Config           | Rust      | C (opus-sys) | C faster by |
-|------------------|-----------|---------------|-------------|
-| 8kHz/20ms VoIP  | 17.7 µs   | 13.3 µs      | 33%         |
-| 16kHz/20ms VoIP | 33.3 µs   | 21.6 µs      | 55%         |
-| 16kHz/10ms VoIP | 17.3 µs   | 13.1 µs      | 32%         |
-| 48kHz/20ms Audio| 172 µs    | 42.8 µs      | 4x          |
-| 48kHz/10ms Audio| 99.3 µs   | 17.7 µs      | 5.6x        |
+|------------------|-----------|--------------|-------------|
+| 8kHz/20ms VoIP   | 17.6 µs   | 13.5 µs      | 1.31×       |
+| 16kHz/20ms VoIP  | 31.6 µs   | 21.7 µs      | 1.45×       |
+| 16kHz/10ms VoIP  | 17.4 µs   | 13.2 µs      | 1.32×       |
+| 48kHz/20ms Audio | 172 µs    | 43.2 µs      | 4.0×        |
+| 48kHz/10ms Audio | 98.5 µs   | 17.8 µs      | 5.5×        |
 
-Rust fixed-point encoder + decoder is 1.3-5.6x slower than C floating-point. SILK (VoIP) has smaller gap (~1.3-1.5x), while CELT (Audio) has larger gap (~4-6x).
+SILK (VoIP) is ~1.3–1.5× slower than C; CELT (Audio) is ~4–5.5× slower.
 
 ## License
 

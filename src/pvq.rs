@@ -148,6 +148,10 @@ pub const CELT_PVQ_U_DATA: [u32; 2662] = [
     2653649025, 1409933619,
 ];
 
+const MAX_PVQ_K: usize = 128;
+const MAX_PVQ_U: usize = MAX_PVQ_K + 2;
+pub const MAX_PVQ_N: usize = 352;
+
 pub fn ncwrs(n: u32, k: u32) -> u32 {
     if n == 0 {
         return 0;
@@ -155,7 +159,7 @@ pub fn ncwrs(n: u32, k: u32) -> u32 {
     if n == 1 {
         return if k > 0 { 2 } else { 1 };
     }
-    let mut u = vec![0u32; (k + 2) as usize];
+    let mut u = [0u32; MAX_PVQ_U];
     u[0] = 0;
     u[1] = 1;
     for ki in 2..=(k + 1) as usize {
@@ -203,7 +207,7 @@ fn uprev(u: &mut [u32], len: usize, mut u0: u32) {
 }
 
 pub fn icwrs(n: u32, k: u32, y: &[i32]) -> u32 {
-    let mut u = vec![0u32; (k + 2) as usize];
+    let mut u = [0u32; MAX_PVQ_U];
     u[0] = 0;
     for ki in 1..=(k + 1) as usize {
         u[ki] = (ki as u32 * 2).wrapping_sub(1);
@@ -244,7 +248,7 @@ pub fn cwrsi(n: u32, k: u32, mut i: u32, y: &mut [i32]) {
         return;
     }
 
-    let mut u = vec![0u32; (k + 2) as usize];
+    let mut u = [0u32; MAX_PVQ_U];
     u[0] = 0;
     u[1] = 1;
     for ki in 2..=(k + 1) as usize {
@@ -355,6 +359,7 @@ pub fn pvq_search(x: &[f32], y: &mut [i32], k: i32, n: usize) {
     }
 }
 
+#[inline]
 fn exp_rotation1(x: &mut [f32], len: usize, stride: usize, c: f32, s: f32) {
     let ms = -s;
     for i in 0..(len - stride) {
@@ -373,6 +378,7 @@ fn exp_rotation1(x: &mut [f32], len: usize, stride: usize, c: f32, s: f32) {
     }
 }
 
+#[inline]
 pub fn exp_rotation(x: &mut [f32], length: usize, dir: i32, stride: usize, k: i32, spread: i32) {
     const SPREAD_FACTOR: [i32; 3] = [15, 10, 5];
     if 2 * k >= length as i32 || spread <= 0 || spread > 3 {
@@ -410,6 +416,7 @@ pub fn exp_rotation(x: &mut [f32], length: usize, dir: i32, stride: usize, k: i3
     }
 }
 
+#[inline]
 pub fn extract_collapse_mask(iy: &[i32], n: usize, b: usize) -> u32 {
     if b <= 1 {
         return 1;
@@ -418,8 +425,9 @@ pub fn extract_collapse_mask(iy: &[i32], n: usize, b: usize) -> u32 {
     let mut collapse_mask = 0u32;
     for i in 0..b {
         let mut tmp = 0i32;
+        let base = i * n0;
         for j in 0..n0 {
-            tmp |= iy[i * n0 + j];
+            tmp |= iy[base + j];
         }
         if tmp != 0 {
             collapse_mask |= 1 << i;
@@ -428,6 +436,7 @@ pub fn extract_collapse_mask(iy: &[i32], n: usize, b: usize) -> u32 {
     collapse_mask
 }
 
+#[inline]
 pub fn renormalise_vector(x: &mut [f32], n: usize, gain: f32) {
     let mut e = 1e-15f32;
     for i in 0..n {
@@ -449,12 +458,12 @@ pub fn alg_quant(
     gain: f32,
     resynth: bool,
 ) -> u32 {
-    let mut y = vec![0i32; n];
+    let mut y = [0i32; MAX_PVQ_N];
     exp_rotation(x, n, 1, stride, k, spread);
-    pvq_search(x, &mut y, k, n);
-    let mask = extract_collapse_mask(&y, n, stride);
+    pvq_search(x, &mut y[..n], k, n);
+    let mask = extract_collapse_mask(&y[..n], n, stride);
 
-    encode_pulses(&y, n as u32, k as u32, rc);
+    encode_pulses(&y[..n], n as u32, k as u32, rc);
 
     if resynth {
         for i in 0..n {
@@ -482,10 +491,10 @@ pub fn alg_unquant(
     rc: &mut RangeCoder,
     gain: f32,
 ) -> u32 {
-    let mut y = vec![0i32; n];
-    decode_pulses(&mut y, n as u32, k as u32, rc);
+    let mut y = [0i32; MAX_PVQ_N];
+    decode_pulses(&mut y[..n], n as u32, k as u32, rc);
 
-    let mask = extract_collapse_mask(&y, n, stride);
+    let mask = extract_collapse_mask(&y[..n], n, stride);
     for i in 0..n {
         x[i * stride] = y[i] as f32;
     }

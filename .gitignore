@@ -6,3 +6,4 @@ fuzz/target
 fuzz/artifacts
 fuzz/corpus
 flamegraph.svg
+opus-1.6.1/

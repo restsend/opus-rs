@@ -2,6 +2,7 @@ pub mod bands;
 pub mod celt;
 pub mod celt_lpc;
 pub mod hp_cutoff;
+pub mod kiss_fft;
 pub mod mdct;
 pub mod modes;
 pub mod pitch;
