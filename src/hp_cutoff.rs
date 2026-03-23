@@ -1,7 +1,8 @@
 use crate::silk::biquad_alt::{silk_biquad_alt_stride1, silk_biquad_alt_stride2};
 use crate::silk::macros::*;
 
-const SILK_FIX_CONST_19: i32 = ((1.5 * std::f64::consts::PI / 1000.0) * (1 << 19) as f64 + 0.5) as i32;
+const SILK_FIX_CONST_19: i32 =
+    ((1.5 * std::f64::consts::PI / 1000.0) * (1 << 19) as f64 + 0.5) as i32;
 
 pub fn hp_cutoff(
     input: &[f32],
@@ -27,8 +28,7 @@ pub fn hp_cutoff(
     a_q28[0] = silk_smulww(r_q22, silk_smulww(fc_q19, fc_q19) - (2i32 << 22));
     a_q28[1] = silk_smulww(r_q22, r_q22);
 
-    // SILK path: max frame_size=320 × channels=2 = 640
-    const MAX_HP_INPUT: usize = 640;
+    const MAX_HP_INPUT: usize = 11520;
     debug_assert!(input.len() <= MAX_HP_INPUT);
     let mut input_i16_buf = [0i16; MAX_HP_INPUT];
     let input_i16 = &mut input_i16_buf[..input.len()];

@@ -1509,14 +1509,14 @@ impl CeltDecoder {
             channels,
         );
 
+        if frame_size > DECODE_BUFFER_SIZE + overlap {
+            return 0;
+        }
+
         self.w_x[..frame_size * channels].fill(0.0);
         let x = &mut self.w_x[..frame_size * channels];
         self.w_collapse_masks[..nb_ebands * channels].fill(0);
         let collapse_masks = &mut self.w_collapse_masks[..nb_ebands * channels];
-
-        if frame_size > DECODE_BUFFER_SIZE + overlap {
-            return 0;
-        }
 
         for c in 0..channels {
             let channel_mem_offset = c * (DECODE_BUFFER_SIZE + overlap);
