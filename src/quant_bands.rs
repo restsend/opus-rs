@@ -97,7 +97,8 @@ pub fn quant_coarse_energy(
     let prob_model = &E_PROB_MODEL[lm][if intra { 1 } else { 0 }];
     let coef = if intra { 0.0 } else { PRED_COEF[lm] };
     let beta = if intra { BETA_INTRA } else { BETA_COEF[lm] };
-    let mut prev = vec![0.0f32; channels];
+    debug_assert!(channels <= 2);
+    let mut prev = [0.0f32; 2];
 
     let mut max_decay = 16.0f32;
     if lm == 0 {
@@ -187,7 +188,8 @@ pub fn unquant_coarse_energy(
     let prob_model = &E_PROB_MODEL[lm][if intra { 1 } else { 0 }];
     let coef = if intra { 0.0 } else { PRED_COEF[lm] };
     let beta = if intra { BETA_INTRA } else { BETA_COEF[lm] };
-    let mut prev = vec![0.0f32; channels];
+    debug_assert!(channels <= 2);
+    let mut prev = [0.0f32; 2];
 
     for i in start..end {
         for c in 0..channels {
@@ -404,7 +406,7 @@ mod tests {
         enc.done();
         let _compressed = &enc.buf;
 
-        let mut dec = RangeCoder::new_decoder(enc.buf.clone());
+        let mut dec = RangeCoder::new_decoder(&enc.buf);
 
         let mut decoded_old_e_bands = vec![0.0; mode.nb_ebands];
         unquant_coarse_energy(

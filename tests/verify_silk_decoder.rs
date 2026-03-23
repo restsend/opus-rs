@@ -87,7 +87,7 @@ fn test_decode_c_encoded_silk_8khz() {
     println!("SILK hex: {}", hex::encode(silk_payload));
 
     // Create range decoder
-    let mut range_coder = RangeCoder::new_decoder(silk_payload.to_vec());
+    let mut range_coder = RangeCoder::new_decoder(&silk_payload);
 
     // Decode
     let mut output = vec![0i16; 160];

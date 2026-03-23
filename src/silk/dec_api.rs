@@ -188,7 +188,7 @@ impl SilkDecoder {
     }
 
     pub fn decode_bytes(&mut self, data: &[u8], output: &mut [i16], new_packet: bool) -> i32 {
-        let mut range_dec = RangeCoder::new_decoder(data.to_vec());
+        let mut range_dec = RangeCoder::new_decoder(data);
         let internal_rate = self.channel_state[0].fs_khz * 1000;
         let payload_ms = if self.channel_state[0].nb_subfr == 2 {
             10

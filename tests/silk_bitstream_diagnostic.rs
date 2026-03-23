@@ -11,7 +11,7 @@ use opus_rs::silk::init_decoder::silk_decoder_set_fs;
 
 /// Manually decode SILK bitstream parameters for comparison
 fn decode_silk_params(payload: &[u8], fs_khz: i32) {
-    let mut rc = RangeCoder::new_decoder(payload.to_vec());
+    let mut rc = RangeCoder::new_decoder(payload);
 
     // 1. VAD/LBRR flags (C uses ec_dec_bit_logp(1) for each bit)
     let n_frames_per_packet = 1;

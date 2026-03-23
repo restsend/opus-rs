@@ -27,7 +27,11 @@ pub fn hp_cutoff(
     a_q28[0] = silk_smulww(r_q22, silk_smulww(fc_q19, fc_q19) - (2i32 << 22));
     a_q28[1] = silk_smulww(r_q22, r_q22);
 
-    let mut input_i16 = vec![0i16; input.len()];
+    // SILK path: max frame_size=320 × channels=2 = 640
+    const MAX_HP_INPUT: usize = 640;
+    debug_assert!(input.len() <= MAX_HP_INPUT);
+    let mut input_i16_buf = [0i16; MAX_HP_INPUT];
+    let input_i16 = &mut input_i16_buf[..input.len()];
     for i in 0..input.len() {
         let sample = (input[i] * 32768.0 + 0.5).floor().clamp(-32768.0, 32767.0);
         input_i16[i] = sample as i16;

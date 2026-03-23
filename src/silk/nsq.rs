@@ -130,14 +130,8 @@ pub fn silk_nsq(
     let frame_length = ps_enc_c.frame_length as usize;
     let ltp_mem_length = ps_enc_c.ltp_mem_length as usize;
 
-    let mut tmp_xq = [0i16; MAX_FRAME_LENGTH * 2];
-    tmp_xq[..ltp_mem_length].copy_from_slice(&nsq.xq[frame_length..frame_length + ltp_mem_length]);
-    nsq.xq[..ltp_mem_length].copy_from_slice(&tmp_xq[..ltp_mem_length]);
-
-    let mut tmp_ltp_shp = [0i32; MAX_FRAME_LENGTH * 2];
-    tmp_ltp_shp[..ltp_mem_length]
-        .copy_from_slice(&nsq.s_ltp_shp_q14[frame_length..frame_length + ltp_mem_length]);
-    nsq.s_ltp_shp_q14[..ltp_mem_length].copy_from_slice(&tmp_ltp_shp[..ltp_mem_length]);
+    nsq.xq.copy_within(frame_length..frame_length + ltp_mem_length, 0);
+    nsq.s_ltp_shp_q14.copy_within(frame_length..frame_length + ltp_mem_length, 0);
 }
 
 pub fn silk_nsq_scale_states(

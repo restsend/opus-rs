@@ -241,91 +241,9 @@ fn kf_bfly2(fout: &mut [KissCpx], m: usize, n: usize) {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-fn kf_bfly4(
-    fout: &mut [KissCpx],
-    fstride: usize,
-    twiddles: &[KissCpx],
-    m: usize,
-    n: usize,
-    mm: usize,
-) {
-    let m2 = 2 * m;
-    let m3 = 3 * m;
-
-    if m == 1 {
-        for i in 0..n {
-            let base = i * 4;
-
-            let scratch0 = c_sub(&fout[base], &fout[base + 2]);
-            let sum02 = c_add(&fout[base], &fout[base + 2]);
-            let scratch1 = c_add(&fout[base + 1], &fout[base + 3]);
-            let diff13 = c_sub(&fout[base + 1], &fout[base + 3]);
-
-            fout[base] = c_add(&sum02, &scratch1);
-            fout[base + 2] = c_sub(&sum02, &scratch1);
-            fout[base + 1] = KissCpx::new(scratch0.r + diff13.i, scratch0.i - diff13.r);
-            fout[base + 3] = KissCpx::new(scratch0.r - diff13.i, scratch0.i + diff13.r);
-        }
-    } else {
-        for i in 0..n {
-            let base = i * mm;
-            let stride2 = fstride * 2;
-            let stride3 = fstride * 3;
-
-            let m4 = m / 4;
-
-            for j in 0..m4 {
-                let j4 = j * 4;
-
-                for jj in 0..4 {
-                    let jv = j4 + jj;
-                    let idx = base + jv;
-
-                    let scratch0 = c_mul(&fout[idx + m], &twiddles[jv * fstride]);
-                    let scratch1 = c_mul(&fout[idx + m2], &twiddles[jv * stride2]);
-                    let scratch2 = c_mul(&fout[idx + m3], &twiddles[jv * stride3]);
-
-                    let scratch5 = c_sub(&fout[idx], &scratch1);
-                    fout[idx] = c_add(&fout[idx], &scratch1);
-
-                    let scratch3 = c_add(&scratch0, &scratch2);
-                    let scratch4 = c_sub(&scratch0, &scratch2);
-
-                    fout[idx + m2] = c_sub(&fout[idx], &scratch3);
-                    fout[idx] = c_add(&fout[idx], &scratch3);
-
-                    fout[idx + m] = KissCpx::new(scratch5.r + scratch4.i, scratch5.i - scratch4.r);
-                    fout[idx + m3] = KissCpx::new(scratch5.r - scratch4.i, scratch5.i + scratch4.r);
-                }
-            }
-
-            for j in (m4 * 4)..m {
-                let idx = base + j;
-
-                let scratch0 = c_mul(&fout[idx + m], &twiddles[j * fstride]);
-                let scratch1 = c_mul(&fout[idx + m2], &twiddles[j * stride2]);
-                let scratch2 = c_mul(&fout[idx + m3], &twiddles[j * stride3]);
-
-                let scratch5 = c_sub(&fout[idx], &scratch1);
-                fout[idx] = c_add(&fout[idx], &scratch1);
-
-                let scratch3 = c_add(&scratch0, &scratch2);
-                let scratch4 = c_sub(&scratch0, &scratch2);
-
-                fout[idx + m2] = c_sub(&fout[idx], &scratch3);
-                fout[idx] = c_add(&fout[idx], &scratch3);
-
-                fout[idx + m] = KissCpx::new(scratch5.r + scratch4.i, scratch5.i - scratch4.r);
-                fout[idx + m3] = KissCpx::new(scratch5.r - scratch4.i, scratch5.i + scratch4.r);
-            }
-        }
-    }
-}
-
-/// Radix-4 butterfly (matches C kf_bfly4) - scalar version for non-NEON
-#[cfg(not(target_arch = "aarch64"))]
+/// Radix-4 butterfly — single implementation for all targets.
+/// Uses incremental twiddle indices (matching C `tw1 += fstride` pattern)
+/// to allow strength reduction and let LLVM auto-vectorize.
 #[inline(always)]
 fn kf_bfly4(
     fout: &mut [KissCpx],
@@ -354,18 +272,23 @@ fn kf_bfly4(
             fout[base + 3] = KissCpx::new(scratch0.r - diff13.i, scratch0.i + diff13.r);
         }
     } else {
+        // Standard radix-4 butterfly with twiddles.
+        // Use incremental twiddle indices (matching C tw1 += fstride pattern).
+        let stride2 = fstride * 2;
+        let stride3 = fstride * 3;
         for i in 0..n {
             let base = i * mm;
-            let stride2 = fstride * 2;
-            let stride3 = fstride * 3;
+            // tw1, tw2, tw3 start at 0 and increment by fstride, stride2, stride3 each iteration
+            let mut tw1 = 0usize;
+            let mut tw2 = 0usize;
+            let mut tw3 = 0usize;
 
-            // m is guaranteed to be a multiple of 4
             for j in 0..m {
                 let idx = base + j;
 
-                let scratch0 = c_mul(&fout[idx + m], &twiddles[j * fstride]);
-                let scratch1 = c_mul(&fout[idx + m2], &twiddles[j * stride2]);
-                let scratch2 = c_mul(&fout[idx + m3], &twiddles[j * stride3]);
+                let scratch0 = c_mul(&fout[idx + m], &twiddles[tw1]);
+                let scratch1 = c_mul(&fout[idx + m2], &twiddles[tw2]);
+                let scratch2 = c_mul(&fout[idx + m3], &twiddles[tw3]);
 
                 let scratch5 = c_sub(&fout[idx], &scratch1);
                 fout[idx] = c_add(&fout[idx], &scratch1);
@@ -378,6 +301,10 @@ fn kf_bfly4(
 
                 fout[idx + m] = KissCpx::new(scratch5.r + scratch4.i, scratch5.i - scratch4.r);
                 fout[idx + m3] = KissCpx::new(scratch5.r - scratch4.i, scratch5.i + scratch4.r);
+
+                tw1 += fstride;
+                tw2 += stride2;
+                tw3 += stride3;
             }
         }
     }
@@ -565,17 +492,15 @@ pub fn opus_fft(st: &KissFftState, fin: &[KissCpx], fout: &mut [KissCpx]) {
 pub fn opus_ifft(st: &KissFftState, fin: &[KissCpx], fout: &mut [KissCpx]) {
     let nfft = st.nfft;
 
+    // Merge bitrev copy + conjugation (negate imag) in one pass
     for i in 0..nfft {
         let rev = st.bitrev[i] as usize;
-        fout[rev] = fin[i];
-    }
-
-    for i in 0..nfft {
-        fout[i].i = -fout[i].i;
+        fout[rev] = KissCpx::new(fin[i].r, -fin[i].i);
     }
 
     opus_fft_impl(st, fout);
 
+    // Conjugate output in one pass (negate imag back)
     for i in 0..nfft {
         fout[i].i = -fout[i].i;
     }

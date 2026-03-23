@@ -10,6 +10,11 @@ fn configure_criterion() -> Criterion {
         .warm_up_time(std::time::Duration::from_millis(100)) // 100ms warmup
 }
 use opus_rs::silk::define::*;
+use opus_rs::celt_lpc::autocorr;
+use opus_rs::kiss_fft::{KissCpx, KissFftState, opus_fft_impl};
+use opus_rs::modes::default_mode;
+use opus_rs::pvq::{alg_quant, encode_pulses, pvq_search};
+use opus_rs::range_coder::RangeCoder;
 use opus_rs::silk::lpc_analysis::silk_burg_modified_fix;
 use opus_rs::silk::nsq::silk_nsq;
 use opus_rs::silk::pitch_analysis::silk_pitch_analysis_core;
@@ -607,6 +612,167 @@ fn bench_opus_vs_c(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_celt_autocorr(c: &mut Criterion) {
+    let mut group = c.benchmark_group("celt_autocorr");
+
+    for &(n, lag) in &[(320usize, 24usize), (640, 24), (960, 24)] {
+        let x = sine_f32(n, 48000, 1000);
+        group.throughput(Throughput::Elements(n as u64));
+        group.bench_with_input(
+            BenchmarkId::new(format!("n{n}/lag{lag}"), ""),
+            &(n, lag),
+            |b, &(ns, lg)| {
+                let mut ac = vec![0.0f32; lg + 1];
+                b.iter(|| {
+                    autocorr(
+                        black_box(&x),
+                        black_box(&mut ac),
+                        None,
+                        0,
+                        lg,
+                        ns,
+                    )
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_fft(c: &mut Criterion) {
+    let mut group = c.benchmark_group("fft");
+
+    for &nfft in &[60usize, 120, 240, 480] {
+        let st = KissFftState::new(nfft).unwrap();
+        let mut fout: Vec<KissCpx> = (0..nfft)
+            .map(|i| KissCpx::new(i as f32, -(i as f32)))
+            .collect();
+
+        group.throughput(Throughput::Elements(nfft as u64));
+        group.bench_with_input(
+            BenchmarkId::new(format!("opus_fft_impl/n{nfft}"), ""),
+            &nfft,
+            |b, _| {
+                b.iter(|| {
+                    // Re-initialize each time to avoid accumulating overflow
+                    for (i, v) in fout.iter_mut().enumerate() {
+                        *v = KissCpx::new(i as f32, -(i as f32));
+                    }
+                    opus_fft_impl(black_box(&st), black_box(&mut fout));
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_mdct(c: &mut Criterion) {
+    let mut group = c.benchmark_group("mdct");
+    let mode = default_mode();
+
+    // CELT 48kHz/20ms: N=1920, lm=3, shift=0 → nfft=480
+    // We benchmark forward MDCT (the encode path)
+    for &(shift, n) in &[(0usize, 1920usize), (1, 960), (2, 480), (3, 240)] {
+        let frame_size = n;
+        let overlap = mode.overlap;
+        let window = &mode.window[..overlap];
+        let input: Vec<f32> = (0..frame_size + overlap)
+            .map(|i| (i as f32 * 0.01).sin())
+            .collect();
+        let mut output = vec![0.0f32; frame_size];
+
+        group.throughput(Throughput::Elements(frame_size as u64));
+        group.bench_with_input(
+            BenchmarkId::new(format!("forward/shift{shift}/n{frame_size}"), ""),
+            &(shift, frame_size),
+            |b, &(sh, _fs)| {
+                b.iter(|| {
+                    mode.mdct.forward(
+                        black_box(&input),
+                        black_box(&mut output),
+                        black_box(window),
+                        overlap,
+                        sh,
+                        1,
+                    );
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_pvq(c: &mut Criterion) {
+    let mut group = c.benchmark_group("pvq");
+
+    // Typical high-band: n=16, k=8 (moderate case)
+    // High-freq bands: n=8, k=4
+    // Large bands: n=64, k=16
+    for &(n, k) in &[(8usize, 4i32), (16, 8), (32, 8), (64, 16)] {
+        let x: Vec<f32> = (0..n).map(|i| (i as f32 * 0.5).sin()).collect();
+        let mut y = vec![0i32; n];
+
+        group.throughput(Throughput::Elements(n as u64));
+        group.bench_with_input(
+            BenchmarkId::new(format!("pvq_search/n{n}/k{k}"), ""),
+            &(n, k),
+            |b, &(ns, ks)| {
+                b.iter(|| {
+                    pvq_search(black_box(&x), black_box(&mut y), ks, ns);
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new(format!("encode_pulses/n{n}/k{k}"), ""),
+            &(n, k),
+            |b, &(ns, ks)| {
+                let mut rc = RangeCoder::new_encoder(1024);
+                b.iter(|| {
+                    rc = RangeCoder::new_encoder(1024);
+                    encode_pulses(black_box(&y), ns as u32, ks as u32, &mut rc);
+                });
+            },
+        );
+    }
+
+    // alg_quant (combined pvq_search + encode_pulses + exp_rotation)
+    for &(n, k) in &[(16usize, 8i32), (64, 16)] {
+        let mut x: Vec<f32> = (0..n).map(|i| (i as f32 * 0.5).sin()).collect();
+        let mode = default_mode();
+
+        group.bench_with_input(
+            BenchmarkId::new(format!("alg_quant/n{n}/k{k}"), ""),
+            &(n, k),
+            |b, &(ns, ks)| {
+                let mut rc = RangeCoder::new_encoder(1024);
+                b.iter(|| {
+                    // Reset x to avoid degenerate inputs
+                    for (i, v) in x.iter_mut().enumerate() {
+                        *v = (i as f32 * 0.5).sin();
+                    }
+                    rc = RangeCoder::new_encoder(1024);
+                    alg_quant(
+                        black_box(&mut x),
+                        ns,
+                        ks,
+                        2, // SPREAD_NORMAL
+                        1,
+                        &mut rc,
+                        1.0,
+                        true,
+                    );
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = configure_criterion();
@@ -621,5 +787,9 @@ criterion_group! {
         bench_silk_nsq,
         bench_silk_pitch_analysis_core,
         bench_opus_vs_c,
+        bench_celt_autocorr,
+        bench_fft,
+        bench_mdct,
+        bench_pvq,
 }
 criterion_main!(benches);

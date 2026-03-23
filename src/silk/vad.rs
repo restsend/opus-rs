@@ -88,7 +88,11 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
 
     let alloc_size = x_offset_3 + decimated_framelength1;
 
-    let mut x = vec![0i16; alloc_size];
+    // MAX_FRAME_LENGTH = 320, so alloc_size ≤ (320/8 + 320/4)*2 + 320/2 = 400
+    const MAX_VAD_X_SIZE: usize = 400;
+    debug_assert!(alloc_size <= MAX_VAD_X_SIZE);
+    let mut x_buf = [0i16; MAX_VAD_X_SIZE];
+    let x = &mut x_buf[..alloc_size];
 
     let (x_low, x_high) = x.split_at_mut(x_offset_3);
     silk_ana_filt_bank_1(

@@ -43,27 +43,28 @@ pub fn autocorr(
     lag: usize,
     n: usize,
 ) {
-
-    let mut xx = Vec::with_capacity(n);
-
-    if let Some(win) = window {
+    // Avoid heap allocation when no window is applied
+    let xx_vec;
+    let xx: &[f32] = if let Some(win) = window {
         if x.len() < n {
-
             return;
         }
-
-        xx.extend_from_slice(&x[0..n]);
-        for i in 0..overlap {
-            xx[i] *= win[i];
-            xx[n - 1 - i] *= win[i];
-        }
+        xx_vec = {
+            let mut v = x[0..n].to_vec();
+            for i in 0..overlap {
+                v[i] *= win[i];
+                v[n - 1 - i] *= win[i];
+            }
+            v
+        };
+        &xx_vec
     } else {
-        xx.extend_from_slice(&x[0..n]);
-    }
+        &x[0..n]
+    };
 
     let fast_n = n - lag;
 
-    pitch_xcorr(&xx, &xx, ac, fast_n, lag + 1);
+    pitch_xcorr(xx, xx, ac, fast_n, lag + 1);
 
     for k in 0..=lag {
         let mut d = 0.0f32;

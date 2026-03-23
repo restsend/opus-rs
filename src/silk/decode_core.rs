@@ -42,9 +42,17 @@ pub fn silk_decode_core(
     let mut pxq_idx: usize = 0;
     let mut s_ltp_buf_idx = ps_dec.ltp_mem_length;
 
-    let mut s_ltp_q15: Vec<i32> =
-        vec![0i32; ps_dec.ltp_mem_length as usize + ps_dec.frame_length as usize];
-    let mut s_ltp: Vec<i16> = vec![0i16; ps_dec.ltp_mem_length as usize];
+    let s_ltp_q15_len = ps_dec.ltp_mem_length as usize + ps_dec.frame_length as usize;
+    let s_ltp_len = ps_dec.ltp_mem_length as usize;
+    // Max: ltp_mem_length(320) + frame_length(320) = 640
+    const MAX_S_LTP_Q15: usize = 640;
+    const MAX_S_LTP: usize = 320;
+    debug_assert!(s_ltp_q15_len <= MAX_S_LTP_Q15);
+    debug_assert!(s_ltp_len <= MAX_S_LTP);
+    let mut s_ltp_q15_buf = [0i32; MAX_S_LTP_Q15];
+    let s_ltp_q15 = &mut s_ltp_q15_buf[..s_ltp_q15_len];
+    let mut s_ltp_buf = [0i16; MAX_S_LTP];
+    let s_ltp = &mut s_ltp_buf[..s_ltp_len];
 
     for k in 0..ps_dec.nb_subfr as usize {
         let a_q12 = &ps_dec_ctrl.pred_coef_q12[k >> 1];
@@ -96,7 +104,7 @@ pub fn silk_decode_core(
                 let filter_input_offset = start_idx as usize + k * ps_dec.subfr_length as usize;
                 let filter_len = (ps_dec.ltp_mem_length - start_idx) as usize;
                 silk_lpc_analysis_filter_offset(
-                    &mut s_ltp,
+                    s_ltp,
                     start_idx as usize,
                     &ps_dec.out_buf,
                     filter_input_offset,

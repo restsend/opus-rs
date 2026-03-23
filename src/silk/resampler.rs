@@ -192,7 +192,11 @@ impl SilkResampler {
         rest_len: i32,
     ) {
         let total_in = first_len + rest_len;
-        let mut combined = vec![0i16; total_in as usize];
+        // Max total_in ≈ MAX_FRAME_LENGTH + delay ≈ 368
+        const MAX_COMBINED: usize = 512;
+        debug_assert!((total_in as usize) <= MAX_COMBINED);
+        let mut combined_buf = [0i16; MAX_COMBINED];
+        let combined = &mut combined_buf[..total_in as usize];
         combined[..first_len as usize].copy_from_slice(&first_block[..first_len as usize]);
         combined[first_len as usize..].copy_from_slice(&rest[..rest_len as usize]);
 
@@ -203,8 +207,12 @@ impl SilkResampler {
         while remaining > 0 {
             let n_samples_in = remaining.min(self.batch_size) as usize;
 
+            // Max buf_len = 2 * 160 + 8 = 328
+            const MAX_BUF: usize = 328;
             let buf_len = 2 * n_samples_in + RESAMPLER_ORDER_FIR_12;
-            let mut buf = vec![0i16; buf_len];
+            debug_assert!(buf_len <= MAX_BUF);
+            let mut buf_arr = [0i16; MAX_BUF];
+            let buf = &mut buf_arr[..buf_len];
 
             buf[..RESAMPLER_ORDER_FIR_12].copy_from_slice(&self.s_fir);
 

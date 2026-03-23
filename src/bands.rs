@@ -22,6 +22,26 @@ pub struct BandCtx<'a> {
     pub disable_inv: bool,
 }
 
+/// Bit-exact cosine approximation matching C opus's bitexact_cos().
+/// Input: x in [0, 16384] representing angle * 16384 / (π/2).
+/// Output: cos(x * π/2 / 16384) * 32768 as i16.
+/// Matches C opus celt/bands.c bitexact_cos() exactly.
+#[inline]
+fn bitexact_cos(x: i16) -> i16 {
+    // FRAC_MUL16(a,b) = (16384 + (a as i16 as i32) * (b as i16 as i32)) >> 15
+    #[inline(always)]
+    fn frac_mul16(a: i16, b: i16) -> i16 {
+        ((16384i32 + (a as i32) * (b as i32)) >> 15) as i16
+    }
+
+    let tmp = (4096i32 + (x as i32) * (x as i32)) >> 13;
+    let x2 = tmp as i16;
+    let x2 = (32767 - x2 as i32
+        + frac_mul16(x2, -7651 + frac_mul16(x2, 8277 + frac_mul16(-626, x2))) as i32)
+        as i16;
+    1 + x2
+}
+
 pub fn bitexact_log2tan(isin: i32, icos: i32) -> i32 {
     let ec_ilog = |x: u32| -> i32 {
         if x == 0 {
@@ -214,8 +234,13 @@ pub fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i32 {
             eside += y[i] * y[i];
         }
     }
-    let theta = (eside.sqrt()).atan2(emid.sqrt());
-    (0.5 + 16384.0 * theta / (std::f32::consts::PI / 2.0)) as i32
+    // Fast integer-friendly itheta: use atan2 on sqrts
+    // C opus uses celt_atan2p which is a polynomial, but for float we keep atan2f
+    // since the sqrt calls are the bigger cost. We combine sqrt with rsqrt:
+    let mid = emid.sqrt();
+    let side = eside.sqrt();
+    let theta = side.atan2(mid);
+    (0.5 + 16384.0 * theta / (std::f32::consts::PI * 0.5)) as i32
 }
 
 pub struct SplitCtx {
@@ -401,11 +426,13 @@ pub fn compute_theta(
         sctx.delta = 16384;
         *fill &= !((1 << b_blocks) - 1);
     } else {
-        let angle = (itheta as f32) * (std::f32::consts::PI * 0.5 / 16384.0);
-        sctx.imid = (32768.0 * angle.cos()) as i32;
-        sctx.iside = (32768.0
-            * ((16384 - itheta) as f32 * (std::f32::consts::PI * 0.5 / 16384.0)).cos())
-            as i32;
+        // Use the same polynomial cos approximation as C opus (bitexact_cos)
+        // to avoid expensive libm cosf calls.
+        // bitexact_cos(x) for x in [0, 16384] maps to cos(x * PI/2 / 16384) * 32768
+        let imid = bitexact_cos(itheta as i16);
+        sctx.imid = imid as i32;
+        let iside = bitexact_cos((16384 - itheta) as i16);
+        sctx.iside = iside as i32;
         sctx.delta =
             (((n as i32 - 1) << 7) * bitexact_log2tan(sctx.iside, sctx.imid) + 16384) >> 15;
     }
@@ -696,7 +723,14 @@ pub fn quant_band(
         recombine = tf_change_local;
     }
 
-    let mut lowband_buf: Option<Vec<f32>> = lowband.map(|lb| lb.to_vec());
+    // Scratch buffer for lowband transformation (avoids heap allocation).
+    // MAX_PVQ_N = 352 is the max band size; lowband is never larger than the current band.
+    let mut lowband_scratch = [0.0f32; MAX_PVQ_N];
+    let mut lowband_buf: Option<&mut [f32]> = lowband.map(|lb| {
+        let len = lb.len();
+        lowband_scratch[..len].copy_from_slice(lb);
+        &mut lowband_scratch[..len]
+    });
 
     static BIT_INTERLEAVE_TABLE: [u8; 16] = [0, 1, 1, 1, 2, 3, 3, 3, 2, 3, 3, 3, 2, 3, 3, 3];
 
@@ -1059,7 +1093,15 @@ pub fn quant_all_bands(
 
     let norm_offset = m_val * (m.e_bands[start] as usize);
     let norm_size = m_val * (m.e_bands[m.nb_ebands - 1] as usize) - norm_offset;
-    let mut norm = vec![0.0f32; norm_size];
+    // max norm_size = m_val(8) * e_bands_last(100) = 800
+    const MAX_NORM_SIZE: usize = 800;
+    debug_assert!(norm_size <= MAX_NORM_SIZE);
+    let mut norm_buf = [0.0f32; MAX_NORM_SIZE];
+    let norm = &mut norm_buf[..norm_size];
+
+    // Stack scratch buffer for lowband data (avoids per-band heap allocation).
+    // MAX_PVQ_N = 352 covers the largest possible band size.
+    let mut lowband_scratch_buf = [0.0f32; MAX_PVQ_N];
 
     let mut lowband_offset: usize = 0;
     let mut update_lowband = true;
@@ -1152,11 +1194,12 @@ pub fn quant_all_bands(
             *dual_stereo = false;
         }
 
-        let mut lowband_scratch: Option<Vec<f32>> = if effective_lowband >= 0 {
+        let mut lowband_scratch: Option<&mut [f32]> = if effective_lowband >= 0 {
             let lb_start = effective_lowband as usize;
             let lb_end = lb_start + n;
             if lb_end <= norm.len() {
-                Some(norm[lb_start..lb_end].to_vec())
+                lowband_scratch_buf[..n].copy_from_slice(&norm[lb_start..lb_end]);
+                Some(&mut lowband_scratch_buf[..n])
             } else {
                 None
             }
@@ -1256,14 +1299,12 @@ pub fn compute_band_energies(
 ) {
     let frame_size = m.short_mdct_size << lm;
     for c in 0..channels {
+        let ch = &x[c * frame_size..(c + 1) * frame_size];
         for i in 0..end {
             let offset = (m.e_bands[i] as usize) << lm;
             let n = ((m.e_bands[i + 1] - m.e_bands[i]) as usize) << lm;
-            let mut sum = 1e-15f32;
-            let slice = &x[c * frame_size..];
-            for j in 0..n {
-                sum += slice[offset + j].powi(2);
-            }
+            let band = &ch[offset..offset + n];
+            let sum = band.iter().fold(1e-15f32, |acc, &v| acc + v * v);
             band_e[c * m.nb_ebands + i] = sum.sqrt();
         }
     }
@@ -1310,11 +1351,13 @@ pub fn normalise_bands(
     let frame_size = m.short_mdct_size << lm;
     for c in 0..channels {
         for i in 0..end {
-            let offset = (m.e_bands[i] as usize) << lm;
+            let base = c * frame_size + ((m.e_bands[i] as usize) << lm);
             let n = ((m.e_bands[i + 1] - m.e_bands[i]) as usize) << lm;
             let norm = 1.0 / (1e-15 + band_e[c * m.nb_ebands + i]);
-            for j in 0..n {
-                x[c * frame_size + offset + j] = freq[c * frame_size + offset + j] * norm;
+            let src = &freq[base..base + n];
+            let dst = &mut x[base..base + n];
+            for (d, &s) in dst.iter_mut().zip(src) {
+                *d = s * norm;
             }
         }
     }
@@ -1336,12 +1379,14 @@ pub fn denormalise_bands(
 
     for c in 0..channels {
         for i in start..end {
-            let offset = (m.e_bands[i] as usize) << lm;
+            let base = c * frame_size + ((m.e_bands[i] as usize) << lm);
             let n = ((m.e_bands[i + 1] - m.e_bands[i]) as usize) << lm;
             let band_log = band_e[c * m.nb_ebands + i];
             let g = (2.0f32).powf(band_log + m.e_means[i]);
-            for j in 0..n {
-                freq[c * frame_size + offset + j] = x[c * frame_size + offset + j] * g;
+            let src = &x[base..base + n];
+            let dst = &mut freq[base..base + n];
+            for (d, &s) in dst.iter_mut().zip(src) {
+                *d = s * g;
             }
         }
     }

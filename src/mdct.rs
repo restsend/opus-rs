@@ -213,12 +213,7 @@ impl MdctLookup {
             let yr = x2 * t0 + x1 * t1;
             let yi = x1 * t0 - x2 * t1;
 
-            output[overlap2 + 2 * rev + 1] = yr;
-            output[overlap2 + 2 * rev] = yi;
-        }
-
-        for i in 0..n4 {
-            f2[i] = KissCpx::new(output[overlap2 + 2 * i], output[overlap2 + 2 * i + 1]);
+            f2[rev] = KissCpx::new(yi, yr);
         }
 
         opus_fft_impl(st, f2);

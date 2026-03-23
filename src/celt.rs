@@ -23,6 +23,9 @@ const INV_TABLE: [u8; 128] = [
     3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2,
 ];
 
+/// Max len for transient_analysis: (MAX_FRAME_SIZE + overlap) = 2880 + 120 = 3000
+const MAX_TRANSIENT_LEN: usize = 3000;
+
 #[allow(clippy::too_many_arguments)]
 fn transient_analysis(
     input: &[f32],
@@ -44,7 +47,8 @@ fn transient_analysis(
     }
 
     let len2 = len / 2;
-    let mut tmp = vec![0.0f32; len];
+    debug_assert!(len <= MAX_TRANSIENT_LEN);
+    let mut tmp = [0.0f32; MAX_TRANSIENT_LEN];
 
     for c in 0..channels {
         let mut mem0 = 0.0f32;
@@ -63,7 +67,7 @@ fn transient_analysis(
 
         let mut mean = 0.0f32;
         mem0 = 0.0f32;
-        let mut tmp2 = vec![0.0f32; len2];
+        let mut tmp2 = [0.0f32; MAX_TRANSIENT_LEN / 2];
         for i in 0..len2 {
             let x2 = (tmp[2 * i] * tmp[2 * i] + tmp[2 * i + 1] * tmp[2 * i + 1]) / 16.0;
             mean += x2 / 4096.0;
@@ -119,6 +123,11 @@ fn l1_metric(tmp: &[f32], n: usize, lm: i32, bias: f32) -> f32 {
     l1 + (lm as f32) * bias * l1
 }
 
+/// Max nb_ebands
+const MAX_NB_EBANDS: usize = 21;
+/// Max band width in tf_analysis: (e_bands[21] - e_bands[20]) << max_lm = 22 << 3 = 176
+const MAX_TF_TMP: usize = 176;
+
 #[allow(clippy::too_many_arguments)]
 fn tf_analysis(
     mode: &CeltMode,
@@ -132,9 +141,10 @@ fn tf_analysis(
     tf_estimate: f32,
     tf_chan: usize,
 ) -> i32 {
-    let mut metric = vec![0i32; len];
-    let mut tmp = vec![0.0f32; ((mode.e_bands[len] - mode.e_bands[len - 1]) as usize) << lm];
-    let mut tmp_1 = vec![0.0f32; ((mode.e_bands[len] - mode.e_bands[len - 1]) as usize) << lm];
+    debug_assert!(len <= MAX_NB_EBANDS);
+    let mut metric = [0i32; MAX_NB_EBANDS];
+    let mut tmp = [0.0f32; MAX_TF_TMP];
+    let mut tmp_1 = [0.0f32; MAX_TF_TMP];
 
     let bias = 0.04 * (-0.25f32).max(0.5 - tf_estimate);
 
@@ -182,7 +192,7 @@ fn tf_analysis(
     }
 
     let mut tf_select = 0;
-    let importance = vec![1.0f32; len];
+    let importance = [1.0f32; MAX_NB_EBANDS];
     let mut selcost = [0.0f32; 2];
 
     for sel in 0..2 {
@@ -505,6 +515,16 @@ fn comb_filter(
     }
 }
 
+/// Max nb_ebands * max channels
+#[allow(dead_code)]
+const MAX_EBANDS_X_CH: usize = 21 * 2;
+/// Max frame_size * max channels (2880 * 2)
+#[allow(dead_code)]
+const MAX_FRAME_X_CH: usize = MAX_FRAME_SIZE * 2;
+/// Max buf_stride * max channels ((2880 + 120) * 2)
+#[allow(dead_code)]
+const MAX_BUFSTRIDE_X_CH: usize = (MAX_FRAME_SIZE + 120) * 2;
+
 pub struct CeltEncoder {
     mode: &'static CeltMode,
     channels: usize,
@@ -525,6 +545,22 @@ pub struct CeltEncoder {
     old_band_e2: Vec<f32>,
     old_band_e3: Vec<f32>,
     last_band_log_e: Vec<f32>,
+    // Pre-allocated working buffers for encode_impl
+    w_in_buf: Vec<f32>,
+    w_freq: Vec<f32>,
+    w_band_e: Vec<f32>,
+    w_x: Vec<f32>,
+    w_band_log_e: Vec<f32>,
+    w_error: Vec<f32>,
+    w_tf_res: Vec<i32>,
+    w_cap: Vec<i32>,
+    w_offsets: Vec<i32>,
+    w_pulses: Vec<i32>,
+    w_ebits: Vec<i32>,
+    w_fine_priority: Vec<i32>,
+    w_collapse_masks: Vec<u32>,
+    w_band_amp_synth: Vec<f32>,
+    w_freq_synth: Vec<f32>,
 }
 
 const INTEN_THRESHOLDS: [i32; 21] = [
@@ -627,12 +663,16 @@ impl CeltEncoder {
         let overlap = mode.overlap;
         let channel_mem_size = 2048 + overlap;
         let syn_mem_size = channels * channel_mem_size;
+        let nb_ebands = mode.nb_ebands;
+        let nb_x_ch = nb_ebands * channels;
+        let frame_x_ch = MAX_FRAME_SIZE * channels;
+        let bufstride_x_ch = (MAX_FRAME_SIZE + overlap) * channels;
         Self {
             mode,
             channels,
             syn_mem: vec![0.0; syn_mem_size],
             enc_decode_mem: vec![0.0; syn_mem_size],
-            old_band_e: vec![-28.0; mode.nb_ebands * channels],
+            old_band_e: vec![-28.0; nb_x_ch],
             preemph_mem: vec![0.0; channels],
             tonal_average: 256,
             hf_average: 0,
@@ -644,9 +684,25 @@ impl CeltEncoder {
             prefilter_period: COMBFILTER_MINPERIOD,
             prefilter_gain: 0.0,
             prefilter_tapset: 0,
-            old_band_e2: vec![-28.0; mode.nb_ebands * channels],
-            old_band_e3: vec![-28.0; mode.nb_ebands * channels],
-            last_band_log_e: vec![-28.0; mode.nb_ebands * channels],
+            old_band_e2: vec![-28.0; nb_x_ch],
+            old_band_e3: vec![-28.0; nb_x_ch],
+            last_band_log_e: vec![-28.0; nb_x_ch],
+            // Pre-allocate working buffers
+            w_in_buf: vec![0.0; bufstride_x_ch],
+            w_freq: vec![0.0; frame_x_ch],
+            w_band_e: vec![0.0; nb_x_ch],
+            w_x: vec![0.0; frame_x_ch],
+            w_band_log_e: vec![0.0; nb_x_ch],
+            w_error: vec![0.0; nb_x_ch],
+            w_tf_res: vec![0; nb_ebands],
+            w_cap: vec![0; nb_ebands],
+            w_offsets: vec![0; nb_ebands],
+            w_pulses: vec![0; nb_ebands],
+            w_ebits: vec![0; nb_x_ch],
+            w_fine_priority: vec![0; nb_x_ch],
+            w_collapse_masks: vec![0; nb_x_ch],
+            w_band_amp_synth: vec![0.0; nb_x_ch],
+            w_freq_synth: vec![0.0; frame_x_ch],
         }
     }
 
@@ -696,9 +752,10 @@ impl CeltEncoder {
         for c in 0..channels {
             let channel_offset = c * syn_mem_size;
 
-            for i in 0..syn_mem_size - frame_size {
-                self.syn_mem[channel_offset + i] = self.syn_mem[channel_offset + i + frame_size];
-            }
+            self.syn_mem.copy_within(
+                channel_offset + frame_size..channel_offset + syn_mem_size,
+                channel_offset,
+            );
 
             let mut m = self.preemph_mem[c];
             let coef = mode.preemph[0];
@@ -712,7 +769,8 @@ impl CeltEncoder {
         }
 
         let buf_stride = frame_size + overlap;
-        let mut in_buf = vec![0.0f32; buf_stride * channels];
+        self.w_in_buf[..buf_stride * channels].fill(0.0);
+        let in_buf = &mut self.w_in_buf[..buf_stride * channels];
         for c in 0..channels {
             let channel_offset = c * syn_mem_size;
             let in_buf_offset = c * buf_stride;
@@ -742,7 +800,8 @@ impl CeltEncoder {
         let gain1 = 0.0f32;
         let pitch_index = 0usize;
 
-        let mut freq = vec![0.0f32; frame_size * channels];
+        self.w_freq[..frame_size * channels].fill(0.0);
+        let freq = &mut self.w_freq[..frame_size * channels];
         let (shift, b) = if is_transient {
             (mode.max_lm, 1 << lm)
         } else {
@@ -775,14 +834,16 @@ impl CeltEncoder {
             }
         }
 
-        let mut band_e = vec![0.0f32; nb_ebands * channels];
-        compute_band_energies(mode, &freq, &mut band_e, nb_ebands, channels, lm);
+        self.w_band_e[..nb_ebands * channels].fill(0.0);
+        let band_e = &mut self.w_band_e[..nb_ebands * channels];
+        compute_band_energies(mode, &freq, band_e, nb_ebands, channels, lm);
 
-        let mut x = vec![0.0f32; frame_size * channels];
+        self.w_x[..frame_size * channels].fill(0.0);
+        let x = &mut self.w_x[..frame_size * channels];
         normalise_bands(
             mode,
             &freq,
-            &mut x,
+            x,
             &band_e,
             nb_ebands,
             channels,
@@ -793,18 +854,20 @@ impl CeltEncoder {
             let _ = freq[0];
         }
 
-        let mut band_log_e = vec![0.0f32; nb_ebands * channels];
+        self.w_band_log_e[..nb_ebands * channels].fill(0.0);
+        let band_log_e = &mut self.w_band_log_e[..nb_ebands * channels];
         crate::bands::amp2log2(
             mode,
             nb_ebands,
             nb_ebands,
             &band_e,
-            &mut band_log_e,
+            band_log_e,
             channels,
         );
 
         let total_bits = (rc.buf.len() * 8) as i32;
-        let mut error = vec![0.0f32; nb_ebands * channels];
+        self.w_error[..nb_ebands * channels].fill(0.0);
+        let error = &mut self.w_error[..nb_ebands * channels];
 
         let tell = rc.tell();
         let silence = false;
@@ -853,11 +916,11 @@ impl CeltEncoder {
                 }
             }
 
-            compute_band_energies(mode, &freq, &mut band_e, nb_ebands, channels, lm);
+            compute_band_energies(mode, &freq, band_e, nb_ebands, channels, lm);
             normalise_bands(
                 mode,
                 &freq,
-                &mut x,
+                x,
                 &band_e,
                 nb_ebands,
                 channels,
@@ -873,21 +936,22 @@ impl CeltEncoder {
             &band_log_e,
             &mut self.old_band_e,
             (total_bits << 3) as u32,
-            &mut error,
+            error,
             rc,
             channels,
             lm,
             is_transient || intra_ener,
         );
 
-        let mut tf_res = vec![0i32; nb_ebands];
+        self.w_tf_res[..nb_ebands].fill(0);
+        let tf_res = &mut self.w_tf_res[..nb_ebands];
         let effective_bytes = ((total_bits / 8) as usize).max(1);
         let lambda = 80.max(20480 / effective_bytes + 2) as i32;
         let tf_select = tf_analysis(
             mode,
             nb_ebands,
             is_transient,
-            &mut tf_res,
+            tf_res,
             lambda,
             &x,
             frame_size,
@@ -899,7 +963,7 @@ impl CeltEncoder {
             start_band,
             nb_ebands,
             is_transient,
-            &mut tf_res,
+            tf_res,
             lm as i32,
             tf_select,
             rc,
@@ -925,7 +989,7 @@ impl CeltEncoder {
 
         if rc.tell() + 4 <= total_bits {
             let update_hf = lm == mode.max_lm;
-            let spread_weights = vec![32i32; nb_ebands];
+            let spread_weights = [32i32; 21];
             self.spread_decision = spreading_decision(
                 mode,
                 &x,
@@ -944,14 +1008,16 @@ impl CeltEncoder {
             self.spread_decision = SPREAD_NORMAL;
         }
 
-        let mut cap = vec![0i32; nb_ebands];
+        self.w_cap[..nb_ebands].fill(0);
+        let cap = &mut self.w_cap[..nb_ebands];
         for (i, cap_i) in cap.iter_mut().enumerate() {
             *cap_i = (mode.cache.caps[nb_ebands * (2 * lm + channels - 1) + i] as i32 + 64)
                 * channels as i32
                 * 2;
         }
 
-        let mut offsets = vec![0i32; nb_ebands];
+        self.w_offsets[..nb_ebands].fill(0);
+        let offsets = &mut self.w_offsets[..nb_ebands];
         let dynalloc_logp = 6i32;
         let total_bits_bitres = total_bits << BITRES;
         let total_boost = 0i32;
@@ -989,7 +1055,8 @@ impl CeltEncoder {
         }
 
         let mut intensity = self.intensity;
-        let mut pulses = vec![0i32; nb_ebands];
+        self.w_pulses[..nb_ebands].fill(0);
+        let pulses = &mut self.w_pulses[..nb_ebands];
 
         let stereo = channels > 1;
         let ebands_stereo = if stereo {
@@ -997,8 +1064,10 @@ impl CeltEncoder {
         } else {
             nb_ebands
         };
-        let mut fine_priority = vec![0i32; ebands_stereo];
-        let mut ebits = vec![0i32; ebands_stereo];
+        self.w_fine_priority[..ebands_stereo].fill(0);
+        let fine_priority = &mut self.w_fine_priority[..ebands_stereo];
+        self.w_ebits[..ebands_stereo].fill(0);
+        let ebits = &mut self.w_ebits[..ebands_stereo];
         let mut balance = 0;
 
         self.last_coded_bands = clt_compute_allocation(
@@ -1012,9 +1081,9 @@ impl CeltEncoder {
             &mut dual_stereo_val,
             total_bits << 3,
             &mut balance,
-            &mut pulses,
-            &mut ebits,
-            &mut fine_priority,
+            pulses,
+            ebits,
+            fine_priority,
             channels as i32,
             lm as i32,
             rc,
@@ -1028,13 +1097,14 @@ impl CeltEncoder {
             start_band,
             nb_ebands,
             &mut self.old_band_e,
-            &mut error,
+            error,
             &ebits,
             rc,
             channels,
         );
 
-        let mut collapse_masks = vec![0u32; nb_ebands * channels];
+        self.w_collapse_masks[..nb_ebands * channels].fill(0);
+        let collapse_masks = &mut self.w_collapse_masks[..nb_ebands * channels];
         let (x_split, y_split) = x.split_at_mut(frame_size);
         let y_opt = if channels == 2 { Some(y_split) } else { None };
 
@@ -1046,7 +1116,7 @@ impl CeltEncoder {
             nb_ebands,
             x_split,
             y_opt,
-            &mut collapse_masks,
+            collapse_masks,
             &band_e,
             &pulses,
             short_blocks,
@@ -1067,7 +1137,7 @@ impl CeltEncoder {
             start_band,
             nb_ebands,
             &mut self.old_band_e,
-            &mut error,
+            error,
             &ebits,
             &fine_priority,
             (total_bits - rc.tell()) << 3,
@@ -1076,19 +1146,21 @@ impl CeltEncoder {
         );
 
         {
-            let mut band_amp_synth = vec![0.0f32; nb_ebands * channels];
+            self.w_band_amp_synth[..nb_ebands * channels].fill(0.0);
+            let band_amp_synth = &mut self.w_band_amp_synth[..nb_ebands * channels];
             log2amp(
                 mode,
                 nb_ebands,
-                &mut band_amp_synth,
+                band_amp_synth,
                 &self.old_band_e,
                 channels,
             );
-            let mut freq_synth = vec![0.0f32; frame_size * channels];
+            self.w_freq_synth[..frame_size * channels].fill(0.0);
+            let freq_synth = &mut self.w_freq_synth[..frame_size * channels];
             denormalise_bands(
                 mode,
                 &x,
-                &mut freq_synth,
+                freq_synth,
                 &band_amp_synth,
                 start_band,
                 nb_ebands,
@@ -1105,9 +1177,7 @@ impl CeltEncoder {
 
             for c in 0..channels {
                 let co = c * syn_mem_size;
-                for i in 0..decode_buf_size - frame_size + overlap {
-                    self.enc_decode_mem[co + i] = self.enc_decode_mem[co + i + frame_size];
-                }
+                self.enc_decode_mem.copy_within(co + frame_size..co + decode_buf_size + overlap, co);
             }
 
             for c in 0..channels {
@@ -1161,7 +1231,7 @@ impl CeltEncoder {
                         [channel_offset + syn_mem_size - max_period..channel_offset + syn_mem_size],
                 );
             } else {
-                let mut new_mem = vec![0.0f32; max_period];
+                let mut new_mem = [0.0f32; COMBFILTER_MAXPERIOD];
                 new_mem[..max_period - n]
                     .copy_from_slice(&self.prefilter_mem[c * max_period + n..(c + 1) * max_period]);
                 new_mem[max_period - n..].copy_from_slice(
@@ -1186,24 +1256,55 @@ pub struct CeltDecoder {
     old_band_e2: Vec<f32>,
     old_band_e3: Vec<f32>,
     rng: u32,
+    // Pre-allocated working buffers for decode_impl
+    w_tf_res: Vec<i32>,
+    w_cap: Vec<i32>,
+    w_offsets: Vec<i32>,
+    w_pulses: Vec<i32>,
+    w_ebits: Vec<i32>,
+    w_fine_priority: Vec<i32>,
+    w_x: Vec<f32>,
+    w_collapse_masks: Vec<u32>,
+    w_freq: Vec<f32>,
+    w_band_amp: Vec<f32>,
+    w_pcm_frame: Vec<f32>,
+    w_filtered: Vec<f32>,
+    w_post: Vec<f32>,
 }
 
 impl CeltDecoder {
     pub fn new(mode: &'static CeltMode, channels: usize) -> Self {
         let overlap = mode.overlap;
+        let nb_ebands = mode.nb_ebands;
+        let nb_x_ch = nb_ebands * channels;
+        let dec_frame_x_ch = DECODE_BUFFER_SIZE * channels;
         Self {
             mode,
             channels,
             decode_mem: vec![0.0; channels * (DECODE_BUFFER_SIZE + overlap)],
-            old_band_e: vec![-28.0; mode.nb_ebands * channels],
+            old_band_e: vec![-28.0; nb_x_ch],
             preemph_mem: vec![0.0; channels],
             prefilter_mem: vec![0.0; channels * COMBFILTER_MAXPERIOD],
             prefilter_period: COMBFILTER_MINPERIOD,
             prefilter_gain: 0.0,
             prefilter_tapset: 0,
-            old_band_e2: vec![-28.0; mode.nb_ebands * channels],
-            old_band_e3: vec![-28.0; mode.nb_ebands * channels],
+            old_band_e2: vec![-28.0; nb_x_ch],
+            old_band_e3: vec![-28.0; nb_x_ch],
             rng: 0,
+            // Pre-allocate working buffers
+            w_tf_res: vec![0; nb_ebands],
+            w_cap: vec![0; nb_ebands],
+            w_offsets: vec![0; nb_ebands],
+            w_pulses: vec![0; nb_ebands],
+            w_ebits: vec![0; nb_x_ch],
+            w_fine_priority: vec![0; nb_x_ch],
+            w_x: vec![0.0; dec_frame_x_ch],
+            w_collapse_masks: vec![0; nb_x_ch],
+            w_freq: vec![0.0; dec_frame_x_ch],
+            w_band_amp: vec![0.0; nb_x_ch],
+            w_pcm_frame: vec![0.0; DECODE_BUFFER_SIZE],
+            w_filtered: vec![0.0; DECODE_BUFFER_SIZE],
+            w_post: vec![0.0; DECODE_BUFFER_SIZE + COMBFILTER_MAXPERIOD],
         }
     }
 
@@ -1244,7 +1345,7 @@ impl CeltDecoder {
             lm = 0;
         }
 
-        let mut rc = RangeCoder::new_decoder(compressed.to_vec());
+        let mut rc = RangeCoder::new_decoder(compressed);
         let total_bits = (compressed.len() * 8) as i32;
 
         let tell = rc.tell();
@@ -1291,12 +1392,13 @@ impl CeltDecoder {
             is_transient || intra_ener,
         );
 
-        let mut tf_res = vec![0i32; nb_ebands];
+        self.w_tf_res[..nb_ebands].fill(0);
+        let tf_res = &mut self.w_tf_res[..nb_ebands];
         tf_decode(
             start_band,
             nb_ebands,
             is_transient,
-            &mut tf_res,
+            tf_res,
             lm as i32,
             &mut rc,
         );
@@ -1307,14 +1409,16 @@ impl CeltDecoder {
             SPREAD_NORMAL
         };
 
-        let mut cap = vec![0i32; nb_ebands];
+        self.w_cap[..nb_ebands].fill(0);
+        let cap = &mut self.w_cap[..nb_ebands];
         for (i, cap_i) in cap.iter_mut().enumerate() {
             *cap_i = (mode.cache.caps[nb_ebands * (2 * lm + channels - 1) + i] as i32 + 64)
                 * channels as i32
                 * 2;
         }
 
-        let mut offsets = vec![0i32; nb_ebands];
+        self.w_offsets[..nb_ebands].fill(0);
+        let offsets = &mut self.w_offsets[..nb_ebands];
         let mut dynalloc_logp = 6i32;
         let mut total_bits_bitres = total_bits << BITRES;
         let mut tell_frac = rc.tell() << BITRES;
@@ -1360,15 +1464,18 @@ impl CeltDecoder {
         let mut intensity = 0;
         let mut dual_stereo_val = if channels == 2 { 1 } else { 0 };
         let mut balance = 0;
-        let mut pulses = vec![0i32; nb_ebands];
+        self.w_pulses[..nb_ebands].fill(0);
+        let pulses = &mut self.w_pulses[..nb_ebands];
 
         let ebands_stereo = if channels > 1 {
             nb_ebands * channels
         } else {
             nb_ebands
         };
-        let mut fine_priority = vec![0i32; ebands_stereo];
-        let mut ebits = vec![0i32; ebands_stereo];
+        self.w_fine_priority[..ebands_stereo].fill(0);
+        let fine_priority = &mut self.w_fine_priority[..ebands_stereo];
+        self.w_ebits[..ebands_stereo].fill(0);
+        let ebits = &mut self.w_ebits[..ebands_stereo];
 
         let coded_bands = clt_compute_allocation(
             mode,
@@ -1381,9 +1488,9 @@ impl CeltDecoder {
             &mut dual_stereo_val,
             total_bits << 3,
             &mut balance,
-            &mut pulses,
-            &mut ebits,
-            &mut fine_priority,
+            pulses,
+            ebits,
+            fine_priority,
             channels as i32,
             lm as i32,
             &mut rc,
@@ -1402,8 +1509,10 @@ impl CeltDecoder {
             channels,
         );
 
-        let mut x = vec![0.0f32; frame_size * channels];
-        let mut collapse_masks = vec![0u32; nb_ebands * channels];
+        self.w_x[..frame_size * channels].fill(0.0);
+        let x = &mut self.w_x[..frame_size * channels];
+        self.w_collapse_masks[..nb_ebands * channels].fill(0);
+        let collapse_masks = &mut self.w_collapse_masks[..nb_ebands * channels];
 
         if frame_size > DECODE_BUFFER_SIZE + overlap {
             return 0;
@@ -1411,18 +1520,19 @@ impl CeltDecoder {
 
         for c in 0..channels {
             let channel_mem_offset = c * (DECODE_BUFFER_SIZE + overlap);
-            for i in 0..DECODE_BUFFER_SIZE - frame_size + overlap {
-                self.decode_mem[channel_mem_offset + i] =
-                    self.decode_mem[channel_mem_offset + i + frame_size];
-            }
+            self.decode_mem.copy_within(
+                channel_mem_offset + frame_size..channel_mem_offset + DECODE_BUFFER_SIZE + overlap,
+                channel_mem_offset,
+            );
         }
 
         let (x_split, y_split) = x.split_at_mut(frame_size);
         let y_opt = if channels == 2 { Some(y_split) } else { None };
 
         let mut dual_stereo = dual_stereo_val != 0;
-        let mut band_amp = vec![0.0f32; nb_ebands * channels];
-        log2amp(mode, nb_ebands, &mut band_amp, &self.old_band_e, channels);
+        self.w_band_amp[..nb_ebands * channels].fill(0.0);
+        let band_amp = &mut self.w_band_amp[..nb_ebands * channels];
+        log2amp(mode, nb_ebands, band_amp, &self.old_band_e, channels);
 
         quant_all_bands(
             false,
@@ -1431,7 +1541,7 @@ impl CeltDecoder {
             nb_ebands,
             x_split,
             y_opt,
-            &mut collapse_masks,
+            collapse_masks,
             &band_amp,
             &pulses,
             short_blocks,
@@ -1467,7 +1577,7 @@ impl CeltDecoder {
         if anti_collapse_on {
             self.rng = crate::bands::anti_collapse(
                 mode,
-                &mut x,
+                x,
                 &collapse_masks,
                 lm as i32,
                 channels,
@@ -1482,11 +1592,12 @@ impl CeltDecoder {
             );
         }
 
-        let mut freq = vec![0.0f32; frame_size * channels];
+        self.w_freq[..frame_size * channels].fill(0.0);
+        let freq = &mut self.w_freq[..frame_size * channels];
         denormalise_bands(
             mode,
             &x,
-            &mut freq,
+            freq,
             &self.old_band_e,
             start_band,
             nb_ebands,
@@ -1530,20 +1641,23 @@ impl CeltDecoder {
                 );
             }
 
-            let mut pcm_frame = vec![0.0f32; frame_size];
+            self.w_pcm_frame[..frame_size].fill(0.0);
+            let pcm_frame = &mut self.w_pcm_frame[..frame_size];
 
             pcm_frame.copy_from_slice(&self.decode_mem[channel_mem_offset + out_syn_idx..channel_mem_offset + out_syn_idx + frame_size]);
 
             if pf_on || self.prefilter_gain > 0.0 {
-                let mut filtered = vec![0.0f32; frame_size];
-                let mut post = vec![0.0f32; frame_size + COMBFILTER_MAXPERIOD];
+                self.w_filtered[..frame_size].fill(0.0);
+                let filtered = &mut self.w_filtered[..frame_size];
+                self.w_post[..frame_size + COMBFILTER_MAXPERIOD].fill(0.0);
+                let post = &mut self.w_post[..frame_size + COMBFILTER_MAXPERIOD];
                 post[..COMBFILTER_MAXPERIOD].copy_from_slice(
                     &self.prefilter_mem[c * COMBFILTER_MAXPERIOD..(c + 1) * COMBFILTER_MAXPERIOD],
                 );
                 post[COMBFILTER_MAXPERIOD..].copy_from_slice(&pcm_frame);
 
                 comb_filter(
-                    &mut filtered,
+                    filtered,
                     &post,
                     0,
                     COMBFILTER_MAXPERIOD,
@@ -1562,7 +1676,7 @@ impl CeltDecoder {
                 self.decode_mem[channel_mem_offset + out_syn_idx..channel_mem_offset + out_syn_idx + frame_size].copy_from_slice(&pcm_frame);
             }
 
-            let mut new_mem = vec![0.0f32; COMBFILTER_MAXPERIOD];
+            let mut new_mem = [0.0f32; COMBFILTER_MAXPERIOD];
             if frame_size >= COMBFILTER_MAXPERIOD {
                 new_mem.copy_from_slice(&pcm_frame[frame_size - COMBFILTER_MAXPERIOD..frame_size]);
             } else {

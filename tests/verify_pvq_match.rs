@@ -65,7 +65,7 @@ fn test_pvq_match() {
     }
 
     // Test Unquant
-    let mut rc_dec = RangeCoder::new_decoder(buffer.clone());
+    let mut rc_dec = RangeCoder::new_decoder(&buffer);
     let mut x_unquant = vec![0.0f32; n];
     alg_unquant(&mut x_unquant, n, k, spread, 1, &mut rc_dec, 1.0);
 
@@ -126,7 +126,7 @@ fn test_pvq_complex_match() {
         buffer.extend_from_slice(&rc.buf[rc.end_offs as usize..1024]);
     }
 
-    let mut rc_dec = RangeCoder::new_decoder(buffer);
+    let mut rc_dec = RangeCoder::new_decoder(&buffer);
     let mut x_unquant = vec![0.0f32; n];
     alg_unquant(&mut x_unquant, n, k, spread, 1, &mut rc_dec, 1.0);
 

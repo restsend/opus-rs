@@ -1,26 +1,273 @@
 use crate::celt_lpc::{autocorr, lpc};
 
+/// Inner product with NEON optimization on aarch64
 pub fn inner_prod(x: &[f32], y: &[f32], n: usize) -> f32 {
-    let mut sum = 0.0f32;
-    for i in 0..n {
-        sum += x[i] * y[i];
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        return inner_prod_neon(x, y, n);
     }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let mut sum = 0.0f32;
+        for i in 0..n {
+            sum += x[i] * y[i];
+        }
+        sum
+    }
+}
+
+/// Dual inner product with NEON optimization on aarch64
+pub fn dual_inner_prod(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32) {
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        return dual_inner_prod_neon(x, y1, y2, n);
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let mut xy1 = 0.0f32;
+        let mut xy2 = 0.0f32;
+        for i in 0..n {
+            xy1 += x[i] * y1[i];
+            xy2 += x[i] * y2[i];
+        }
+        (xy1, xy2)
+    }
+}
+
+/// Pitch cross-correlation with NEON optimization on aarch64
+pub fn pitch_xcorr(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitch: usize) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        // For large max_pitch, use xcorr_kernel_neon which computes 4 correlations
+        // simultaneously with shared y-vector loads. For small max_pitch (e.g. autocorr
+        // with lag ≤ 24), the kernel setup overhead exceeds the data-sharing benefit,
+        // so individual inner_prod_neon calls are faster on Apple Silicon.
+        if max_pitch >= 32 {
+            unsafe {
+                return pitch_xcorr_neon(x, y, xcorr, len, max_pitch);
+            }
+        }
+        for i in 0..max_pitch {
+            xcorr[i] = unsafe { inner_prod_neon(x, &y[i..], len) };
+        }
+        return;
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for i in 0..max_pitch {
+            xcorr[i] = inner_prod(x, &y[i..], len);
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn inner_prod_neon(x: &[f32], y: &[f32], n: usize) -> f32 {
+    use std::arch::aarch64::*;
+
+    let mut xy = vdupq_n_f32(0.0);
+    let mut i = 0;
+
+    // Process 8 elements at a time
+    while i + 8 <= n {
+        let x0 = vld1q_f32(x.as_ptr().add(i));
+        let y0 = vld1q_f32(y.as_ptr().add(i));
+        xy = vfmaq_f32(xy, x0, y0);
+
+        let x1 = vld1q_f32(x.as_ptr().add(i + 4));
+        let y1 = vld1q_f32(y.as_ptr().add(i + 4));
+        xy = vfmaq_f32(xy, x1, y1);
+
+        i += 8;
+    }
+
+    // Process 4 more elements
+    if i + 4 <= n {
+        let x0 = vld1q_f32(x.as_ptr().add(i));
+        let y0 = vld1q_f32(y.as_ptr().add(i));
+        xy = vfmaq_f32(xy, x0, y0);
+        i += 4;
+    }
+
+    // Horizontal sum
+    let mut sum = vaddvq_f32(xy);
+
+    // Scalar tail
+    for j in i..n {
+        sum += x[j] * y[j];
+    }
+
     sum
 }
 
-pub fn dual_inner_prod(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32) {
-    let mut xy1 = 0.0f32;
-    let mut xy2 = 0.0f32;
-    for i in 0..n {
-        xy1 += x[i] * y1[i];
-        xy2 += x[i] * y2[i];
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn dual_inner_prod_neon(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32) {
+    use std::arch::aarch64::*;
+
+    let mut xy1 = vdupq_n_f32(0.0);
+    let mut xy2 = vdupq_n_f32(0.0);
+    let mut i = 0;
+
+    // Process 8 elements at a time
+    while i + 8 <= n {
+        let x0 = vld1q_f32(x.as_ptr().add(i));
+        let x4 = vld1q_f32(x.as_ptr().add(i + 4));
+
+        let y1_0 = vld1q_f32(y1.as_ptr().add(i));
+        let y1_4 = vld1q_f32(y1.as_ptr().add(i + 4));
+        let y2_0 = vld1q_f32(y2.as_ptr().add(i));
+        let y2_4 = vld1q_f32(y2.as_ptr().add(i + 4));
+
+        xy1 = vfmaq_f32(xy1, x0, y1_0);
+        xy2 = vfmaq_f32(xy2, x0, y2_0);
+        xy1 = vfmaq_f32(xy1, x4, y1_4);
+        xy2 = vfmaq_f32(xy2, x4, y2_4);
+
+        i += 8;
     }
-    (xy1, xy2)
+
+    // Process 4 more elements
+    if i + 4 <= n {
+        let x0 = vld1q_f32(x.as_ptr().add(i));
+        let y1_0 = vld1q_f32(y1.as_ptr().add(i));
+        let y2_0 = vld1q_f32(y2.as_ptr().add(i));
+        xy1 = vfmaq_f32(xy1, x0, y1_0);
+        xy2 = vfmaq_f32(xy2, x0, y2_0);
+        i += 4;
+    }
+
+    let sum1 = vaddvq_f32(xy1);
+    let sum2 = vaddvq_f32(xy2);
+
+    let mut s1 = sum1;
+    let mut s2 = sum2;
+    for j in i..n {
+        s1 += x[j] * y1[j];
+        s2 += x[j] * y2[j];
+    }
+
+    (s1, s2)
 }
 
-pub fn pitch_xcorr(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitch: usize) {
-    for i in 0..max_pitch {
-        xcorr[i] = inner_prod(x, &y[i..], len);
+/// Compute 4 cross-correlation values using NEON lane multiplies
+/// sum[k] = Σ(x[i+k] * y[i]) for k=0..3
+/// Matches C implementation: celt_neon_intr.c xcorr_kernel_neon_float
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn xcorr_kernel_neon(x: &[f32], y: &[f32], sum: &mut [f32; 4], mut len: usize) {
+    use std::arch::aarch64::*;
+
+    debug_assert!(x.len() >= len, "xcorr_kernel_neon: x too short");
+    debug_assert!(y.len() >= len + 3, "xcorr_kernel_neon: y too short (need len+3 for vextq)");
+
+    let mut summ = vdupq_n_f32(0.0);
+    let mut xi = x.as_ptr();
+    let mut yi = y.as_ptr();
+
+    // Load initial y[0..3]
+    let mut yy = vld1q_f32(yi);
+
+    // Process 8 elements at a time
+    // Note: loop condition is len > 8 (not >=) to avoid reading past array bounds
+    while len > 8 {
+        yi = yi.add(4);
+        let yy1 = vld1q_f32(yi);
+        yi = yi.add(4);
+        let yy2 = vld1q_f32(yi);
+
+        let xx0 = vld1q_f32(xi);
+        xi = xi.add(4);
+        let xx1 = vld1q_f32(xi);
+        xi = xi.add(4);
+
+        // Compute 4 correlations using lane multiplies with rotated y vectors
+        summ = vfmaq_lane_f32(summ, yy, vget_low_f32(xx0), 0);
+        let yext = vextq_f32(yy, yy1, 1);
+        summ = vfmaq_lane_f32(summ, yext, vget_low_f32(xx0), 1);
+        let yext = vextq_f32(yy, yy1, 2);
+        summ = vfmaq_lane_f32(summ, yext, vget_high_f32(xx0), 0);
+        let yext = vextq_f32(yy, yy1, 3);
+        summ = vfmaq_lane_f32(summ, yext, vget_high_f32(xx0), 1);
+
+        summ = vfmaq_lane_f32(summ, yy1, vget_low_f32(xx1), 0);
+        let yext = vextq_f32(yy1, yy2, 1);
+        summ = vfmaq_lane_f32(summ, yext, vget_low_f32(xx1), 1);
+        let yext = vextq_f32(yy1, yy2, 2);
+        summ = vfmaq_lane_f32(summ, yext, vget_high_f32(xx1), 0);
+        let yext = vextq_f32(yy1, yy2, 3);
+        summ = vfmaq_lane_f32(summ, yext, vget_high_f32(xx1), 1);
+
+        yy = yy2;
+        len -= 8;
+    }
+
+    // Process 4 more elements
+    // Note: condition is len > 4 (not >=) to avoid reading past array bounds
+    if len > 4 {
+        yi = yi.add(4);
+        let yy1 = vld1q_f32(yi);
+
+        let xx0 = vld1q_f32(xi);
+        xi = xi.add(4);
+
+        summ = vfmaq_lane_f32(summ, yy, vget_low_f32(xx0), 0);
+        let yext = vextq_f32(yy, yy1, 1);
+        summ = vfmaq_lane_f32(summ, yext, vget_low_f32(xx0), 1);
+        let yext = vextq_f32(yy, yy1, 2);
+        summ = vfmaq_lane_f32(summ, yext, vget_high_f32(xx0), 0);
+        let yext = vextq_f32(yy, yy1, 3);
+        summ = vfmaq_lane_f32(summ, yext, vget_high_f32(xx0), 1);
+
+        yy = yy1;
+        len -= 4;
+    }
+
+    // Process remaining elements one at a time
+    // Note: --len > 0 means loop while len-1 > 0, i.e., len > 1
+    while len > 1 {
+        let xx = vld1_dup_f32(xi);
+        xi = xi.add(1);
+        summ = vfmaq_lane_f32(summ, yy, xx, 0);
+        yi = yi.add(1);
+        yy = vld1q_f32(yi);
+        len -= 1;
+    }
+
+    // Final element
+    let xx = vld1_dup_f32(xi);
+    summ = vfmaq_lane_f32(summ, yy, xx, 0);
+
+    vst1q_f32(sum.as_mut_ptr(), summ);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn pitch_xcorr_neon(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitch: usize) {
+    debug_assert!(x.len() >= len, "pitch_xcorr_neon: x too short");
+    debug_assert!(y.len() >= max_pitch + len - 1, "pitch_xcorr_neon: y too short");
+    debug_assert!(xcorr.len() >= max_pitch, "pitch_xcorr_neon: xcorr too short");
+
+    let mut i = 0;
+
+    // Process 4 pitch values at a time using kernel
+    while i + 4 <= max_pitch {
+        let mut sum = [0.0f32; 4];
+        unsafe { xcorr_kernel_neon(x, &y[i..], &mut sum, len) };
+        xcorr[i] = sum[0];
+        xcorr[i + 1] = sum[1];
+        xcorr[i + 2] = sum[2];
+        xcorr[i + 3] = sum[3];
+        i += 4;
+    }
+
+    // Scalar tail
+    for j in i..max_pitch {
+        xcorr[j] = unsafe { inner_prod_neon(x, &y[j..], len) };
     }
 }
 

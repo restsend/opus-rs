@@ -41,8 +41,9 @@ impl RangeCoder {
         }
     }
 
-    pub fn new_decoder(buf: Vec<u8>) -> Self {
-        let storage = buf.len() as u32;
+    pub fn new_decoder(data: &[u8]) -> Self {
+        let storage = data.len() as u32;
+        let buf = data.to_vec();
         let mut rc = RangeCoder {
             buf,
             storage,
@@ -525,7 +526,7 @@ mod tests {
         assert_eq!(enc.offs, 1);
         assert_eq!(enc.buf[0], 224);
 
-        let mut dec = RangeCoder::new_decoder(enc.buf[..enc.offs as usize].to_vec());
+        let mut dec = RangeCoder::new_decoder(&enc.buf[..enc.offs as usize]);
         let decoded_val = dec.laplace_decode(fs, decay);
         assert_eq!(decoded_val, -3);
     }
@@ -540,7 +541,7 @@ mod tests {
         enc.done();
         let data = enc.buf[..enc.offs as usize].to_vec();
 
-        let mut dec = RangeCoder::new_decoder(data);
+        let mut dec = RangeCoder::new_decoder(&data);
         let s0 = dec.decode_icdf(&icdf, 2);
         let s1 = dec.decode_icdf(&icdf, 2);
         let s2 = dec.decode_icdf(&icdf, 2);
@@ -570,7 +571,7 @@ mod tests {
             enc.done();
             let data = enc.buf[..enc.offs as usize].to_vec();
 
-            let mut dec = RangeCoder::new_decoder(data);
+            let mut dec = RangeCoder::new_decoder(&data);
             let decoded = dec.decode_icdf(icdf, ftb);
             assert_eq!(decoded, sym, "往返失败: 编码 symbol={sym} 解码得 {decoded}");
         }
@@ -593,7 +594,7 @@ mod tests {
         enc.done();
         let data = enc.buf[..enc.offs as usize].to_vec();
 
-        let mut dec = RangeCoder::new_decoder(data);
+        let mut dec = RangeCoder::new_decoder(&data);
         for &expected in &symbols {
             let got = dec.decode_icdf(icdf, ftb);
             assert_eq!(got, expected, "解码器输出 {got}，期望 {expected}");
@@ -610,7 +611,7 @@ mod tests {
         enc.enc_bits(0, 2);
 
         let data = enc.finish();
-        let mut dec = RangeCoder::new_decoder(data);
+        let mut dec = RangeCoder::new_decoder(&data);
 
         let b1 = dec.dec_bits(1);
         let b2 = dec.dec_bits(3);
@@ -637,7 +638,7 @@ mod tests {
 
         let data = enc.finish();
 
-        let mut dec = RangeCoder::new_decoder(data);
+        let mut dec = RangeCoder::new_decoder(&data);
 
         let b1 = dec.dec_bits(1);
         let d1 = dec.decode(100);

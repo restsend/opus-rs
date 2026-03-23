@@ -83,25 +83,25 @@ cargo bench -- silk_burg_modified_fix  # LPC analysis
 
 | Sample Rate | Frame Size | Time per Frame | Throughput  |
 |-------------|------------|----------------|-------------|
-| 8 kHz       | 20 ms      | 13.3 µs        | 23.0 MiB/s  |
-| 16 kHz      | 20 ms      | 24.3 µs        | 25.2 MiB/s  |
-| 16 kHz      | 10 ms      | 13.9 µs        | 22.0 MiB/s  |
+| 8 kHz       | 20 ms      | 13.2 µs        | 23.1 MiB/s  |
+| 16 kHz      | 20 ms      | 24.2 µs        | 25.2 MiB/s  |
+| 16 kHz      | 10 ms      | 13.8 µs        | 22.1 MiB/s  |
 
 ### CELT Encoder (Rust, 48 kHz)
 
 | Frame Size | Time per Frame | Throughput  |
 |------------|----------------|-------------|
-| 20 ms      | 102.4 µs       | 17.9 MiB/s  |
-| 10 ms      | 63.3 µs        | 14.5 MiB/s  |
-| 5 ms       | 39.2 µs        | 11.7 MiB/s  |
+| 20 ms      | 91.9 µs        | 19.9 MiB/s  |
+| 10 ms      | 51.7 µs        | 17.7 MiB/s  |
+| 5 ms       | 29.9 µs        | 15.3 MiB/s  |
 
 ### SILK vs C Reference (encoder only, complexity=0)
 
 | Config           | 8kHz/20ms | 16kHz/20ms | 16kHz/10ms |
 |------------------|-----------|------------|------------|
-| Rust (cx0)       | 13.3 µs   | 24.2 µs    | 13.9 µs    |
-| C libopus (cx0)  | 11.0 µs   | 18.5 µs    | 11.3 µs    |
-| C faster by      | 1.21×     | 1.31×      | 1.23×      |
+| Rust (cx0)       | 13.3 µs   | 24.4 µs    | 13.8 µs    |
+| C libopus (cx0)  | 11.0 µs   | 18.3 µs    | 11.2 µs    |
+| C faster by      | 1.21×     | 1.33×      | 1.23×      |
 
 Both use complexity=0 (fast mode). Rust fixed-point is ~20-30% slower than C floating-point.
 
@@ -109,13 +109,13 @@ Both use complexity=0 (fast mode). Rust fixed-point is ~20-30% slower than C flo
 
 | Config           | Rust      | C (opus-sys) | C faster by |
 |------------------|-----------|--------------|-------------|
-| 8kHz/20ms VoIP   | 17.6 µs   | 13.5 µs      | 1.31×       |
-| 16kHz/20ms VoIP  | 31.6 µs   | 21.7 µs      | 1.45×       |
-| 16kHz/10ms VoIP  | 17.4 µs   | 13.2 µs      | 1.32×       |
-| 48kHz/20ms Audio | 172 µs    | 43.2 µs      | 4.0×        |
-| 48kHz/10ms Audio | 98.5 µs   | 17.8 µs      | 5.5×        |
+| 8kHz/20ms VoIP   | 17.2 µs   | 13.5 µs      | 1.27×       |
+| 16kHz/20ms VoIP  | 31.0 µs   | 21.7 µs      | 1.43×       |
+| 16kHz/10ms VoIP  | 17.2 µs   | 13.3 µs      | 1.29×       |
+| 48kHz/20ms Audio | 159 µs    | 42.8 µs      | 3.72×       |
+| 48kHz/10ms Audio | 85.4 µs   | 17.8 µs      | 4.80×       |
 
-SILK (VoIP) is ~1.3–1.5× slower than C; CELT (Audio) is ~4–5.5× slower.
+SILK (VoIP) is ~1.3–1.4× slower than C; CELT (Audio) is ~3.7–4.8× slower.
 
 ## License
 

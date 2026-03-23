@@ -285,15 +285,16 @@ impl OpusEncoder {
                     self.buf_stereo_side[i] = (l - r) as i16;
                 }
 
-                self.silk_enc.stereo.side = self.buf_stereo_side.clone();
+                self.silk_enc.stereo.side.resize(frame_length, 0);
+                self.silk_enc.stereo.side.copy_from_slice(&self.buf_stereo_side[..frame_length]);
                 &self.buf_stereo_mid
             } else if mode == OpusMode::Hybrid && self.sampling_rate > 16000 {
                 if self.sampling_rate == 48000 {
                     let stage1_size = frame_size / 2;
-                    let mut stage1_buf = vec![0i16; stage1_size];
+                    let mut stage1_buf = [0i16; 480]; // max frame_size/2 for 48kHz/20ms
                     silk_resampler_down2(
                         &mut self.down2_state_first,
-                        &mut stage1_buf,
+                        &mut stage1_buf[..stage1_size],
                         input_i16,
                         frame_size as i32,
                     );
@@ -302,7 +303,7 @@ impl OpusEncoder {
                     silk_resampler_down2_3(
                         &mut self.down2_3_state,
                         &mut self.buf_silk_input,
-                        &stage1_buf,
+                        &stage1_buf[..stage1_size],
                         stage1_size as i32,
                     );
                 } else {
@@ -465,6 +466,12 @@ pub struct OpusDecoder {
     silk_resampler: silk::resampler::SilkResampler,
 
     prev_internal_rate: i32,
+
+    // Pre-allocated decode working buffers (avoid per-frame heap allocation)
+    w_pcm_i16: Vec<i16>,       // SILK internal PCM: max 16kHz×20ms×2ch = 640
+    w_silk_out: Vec<f32>,      // SILK→f32 output: max frame_size×channels
+    w_pcm_resampled: Vec<i16>, // resampler i16 output: max frame_size×channels
+    w_celt_out: Vec<f32>,      // CELT output: max frame_size×channels
 }
 
 impl OpusDecoder {
@@ -494,6 +501,12 @@ impl OpusDecoder {
             stream_channels: channels,
             silk_resampler: silk::resampler::SilkResampler::default(),
             prev_internal_rate: 0,
+            // 640 = 16kHz × 20ms × 2ch (SILK max internal frame)
+            w_pcm_i16: vec![0i16; 640],
+            // 5760 × 2 = 48kHz × 120ms × 2ch (max output frame)
+            w_silk_out: vec![0.0f32; 5760 * channels],
+            w_pcm_resampled: vec![0i16; 5760 * channels],
+            w_celt_out: vec![0.0f32; 5760 * channels],
         })
     }
 
@@ -580,21 +593,25 @@ impl OpusDecoder {
                     _ => 16000,
                 };
 
-                let mut rc = RangeCoder::new_decoder(payload_data.to_vec());
+                let mut rc = RangeCoder::new_decoder(payload_data);
                 let internal_frame_size =
                     (frame_duration_ms * internal_sample_rate / 1000) as usize;
-                let mut pcm_i16 = vec![0i16; internal_frame_size * self.channels];
+                let pcm_i16_len = internal_frame_size * self.channels;
+                debug_assert!(pcm_i16_len <= self.w_pcm_i16.len());
 
                 let payload_size_ms = frame_duration_ms;
 
-                let ret = self.silk_dec.decode(
-                    &mut rc,
-                    &mut pcm_i16,
-                    silk::decode_frame::FLAG_DECODE_NORMAL,
-                    true,
-                    payload_size_ms,
-                    internal_sample_rate,
-                );
+                let ret = {
+                    let (silk_dec, pcm_i16) = (&mut self.silk_dec, &mut self.w_pcm_i16);
+                    silk_dec.decode(
+                        &mut rc,
+                        &mut pcm_i16[..pcm_i16_len],
+                        silk::decode_frame::FLAG_DECODE_NORMAL,
+                        true,
+                        payload_size_ms,
+                        internal_sample_rate,
+                    )
+                };
 
                 if ret < 0 {
                     return Err("SILK decoding failed");
@@ -606,7 +623,7 @@ impl OpusDecoder {
 
                     let n = decoded_samples.min(frame_size).min(output.len());
                     for i in 0..n {
-                        output[i] = pcm_i16[i] as f32 / 32768.0;
+                        output[i] = self.w_pcm_i16[i] as f32 / 32768.0;
                     }
                     self.prev_mode = Some(OpusMode::SilkOnly);
                     Ok(n)
@@ -620,16 +637,24 @@ impl OpusDecoder {
 
                     let ratio = self.sampling_rate as f64 / internal_sample_rate as f64;
                     let out_len = ((decoded_samples as f64 * ratio) as usize).min(frame_size);
-                    let mut pcm_out = vec![0i16; out_len];
-                    self.silk_resampler.process(
-                        &mut pcm_out,
-                        &pcm_i16[..decoded_samples],
-                        decoded_samples as i32,
-                    );
+                    debug_assert!(out_len <= self.w_pcm_resampled.len());
+                    let ret2 = {
+                        let (silk_res, pcm_i16, pcm_out) = (
+                            &mut self.silk_resampler,
+                            &self.w_pcm_i16,
+                            &mut self.w_pcm_resampled,
+                        );
+                        silk_res.process(
+                            &mut pcm_out[..out_len],
+                            &pcm_i16[..decoded_samples],
+                            decoded_samples as i32,
+                        )
+                    };
+                    let _ = ret2;
 
                     let n = out_len.min(output.len());
                     for i in 0..n {
-                        output[i] = pcm_out[i] as f32 / 32768.0;
+                        output[i] = self.w_pcm_resampled[i] as f32 / 32768.0;
                     }
                     self.prev_mode = Some(OpusMode::SilkOnly);
                     Ok(n)
@@ -650,27 +675,33 @@ impl OpusDecoder {
                     _ => 16000,
                 };
 
-                let mut rc = RangeCoder::new_decoder(payload_data.to_vec());
+                let mut rc = RangeCoder::new_decoder(payload_data);
                 let internal_frame_size =
                     (frame_duration_ms * internal_sample_rate / 1000) as usize;
-                let mut pcm_silk_i16 = vec![0i16; internal_frame_size * self.channels];
+                let pcm_silk_i16_len = internal_frame_size * self.channels;
+                debug_assert!(pcm_silk_i16_len <= self.w_pcm_i16.len());
 
-                let ret = self.silk_dec.decode(
-                    &mut rc,
-                    &mut pcm_silk_i16,
-                    silk::decode_frame::FLAG_DECODE_NORMAL,
-                    true,
-                    frame_duration_ms,
-                    internal_sample_rate,
-                );
+                let ret = {
+                    let (silk_dec, pcm_i16) = (&mut self.silk_dec, &mut self.w_pcm_i16);
+                    silk_dec.decode(
+                        &mut rc,
+                        &mut pcm_i16[..pcm_silk_i16_len],
+                        silk::decode_frame::FLAG_DECODE_NORMAL,
+                        true,
+                        frame_duration_ms,
+                        internal_sample_rate,
+                    )
+                };
 
-                let mut silk_out = vec![0.0f32; frame_size * self.channels];
+                let silk_out_len = frame_size * self.channels;
+                debug_assert!(silk_out_len <= self.w_silk_out.len());
+                self.w_silk_out[..silk_out_len].fill(0.0);
                 if ret > 0 {
                     let decoded_samples = ret as usize;
                     if self.sampling_rate == internal_sample_rate {
                         let n = decoded_samples.min(frame_size);
                         for i in 0..n {
-                            silk_out[i] = pcm_silk_i16[i] as f32 / 32768.0;
+                            self.w_silk_out[i] = self.w_pcm_i16[i] as f32 / 32768.0;
                         }
                     } else {
 
@@ -681,28 +712,40 @@ impl OpusDecoder {
                         }
                         let ratio = self.sampling_rate as f64 / internal_sample_rate as f64;
                         let out_len = ((decoded_samples as f64 * ratio) as usize).min(frame_size);
-                        let mut pcm_resampled = vec![0i16; out_len];
-                        self.silk_resampler.process(
-                            &mut pcm_resampled,
-                            &pcm_silk_i16[..decoded_samples],
-                            decoded_samples as i32,
-                        );
+                        debug_assert!(out_len <= self.w_pcm_resampled.len());
+                        {
+                            let (silk_res, pcm_i16, pcm_resampled) = (
+                                &mut self.silk_resampler,
+                                &self.w_pcm_i16,
+                                &mut self.w_pcm_resampled,
+                            );
+                            silk_res.process(
+                                &mut pcm_resampled[..out_len],
+                                &pcm_i16[..decoded_samples],
+                                decoded_samples as i32,
+                            );
+                        }
                         for i in 0..out_len.min(frame_size) {
-                            silk_out[i] = pcm_resampled[i] as f32 / 32768.0;
+                            self.w_silk_out[i] = self.w_pcm_resampled[i] as f32 / 32768.0;
                         }
                     }
                 }
 
-                let mut celt_out = vec![0.0f32; frame_size * self.channels];
-
-                self.celt_dec
-                    .decode_with_start_band(payload_data, frame_size, &mut celt_out, 17);
+                let celt_out_len = frame_size * self.channels;
+                debug_assert!(celt_out_len <= self.w_celt_out.len());
+                {
+                    let (celt_dec, celt_out) = (&mut self.celt_dec, &mut self.w_celt_out);
+                    celt_dec.decode_with_start_band(
+                        payload_data,
+                        frame_size,
+                        &mut celt_out[..celt_out_len],
+                        17,
+                    );
+                }
 
                 let n = frame_size.min(output.len());
                 for i in 0..n {
-                    output[i] = silk_out[i] + celt_out[i];
-
-                    output[i] = output[i].clamp(-1.0, 1.0);
+                    output[i] = (self.w_silk_out[i] + self.w_celt_out[i]).clamp(-1.0, 1.0);
                 }
 
                 self.prev_mode = Some(OpusMode::Hybrid);
