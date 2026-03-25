@@ -160,13 +160,11 @@ pub fn silk_encode_pulses(
     for i in 0..iter {
         let p = sum_pulses[i];
         if p > 0 {
-
             let icdf0 = SILK_SIGN_ICDF[icdf_offset + ((p & 0x1F) as usize).min(6)];
             let icdf = [icdf0, 0u8];
             for j in 0..SHELL_CODEC_FRAME_LENGTH {
                 let pulse = pulses[i * SHELL_CODEC_FRAME_LENGTH + j];
                 if pulse != 0 {
-
                     let mapped = if pulse > 0 { 1i32 } else { 0i32 };
                     ps_range_enc.encode_icdf(mapped, &icdf, 8);
                 }

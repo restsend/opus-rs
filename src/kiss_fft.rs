@@ -43,7 +43,7 @@ fn c_add(a: &KissCpx, b: &KissCpx) -> KissCpx {
 pub struct KissFftState {
     nfft: usize,
     scale: f32,
-    shift: i32, 
+    shift: i32,
     factors: [i16; 2 * MAXFACTORS],
     pub bitrev: Vec<i16>,
     twiddles: Vec<KissCpx>,
@@ -348,8 +348,10 @@ fn kf_bfly3(
 
             fout[idx] = c_add(&fout[idx], &scratch3);
 
-            fout[idx + m] = KissCpx::new(fout_m.r - scratch0_scaled.i, fout_m.i + scratch0_scaled.r);
-            fout[idx + m2] = KissCpx::new(fout_m.r + scratch0_scaled.i, fout_m.i - scratch0_scaled.r);
+            fout[idx + m] =
+                KissCpx::new(fout_m.r - scratch0_scaled.i, fout_m.i + scratch0_scaled.r);
+            fout[idx + m2] =
+                KissCpx::new(fout_m.r + scratch0_scaled.i, fout_m.i - scratch0_scaled.r);
         }
     }
 }
@@ -540,7 +542,13 @@ mod tests {
             let mut sorted: Vec<i16> = st.bitrev.clone();
             sorted.sort();
             let expected: Vec<i16> = (0..nfft).map(|x| x as i16).collect();
-            assert_eq!(sorted, expected, "bitrev for nfft={} should be a permutation of 0..{}", nfft, nfft - 1);
+            assert_eq!(
+                sorted,
+                expected,
+                "bitrev for nfft={} should be a permutation of 0..{}",
+                nfft,
+                nfft - 1
+            );
         }
     }
 
@@ -715,8 +723,14 @@ mod tests {
         let ns_per_iter = elapsed.as_nanos() as f64 / (iterations as f64 * 2.0);
 
         println!("\nFFT/IFFT performance (nfft={}):", nfft);
-        println!("  Total time for {} FFT+IFFT pairs: {:?}", iterations, elapsed);
+        println!(
+            "  Total time for {} FFT+IFFT pairs: {:?}",
+            iterations, elapsed
+        );
         println!("  Time per FFT or IFFT: {:.2} ns", ns_per_iter);
-        println!("  Throughput: {:.2} M points/sec", (nfft as f64) / ns_per_iter * 1000.0);
+        println!(
+            "  Throughput: {:.2} M points/sec",
+            (nfft as f64) / ns_per_iter * 1000.0
+        );
     }
 }

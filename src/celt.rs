@@ -10,6 +10,9 @@ use crate::quant_bands::{
 use crate::range_coder::RangeCoder;
 use crate::rate::{BITRES, clt_compute_allocation};
 
+#[cfg(target_arch = "aarch64")]
+use std::arch::aarch64::*;
+
 #[allow(dead_code)]
 const MAX_FRAME_SIZE: usize = 2880;
 
@@ -115,12 +118,62 @@ fn transient_analysis(
 }
 
 fn l1_metric(tmp: &[f32], n: usize, lm: i32, bias: f32) -> f32 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        if n >= 16 {
+            return unsafe { l1_metric_neon(tmp, n, lm, bias) };
+        }
+    }
+
     let mut l1 = 0.0f32;
     for &tv in tmp[..n].iter() {
         l1 += tv.abs();
     }
-
     l1 + (lm as f32) * bias * l1
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn l1_metric_neon(tmp: &[f32], n: usize, lm: i32, bias: f32) -> f32 {
+    unsafe {
+        let mut sum4 = vdupq_n_f32(0.0);
+        let mut i = 0;
+
+        // Process 16 elements at a time (4 vectors of 4 floats)
+        while i + 15 < n {
+            let v0 = vld1q_f32(tmp.as_ptr().add(i));
+            let v1 = vld1q_f32(tmp.as_ptr().add(i + 4));
+            let v2 = vld1q_f32(tmp.as_ptr().add(i + 8));
+            let v3 = vld1q_f32(tmp.as_ptr().add(i + 12));
+
+            sum4 = vaddq_f32(sum4, vabsq_f32(v0));
+            sum4 = vaddq_f32(sum4, vabsq_f32(v1));
+            sum4 = vaddq_f32(sum4, vabsq_f32(v2));
+            sum4 = vaddq_f32(sum4, vabsq_f32(v3));
+
+            i += 16;
+        }
+
+        // Process remaining 4-element chunks
+        while i + 3 < n {
+            let v = vld1q_f32(tmp.as_ptr().add(i));
+            sum4 = vaddq_f32(sum4, vabsq_f32(v));
+            i += 4;
+        }
+
+        // Horizontal sum
+        let sum2 = vpaddq_f32(sum4, sum4);
+        let sum1 = vpaddq_f32(sum2, sum2);
+        let mut l1 = vgetq_lane_f32(sum1, 0);
+
+        // Handle remaining elements
+        while i < n {
+            l1 += tmp[i].abs();
+            i += 1;
+        }
+
+        l1 + (lm as f32) * bias * l1
+    }
 }
 
 /// Max nb_ebands
@@ -198,8 +251,8 @@ fn tf_analysis(
     for sel in 0..2 {
         let mut cost0 = importance[0]
             * ((metric[0]
-                - 2 * TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + 2 * sel]
-                    as i32) as f32)
+                - 2 * TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + 2 * sel] as i32)
+                as f32)
                 .abs();
         let mut cost1 = importance[0]
             * ((metric[0]
@@ -214,8 +267,7 @@ fn tf_analysis(
             cost0 = curr0
                 + importance[i]
                     * ((metric[i]
-                        - 2 * TF_SELECT_TABLE[lm as usize]
-                            [4 * (is_transient as usize) + 2 * sel]
+                        - 2 * TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + 2 * sel]
                             as i32) as f32)
                         .abs();
             cost1 = curr1
@@ -235,8 +287,8 @@ fn tf_analysis(
 
     let mut cost0 = importance[0]
         * ((metric[0]
-            - 2 * TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + 2 * tf_select]
-                as i32) as f32)
+            - 2 * TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + 2 * tf_select] as i32)
+            as f32)
             .abs();
     let mut cost1 = importance[0]
         * ((metric[0]
@@ -253,8 +305,7 @@ fn tf_analysis(
         cost0 = curr0
             + importance[i]
                 * ((metric[i]
-                    - 2 * TF_SELECT_TABLE[lm as usize]
-                        [4 * (is_transient as usize) + 2 * tf_select]
+                    - 2 * TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + 2 * tf_select]
                         as i32) as f32)
                     .abs();
         cost1 = curr1
@@ -285,11 +336,7 @@ fn tf_encode(
     let mut budget = rc.storage as i32 * 8;
     let mut tell = rc.tell();
 
-    let tf_select_rsv = if lm > 0 && tell + logp < budget {
-        1
-    } else {
-        0
-    };
+    let tf_select_rsv = if lm > 0 && tell + logp < budget { 1 } else { 0 };
     budget -= tf_select_rsv;
 
     for tf_res_i in tf_res[start..end].iter_mut() {
@@ -336,11 +383,7 @@ fn tf_decode(
     let budget = rc.storage as i32 * 8;
     let mut tell = rc.tell();
 
-    let tf_select_rsv = if lm > 0 && tell + logp < budget {
-        1
-    } else {
-        0
-    };
+    let tf_select_rsv = if lm > 0 && tell + logp < budget { 1 } else { 0 };
     let budget = budget - tf_select_rsv;
 
     for tf_res_i in tf_res[start..end].iter_mut() {
@@ -822,7 +865,6 @@ impl CeltEncoder {
             }
 
             for i in 0..b {
-
                 mode.mdct.forward(
                     &self.syn_mem[channel_offset + mdct_base + i * n..],
                     &mut freq[c * frame_size + i..],
@@ -856,14 +898,7 @@ impl CeltEncoder {
 
         self.w_band_log_e[..nb_ebands * channels].fill(0.0);
         let band_log_e = &mut self.w_band_log_e[..nb_ebands * channels];
-        crate::bands::amp2log2(
-            mode,
-            nb_ebands,
-            nb_ebands,
-            &band_e,
-            band_log_e,
-            channels,
-        );
+        crate::bands::amp2log2(mode, nb_ebands, nb_ebands, &band_e, band_log_e, channels);
 
         let total_bits = (rc.buf.len() * 8) as i32;
         self.w_error[..nb_ebands * channels].fill(0.0);
@@ -899,7 +934,6 @@ impl CeltEncoder {
         }
 
         if short_blocks {
-
             let b = 1 << lm;
             let n = frame_size / b;
             for c in 0..channels {
@@ -947,6 +981,7 @@ impl CeltEncoder {
         let tf_res = &mut self.w_tf_res[..nb_ebands];
         let effective_bytes = ((total_bits / 8) as usize).max(1);
         let lambda = 80.max(20480 / effective_bytes + 2) as i32;
+
         let tf_select = tf_analysis(
             mode,
             nb_ebands,
@@ -1148,13 +1183,7 @@ impl CeltEncoder {
         {
             self.w_band_amp_synth[..nb_ebands * channels].fill(0.0);
             let band_amp_synth = &mut self.w_band_amp_synth[..nb_ebands * channels];
-            log2amp(
-                mode,
-                nb_ebands,
-                band_amp_synth,
-                &self.old_band_e,
-                channels,
-            );
+            log2amp(mode, nb_ebands, band_amp_synth, &self.old_band_e, channels);
             self.w_freq_synth[..frame_size * channels].fill(0.0);
             let freq_synth = &mut self.w_freq_synth[..frame_size * channels];
             denormalise_bands(
@@ -1177,7 +1206,8 @@ impl CeltEncoder {
 
             for c in 0..channels {
                 let co = c * syn_mem_size;
-                self.enc_decode_mem.copy_within(co + frame_size..co + decode_buf_size + overlap, co);
+                self.enc_decode_mem
+                    .copy_within(co + frame_size..co + decode_buf_size + overlap, co);
             }
 
             for c in 0..channels {
@@ -1644,7 +1674,10 @@ impl CeltDecoder {
             self.w_pcm_frame[..frame_size].fill(0.0);
             let pcm_frame = &mut self.w_pcm_frame[..frame_size];
 
-            pcm_frame.copy_from_slice(&self.decode_mem[channel_mem_offset + out_syn_idx..channel_mem_offset + out_syn_idx + frame_size]);
+            pcm_frame.copy_from_slice(
+                &self.decode_mem[channel_mem_offset + out_syn_idx
+                    ..channel_mem_offset + out_syn_idx + frame_size],
+            );
 
             if pf_on || self.prefilter_gain > 0.0 {
                 self.w_filtered[..frame_size].fill(0.0);
@@ -1673,7 +1706,9 @@ impl CeltDecoder {
                 );
                 pcm_frame.copy_from_slice(&filtered);
 
-                self.decode_mem[channel_mem_offset + out_syn_idx..channel_mem_offset + out_syn_idx + frame_size].copy_from_slice(&pcm_frame);
+                self.decode_mem[channel_mem_offset + out_syn_idx
+                    ..channel_mem_offset + out_syn_idx + frame_size]
+                    .copy_from_slice(&pcm_frame);
             }
 
             let mut new_mem = [0.0f32; COMBFILTER_MAXPERIOD];

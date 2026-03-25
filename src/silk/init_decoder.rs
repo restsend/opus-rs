@@ -2,11 +2,7 @@ use crate::silk::decoder_structs::SilkDecoderState;
 use crate::silk::define::*;
 use crate::silk::tables_nlsf::*;
 
-pub fn silk_decoder_set_fs(
-    dec: &mut SilkDecoderState,
-    fs_khz: i32,
-    fs_api_hz: i32,
-) -> i32 {
+pub fn silk_decoder_set_fs(dec: &mut SilkDecoderState, fs_khz: i32, fs_api_hz: i32) -> i32 {
     if fs_khz != 8 && fs_khz != 12 && fs_khz != 16 {
         return -1;
     }
@@ -18,7 +14,11 @@ pub fn silk_decoder_set_fs(
     dec.subfr_length = (SUB_FRAME_LENGTH_MS as i32) * fs_khz;
     dec.frame_length = dec.subfr_length * dec.nb_subfr;
     dec.ltp_mem_length = (LTP_MEM_LENGTH_MS as i32) * fs_khz;
-    dec.lpc_order = if fs_khz == 8 { MIN_LPC_ORDER as i32 } else { MAX_LPC_ORDER as i32 };
+    dec.lpc_order = if fs_khz == 8 {
+        MIN_LPC_ORDER as i32
+    } else {
+        MAX_LPC_ORDER as i32
+    };
 
     if fs_khz == 8 {
         if dec.nb_subfr == MAX_NB_SUBFR as i32 {

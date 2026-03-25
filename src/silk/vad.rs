@@ -19,7 +19,6 @@ fn silk_vad_get_noise_levels(p_x: &[i32; VAD_N_BANDS], ps_silk_vad: &mut SilkVAD
     let min_coef;
 
     if ps_silk_vad.counter < 1000 {
-
         min_coef = silk_div32_16(i16::MAX as i32, (ps_silk_vad.counter >> 4) + 1);
 
         ps_silk_vad.counter += 1;
@@ -28,7 +27,6 @@ fn silk_vad_get_noise_levels(p_x: &[i32; VAD_N_BANDS], ps_silk_vad: &mut SilkVAD
     }
 
     for k in 0..VAD_N_BANDS {
-
         let mut nl = ps_silk_vad.nl[k];
 
         let nrg = silk_add_pos_sat32(p_x[k], ps_silk_vad.noise_level_bias[k]);
@@ -66,7 +64,6 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
     let fs_khz = ps_enc.s_cmn.fs_khz as usize;
 
     if fs_khz != 8 && fs_khz != 12 && fs_khz != 16 {
-
         return 0;
     }
 
@@ -80,7 +77,10 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
         0,
         decimated_framelength + decimated_framelength2,
         decimated_framelength + decimated_framelength2 + decimated_framelength,
-        decimated_framelength + decimated_framelength2 + decimated_framelength + decimated_framelength2,
+        decimated_framelength
+            + decimated_framelength2
+            + decimated_framelength
+            + decimated_framelength2,
     ];
     let x_offset_1 = x_offset[1];
     let x_offset_2 = x_offset[2];
@@ -137,7 +137,6 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
     ps_silk_vad.hp_state = hp_state_tmp;
 
     for b in 0..VAD_N_BANDS {
-
         let dec_framelength_band = frame_length >> min(VAD_N_BANDS - b, VAD_N_BANDS - 1);
 
         let dec_subframe_length = dec_framelength_band >> VAD_INTERNAL_SUBFRAMES_LOG2;
@@ -149,7 +148,6 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
         for s in 0..VAD_INTERNAL_SUBFRAMES {
             sum_squared = 0;
             for i in 0..dec_subframe_length {
-
                 let x_tmp = (x[x_offset[b] + i + dec_subframe_offset] >> 3) as i32;
                 sum_squared = silk_smlabb(sum_squared, x_tmp as i32, x_tmp as i32);
             }
@@ -157,7 +155,6 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
             if s < VAD_INTERNAL_SUBFRAMES - 1 {
                 x_nrg[b] = silk_add_pos_sat32(x_nrg[b], sum_squared);
             } else {
-
                 x_nrg[b] = silk_add_pos_sat32(x_nrg[b], sum_squared >> 1);
             }
 
@@ -174,7 +171,6 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
     for b in 0..VAD_N_BANDS {
         let speech_nrg = x_nrg[b] - ps_silk_vad.nl[b];
         if speech_nrg > 0 {
-
             if (x_nrg[b] & 0xFF800000_u32 as i32) == 0 {
                 nrg_to_noise_ratio_q8[b] = silk_div32(x_nrg[b] << 8, ps_silk_vad.nl[b] + 1);
             } else {
@@ -186,7 +182,6 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
             sum_squared = silk_smlabb(sum_squared, snr_q7 as i32, snr_q7 as i32);
 
             if speech_nrg < (1 << 20) {
-
                 snr_q7 = silk_smulwb(silk_sqrt_approx(speech_nrg) << 6, snr_q7 as i32);
             }
             input_tilt = silk_smlawb(input_tilt, TILT_WEIGHTS[b], snr_q7 as i32);
@@ -206,7 +201,6 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
 
     let mut speech_nrg = 0;
     for b in 0..VAD_N_BANDS {
-
         speech_nrg += (b as i32 + 1) * ((x_nrg[b] - ps_silk_vad.nl[b]) >> 4);
     }
 
@@ -234,7 +228,6 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
     }
 
     for b in 0..VAD_N_BANDS {
-
         ps_silk_vad.nrg_ratio_smth_q8[b] = silk_smlawb(
             ps_silk_vad.nrg_ratio_smth_q8[b],
             nrg_to_noise_ratio_q8[b] - ps_silk_vad.nrg_ratio_smth_q8[b],

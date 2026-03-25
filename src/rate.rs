@@ -406,10 +406,18 @@ fn interp_bits2pulses(
     let nb_samples = (m.e_bands[coded_bands] - m.e_bands[start]) as i32;
     let percoeff = left / nb_samples;
     left -= nb_samples * percoeff;
-    for (j, bits_j) in bits[start..coded_bands].iter_mut().enumerate().map(|(i, v)| (i + start, v)) {
+    for (j, bits_j) in bits[start..coded_bands]
+        .iter_mut()
+        .enumerate()
+        .map(|(i, v)| (i + start, v))
+    {
         *bits_j += percoeff * (m.e_bands[j + 1] - m.e_bands[j]) as i32;
     }
-    for (j, bits_j) in bits[start..coded_bands].iter_mut().enumerate().map(|(i, v)| (i + start, v)) {
+    for (j, bits_j) in bits[start..coded_bands]
+        .iter_mut()
+        .enumerate()
+        .map(|(i, v)| (i + start, v))
+    {
         let tmp = min(left, (m.e_bands[j + 1] - m.e_bands[j]) as i32);
         *bits_j += tmp;
         left -= tmp;

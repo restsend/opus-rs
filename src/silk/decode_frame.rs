@@ -59,7 +59,6 @@ pub fn silk_decode_frame(
 
         ps_dec.first_frame_after_reset = 0;
     } else {
-
         for i in 0..l {
             p_out[i] = 0;
         }

@@ -100,7 +100,6 @@ impl OpusEncoder {
 
         let (opus_mode, bw) = match application {
             Application::Voip => {
-
                 let bw = match sampling_rate {
                     8000 => Bandwidth::Narrowband,
                     12000 => Bandwidth::Mediumband,
@@ -165,7 +164,6 @@ impl OpusEncoder {
         frame_size: usize,
         output: &mut [u8],
     ) -> Result<usize, &'static str> {
-
         if output.len() < 2 {
             return Err("Output buffer too small");
         }
@@ -198,11 +196,9 @@ impl OpusEncoder {
         let mut rc = RangeCoder::new_encoder((max_data_bytes - 1) as u32);
 
         if mode == OpusMode::SilkOnly || mode == OpusMode::Hybrid {
-
             let silk_fs_khz = if mode == OpusMode::Hybrid {
                 16
             } else {
-
                 self.sampling_rate.min(16000) / 1000
             };
 
@@ -224,7 +220,6 @@ impl OpusEncoder {
                 self.down2_state_first = [0; 2];
                 self.down2_state_second = [0; 2];
                 self.down2_3_state = [0; 6];
-
             }
 
             self.silk_enc.s_cmn.use_in_band_fec = if self.use_inband_fec { 1 } else { 0 };
@@ -264,7 +259,6 @@ impl OpusEncoder {
                     self.sampling_rate,
                 );
             } else {
-
                 for (i, &x) in input.iter().enumerate() {
                     self.buf_filtered[i] = (x * 32768.0).clamp(-32768.0, 32767.0) as i16;
                 }
@@ -273,12 +267,10 @@ impl OpusEncoder {
             let input_i16 = &self.buf_filtered;
 
             let silk_input: &[i16] = if mode == OpusMode::SilkOnly && self.channels == 2 {
-
                 let frame_length = input_i16.len() / 2;
                 self.buf_stereo_mid.resize(frame_length, 0);
                 self.buf_stereo_side.resize(frame_length, 0);
                 for i in 0..frame_length {
-
                     let l = input_i16[2 * i] as i32;
                     let r = input_i16[2 * i + 1] as i32;
                     self.buf_stereo_mid[i] = ((l + r) / 2) as i16;
@@ -286,7 +278,10 @@ impl OpusEncoder {
                 }
 
                 self.silk_enc.stereo.side.resize(frame_length, 0);
-                self.silk_enc.stereo.side.copy_from_slice(&self.buf_stereo_side[..frame_length]);
+                self.silk_enc
+                    .stereo
+                    .side
+                    .copy_from_slice(&self.buf_stereo_side[..frame_length]);
                 &self.buf_stereo_mid
             } else if mode == OpusMode::Hybrid && self.sampling_rate > 16000 {
                 if self.sampling_rate == 48000 {
@@ -307,7 +302,6 @@ impl OpusEncoder {
                         stage1_size as i32,
                     );
                 } else {
-
                     let silk_frame_size = frame_size * 2 / 3;
                     self.buf_silk_input.resize(silk_frame_size, 0);
                     silk_resampler_down2_3(
@@ -338,8 +332,8 @@ impl OpusEncoder {
             let silk_bitrate = if mode == OpusMode::Hybrid {
                 (silk_max_bits as i64 * silk_rate_for_calc as i64 / silk_frame_len as i64) as i32
             } else {
-
-                (8i64 * (n_bytes - 1) as i64 * silk_rate_for_calc as i64 / silk_frame_len as i64) as i32
+                (8i64 * (n_bytes - 1) as i64 * silk_rate_for_calc as i64 / silk_frame_len as i64)
+                    as i32
             };
             let ret = silk_encode(
                 &mut *self.silk_enc,
@@ -366,7 +360,6 @@ impl OpusEncoder {
         rc.done();
 
         let silk_payload: Vec<u8> = if mode == OpusMode::SilkOnly {
-
             let mut combined = Vec::with_capacity(rc.storage as usize);
             combined.extend_from_slice(&rc.buf[0..rc.offs as usize]);
             combined.extend_from_slice(
@@ -401,7 +394,6 @@ impl OpusEncoder {
             let silk_len = silk_payload.len();
 
             if silk_len + 1 >= target_total {
-
                 output[0] = toc;
                 let copy_len = (target_total - 1).min(silk_len);
                 output[1..1 + copy_len].copy_from_slice(&silk_payload[..copy_len]);
@@ -411,7 +403,6 @@ impl OpusEncoder {
             output[0] = toc | 0x03;
 
             if silk_len + 2 >= target_total {
-
                 output[1] = 0x01;
                 let copy_len = (target_total - 2).min(silk_len);
                 output[2..2 + copy_len].copy_from_slice(&silk_payload[..copy_len]);
@@ -535,11 +526,9 @@ impl OpusDecoder {
 
         match code {
             0 => {
-
                 payload_data = &input[1..];
             }
             3 => {
-
                 if input.len() < 2 {
                     return Err("Code 3 packet too short");
                 }
@@ -574,7 +563,6 @@ impl OpusDecoder {
                 }
             }
             _ => {
-
                 payload_data = &input[1..];
             }
         }
@@ -585,7 +573,6 @@ impl OpusDecoder {
 
         match mode {
             OpusMode::SilkOnly => {
-
                 let internal_sample_rate = match bandwidth {
                     Bandwidth::Narrowband => 8000,
                     Bandwidth::Mediumband => 12000,
@@ -620,7 +607,6 @@ impl OpusDecoder {
                 let decoded_samples = ret as usize;
 
                 if self.sampling_rate == internal_sample_rate {
-
                     let n = decoded_samples.min(frame_size).min(output.len());
                     for i in 0..n {
                         output[i] = self.w_pcm_i16[i] as f32 / 32768.0;
@@ -628,7 +614,6 @@ impl OpusDecoder {
                     self.prev_mode = Some(OpusMode::SilkOnly);
                     Ok(n)
                 } else {
-
                     if internal_sample_rate != self.prev_internal_rate {
                         self.silk_resampler
                             .init(internal_sample_rate, self.sampling_rate);
@@ -662,7 +647,6 @@ impl OpusDecoder {
             }
 
             OpusMode::CeltOnly => {
-
                 self.celt_dec.decode(payload_data, frame_size, output);
                 self.prev_mode = Some(OpusMode::CeltOnly);
                 Ok(frame_size)
@@ -704,7 +688,6 @@ impl OpusDecoder {
                             self.w_silk_out[i] = self.w_pcm_i16[i] as f32 / 32768.0;
                         }
                     } else {
-
                         if internal_sample_rate != self.prev_internal_rate {
                             self.silk_resampler
                                 .init(internal_sample_rate, self.sampling_rate);
@@ -786,7 +769,6 @@ fn gen_toc(mode: OpusMode, frame_rate: i32, bandwidth: Bandwidth, channels: usiz
             (0x80 | (tmp << 5) | per) as u8
         }
         OpusMode::Hybrid => {
-
             let base_config = if bandwidth == Bandwidth::Superwideband {
                 16
             } else {
@@ -866,10 +848,7 @@ fn frame_duration_ms_from_toc(toc: u8) -> i32 {
         OpusMode::CeltOnly => {
             let config = (toc >> 3) & 0x03;
             match config {
-                0 => {
-
-                    2
-                }
+                0 => 2,
                 1 => 5,
                 2 => 10,
                 3 => 20,
@@ -950,8 +929,12 @@ mod tests {
         let frame_sizes = [120, 240, 480, 960];
 
         for frame_size in frame_sizes {
-
-            let toc = gen_toc(OpusMode::CeltOnly, frame_rate_from_params(sampling_rate, frame_size).unwrap(), Bandwidth::Fullband, channels);
+            let toc = gen_toc(
+                OpusMode::CeltOnly,
+                frame_rate_from_params(sampling_rate, frame_size).unwrap(),
+                Bandwidth::Fullband,
+                channels,
+            );
             let packet = [toc, 0, 0, 0, 0];
 
             let mut output = vec![0.0f32; frame_size * channels];
@@ -963,7 +946,12 @@ mod tests {
         let mut decoder = OpusDecoder::new(sampling_rate, channels).unwrap();
 
         for frame_size in frame_sizes {
-            let toc = gen_toc(OpusMode::CeltOnly, frame_rate_from_params(sampling_rate, frame_size).unwrap(), Bandwidth::Fullband, channels);
+            let toc = gen_toc(
+                OpusMode::CeltOnly,
+                frame_rate_from_params(sampling_rate, frame_size).unwrap(),
+                Bandwidth::Fullband,
+                channels,
+            );
             let packet = [toc, 0, 0, 0, 0];
 
             let mut output = vec![0.0f32; frame_size * channels];

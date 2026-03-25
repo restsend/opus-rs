@@ -273,7 +273,10 @@ fn test_resampler_12khz_to_24khz() {
     assert_eq!(ret, 0, "Resampler process should succeed");
 
     let nonzero = output.iter().filter(|&&x| x != 0).count();
-    assert!(nonzero > 0, "12→24kHz resampler output should not be all-zero");
+    assert!(
+        nonzero > 0,
+        "12→24kHz resampler output should not be all-zero"
+    );
 
     let in_energy: i64 = input.iter().map(|&x| (x as i64) * (x as i64)).sum();
     let out_energy: i64 = output.iter().map(|&x| (x as i64) * (x as i64)).sum();
@@ -306,7 +309,10 @@ fn test_resampler_16khz_to_48khz() {
     assert_eq!(ret, 0, "Resampler process should succeed");
 
     let nonzero = output.iter().filter(|&&x| x != 0).count();
-    assert!(nonzero > 0, "16→48kHz resampler output should not be all-zero");
+    assert!(
+        nonzero > 0,
+        "16→48kHz resampler output should not be all-zero"
+    );
 
     let out_energy: i64 = output.iter().map(|&x| (x as i64) * (x as i64)).sum();
     println!("16kHz→48kHz resampler:");
@@ -410,6 +416,9 @@ fn test_resampler_8khz_to_16khz() {
     println!("  Output energy: {}", out_energy);
     println!("  Non-zero samples: {}/160", nonzero);
 
-    assert!(nonzero > 0, "8→16kHz resampler output should not be all-zero");
+    assert!(
+        nonzero > 0,
+        "8→16kHz resampler output should not be all-zero"
+    );
     assert!(out_energy > 0, "Output energy must be non-zero");
 }

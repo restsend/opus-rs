@@ -42,7 +42,11 @@ fn test_stereo_basic() {
     // samples is the number of frames, not including channels
     // So for frame_size=960 and channels=2, samples=960 (not 1920)
     assert_eq!(samples, frame_size);
-    println!("Decoded {} frames ({} samples total)", samples, samples * channels);
+    println!(
+        "Decoded {} frames ({} samples total)",
+        samples,
+        samples * channels
+    );
     println!("✅ Basic stereo test passed");
 }
 
@@ -162,7 +166,10 @@ fn test_silk_stereo_roundtrip() {
     assert!(left_energy > 0.0, "Left channel should have energy");
     assert!(right_energy > 0.0, "Right channel should have energy");
 
-    println!("Left energy: {:.2}, Right energy: {:.2}", left_energy, right_energy);
+    println!(
+        "Left energy: {:.2}, Right energy: {:.2}",
+        left_energy, right_energy
+    );
     println!("✅ SILK stereo round-trip test passed");
 }
 
@@ -189,7 +196,12 @@ fn test_silk_stereo_sample_rates() {
             .encode(&input, frame_size, &mut output)
             .expect(&format!("Encode at {}Hz failed", sample_rate));
 
-        assert!(n >= 3, "Stereo SILK at {}Hz packet too short: {}", sample_rate, n);
+        assert!(
+            n >= 3,
+            "Stereo SILK at {}Hz packet too short: {}",
+            sample_rate,
+            n
+        );
         println!("Stereo SILK at {}Hz: {} bytes", sample_rate, n);
 
         // Decode and verify
@@ -220,7 +232,7 @@ fn test_silk_stereo_channel_separation() {
     let mut input = vec![0.0f32; frame_size * channels];
     for i in 0..frame_size {
         let t = i as f32 / sample_rate as f32;
-        input[i * 2] = (2.0f32 * PI * 300.0f32 * t).sin() * 0.8;    // Left
+        input[i * 2] = (2.0f32 * PI * 300.0f32 * t).sin() * 0.8; // Left
         input[i * 2 + 1] = (2.0f32 * PI * 500.0f32 * t).sin() * 0.8; // Right
     }
 
@@ -338,8 +350,8 @@ fn test_silk_stereo_phase_inverted() {
     for i in 0..frame_size {
         let t = i as f32 / sample_rate as f32;
         let sample = (2.0f32 * PI * 300.0f32 * t).sin() * 0.5;
-        input[i * 2] = sample;       // Normal phase
-        input[i * 2 + 1] = -sample;  // Inverted phase
+        input[i * 2] = sample; // Normal phase
+        input[i * 2 + 1] = -sample; // Inverted phase
     }
 
     let mut output = vec![0u8; 500];
@@ -367,7 +379,10 @@ fn test_silk_stereo_phase_inverted() {
     assert!(left_energy > 0.0, "Left channel should have energy");
     assert!(right_energy > 0.0, "Right channel should have energy");
 
-    println!("Left energy: {:.2}, Right energy: {:.2}", left_energy, right_energy);
+    println!(
+        "Left energy: {:.2}, Right energy: {:.2}",
+        left_energy, right_energy
+    );
     println!("✅ SILK stereo phase-inverted test passed");
 }
 
@@ -461,7 +476,10 @@ fn test_silk_stereo_speech() {
     assert!(left_energy > 0.0, "Left channel should have energy");
     assert!(right_energy > 0.0, "Right channel should have energy");
 
-    println!("Left energy: {:.2}, Right energy: {:.2}", left_energy, right_energy);
+    println!(
+        "Left energy: {:.2}, Right energy: {:.2}",
+        left_energy, right_energy
+    );
     println!("✅ SILK stereo speech test passed");
 }
 

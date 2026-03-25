@@ -71,7 +71,10 @@ fn test_celt_realistic_bitrate() {
         }
     }
 
-    println!("CELT realistic bitrate ({} bytes): Best SNR = {:.2} dB at delay {}", budget, best_snr, best_delay);
+    println!(
+        "CELT realistic bitrate ({} bytes): Best SNR = {:.2} dB at delay {}",
+        budget, best_snr, best_delay
+    );
     // TODO: Current implementation achieves ~3 dB, needs improvement to reach >10 dB
     assert!(
         best_snr > 0.0,

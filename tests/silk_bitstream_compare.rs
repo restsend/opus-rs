@@ -13,8 +13,8 @@ fn test_silk_toc_byte_structure() {
     let sample_rate = 8000;
     let frame_size = 160;
 
-    let mut encoder = OpusEncoder::new(sample_rate, 1, Application::Voip)
-        .expect("Failed to create encoder");
+    let mut encoder =
+        OpusEncoder::new(sample_rate, 1, Application::Voip).expect("Failed to create encoder");
     encoder.complexity = 0;
     encoder.bitrate_bps = 10000;
     encoder.use_cbr = true;
@@ -25,7 +25,9 @@ fn test_silk_toc_byte_structure() {
     }
 
     let mut output = vec![0u8; 25];
-    let bytes = encoder.encode(&input, frame_size, &mut output).expect("Encode failed");
+    let bytes = encoder
+        .encode(&input, frame_size, &mut output)
+        .expect("Encode failed");
 
     assert!(bytes >= 3, "Packet too short: {}", bytes);
 
@@ -33,10 +35,18 @@ fn test_silk_toc_byte_structure() {
     // bits[7:3] = config (NB 20ms = 0b00001)
     // bit[2]    = stereo = 0
     // bits[1:0] = frame_count_code = 3 (Code 3)
-    assert_eq!(output[0], 0x0b, "TOC byte mismatch: got 0x{:02x}", output[0]);
+    assert_eq!(
+        output[0], 0x0b,
+        "TOC byte mismatch: got 0x{:02x}",
+        output[0]
+    );
 
     // Code 3 second byte: count byte, 1 frame, no padding = 0x01
-    assert_eq!(output[1], 0x01, "Count byte mismatch: got 0x{:02x}", output[1]);
+    assert_eq!(
+        output[1], 0x01,
+        "Count byte mismatch: got 0x{:02x}",
+        output[1]
+    );
 }
 
 /// Test that multiple consecutive frames produce correct output sizes
@@ -45,8 +55,8 @@ fn test_silk_multi_frame_sizes() {
     let sample_rate = 8000;
     let frame_size = 160;
 
-    let mut encoder = OpusEncoder::new(sample_rate, 1, Application::Voip)
-        .expect("Failed to create encoder");
+    let mut encoder =
+        OpusEncoder::new(sample_rate, 1, Application::Voip).expect("Failed to create encoder");
     encoder.complexity = 0;
     encoder.bitrate_bps = 10000;
     encoder.use_cbr = true;
@@ -59,11 +69,28 @@ fn test_silk_multi_frame_sizes() {
         }
 
         let mut output = vec![0u8; 25];
-        let bytes = encoder.encode(&input, frame_size, &mut output).expect("Encode failed");
+        let bytes = encoder
+            .encode(&input, frame_size, &mut output)
+            .expect("Encode failed");
 
-        assert!(bytes >= 3, "Frame {}: packet too short: {}", frame_idx, bytes);
-        assert!(bytes <= 25, "Frame {}: packet too large: {}", frame_idx, bytes);
-        println!("Frame {}: {} bytes, hex: {}", frame_idx, bytes, hex::encode(&output[..bytes]));
+        assert!(
+            bytes >= 3,
+            "Frame {}: packet too short: {}",
+            frame_idx,
+            bytes
+        );
+        assert!(
+            bytes <= 25,
+            "Frame {}: packet too large: {}",
+            frame_idx,
+            bytes
+        );
+        println!(
+            "Frame {}: {} bytes, hex: {}",
+            frame_idx,
+            bytes,
+            hex::encode(&output[..bytes])
+        );
     }
 }
 

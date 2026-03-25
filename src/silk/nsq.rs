@@ -60,7 +60,6 @@ pub fn silk_nsq(
             lag = pitch_l[k] as usize;
 
             if (k & (3 - (lsf_interpolation_flag << 1) as usize)) == 0 {
-
                 let start_idx_signed = ps_enc_c.ltp_mem_length
                     - lag as i32
                     - ps_enc_c.predict_lpc_order
@@ -130,8 +129,10 @@ pub fn silk_nsq(
     let frame_length = ps_enc_c.frame_length as usize;
     let ltp_mem_length = ps_enc_c.ltp_mem_length as usize;
 
-    nsq.xq.copy_within(frame_length..frame_length + ltp_mem_length, 0);
-    nsq.s_ltp_shp_q14.copy_within(frame_length..frame_length + ltp_mem_length, 0);
+    nsq.xq
+        .copy_within(frame_length..frame_length + ltp_mem_length, 0);
+    nsq.s_ltp_shp_q14
+        .copy_within(frame_length..frame_length + ltp_mem_length, 0);
 }
 
 pub fn silk_nsq_scale_states(
@@ -160,7 +161,6 @@ pub fn silk_nsq_scale_states(
 
     if nsq.rewhite_flag != 0 {
         if k == 0 {
-
             inv_gain_q31 = silk_lshift(silk_smulwb(inv_gain_q31, ltp_scale_q14), 2);
         }
         let start = (nsq.s_ltp_buf_idx as usize)
@@ -215,6 +215,9 @@ fn silk_nsq_noise_shape_feedback_loop(
     coef: &[i16],
     order: usize,
 ) -> i32 {
+    if order == 12 {
+        return silk_nsq_noise_shape_feedback_loop_order12(data0_val, data1, coef);
+    }
 
     unsafe {
         let mut tmp2 = data0_val;
@@ -236,6 +239,64 @@ fn silk_nsq_noise_shape_feedback_loop(
         }
         *data1.get_unchecked_mut(order - 1) = tmp1;
         out = silk_smlawb(out, tmp1, *coef.get_unchecked(order - 1) as i32);
+
+        out <<= 1;
+        out
+    }
+}
+
+/// Fully unrolled noise shape feedback loop for order=12 (cx0 shaping_lpc_order).
+#[inline(always)]
+fn silk_nsq_noise_shape_feedback_loop_order12(
+    data0_val: i32,
+    data1: &mut [i32],
+    coef: &[i16],
+) -> i32 {
+    unsafe {
+        // Shift data1 delay line and compute dot product simultaneously.
+        // Entry: data1[0..11] = old state, data0_val = newest sample
+        // Exit:  data1 = [data0_val, old[0], old[1], ..., old[10]]
+        // out = 6 + sum(data[k] * coef[k]) for k=0..11, data[0]=data0_val, data[k]=old[k-1]
+
+        let d0 = data0_val;
+        let d1 = *data1.get_unchecked(0);
+        let d2 = *data1.get_unchecked(1);
+        let d3 = *data1.get_unchecked(2);
+        let d4 = *data1.get_unchecked(3);
+        let d5 = *data1.get_unchecked(4);
+        let d6 = *data1.get_unchecked(5);
+        let d7 = *data1.get_unchecked(6);
+        let d8 = *data1.get_unchecked(7);
+        let d9 = *data1.get_unchecked(8);
+        let d10 = *data1.get_unchecked(9);
+        let d11 = *data1.get_unchecked(10);
+
+        *data1.get_unchecked_mut(0) = d0;
+        *data1.get_unchecked_mut(1) = d1;
+        *data1.get_unchecked_mut(2) = d2;
+        *data1.get_unchecked_mut(3) = d3;
+        *data1.get_unchecked_mut(4) = d4;
+        *data1.get_unchecked_mut(5) = d5;
+        *data1.get_unchecked_mut(6) = d6;
+        *data1.get_unchecked_mut(7) = d7;
+        *data1.get_unchecked_mut(8) = d8;
+        *data1.get_unchecked_mut(9) = d9;
+        *data1.get_unchecked_mut(10) = d10;
+        *data1.get_unchecked_mut(11) = d11;
+
+        let mut out = 6i32;
+        out = silk_smlawb(out, d0, *coef.get_unchecked(0) as i32);
+        out = silk_smlawb(out, d1, *coef.get_unchecked(1) as i32);
+        out = silk_smlawb(out, d2, *coef.get_unchecked(2) as i32);
+        out = silk_smlawb(out, d3, *coef.get_unchecked(3) as i32);
+        out = silk_smlawb(out, d4, *coef.get_unchecked(4) as i32);
+        out = silk_smlawb(out, d5, *coef.get_unchecked(5) as i32);
+        out = silk_smlawb(out, d6, *coef.get_unchecked(6) as i32);
+        out = silk_smlawb(out, d7, *coef.get_unchecked(7) as i32);
+        out = silk_smlawb(out, d8, *coef.get_unchecked(8) as i32);
+        out = silk_smlawb(out, d9, *coef.get_unchecked(9) as i32);
+        out = silk_smlawb(out, d10, *coef.get_unchecked(10) as i32);
+        out = silk_smlawb(out, d11, *coef.get_unchecked(11) as i32);
 
         out <<= 1;
         out
@@ -317,20 +378,99 @@ fn silk_noise_shape_quantizer(
 }
 
 #[inline(always)]
+fn lpc_pred_order6(s_lpc: &[i32], a_q12: &[i16], idx: usize) -> i32 {
+    let mut pred = 3i32;
+
+    unsafe {
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx),
+            *a_q12.get_unchecked(0) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 1),
+            *a_q12.get_unchecked(1) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 2),
+            *a_q12.get_unchecked(2) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 3),
+            *a_q12.get_unchecked(3) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 4),
+            *a_q12.get_unchecked(4) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 5),
+            *a_q12.get_unchecked(5) as i32,
+        );
+    }
+    pred
+}
+
+#[inline(always)]
 fn lpc_pred_order10(s_lpc: &[i32], a_q12: &[i16], idx: usize) -> i32 {
     let mut pred = 5i32;
 
     unsafe {
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx), *a_q12.get_unchecked(0) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 1), *a_q12.get_unchecked(1) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 2), *a_q12.get_unchecked(2) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 3), *a_q12.get_unchecked(3) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 4), *a_q12.get_unchecked(4) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 5), *a_q12.get_unchecked(5) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 6), *a_q12.get_unchecked(6) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 7), *a_q12.get_unchecked(7) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 8), *a_q12.get_unchecked(8) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 9), *a_q12.get_unchecked(9) as i32);
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx),
+            *a_q12.get_unchecked(0) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 1),
+            *a_q12.get_unchecked(1) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 2),
+            *a_q12.get_unchecked(2) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 3),
+            *a_q12.get_unchecked(3) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 4),
+            *a_q12.get_unchecked(4) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 5),
+            *a_q12.get_unchecked(5) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 6),
+            *a_q12.get_unchecked(6) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 7),
+            *a_q12.get_unchecked(7) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 8),
+            *a_q12.get_unchecked(8) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 9),
+            *a_q12.get_unchecked(9) as i32,
+        );
     }
     pred
 }
@@ -340,22 +480,86 @@ fn lpc_pred_order16(s_lpc: &[i32], a_q12: &[i16], idx: usize) -> i32 {
     let mut pred = 8i32;
 
     unsafe {
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx), *a_q12.get_unchecked(0) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 1), *a_q12.get_unchecked(1) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 2), *a_q12.get_unchecked(2) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 3), *a_q12.get_unchecked(3) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 4), *a_q12.get_unchecked(4) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 5), *a_q12.get_unchecked(5) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 6), *a_q12.get_unchecked(6) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 7), *a_q12.get_unchecked(7) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 8), *a_q12.get_unchecked(8) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 9), *a_q12.get_unchecked(9) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 10), *a_q12.get_unchecked(10) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 11), *a_q12.get_unchecked(11) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 12), *a_q12.get_unchecked(12) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 13), *a_q12.get_unchecked(13) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 14), *a_q12.get_unchecked(14) as i32);
-        pred = silk_smlawb(pred, *s_lpc.get_unchecked(idx - 15), *a_q12.get_unchecked(15) as i32);
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx),
+            *a_q12.get_unchecked(0) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 1),
+            *a_q12.get_unchecked(1) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 2),
+            *a_q12.get_unchecked(2) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 3),
+            *a_q12.get_unchecked(3) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 4),
+            *a_q12.get_unchecked(4) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 5),
+            *a_q12.get_unchecked(5) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 6),
+            *a_q12.get_unchecked(6) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 7),
+            *a_q12.get_unchecked(7) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 8),
+            *a_q12.get_unchecked(8) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 9),
+            *a_q12.get_unchecked(9) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 10),
+            *a_q12.get_unchecked(10) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 11),
+            *a_q12.get_unchecked(11) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 12),
+            *a_q12.get_unchecked(12) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 13),
+            *a_q12.get_unchecked(13) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 14),
+            *a_q12.get_unchecked(14) as i32,
+        );
+        pred = silk_smlawb(
+            pred,
+            *s_lpc.get_unchecked(idx - 15),
+            *a_q12.get_unchecked(15) as i32,
+        );
     }
     pred
 }
@@ -418,7 +622,6 @@ fn silk_noise_shape_quantizer_voiced(
     let mut s_lf_ar_shp_q14: i32;
 
     for i in 0..subfr_length {
-
         nsq.rand_seed = silk_rand(nsq.rand_seed);
 
         let ps_lpc_idx = NSQ_LPC_BUF_LENGTH - 1 + i;
@@ -426,16 +629,34 @@ fn silk_noise_shape_quantizer_voiced(
             lpc_pred_order16(&nsq.s_lpc_q14, a_q12, ps_lpc_idx)
         } else if predict_lpc_order == 10 {
             lpc_pred_order10(&nsq.s_lpc_q14, a_q12, ps_lpc_idx)
+        } else if predict_lpc_order == 6 {
+            lpc_pred_order6(&nsq.s_lpc_q14, a_q12, ps_lpc_idx)
         } else {
             lpc_pred_generic(&nsq.s_lpc_q14, a_q12, ps_lpc_idx, predict_lpc_order)
         };
 
         ltp_pred_q13 = 2;
         ltp_pred_q13 = silk_smlawb(ltp_pred_q13, s_ltp_q15[pred_lag_base + i], b_q14[0] as i32);
-        ltp_pred_q13 = silk_smlawb(ltp_pred_q13, s_ltp_q15[pred_lag_base + i - 1], b_q14[1] as i32);
-        ltp_pred_q13 = silk_smlawb(ltp_pred_q13, s_ltp_q15[pred_lag_base + i - 2], b_q14[2] as i32);
-        ltp_pred_q13 = silk_smlawb(ltp_pred_q13, s_ltp_q15[pred_lag_base + i - 3], b_q14[3] as i32);
-        ltp_pred_q13 = silk_smlawb(ltp_pred_q13, s_ltp_q15[pred_lag_base + i - 4], b_q14[4] as i32);
+        ltp_pred_q13 = silk_smlawb(
+            ltp_pred_q13,
+            s_ltp_q15[pred_lag_base + i - 1],
+            b_q14[1] as i32,
+        );
+        ltp_pred_q13 = silk_smlawb(
+            ltp_pred_q13,
+            s_ltp_q15[pred_lag_base + i - 2],
+            b_q14[2] as i32,
+        );
+        ltp_pred_q13 = silk_smlawb(
+            ltp_pred_q13,
+            s_ltp_q15[pred_lag_base + i - 3],
+            b_q14[3] as i32,
+        );
+        ltp_pred_q13 = silk_smlawb(
+            ltp_pred_q13,
+            s_ltp_q15[pred_lag_base + i - 4],
+            b_q14[4] as i32,
+        );
 
         n_ar_q12 = silk_nsq_noise_shape_feedback_loop(
             nsq.s_diff_shp_q14,
@@ -445,7 +666,10 @@ fn silk_noise_shape_quantizer_voiced(
         );
         n_ar_q12 = silk_smlawb(n_ar_q12, nsq.s_lf_ar_q14, tilt_q14);
 
-        n_lf_q12 = silk_smulwb(nsq.s_ltp_shp_q14[(nsq.s_ltp_shp_buf_idx - 1) as usize], lf_shp_q14);
+        n_lf_q12 = silk_smulwb(
+            nsq.s_ltp_shp_q14[(nsq.s_ltp_shp_buf_idx - 1) as usize],
+            lf_shp_q14,
+        );
         n_lf_q12 = silk_smlawt(n_lf_q12, nsq.s_lf_ar_q14, lf_shp_q14);
 
         tmp1 = (lpc_pred_q10 << 2).wrapping_sub(n_ar_q12);
@@ -456,7 +680,11 @@ fn silk_noise_shape_quantizer_voiced(
             silk_add_sat32(nsq.s_ltp_shp_q14[shp_idx], nsq.s_ltp_shp_q14[shp_idx - 2]),
             harm_shape_fir_packed_q14,
         );
-        n_ltp_q13 = silk_smlawt(n_ltp_q13, nsq.s_ltp_shp_q14[shp_idx - 1], harm_shape_fir_packed_q14);
+        n_ltp_q13 = silk_smlawt(
+            n_ltp_q13,
+            nsq.s_ltp_shp_q14[shp_idx - 1],
+            harm_shape_fir_packed_q14,
+        );
         n_ltp_q13 <<= 1;
 
         tmp2 = ltp_pred_q13 - n_ltp_q13;
@@ -525,14 +753,16 @@ fn silk_noise_shape_quantizer_voiced(
         lpc_exc_q14 = silk_add_lshift32(exc_q14, ltp_pred_q13, 1);
         xq_q14 = lpc_exc_q14.wrapping_add(lpc_pred_q10 << 4);
 
-        nsq.xq[xq_offset + i] = silk_sat16(silk_rshift_round(silk_smulww(xq_q14, gain_q10), 8)) as i16;
+        nsq.xq[xq_offset + i] =
+            silk_sat16(silk_rshift_round(silk_smulww(xq_q14, gain_q10), 8)) as i16;
 
         nsq.s_lpc_q14[NSQ_LPC_BUF_LENGTH + i] = xq_q14;
         nsq.s_diff_shp_q14 = xq_q14.wrapping_sub(x_sc_q10[i] << 4);
         s_lf_ar_shp_q14 = nsq.s_diff_shp_q14.wrapping_sub(n_ar_q12 << 2);
         nsq.s_lf_ar_q14 = s_lf_ar_shp_q14;
 
-        nsq.s_ltp_shp_q14[nsq.s_ltp_shp_buf_idx as usize] = s_lf_ar_shp_q14.wrapping_sub(n_lf_q12 << 2);
+        nsq.s_ltp_shp_q14[nsq.s_ltp_shp_buf_idx as usize] =
+            s_lf_ar_shp_q14.wrapping_sub(n_lf_q12 << 2);
         s_ltp_q15[nsq.s_ltp_buf_idx as usize] = lpc_exc_q14 << 1;
         nsq.s_ltp_shp_buf_idx += 1;
         nsq.s_ltp_buf_idx += 1;
@@ -576,7 +806,6 @@ fn silk_noise_shape_quantizer_unvoiced(
     let mut s_lf_ar_shp_q14: i32;
 
     for i in 0..subfr_length {
-
         nsq.rand_seed = silk_rand(nsq.rand_seed);
 
         let ps_lpc_idx = NSQ_LPC_BUF_LENGTH - 1 + i;
@@ -584,6 +813,8 @@ fn silk_noise_shape_quantizer_unvoiced(
             lpc_pred_order16(&nsq.s_lpc_q14, a_q12, ps_lpc_idx)
         } else if predict_lpc_order == 10 {
             lpc_pred_order10(&nsq.s_lpc_q14, a_q12, ps_lpc_idx)
+        } else if predict_lpc_order == 6 {
+            lpc_pred_order6(&nsq.s_lpc_q14, a_q12, ps_lpc_idx)
         } else {
             lpc_pred_generic(&nsq.s_lpc_q14, a_q12, ps_lpc_idx, predict_lpc_order)
         };
@@ -598,7 +829,10 @@ fn silk_noise_shape_quantizer_unvoiced(
         );
         n_ar_q12 = silk_smlawb(n_ar_q12, nsq.s_lf_ar_q14, tilt_q14);
 
-        n_lf_q12 = silk_smulwb(nsq.s_ltp_shp_q14[(nsq.s_ltp_shp_buf_idx - 1) as usize], lf_shp_q14);
+        n_lf_q12 = silk_smulwb(
+            nsq.s_ltp_shp_q14[(nsq.s_ltp_shp_buf_idx - 1) as usize],
+            lf_shp_q14,
+        );
         n_lf_q12 = silk_smlawt(n_lf_q12, nsq.s_lf_ar_q14, lf_shp_q14);
 
         tmp1 = (lpc_pred_q10 << 2).wrapping_sub(n_ar_q12);
@@ -668,14 +902,16 @@ fn silk_noise_shape_quantizer_unvoiced(
         lpc_exc_q14 = silk_add_lshift32(exc_q14, ltp_pred_q13, 1);
         xq_q14 = lpc_exc_q14.wrapping_add(lpc_pred_q10 << 4);
 
-        nsq.xq[xq_offset + i] = silk_sat16(silk_rshift_round(silk_smulww(xq_q14, gain_q10), 8)) as i16;
+        nsq.xq[xq_offset + i] =
+            silk_sat16(silk_rshift_round(silk_smulww(xq_q14, gain_q10), 8)) as i16;
 
         nsq.s_lpc_q14[NSQ_LPC_BUF_LENGTH + i] = xq_q14;
         nsq.s_diff_shp_q14 = xq_q14.wrapping_sub(x_sc_q10[i] << 4);
         s_lf_ar_shp_q14 = nsq.s_diff_shp_q14.wrapping_sub(n_ar_q12 << 2);
         nsq.s_lf_ar_q14 = s_lf_ar_shp_q14;
 
-        nsq.s_ltp_shp_q14[nsq.s_ltp_shp_buf_idx as usize] = s_lf_ar_shp_q14.wrapping_sub(n_lf_q12 << 2);
+        nsq.s_ltp_shp_q14[nsq.s_ltp_shp_buf_idx as usize] =
+            s_lf_ar_shp_q14.wrapping_sub(n_lf_q12 << 2);
         s_ltp_q15[nsq.s_ltp_buf_idx as usize] = lpc_exc_q14 << 1;
         nsq.s_ltp_shp_buf_idx += 1;
         nsq.s_ltp_buf_idx += 1;

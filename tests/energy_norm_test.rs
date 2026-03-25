@@ -62,7 +62,10 @@ fn test_energy_norm_denorm() {
         max_error = max_error.max(err);
     }
 
-    println!("Max error (within bands, 0..{}): {:.6e}", band_end, max_error);
+    println!(
+        "Max error (within bands, 0..{}): {:.6e}",
+        band_end, max_error
+    );
     assert!(
         max_error < 1e-4,
         "Energy norm/denorm error too large: {}",

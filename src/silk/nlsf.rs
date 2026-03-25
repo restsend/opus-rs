@@ -263,7 +263,6 @@ pub fn silk_nlsf_vq(
         let w_ptr = &pwght_q9[i * lpc_order..];
 
         for m in (0..lpc_order).step_by(2).rev() {
-
             let diff_q15 = (in_q15[m + 1] as i32) - ((cb_ptr[m + 1] as i32) << 7);
             let diffw_q24 = silk_smulbb(diff_q15, w_ptr[m + 1] as i32);
             sum_error_q24 = sum_error_q24.wrapping_add((diffw_q24 - (pred_q24 >> 1)).abs());
@@ -339,7 +338,6 @@ pub fn silk_nlsf2a(a_q12: &mut [i16], nlsf: &[i16], d: usize) {
 }
 
 pub fn silk_nlsf_vq_weights_laroia(p_w_q5: &mut [i16], p_nlsf_q15: &[i16], d: usize) {
-
     const NUMER: i32 = 1 << 17;
 
     let mut tmp1_int = (p_nlsf_q15[0] as i32).max(1);
@@ -395,7 +393,6 @@ pub fn silk_process_nlsfs(
 
     do_interp = (use_interp && interp_coef_q2 < 4) as i32;
     if do_interp != 0 {
-
         let prev_nlsf_q15 = ps_enc.s_cmn.prev_nlsf_q15;
         for i in 0..order {
             nlsf_interp_q15[i] = prev_nlsf_q15[i]
@@ -428,7 +425,6 @@ pub fn silk_process_nlsfs(
     silk_nlsf2a(&mut ps_enc_ctrl.pred_coef_q12[1], nlsf_q15, order);
 
     if do_interp != 0 {
-
         let prev_nlsf_q15 = ps_enc.s_cmn.prev_nlsf_q15;
         for i in 0..order {
             nlsf_interp_q15[i] = prev_nlsf_q15[i]
@@ -440,7 +436,6 @@ pub fn silk_process_nlsfs(
 
         silk_nlsf2a(&mut ps_enc_ctrl.pred_coef_q12[0], &nlsf_interp_q15, order);
     } else {
-
         let (first, second) = ps_enc_ctrl.pred_coef_q12.split_at_mut(1);
         first[0][..order].copy_from_slice(&second[0][..order]);
     }

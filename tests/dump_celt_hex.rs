@@ -30,7 +30,12 @@ fn dump_celt_packets_hex() {
         let packet = &rc.buf[..n_bytes];
         let hex: String = packet.iter().map(|b| format!("{:02x}", b)).collect();
         println!("PACKET_FRAME_{}: {}", f, hex);
-        println!("  offs={} end_offs={} tell_bits={}", rc.offs, rc.end_offs, rc.tell());
+        println!(
+            "  offs={} end_offs={} tell_bits={}",
+            rc.offs,
+            rc.end_offs,
+            rc.tell()
+        );
 
         // Also print with TOC byte prepended (for opus_decode)
         let toc = 0xf8u8; // Fullband CELT 20ms mono

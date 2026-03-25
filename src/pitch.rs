@@ -162,7 +162,10 @@ unsafe fn xcorr_kernel_neon(x: &[f32], y: &[f32], sum: &mut [f32; 4], mut len: u
     use std::arch::aarch64::*;
 
     debug_assert!(x.len() >= len, "xcorr_kernel_neon: x too short");
-    debug_assert!(y.len() >= len + 3, "xcorr_kernel_neon: y too short (need len+3 for vextq)");
+    debug_assert!(
+        y.len() >= len + 3,
+        "xcorr_kernel_neon: y too short (need len+3 for vextq)"
+    );
 
     let mut summ = vdupq_n_f32(0.0);
     let mut xi = x.as_ptr();
@@ -249,8 +252,14 @@ unsafe fn xcorr_kernel_neon(x: &[f32], y: &[f32], sum: &mut [f32; 4], mut len: u
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn pitch_xcorr_neon(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitch: usize) {
     debug_assert!(x.len() >= len, "pitch_xcorr_neon: x too short");
-    debug_assert!(y.len() >= max_pitch + len - 1, "pitch_xcorr_neon: y too short");
-    debug_assert!(xcorr.len() >= max_pitch, "pitch_xcorr_neon: xcorr too short");
+    debug_assert!(
+        y.len() >= max_pitch + len - 1,
+        "pitch_xcorr_neon: y too short"
+    );
+    debug_assert!(
+        xcorr.len() >= max_pitch,
+        "pitch_xcorr_neon: xcorr too short"
+    );
 
     let mut i = 0;
 
@@ -298,14 +307,7 @@ fn celt_fir5(x: &mut [f32], num: &[f32], n: usize) {
     }
 }
 
-pub fn pitch_downsample(
-    x: &[&[f32]],
-    x_lp: &mut [f32],
-    len: usize,
-    c: usize,
-    factor: usize,
-) {
-
+pub fn pitch_downsample(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, factor: usize) {
     let offset = factor / 2;
 
     if x_lp.len() < len {
@@ -315,7 +317,6 @@ pub fn pitch_downsample(
     for i in 1..len {
         let mut val = 0.0f32;
         for k in 0..c {
-
             let x_k = x[k];
 
             let idx_m = factor * i - offset;

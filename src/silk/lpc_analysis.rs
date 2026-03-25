@@ -35,7 +35,6 @@ pub fn silk_find_lpc_fix(
         && ps_enc_c.first_frame_after_reset == 0
         && ps_enc_c.nb_subfr == MAX_NB_SUBFR as i32
     {
-
         let mut res_tmp_nrg: i32 = 0;
         let mut res_tmp_nrg_q: i32 = 0;
         let mut a_tmp_q16 = [0i32; MAX_LPC_ORDER];
@@ -55,7 +54,6 @@ pub fn silk_find_lpc_fix(
             if shift < 32 {
                 res_nrg = res_nrg - silk_rshift(res_tmp_nrg, shift);
             }
-
         } else {
             debug_assert!(shift > -32);
             res_nrg = silk_rshift(res_nrg, -shift) - res_tmp_nrg;
@@ -69,20 +67,12 @@ pub fn silk_find_lpc_fix(
         let mut lpc_res = [0i16; 2 * (MAX_SUB_FRAME_LENGTH + MAX_LPC_ORDER)];
 
         for k in (0..=3).rev() {
-
             let nlsf0_q15 = silk_interpolate(&ps_enc_c.prev_nlsf_q15, nlsf_q15, k, d);
 
             let mut a_tmp_q12 = [0i16; MAX_LPC_ORDER];
             silk_nlsf2a(&mut a_tmp_q12, &nlsf0_q15, d);
 
-            silk_lpc_analysis_filter(
-                &mut lpc_res,
-                x,
-                &a_tmp_q12,
-                lpc_res_len,
-                d,
-                0,
-            );
+            silk_lpc_analysis_filter(&mut lpc_res, x, &a_tmp_q12, lpc_res_len, d, 0);
 
             let mut res_nrg0: i32 = 0;
             let mut rshift0: i32 = 0;
@@ -129,7 +119,6 @@ pub fn silk_find_lpc_fix(
             };
 
             if is_interp_lower {
-
                 res_nrg = res_nrg_interp;
                 res_nrg_q = res_nrg_interp_q;
                 ps_enc_c.indices.nlsf_interp_coef_q2 = k as i8;
@@ -138,7 +127,6 @@ pub fn silk_find_lpc_fix(
     }
 
     if ps_enc_c.indices.nlsf_interp_coef_q2 == 4 {
-
         silk_a2nlsf(nlsf_q15, &mut a_q16, d);
     }
 }
@@ -169,7 +157,6 @@ pub fn silk_residual_energy_fix(
     let mut lpc_res = [0i16; (MAX_NB_SUBFR / 2) * (MAX_LPC_ORDER + MAX_SUB_FRAME_LENGTH)];
 
     for i in 0..(nb_subfr as usize >> 1) {
-
         silk_lpc_analysis_filter(
             &mut lpc_res,
             &x[x_ptr_idx..],
@@ -181,7 +168,6 @@ pub fn silk_residual_energy_fix(
 
         let mut lpc_res_idx = lpc_order as usize;
         for j in 0..(MAX_NB_SUBFR >> 1) {
-
             silk_sum_sqr_shift(
                 &mut nrgs[i * (MAX_NB_SUBFR >> 1) + j],
                 &mut rshift,
@@ -198,7 +184,6 @@ pub fn silk_residual_energy_fix(
     }
 
     for i in 0..nb_subfr as usize {
-
         lz1 = silk_clz32(nrgs[i]) - 1;
         lz2 = silk_clz32(gains[i]) - 1;
 
@@ -262,11 +247,14 @@ pub fn silk_burg_modified_fix(
     ca_b[0] = ca_f[0];
 
     if rshifts > 0 {
+        // When rshifts > 0 we must work in i64 to avoid overflow before shifting.
+        // Each lag is computed independently; the inner loop is small (subfr_length-n).
         for s in 0..nb_subfr {
             let x_ptr = s * subfr_length;
-            for n in 1..d + 1 {
+            for n in 1..=d {
                 let mut sum: i64 = 0;
-                for i in 0..subfr_length - n {
+                let lim = subfr_length - n;
+                for i in 0..lim {
                     sum += (x[x_ptr + i] as i64) * (x[x_ptr + i + n] as i64);
                 }
                 c_first_row[n - 1] =
@@ -274,15 +262,32 @@ pub fn silk_burg_modified_fix(
             }
         }
     } else {
+        // rshifts <= 0: results fit in i32 after left-shifting.
+        // Use xcorr_kernel_c to compute D lags at once (matching libopus
+        // silk_burg_modified_c which calls celt_pitch_xcorr here).
+        // celt_pitch_xcorr computes xcorr[i] = Σ x[j]*y[i+j] for i=0..D-1,
+        // i.e. the cross-correlation of x_ptr[0..subfr_length-D] with itself
+        // shifted by 1..D.
+        let mut xcorr = [0i32; MAX_LPC_ORDER];
         for s in 0..nb_subfr {
             let x_ptr = s * subfr_length;
-            for n in 1..d + 1 {
-                let mut sum: i64 = 0;
-                for i in 0..subfr_length - n {
-                    sum += (x[x_ptr + i] as i64) * (x[x_ptr + i + n] as i64);
+            let fast_n = subfr_length - d; // length used by xcorr_kernel pass
+
+            // Compute xcorr[0..d-1] via 4-at-a-time kernel (lag offsets 0..d-1
+            // correspond to shifts 1..d from x_ptr).
+            silk_pitch_xcorr(&x[x_ptr..], &x[x_ptr + 1..], &mut xcorr[..d], fast_n, d);
+
+            // For each lag n, add the tail samples that xcorr_kernel missed
+            // (indices fast_n..subfr_length-n), matching the C code:
+            //   for (i = n + subfr_length - D, d = 0; i < subfr_length; i++)
+            //       d = MAC16_16(d, x_ptr[i], x_ptr[i-n]);
+            for n in 1..=d {
+                let mut tail: i32 = 0;
+                for i in (n + fast_n)..subfr_length {
+                    tail = silk_smlabb(tail, x[x_ptr + i] as i32, x[x_ptr + i - n] as i32);
                 }
-                c_first_row[n - 1] =
-                    c_first_row[n - 1].wrapping_add(((sum as i32) << (-rshifts)) as i32);
+                xcorr[n - 1] = xcorr[n - 1].wrapping_add(tail);
+                c_first_row[n - 1] = c_first_row[n - 1].wrapping_add(xcorr[n - 1] << (-rshifts));
             }
         }
     }
@@ -295,7 +300,6 @@ pub fn silk_burg_modified_fix(
     let mut reached_max_gain = false;
 
     for n in 0..d {
-
         if rshifts > -2 {
             for s in 0..nb_subfr {
                 let x_ptr = s * subfr_length;
@@ -389,11 +393,9 @@ pub fn silk_burg_modified_fix(
         tmp1 = (1 << 30) - silk_smmul(rc_q31, rc_q31);
         tmp1 = silk_smmul(inv_gain_q30, tmp1) << 2;
         if tmp1 <= min_inv_gain_q30 {
-
             tmp2 = (1 << 30) - silk_div32_varq(min_inv_gain_q30, inv_gain_q30, 30);
             rc_q31 = silk_sqrt_approx(tmp2);
             if rc_q31 > 0 {
-
                 rc_q31 = (rc_q31 + silk_div32(tmp2, rc_q31)) >> 1;
                 rc_q31 = rc_q31 << 16;
                 if num < 0 {
@@ -415,7 +417,6 @@ pub fn silk_burg_modified_fix(
         af_qa[n] = rc_q31 >> (31 - QA);
 
         if reached_max_gain {
-
             for k in n + 1..d {
                 af_qa[k] = 0;
             }
@@ -459,7 +460,6 @@ pub fn silk_burg_modified_fix(
         *res_nrg = silk_smmul(inv_gain_q30, c0_adj) << 2;
         *res_nrg_q = -rshifts;
     } else {
-
         let mut nrg = ca_f[0];
         let mut tmp1_q16: i32 = 1 << 16;
         for k in 0..d {
@@ -652,7 +652,6 @@ fn lpc_inverse_pred_gain_qa(a_qa_in: &mut [i32], order: usize) -> i32 {
 
         inv_gain_q30 = silk_smmul(inv_gain_q30, rc_mult1_q30) << 2;
         if inv_gain_q30 < (1 << 30) / 10000 {
-
             return 0;
         }
 

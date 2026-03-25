@@ -27,7 +27,6 @@ pub fn silk_setup_fs(ps_enc: &mut SilkEncoderState, fs_khz: i32, packet_size_ms:
     cmn.packet_size_ms = packet_size_ms;
 
     if cmn.fs_khz != fs_khz {
-
         ps_enc.s_nsq = SilkNSQState::default();
         cmn.prev_nlsf_q15 = [0; MAX_LPC_ORDER];
 

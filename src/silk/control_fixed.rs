@@ -30,7 +30,6 @@ pub fn silk_find_pred_coefs_fix(
         min_gain_q16 = min_gain_q16.min(ps_enc_ctrl.gains_q16[i]);
     }
     for i in 0..ps_enc.s_cmn.nb_subfr as usize {
-
         inv_gains_q16[i] = silk_div32_varq(min_gain_q16, ps_enc_ctrl.gains_q16[i], 16 - 2);
 
         inv_gains_q16[i] = inv_gains_q16[i].max(100);
@@ -41,7 +40,6 @@ pub fn silk_find_pred_coefs_fix(
     let mut lpc_in_pre = [0i16; MAX_NB_SUBFR * MAX_LPC_ORDER + MAX_FRAME_LENGTH];
 
     if ps_enc.s_cmn.indices.signal_type == TYPE_VOICED as i8 {
-
         let mut x_xltp_q17 = [0i32; MAX_NB_SUBFR * LTP_ORDER];
         let mut xxltp_q17 = [0i32; MAX_NB_SUBFR * LTP_ORDER * LTP_ORDER];
 
@@ -85,7 +83,6 @@ pub fn silk_find_pred_coefs_fix(
             ps_enc.s_cmn.predict_lpc_order as usize,
         );
     } else {
-
         let mut x_ptr_idx = 0;
         let mut x_pre_ptr_idx = 0;
         for i in 0..ps_enc.s_cmn.nb_subfr as usize {
@@ -147,7 +144,6 @@ pub fn silk_find_pred_coefs_fix(
         ps_enc.s_cmn.nb_subfr,
         ps_enc.s_cmn.predict_lpc_order,
     );
-
 }
 
 pub fn silk_process_gains_fix(
@@ -163,7 +159,6 @@ pub fn silk_process_gains_fix(
     let mut res_nrg_part: i32;
 
     if ps_enc.s_cmn.indices.signal_type == TYPE_VOICED as i8 {
-
         s_q15 = -silk_sigm_q15(silk_rshift_round(
             ps_enc_ctrl.ltp_red_cod_gain_q7 - (12.0 * 128.0) as i32,
             4,
@@ -182,7 +177,6 @@ pub fn silk_process_gains_fix(
     inv_max_sqr_val_q16 = silk_div32_16(log2lin_val, ps_enc.s_cmn.subfr_length);
 
     for k in 0..ps_enc.s_cmn.nb_subfr as usize {
-
         let res_nrg = ps_enc_ctrl.res_nrg[k];
         res_nrg_part = silk_smulww(res_nrg, inv_max_sqr_val_q16);
         if ps_enc_ctrl.res_nrg_q[k] > 0 {
@@ -198,7 +192,6 @@ pub fn silk_process_gains_fix(
         gain_q16 = ps_enc_ctrl.gains_q16[k];
         gain_squared_q16 = silk_add_sat32(res_nrg_part, silk_smmul(gain_q16, gain_q16));
         if gain_squared_q16 < i16::MAX as i32 {
-
             gain_squared_q16 = silk_smlaww(res_nrg_part << 16, gain_q16, gain_q16);
 
             gain_q16 = silk_sqrt_approx(gain_squared_q16);
@@ -230,7 +223,6 @@ pub fn silk_process_gains_fix(
 
     if ps_enc.s_cmn.indices.signal_type == TYPE_VOICED as i8 {
         if ps_enc_ctrl.ltp_red_cod_gain_q7 + (ps_enc.s_cmn.input_tilt_q15 >> 8) > 128 {
-
             ps_enc.s_cmn.indices.quant_offset_type = 0;
         } else {
             ps_enc.s_cmn.indices.quant_offset_type = 1;
@@ -265,10 +257,8 @@ pub fn silk_ltp_scale_ctrl_fix(
     cond_coding: i32,
 ) {
     if cond_coding == CODE_INDEPENDENTLY {
-
         let mut round_loss = ps_enc.s_cmn.packet_loss_perc * ps_enc.s_cmn.n_frames_per_packet;
         if ps_enc.s_cmn.lbrr_flag != 0 {
-
             round_loss = 2 + silk_smulbb(round_loss, round_loss) / 100;
         }
         ps_enc.s_cmn.indices.ltp_scale_index =
@@ -278,7 +268,6 @@ pub fn silk_ltp_scale_ctrl_fix(
             (silk_smulbb(ps_enc_ctrl.ltp_red_cod_gain_q7, round_loss)
                 > silk_log2lin(128 * 7 + 3900 - ps_enc.s_cmn.snr_db_q7)) as i8;
     } else {
-
         ps_enc.s_cmn.indices.ltp_scale_index = 0;
     }
     ps_enc_ctrl.ltp_scale_q14 =

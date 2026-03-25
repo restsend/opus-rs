@@ -1,7 +1,7 @@
 use crate::silk::define::{
     TRANSITION_FRAMES, TRANSITION_INT_NUM, TRANSITION_INT_STEPS, TRANSITION_NA, TRANSITION_NB,
 };
-use crate::silk::macros::{silk_lshift, silk_rshift, silk_limit, silk_smlawb};
+use crate::silk::macros::{silk_limit, silk_lshift, silk_rshift, silk_smlawb};
 use crate::silk::sigproc_fix::silk_biquad_alt_stride1;
 use crate::silk::structs::SilkLPState;
 use crate::silk::tables::{SILK_TRANSITION_LP_A_Q28, SILK_TRANSITION_LP_B_Q28};
@@ -15,7 +15,6 @@ fn silk_lp_interpolate_filter_taps(
     if ind < TRANSITION_INT_NUM - 1 {
         if fac_q16 > 0 {
             if fac_q16 < 32768 {
-
                 for nb in 0..TRANSITION_NB {
                     b_q28[nb] = silk_smlawb(
                         SILK_TRANSITION_LP_B_Q28[ind][nb],
@@ -31,7 +30,6 @@ fn silk_lp_interpolate_filter_taps(
                     );
                 }
             } else {
-
                 for nb in 0..TRANSITION_NB {
                     b_q28[nb] = silk_smlawb(
                         SILK_TRANSITION_LP_B_Q28[ind + 1][nb],
@@ -64,7 +62,6 @@ pub fn silk_lp_variable_cutoff(ps_lp: &mut SilkLPState, frame: &mut [i16], frame
     let ind: usize;
 
     if ps_lp.mode != 0 {
-
         if TRANSITION_INT_STEPS == 64 {
             fac_q16 = silk_lshift(TRANSITION_FRAMES - ps_lp.transition_frame_no, 16 - 6);
         } else {

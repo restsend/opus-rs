@@ -26,7 +26,9 @@ mod tests {
         // MDCT window (simple Hann window)
         let mut window = vec![0.0f32; 240];
         for i in 0..240 {
-            window[i] = (std::f32::consts::PI * (i as f32 + 0.5) / 240.0).sin().powi(2);
+            window[i] = (std::f32::consts::PI * (i as f32 + 0.5) / 240.0)
+                .sin()
+                .powi(2);
         }
 
         // Forward MDCT
@@ -49,10 +51,18 @@ mod tests {
             max_val = max_val.max(v);
             sum_sq += v * v;
         }
-        eprintln!("  first 100 coeffs: max={:.6}, rms={:.6}", max_val, (sum_sq/100.0).sqrt());
+        eprintln!(
+            "  first 100 coeffs: max={:.6}, rms={:.6}",
+            max_val,
+            (sum_sq / 100.0).sqrt()
+        );
 
         // Check that output is not all zeros
-        assert!(max_val > 0.01, "MDCT forward output too small: max={}", max_val);
+        assert!(
+            max_val > 0.01,
+            "MDCT forward output too small: max={}",
+            max_val
+        );
 
         // Inverse MDCT
         let mut output = vec![0.0f32; mdct_size + overlap];
@@ -68,14 +78,22 @@ mod tests {
         eprintln!("MDCT backward output stats:");
         max_val = 0.0f32;
         sum_sq = 0.0f32;
-        for i in overlap/2..overlap/2 + 500 {
+        for i in overlap / 2..overlap / 2 + 500 {
             let v = output[i].abs();
             max_val = max_val.max(v);
             sum_sq += v * v;
         }
-        eprintln!("  samples [60..560]: max={:.6}, rms={:.6}", max_val, (sum_sq/500.0).sqrt());
+        eprintln!(
+            "  samples [60..560]: max={:.6}, rms={:.6}",
+            max_val,
+            (sum_sq / 500.0).sqrt()
+        );
 
         // Check that output is reasonable
-        assert!(max_val > 0.1, "MDCT backward output too small: max={}", max_val);
+        assert!(
+            max_val > 0.1,
+            "MDCT backward output too small: max={}",
+            max_val
+        );
     }
 }

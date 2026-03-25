@@ -51,14 +51,8 @@ fn test_celt_mdct_passthrough() {
         );
 
         // MDCT backward (overlap-add)
-        mode.mdct.backward(
-            &freq_buf,
-            &mut decode_mem,
-            mode.window,
-            overlap,
-            shift,
-            b,
-        );
+        mode.mdct
+            .backward(&freq_buf, &mut decode_mem, mode.window, overlap, shift, b);
 
         // Extract frame output (after overlap region)
         let mut frame_out = vec![0.0f32; frame_size];

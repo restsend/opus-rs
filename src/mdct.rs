@@ -70,7 +70,9 @@ impl MdctLookup {
         shift: usize,
         stride: usize,
     ) {
-        let st = self.kfft[shift].as_ref().expect("FFT state not initialized");
+        let st = self.kfft[shift]
+            .as_ref()
+            .expect("FFT state not initialized");
         let n = self.n >> shift;
         let n2 = n / 2;
         let n4 = n / 4;
@@ -192,7 +194,9 @@ impl MdctLookup {
         shift: usize,
         stride: usize,
     ) {
-        let st = self.kfft[shift].as_ref().expect("FFT state not initialized");
+        let st = self.kfft[shift]
+            .as_ref()
+            .expect("FFT state not initialized");
         let n = self.n >> shift;
         let n2 = n / 2;
         let n4 = n / 4;

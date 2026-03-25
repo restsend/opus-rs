@@ -7,7 +7,6 @@ use crate::silk::tuning_parameters::*;
 
 pub fn silk_hp_variable_cutoff(ps_enc: &mut SilkEncoderStateCommon) {
     if ps_enc.prev_signal_type == TYPE_VOICED {
-
         let pitch_freq_hz_q16 =
             ((ps_enc.fs_khz as i64 * 1000 * (1 << 16)) / ps_enc.prev_lag as i64) as i32;
         let pitch_freq_log_q7 = silk_lin2log(pitch_freq_hz_q16) - (16 << 7);
@@ -22,7 +21,6 @@ pub fn silk_hp_variable_cutoff(ps_enc: &mut SilkEncoderStateCommon) {
 
         let mut delta_freq_q7 = pitch_freq_log_q7 - silk_rshift(ps_enc.variable_hp_smth1_q15, 8);
         if delta_freq_q7 < 0 {
-
             delta_freq_q7 *= 3;
         }
 

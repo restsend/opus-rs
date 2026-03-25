@@ -71,7 +71,6 @@ pub fn silk_vq_wmat_ec(
         sum1_q15 = silk_smlawb(sum1_q15, sum2_q24, cb_row[4] as i32);
 
         if sum1_q15 >= 0 {
-
             let bits_res_q8 = silk_smulbb(subfr_len, silk_lin2log(sum1_q15 + penalty) - (15 << 7));
 
             let bits_tot_q8 = bits_res_q8 + ((cl_q5[k as usize] as i32) << (3 - 1));
@@ -82,6 +81,5 @@ pub fn silk_vq_wmat_ec(
                 *gain_q7_out = gain_tmp_q7;
             }
         }
-
     }
 }

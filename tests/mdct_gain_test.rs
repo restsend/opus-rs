@@ -26,7 +26,7 @@ fn test_mdct_gain() {
     // Warm up decoder history with some zeros
     mdct.backward(&freq, &mut output, &window, overlap, 0, 1);
 
-    println!("Output[core]: {:?}", &output[overlap..overlap+10]);
+    println!("Output[core]: {:?}", &output[overlap..overlap + 10]);
 
     let gain = output[overlap] / input[overlap];
     println!("Total Loopback Gain: {}", gain);

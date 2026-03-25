@@ -1,9 +1,9 @@
-use opus_rs::pvq::{icwrs, cwrsi};
+use opus_rs::pvq::{cwrsi, icwrs};
 
 #[test]
 fn test_pvq_sync() {
     let n = 20u32;
-    let k = 10u32; 
+    let k = 10u32;
     let mut y = vec![0i32; n as usize];
     y[0] = 5;
     y[5] = -3;
@@ -34,5 +34,4 @@ fn test_pvq_sync() {
     println!("PVQ Sync Success for N=10, K=10");
 }
 
-fn main() {
-}
+fn main() {}

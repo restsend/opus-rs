@@ -1,8 +1,8 @@
 use crate::range_coder::RangeCoder;
 use crate::silk::define::*;
+use crate::silk::nlsf_unpack::silk_nlsf_unpack;
 use crate::silk::structs::*;
 use crate::silk::tables::*;
-use crate::silk::nlsf_unpack::silk_nlsf_unpack;
 
 pub fn silk_encode_indices(
     ps_enc_c: &mut SilkEncoderState,
@@ -11,7 +11,6 @@ pub fn silk_encode_indices(
     encode_lbrr: bool,
     cond_coding: i32,
 ) {
-
     let ps_indices = if encode_lbrr {
         ps_enc_c.s_cmn.indices_lbrr[frame_index]
     } else {
@@ -27,24 +26,30 @@ pub fn silk_encode_indices(
     }
 
     if cond_coding == CODE_CONDITIONALLY {
-
         ps_range_enc.encode_icdf(ps_indices.gains_indices[0] as i32, &SILK_DELTA_GAIN_ICDF, 8);
     } else {
-
-        ps_range_enc.encode_icdf((ps_indices.gains_indices[0] >> 3) as i32, &SILK_GAIN_ICDF[ps_indices.signal_type as usize], 8);
-        ps_range_enc.encode_icdf((ps_indices.gains_indices[0] & 7) as i32, &SILK_UNIFORM8_ICDF, 8);
-    }
-
-    for i in 1..ps_enc_c.s_cmn.nb_subfr as usize {
         ps_range_enc.encode_icdf(
-            ps_indices.gains_indices[i] as i32,
-            &SILK_DELTA_GAIN_ICDF,
+            (ps_indices.gains_indices[0] >> 3) as i32,
+            &SILK_GAIN_ICDF[ps_indices.signal_type as usize],
+            8,
+        );
+        ps_range_enc.encode_icdf(
+            (ps_indices.gains_indices[0] & 7) as i32,
+            &SILK_UNIFORM8_ICDF,
             8,
         );
     }
 
+    for i in 1..ps_enc_c.s_cmn.nb_subfr as usize {
+        ps_range_enc.encode_icdf(ps_indices.gains_indices[i] as i32, &SILK_DELTA_GAIN_ICDF, 8);
+    }
+
     let cb = ps_enc_c.ps_nlsf_cb.expect("NLSF codebook not initialized");
-    ps_range_enc.encode_icdf(ps_indices.nlsf_indices[0] as i32, &cb.cb1_icdf[((ps_indices.signal_type >> 1) as usize * cb.n_vectors as usize)..], 8);
+    ps_range_enc.encode_icdf(
+        ps_indices.nlsf_indices[0] as i32,
+        &cb.cb1_icdf[((ps_indices.signal_type >> 1) as usize * cb.n_vectors as usize)..],
+        8,
+    );
 
     let mut ec_ix = [0i16; MAX_LPC_ORDER];
     let mut pred_q8 = [0u8; MAX_LPC_ORDER];
@@ -57,13 +62,29 @@ pub fn silk_encode_indices(
 
     for i in 0..cb.order as usize {
         if ps_indices.nlsf_indices[i + 1] >= NLSF_QUANT_MAX_AMPLITUDE as i8 {
-            ps_range_enc.encode_icdf(2 * NLSF_QUANT_MAX_AMPLITUDE, &cb.ec_icdf[ec_ix[i] as usize..], 8);
-            ps_range_enc.encode_icdf((ps_indices.nlsf_indices[i + 1] - NLSF_QUANT_MAX_AMPLITUDE as i8) as i32, &SILK_NLSF_EXT_ICDF, 8);
-        } else if ps_indices.nlsf_indices[i + 1] <= - (NLSF_QUANT_MAX_AMPLITUDE as i8) {
+            ps_range_enc.encode_icdf(
+                2 * NLSF_QUANT_MAX_AMPLITUDE,
+                &cb.ec_icdf[ec_ix[i] as usize..],
+                8,
+            );
+            ps_range_enc.encode_icdf(
+                (ps_indices.nlsf_indices[i + 1] - NLSF_QUANT_MAX_AMPLITUDE as i8) as i32,
+                &SILK_NLSF_EXT_ICDF,
+                8,
+            );
+        } else if ps_indices.nlsf_indices[i + 1] <= -(NLSF_QUANT_MAX_AMPLITUDE as i8) {
             ps_range_enc.encode_icdf(0, &cb.ec_icdf[ec_ix[i] as usize..], 8);
-            ps_range_enc.encode_icdf((-ps_indices.nlsf_indices[i + 1] - NLSF_QUANT_MAX_AMPLITUDE as i8) as i32, &SILK_NLSF_EXT_ICDF, 8);
+            ps_range_enc.encode_icdf(
+                (-ps_indices.nlsf_indices[i + 1] - NLSF_QUANT_MAX_AMPLITUDE as i8) as i32,
+                &SILK_NLSF_EXT_ICDF,
+                8,
+            );
         } else {
-            ps_range_enc.encode_icdf((ps_indices.nlsf_indices[i + 1] + NLSF_QUANT_MAX_AMPLITUDE as i8) as i32, &cb.ec_icdf[ec_ix[i] as usize..], 8);
+            ps_range_enc.encode_icdf(
+                (ps_indices.nlsf_indices[i + 1] + NLSF_QUANT_MAX_AMPLITUDE as i8) as i32,
+                &cb.ec_icdf[ec_ix[i] as usize..],
+                8,
+            );
         }
     }
 
@@ -76,11 +97,10 @@ pub fn silk_encode_indices(
     }
 
     if ps_indices.signal_type == TYPE_VOICED as i8 {
-
         let mut encode_absolute_lag_index = true;
         if cond_coding == CODE_CONDITIONALLY && ps_enc_c.s_cmn.ec_prev_signal_type == TYPE_VOICED {
-
-            let mut delta_lag_index = ps_indices.lag_index as i32 - ps_enc_c.s_cmn.ec_prev_lag_index as i32;
+            let mut delta_lag_index =
+                ps_indices.lag_index as i32 - ps_enc_c.s_cmn.ec_prev_lag_index as i32;
             if delta_lag_index < -8 || delta_lag_index > 11 {
                 delta_lag_index = 0;
             } else {
@@ -151,15 +171,9 @@ pub fn silk_encode_stereo(
     pred_idx: i8,
     only_middle: i8,
 ) {
-
-    ps_range_enc.encode_icdf(
-        only_middle as i32,
-        &SILK_STEREO_ONLY_CODE_MID_ICDF,
-        8,
-    );
+    ps_range_enc.encode_icdf(only_middle as i32, &SILK_STEREO_ONLY_CODE_MID_ICDF, 8);
 
     if only_middle == 0 {
-
         let i = (side_idx as i32).min(4);
         let j = (pred_idx as i32) >> 2;
         let joint_idx = i * 5 + j;

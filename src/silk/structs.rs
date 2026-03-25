@@ -2,7 +2,6 @@ use crate::silk::define::*;
 
 #[derive(Clone)]
 pub struct SilkStereoState {
-
     pub s_mid: [i16; 2],
 
     pub s_side: [i16; 2],

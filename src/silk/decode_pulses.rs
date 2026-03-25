@@ -98,7 +98,6 @@ fn silk_decode_signs(
     for i in 0..n_blocks as usize {
         let p = sum_pulses[i];
         if p > 0 {
-
             let idx = (p & 0x1F).min(6) as usize;
             let icdf_0 = SILK_SIGN_ICDF[i_base as usize + idx];
 
@@ -107,7 +106,6 @@ fn silk_decode_signs(
             let start = i * SHELL_CODEC_FRAME_LENGTH;
             for j in 0..SHELL_CODEC_FRAME_LENGTH {
                 if pulses[start + j] > 0 {
-
                     let sign = ps_range_dec.decode_icdf(&icdf, 8);
                     if sign == 0 {
                         pulses[start + j] = -pulses[start + j];

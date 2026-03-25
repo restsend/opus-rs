@@ -132,7 +132,6 @@ fn silk_noise_shape_quantizer_short_prediction(
     a_q12: &[i16],
     predict_lpc_order: i32,
 ) -> i32 {
-
     let mut out = silk_rshift(predict_lpc_order, 1);
     for j in 0..predict_lpc_order as usize {
         out = silk_smlawb(out, ps_lpc_q14[idx - j], a_q12[j] as i32);
@@ -187,10 +186,14 @@ pub fn silk_noise_shape_quantizer_del_dec(
                 let pred_lag_idx = pred_lag_idx_calc as usize;
                 ltp_pred_q14 = 2;
                 ltp_pred_q14 = silk_smlawb(ltp_pred_q14, s_ltp_q15[pred_lag_idx], b_q14[0] as i32);
-                ltp_pred_q14 = silk_smlawb(ltp_pred_q14, s_ltp_q15[pred_lag_idx - 1], b_q14[1] as i32);
-                ltp_pred_q14 = silk_smlawb(ltp_pred_q14, s_ltp_q15[pred_lag_idx - 2], b_q14[2] as i32);
-                ltp_pred_q14 = silk_smlawb(ltp_pred_q14, s_ltp_q15[pred_lag_idx - 3], b_q14[3] as i32);
-                ltp_pred_q14 = silk_smlawb(ltp_pred_q14, s_ltp_q15[pred_lag_idx - 4], b_q14[4] as i32);
+                ltp_pred_q14 =
+                    silk_smlawb(ltp_pred_q14, s_ltp_q15[pred_lag_idx - 1], b_q14[1] as i32);
+                ltp_pred_q14 =
+                    silk_smlawb(ltp_pred_q14, s_ltp_q15[pred_lag_idx - 2], b_q14[2] as i32);
+                ltp_pred_q14 =
+                    silk_smlawb(ltp_pred_q14, s_ltp_q15[pred_lag_idx - 3], b_q14[3] as i32);
+                ltp_pred_q14 =
+                    silk_smlawb(ltp_pred_q14, s_ltp_q15[pred_lag_idx - 4], b_q14[4] as i32);
                 ltp_pred_q14 = silk_lshift(ltp_pred_q14, 1);
             }
         }
@@ -198,7 +201,9 @@ pub fn silk_noise_shape_quantizer_del_dec(
         let mut n_ltp_q14 = 0;
         if lag > 0 {
             let shp_lag_idx_calc = shp_lag_ptr_base + i;
-            if shp_lag_idx_calc >= HARM_SHAPE_FIR_TAPS as i32 && shp_lag_idx_calc < nsq.s_ltp_shp_q14.len() as i32 {
+            if shp_lag_idx_calc >= HARM_SHAPE_FIR_TAPS as i32
+                && shp_lag_idx_calc < nsq.s_ltp_shp_q14.len() as i32
+            {
                 let shp_lag_idx = shp_lag_idx_calc as usize;
                 n_ltp_q14 = silk_smulwb(
                     silk_add_sat32(
@@ -431,20 +436,15 @@ pub fn silk_noise_shape_quantizer_del_dec(
             }
             if xq_idx >= 0 && xq_idx < nsq.xq.len() as isize {
                 nsq.xq[xq_idx as usize] = silk_sat16(silk_rshift_round(
-                    silk_smulww(
-                        ps_dd.xq_q14[last_smple_idx],
-                        delayed_ga_q10[last_smple_idx],
-                    ),
+                    silk_smulww(ps_dd.xq_q14[last_smple_idx], delayed_ga_q10[last_smple_idx]),
                     8,
                 )) as i16;
             }
             if shp_idx >= 0 && shp_idx < nsq.s_ltp_shp_q14.len() as isize {
-                nsq.s_ltp_shp_q14[shp_idx as usize] =
-                    ps_dd.shape_q14[last_smple_idx];
+                nsq.s_ltp_shp_q14[shp_idx as usize] = ps_dd.shape_q14[last_smple_idx];
             }
             if ltp_idx >= 0 && ltp_idx < s_ltp_q15.len() as isize {
-                s_ltp_q15[ltp_idx as usize] =
-                    ps_dd.pred_q15[last_smple_idx];
+                s_ltp_q15[ltp_idx as usize] = ps_dd.pred_q15[last_smple_idx];
             }
         }
         nsq.s_ltp_shp_buf_idx += 1;
@@ -533,7 +533,6 @@ pub fn silk_nsq_del_dec(
 
     if ps_indices.signal_type as i32 == TYPE_VOICED {
         for k in 0..ps_common.nb_subfr as usize {
-
             let pitch_constraint = pitch_l[k] - LTP_ORDER as i32 / 2 - 1;
             if pitch_constraint > 0 {
                 decision_delay = decision_delay.min(pitch_constraint);
@@ -561,8 +560,8 @@ pub fn silk_nsq_del_dec(
     let mut subfr_nsq = 0;
 
     for k in 0..ps_common.nb_subfr as usize {
-        let a_q12 = &pred_coef_q12
-            [((k >> 1) | (1 - lsf_interpolation_flag as usize)) * MAX_LPC_ORDER..];
+        let a_q12 =
+            &pred_coef_q12[((k >> 1) | (1 - lsf_interpolation_flag as usize)) * MAX_LPC_ORDER..];
         let b_q14 = &ltp_coef_q14[k * LTP_ORDER..];
         let ar_shp_q13 = &ar_q13[k * MAX_SHAPE_LPC_ORDER..];
 
@@ -602,11 +601,10 @@ pub fn silk_nsq_del_dec(
                         if pulse_idx >= 0 && xq_idx >= 0 && shp_idx >= 0 {
                             pulses[pulse_idx as usize] =
                                 silk_rshift_round(ps_dd.q_q10[last_smple_idx as usize], 10) as i8;
-                            ps_nsq.xq[xq_idx as usize] =
-                                silk_sat16(silk_rshift_round(
-                                    silk_smulww(ps_dd.xq_q14[last_smple_idx as usize], gains_q16[1]),
-                                    14,
-                                )) as i16;
+                            ps_nsq.xq[xq_idx as usize] = silk_sat16(silk_rshift_round(
+                                silk_smulww(ps_dd.xq_q14[last_smple_idx as usize], gains_q16[1]),
+                                14,
+                            )) as i16;
                             ps_nsq.s_ltp_shp_q14[shp_idx as usize] =
                                 ps_dd.shape_q14[last_smple_idx as usize];
                         }
@@ -619,7 +617,6 @@ pub fn silk_nsq_del_dec(
                     - ps_common.predict_lpc_order
                     - LTP_ORDER as i32 / 2;
                 if start_idx_calc < 0 {
-
                     continue;
                 }
                 let start_idx = start_idx_calc as usize;
@@ -711,8 +708,7 @@ pub fn silk_nsq_del_dec(
     ps_nsq.lag_prev = pitch_l[ps_common.nb_subfr as usize - 1];
 
     let gain_q10_final = silk_rshift(gains_q16[ps_common.nb_subfr as usize - 1], 6);
-    let mut last_smple_idx =
-        (smpl_buf_idx + decision_delay) as i32;
+    let mut last_smple_idx = (smpl_buf_idx + decision_delay) as i32;
     for i in 0..decision_delay {
         last_smple_idx = (last_smple_idx - 1 + DECISION_DELAY as i32) % DECISION_DELAY as i32;
         let pulse_idx = (pulses_ptr as i32 + i - decision_delay) as isize;
@@ -729,8 +725,7 @@ pub fn silk_nsq_del_dec(
         }
         let shp_idx = (ps_nsq.s_ltp_shp_buf_idx - decision_delay + i) as isize;
         if shp_idx >= 0 && (shp_idx as usize) < ps_nsq.s_ltp_shp_q14.len() {
-            ps_nsq.s_ltp_shp_q14[shp_idx as usize] =
-                ps_dd.shape_q14[last_smple_idx as usize];
+            ps_nsq.s_ltp_shp_q14[shp_idx as usize] = ps_dd.shape_q14[last_smple_idx as usize];
         }
     }
 

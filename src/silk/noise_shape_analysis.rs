@@ -51,7 +51,6 @@ pub fn limit_warped_coefs(
 
     let limit_q20 = limit_q24 >> 4;
     for iter in 0..10 {
-
         maxabs_q24 = -1;
         for (i, &v) in coefs_q24[..order].iter().enumerate() {
             tmp = v.abs();
@@ -63,7 +62,6 @@ pub fn limit_warped_coefs(
 
         maxabs_q20 = maxabs_q24 >> 4;
         if maxabs_q20 <= limit_q20 {
-
             return;
         }
 
@@ -151,10 +149,8 @@ pub fn silk_noise_shape_analysis_fix(
     }
 
     if ps_enc.s_cmn.indices.signal_type == TYPE_VOICED as i8 {
-
         snr_adj_db_q7 = silk_smlawb(snr_adj_db_q7, 512, ps_enc.ltp_corr_q15);
     } else {
-
         snr_adj_db_q7 = silk_smlawb(
             snr_adj_db_q7,
             silk_smlawb(3072, -104858, ps_enc.s_cmn.snr_db_q7),
@@ -165,7 +161,6 @@ pub fn silk_noise_shape_analysis_fix(
     if ps_enc.s_cmn.indices.signal_type == TYPE_VOICED as i8 {
         ps_enc.s_cmn.indices.quant_offset_type = 0;
     } else {
-
         n_samples = (ps_enc.s_cmn.fs_khz << 1) as usize;
         energy_variation_q7 = 0;
         let mut pitch_res_idx = 0;
@@ -188,7 +183,6 @@ pub fn silk_noise_shape_analysis_fix(
         }
 
         if energy_variation_q7 > 77 * (n_segs as i32 - 1) {
-
             ps_enc.s_cmn.indices.quant_offset_type = 0;
         } else {
             ps_enc.s_cmn.indices.quant_offset_type = 1;
@@ -285,14 +279,12 @@ pub fn silk_noise_shape_analysis_fix(
         }
 
         if ps_enc.s_cmn.warping_q16 > 0 {
-
             let gain_mult_q16 = warped_gain(
                 &ar_q24,
                 warping_q16,
                 ps_enc.s_cmn.shaping_lpc_order as usize,
             );
             if ps_enc_ctrl.gains_q16[k] < (1 << 14) {
-
                 ps_enc_ctrl.gains_q16[k] = silk_smulww(ps_enc_ctrl.gains_q16[k], gain_mult_q16);
             } else {
                 ps_enc_ctrl.gains_q16[k] = silk_smulww(
@@ -320,7 +312,10 @@ pub fn silk_noise_shape_analysis_fix(
                 67092087,
                 ps_enc.s_cmn.shaping_lpc_order as usize,
             );
-            for (i, ar_val) in ar_q24[..ps_enc.s_cmn.shaping_lpc_order as usize].iter().enumerate() {
+            for (i, ar_val) in ar_q24[..ps_enc.s_cmn.shaping_lpc_order as usize]
+                .iter()
+                .enumerate()
+            {
                 ps_enc_ctrl.ar_q13[k * MAX_SHAPE_LPC_ORDER + i] =
                     silk_sat16(silk_rshift_round(*ar_val, 11)) as i16;
             }
@@ -355,8 +350,7 @@ pub fn silk_noise_shape_analysis_fix(
         let fs_khz_inv = silk_div32_16(3277, ps_enc.s_cmn.fs_khz);
         for k in 0..ps_enc.s_cmn.nb_subfr as usize {
             let b_q14 = fs_khz_inv + silk_div32_16(49152, ps_enc_ctrl.pitch_l[k]);
-            ps_enc_ctrl.lf_shp_q14[k] =
-                (16384 - b_q14 - silk_smulwb(strength_q16, b_q14)) << 16;
+            ps_enc_ctrl.lf_shp_q14[k] = (16384 - b_q14 - silk_smulwb(strength_q16, b_q14)) << 16;
             ps_enc_ctrl.lf_shp_q14[k] |= (b_q14 - 16384) & 0xFFFF;
         }
         tilt_q16 = -16384
@@ -366,8 +360,7 @@ pub fn silk_noise_shape_analysis_fix(
             );
     } else {
         let b_q14 = silk_div32_16(21299, ps_enc.s_cmn.fs_khz);
-        let lf_high =
-            16384 - b_q14 - silk_smulwb(strength_q16, silk_smulwb(39322, b_q14));
+        let lf_high = 16384 - b_q14 - silk_smulwb(strength_q16, silk_smulwb(39322, b_q14));
         let lf_low_raw = b_q14 - 16384;
         let lf_low_masked = lf_low_raw & 0xFFFF;
 

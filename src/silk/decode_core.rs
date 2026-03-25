@@ -89,7 +89,6 @@ pub fn silk_decode_core(
             lag = eff_pitch_l;
 
             if k == 0 || (k == 2 && nlsf_interpolation_flag != 0) {
-
                 let start_idx =
                     ps_dec.ltp_mem_length - lag - ps_dec.lpc_order - (LTP_ORDER / 2) as i32;
                 debug_assert!(start_idx > 0);
@@ -114,7 +113,6 @@ pub fn silk_decode_core(
                 );
 
                 if k == 0 {
-
                     inv_gain_q31 =
                         silk_lshift(silk_smulwb(inv_gain_q31, ps_dec_ctrl.ltp_scale_q14), 2);
                 }
@@ -125,7 +123,6 @@ pub fn silk_decode_core(
                     );
                 }
             } else {
-
                 if gain_adj_q16 != (1 << 16) {
                     for i in 0..(lag + LTP_ORDER as i32 / 2) as usize {
                         s_ltp_q15[s_ltp_buf_idx as usize - i - 1] =
@@ -138,10 +135,8 @@ pub fn silk_decode_core(
         let mut res_q14: [i32; MAX_SUB_FRAME_LENGTH] = [0; MAX_SUB_FRAME_LENGTH];
 
         if eff_signal_type == TYPE_VOICED {
-
             let pred_lag_ptr_start = (s_ltp_buf_idx - lag + LTP_ORDER as i32 / 2) as usize;
             for i in 0..ps_dec.subfr_length as usize {
-
                 let mut ltp_pred_q13: i32 = 2;
                 ltp_pred_q13 = silk_smlawb(
                     ltp_pred_q13,
@@ -181,7 +176,6 @@ pub fn silk_decode_core(
         }
 
         for i in 0..ps_dec.subfr_length as usize {
-
             let mut lpc_pred_q10: i32 = ps_dec.lpc_order >> 1;
 
             lpc_pred_q10 = silk_smlawb(

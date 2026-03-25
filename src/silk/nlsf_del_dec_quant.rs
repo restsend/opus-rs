@@ -128,7 +128,6 @@ pub fn silk_nlsf_del_dec_quant(
         }
 
         if n_states <= NLSF_QUANT_DEL_DEC_STATES / 2 {
-
             for j in 0..n_states {
                 ind[j + n_states][i] = ind[j][i] + 1;
             }
@@ -137,7 +136,6 @@ pub fn silk_nlsf_del_dec_quant(
                 ind[j][i] = ind[j - n_states][i];
             }
         } else {
-
             for j in 0..NLSF_QUANT_DEL_DEC_STATES {
                 if rd_q25[j] > rd_q25[j + NLSF_QUANT_DEL_DEC_STATES] {
                     rd_max_q25[j] = rd_q25[j];

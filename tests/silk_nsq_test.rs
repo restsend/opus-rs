@@ -460,9 +460,18 @@ fn test_nsq_consistency_unvoiced_wb() {
     let ltp_scale_q14 = 16384;
 
     let (pulses, nsq) = run_nsq_and_capture(
-        &s_cmn, &input, &pred_coef_q12, &ltp_coef_q14, &ar_q13,
-        &harm_shape_gain_q14, &tilt_q14, &lf_shp_q14, &gains_q16,
-        &pitch_l, lambda_q10, ltp_scale_q14,
+        &s_cmn,
+        &input,
+        &pred_coef_q12,
+        &ltp_coef_q14,
+        &ar_q13,
+        &harm_shape_gain_q14,
+        &tilt_q14,
+        &lf_shp_q14,
+        &gains_q16,
+        &pitch_l,
+        lambda_q10,
+        ltp_scale_q14,
     );
 
     // Reference output captured from original implementation
@@ -470,13 +479,25 @@ fn test_nsq_consistency_unvoiced_wb() {
     let pulse_sum: i64 = pulses.iter().map(|&p| p as i64).sum();
     let pulse_sq_sum: i64 = pulses.iter().map(|&p| (p as i64) * (p as i64)).sum();
 
-    println!("Unvoiced WB consistency: pulse_sum={}, pulse_sq_sum={}", pulse_sum, pulse_sq_sum);
-    println!("NSQ state after: lag_prev={}, rand_seed={}", nsq.lag_prev, nsq.rand_seed);
+    println!(
+        "Unvoiced WB consistency: pulse_sum={}, pulse_sq_sum={}",
+        pulse_sum, pulse_sq_sum
+    );
+    println!(
+        "NSQ state after: lag_prev={}, rand_seed={}",
+        nsq.lag_prev, nsq.rand_seed
+    );
 
     // These values should remain constant after optimization
     // If they change, the optimization broke correctness
-    assert_eq!(pulse_sum, 160, "Pulse sum mismatch - optimization may have broken correctness");
-    assert_eq!(pulse_sq_sum, 287360, "Pulse square sum mismatch - optimization may have broken correctness");
+    assert_eq!(
+        pulse_sum, 160,
+        "Pulse sum mismatch - optimization may have broken correctness"
+    );
+    assert_eq!(
+        pulse_sq_sum, 287360,
+        "Pulse square sum mismatch - optimization may have broken correctness"
+    );
     assert_eq!(nsq.lag_prev, 0, "lag_prev mismatch");
 }
 
@@ -504,16 +525,31 @@ fn test_nsq_consistency_voiced_wb() {
     let ltp_scale_q14 = 16384;
 
     let (pulses, nsq) = run_nsq_and_capture(
-        &s_cmn, &input, &pred_coef_q12, &ltp_coef_q14, &ar_q13,
-        &harm_shape_gain_q14, &tilt_q14, &lf_shp_q14, &gains_q16,
-        &pitch_l, lambda_q10, ltp_scale_q14,
+        &s_cmn,
+        &input,
+        &pred_coef_q12,
+        &ltp_coef_q14,
+        &ar_q13,
+        &harm_shape_gain_q14,
+        &tilt_q14,
+        &lf_shp_q14,
+        &gains_q16,
+        &pitch_l,
+        lambda_q10,
+        ltp_scale_q14,
     );
 
     let pulse_sum: i64 = pulses.iter().map(|&p| p as i64).sum();
     let pulse_sq_sum: i64 = pulses.iter().map(|&p| (p as i64) * (p as i64)).sum();
 
-    println!("Voiced WB consistency: pulse_sum={}, pulse_sq_sum={}", pulse_sum, pulse_sq_sum);
-    println!("NSQ state after: lag_prev={}, rand_seed={}", nsq.lag_prev, nsq.rand_seed);
+    println!(
+        "Voiced WB consistency: pulse_sum={}, pulse_sq_sum={}",
+        pulse_sum, pulse_sq_sum
+    );
+    println!(
+        "NSQ state after: lag_prev={}, rand_seed={}",
+        nsq.lag_prev, nsq.rand_seed
+    );
 
     // Reference values
     assert_eq!(pulse_sum, 38, "Pulse sum mismatch");
@@ -538,16 +574,31 @@ fn test_nsq_consistency_unvoiced_nb() {
     let ltp_scale_q14 = 16384;
 
     let (pulses, nsq) = run_nsq_and_capture(
-        &s_cmn, &input, &pred_coef_q12, &ltp_coef_q14, &ar_q13,
-        &harm_shape_gain_q14, &tilt_q14, &lf_shp_q14, &gains_q16,
-        &pitch_l, lambda_q10, ltp_scale_q14,
+        &s_cmn,
+        &input,
+        &pred_coef_q12,
+        &ltp_coef_q14,
+        &ar_q13,
+        &harm_shape_gain_q14,
+        &tilt_q14,
+        &lf_shp_q14,
+        &gains_q16,
+        &pitch_l,
+        lambda_q10,
+        ltp_scale_q14,
     );
 
     let pulse_sum: i64 = pulses.iter().map(|&p| p as i64).sum();
     let pulse_sq_sum: i64 = pulses.iter().map(|&p| (p as i64) * (p as i64)).sum();
 
-    println!("Unvoiced NB consistency: pulse_sum={}, pulse_sq_sum={}", pulse_sum, pulse_sq_sum);
-    println!("NSQ state after: lag_prev={}, rand_seed={}", nsq.lag_prev, nsq.rand_seed);
+    println!(
+        "Unvoiced NB consistency: pulse_sum={}, pulse_sq_sum={}",
+        pulse_sum, pulse_sq_sum
+    );
+    println!(
+        "NSQ state after: lag_prev={}, rand_seed={}",
+        nsq.lag_prev, nsq.rand_seed
+    );
 
     // Reference values
     assert_eq!(pulse_sum, 380, "Pulse sum mismatch");
@@ -579,16 +630,31 @@ fn test_nsq_consistency_voiced_nb() {
     let ltp_scale_q14 = 16384;
 
     let (pulses, nsq) = run_nsq_and_capture(
-        &s_cmn, &input, &pred_coef_q12, &ltp_coef_q14, &ar_q13,
-        &harm_shape_gain_q14, &tilt_q14, &lf_shp_q14, &gains_q16,
-        &pitch_l, lambda_q10, ltp_scale_q14,
+        &s_cmn,
+        &input,
+        &pred_coef_q12,
+        &ltp_coef_q14,
+        &ar_q13,
+        &harm_shape_gain_q14,
+        &tilt_q14,
+        &lf_shp_q14,
+        &gains_q16,
+        &pitch_l,
+        lambda_q10,
+        ltp_scale_q14,
     );
 
     let pulse_sum: i64 = pulses.iter().map(|&p| p as i64).sum();
     let pulse_sq_sum: i64 = pulses.iter().map(|&p| (p as i64) * (p as i64)).sum();
 
-    println!("Voiced NB consistency: pulse_sum={}, pulse_sq_sum={}", pulse_sum, pulse_sq_sum);
-    println!("NSQ state after: lag_prev={}, rand_seed={}", nsq.lag_prev, nsq.rand_seed);
+    println!(
+        "Voiced NB consistency: pulse_sum={}, pulse_sq_sum={}",
+        pulse_sum, pulse_sq_sum
+    );
+    println!(
+        "NSQ state after: lag_prev={}, rand_seed={}",
+        nsq.lag_prev, nsq.rand_seed
+    );
 
     // Reference values
     assert_eq!(pulse_sum, -205, "Pulse sum mismatch");

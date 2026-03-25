@@ -22,10 +22,8 @@ pub fn silk_decode_indices(
     ps_dec.indices.quant_offset_type = (ix & 1) as i8;
 
     if cond_coding == CODE_CONDITIONALLY {
-
         ps_dec.indices.gains_indices[0] = ps_range_dec.decode_icdf(&SILK_DELTA_GAIN_ICDF, 8) as i8;
     } else {
-
         ps_dec.indices.gains_indices[0] = (ps_range_dec
             .decode_icdf(&SILK_GAIN_ICDF[ps_dec.indices.signal_type as usize], 8)
             << 3) as i8;
@@ -70,11 +68,9 @@ pub fn silk_decode_indices(
     }
 
     if ps_dec.indices.signal_type == TYPE_VOICED as i8 {
-
         let mut decode_absolute_lag_index = 1;
 
         if cond_coding == CODE_CONDITIONALLY && ps_dec.ec_prev_signal_type == TYPE_VOICED {
-
             let delta_lag_index = ps_range_dec.decode_icdf(&SILK_PITCH_DELTA_ICDF, 8) as i16;
             if delta_lag_index > 0 {
                 ps_dec.indices.lag_index = ps_dec.ec_prev_lag_index + delta_lag_index - 9;
@@ -82,7 +78,6 @@ pub fn silk_decode_indices(
             }
         }
         if decode_absolute_lag_index != 0 {
-
             ps_dec.indices.lag_index = ((ps_range_dec.decode_icdf(&SILK_PITCH_LAG_ICDF, 8) as i32)
                 * (ps_dec.fs_khz >> 1)) as i16;
             ps_dec.indices.lag_index +=
@@ -112,14 +107,10 @@ pub fn silk_decode_indices(
     ps_dec.indices.seed = ps_range_dec.decode_icdf(&SILK_UNIFORM4_ICDF, 8) as i8;
 }
 
-pub fn silk_decode_stereo(
-    ps_range_dec: &mut RangeCoder,
-) -> (i8, i8, i8) {
-
+pub fn silk_decode_stereo(ps_range_dec: &mut RangeCoder) -> (i8, i8, i8) {
     let only_middle = ps_range_dec.decode_icdf(&SILK_STEREO_ONLY_CODE_MID_ICDF, 8) as i8;
 
     if only_middle == 0 {
-
         let joint_idx = ps_range_dec.decode_icdf(&SILK_STEREO_PRED_JOINT_ICDF, 8) as i8;
 
         let side_idx = joint_idx / 5;

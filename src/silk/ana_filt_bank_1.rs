@@ -8,9 +8,8 @@ pub fn silk_ana_filt_bank_1(
     s: &mut [i32],
     out_l: &mut [i16],
     out_h: &mut [i16],
-    n: usize
+    n: usize,
 ) {
-
     if n < 2 || n > 4096 || n > input.len() {
         return;
     }
@@ -30,7 +29,6 @@ pub fn silk_ana_filt_bank_1(
     }
 
     for k in 0..n2 {
-
         let idx_even = 2 * k;
         let idx_odd = idx_even + 1;
 

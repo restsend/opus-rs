@@ -15,11 +15,7 @@ use crate::silk::pitch_analysis::*;
 use crate::silk::structs::*;
 use crate::silk::vad::silk_vad_get_sa_q8;
 
-pub fn silk_encode_do_vad(
-    ps_enc: &mut SilkEncoderState,
-    input: &[i16],
-    activity: i32,
-) {
+pub fn silk_encode_do_vad(ps_enc: &mut SilkEncoderState, input: &[i16], activity: i32) {
     let activity_threshold = SPEECH_ACTIVITY_DTX_THRES_Q8;
 
     let frame_length = ps_enc.s_cmn.frame_length as usize;
@@ -48,12 +44,7 @@ pub fn silk_encode_do_vad(
     }
 }
 
-pub fn silk_encode_prefill(
-    ps_enc: &mut SilkEncoderState,
-    samples: &[i16],
-    _activity: i32,
-) {
-
+pub fn silk_encode_prefill(ps_enc: &mut SilkEncoderState, samples: &[i16], _activity: i32) {
     let fs_khz = ps_enc.s_cmn.fs_khz as usize;
 
     if fs_khz != 8 && fs_khz != 12 && fs_khz != 16 {
@@ -204,7 +195,6 @@ pub fn silk_encode_frame(
         } else if gains_id == gains_id_upper {
             n_bits = n_bits_upper;
         } else {
-
             if iter > 0 {
                 *rc = rc_copy.clone();
                 ps_enc.s_nsq = nsq_copy.clone();
@@ -222,9 +212,7 @@ pub fn silk_encode_frame(
                     &ps_enc.s_cmn,
                     &mut ps_enc.s_nsq,
                     &ps_enc.s_cmn.indices,
-
                     &ps_enc.s_cmn.x_buf[x_frame_idx..],
-
                     &mut ps_enc.pulses,
                     &pred_coef_q12_flat,
                     &s_enc_ctrl.ltp_coef_q14,
@@ -244,9 +232,7 @@ pub fn silk_encode_frame(
                     &ps_enc.s_cmn,
                     &mut ps_enc.s_nsq,
                     &ps_enc.s_cmn.indices,
-
                     &ps_enc.s_cmn.x_buf[x_frame_idx..],
-
                     &mut ps_enc.pulses,
                     &pred_coef_q12_flat,
                     &s_enc_ctrl.ltp_coef_q14,
@@ -325,7 +311,6 @@ pub fn silk_encode_frame(
 
         if iter == max_iter {
             if found_lower && (gains_id == gains_id_lower || n_bits > max_bits) {
-
                 if let Some(rc_c2) = &rc_copy2 {
                     *rc = rc_c2.clone();
                     let offs = rc.offs as usize;
@@ -341,7 +326,6 @@ pub fn silk_encode_frame(
 
         if n_bits > max_bits {
             if !found_lower && iter >= 2 {
-
                 s_enc_ctrl.lambda_q10 =
                     silk_add_rshift32(s_enc_ctrl.lambda_q10, s_enc_ctrl.lambda_q10, 1);
                 found_upper = false;
@@ -366,7 +350,6 @@ pub fn silk_encode_frame(
                 last_gain_index_copy2 = ps_enc.s_shape.last_gain_index;
             }
         } else {
-
             break;
         }
 
@@ -387,14 +370,12 @@ pub fn silk_encode_frame(
         }
 
         if !(found_lower && found_upper) {
-
             if n_bits > max_bits {
                 gain_mult_q8 = silk_min_32(1024, (gain_mult_q8 * 3) / 2);
             } else {
                 gain_mult_q8 = silk_max_32(64, (gain_mult_q8 * 4) / 5);
             }
         } else {
-
             let delta = gain_mult_upper - gain_mult_lower;
             gain_mult_q8 = gain_mult_lower
                 + silk_div32_16(
@@ -507,7 +488,6 @@ pub fn silk_encode(
     let mut sample_offset = 0usize;
 
     for frame_idx in 0..n_frames_per_packet {
-
         if frame_idx == 0 {
             silk_hp_variable_cutoff(&mut ps_enc.s_cmn);
         }
@@ -567,14 +547,12 @@ pub fn silk_encode(
         ps_enc.stereo.s_mid[1] = input_buf[frame_length + 1];
 
         if frame_idx == 0 {
-
             let n_flag_bits = (n_frames_per_packet + 1) as u32;
             let icdf_val = (256i32 - (256i32 >> n_flag_bits)) as u8;
             let icdf = [icdf_val, 0u8];
             rc.encode_icdf(0, &icdf, 8);
 
             if lbrr_symbol > 0 {
-
                 let lbrr_icdf = match n_frames_per_packet {
                     2 => &crate::silk::tables::SILK_LBRR_FLAGS_2_ICDF[..],
                     3 => &crate::silk::tables::SILK_LBRR_FLAGS_3_ICDF[..],

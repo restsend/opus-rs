@@ -21,7 +21,8 @@ fn read_wav(path: &Path) -> (WavHeader, Vec<i16>) {
 
     // Read RIFF header
     let mut riff = [0u8; 12];
-    file.read_exact(&mut riff).expect("Failed to read RIFF header");
+    file.read_exact(&mut riff)
+        .expect("Failed to read RIFF header");
     assert!(&riff[0..4] == b"RIFF", "Not a valid WAV file");
     assert!(&riff[8..12] == b"WAVE", "Not a valid WAV file");
 
@@ -42,7 +43,8 @@ fn read_wav(path: &Path) -> (WavHeader, Vec<i16>) {
 
     // Read data chunk
     let mut data_header = [0u8; 8];
-    file.read_exact(&mut data_header).expect("Failed to read data header");
+    file.read_exact(&mut data_header)
+        .expect("Failed to read data header");
     assert!(&data_header[0..4] == b"data", "Invalid data chunk");
 
     let data_size = u32::from_le_bytes([
@@ -210,8 +212,7 @@ fn main() {
     encoder.complexity = 5; // Medium complexity for better quality
 
     // Initialize decoder
-    let mut decoder = OpusDecoder::new(target_rate as i32, 1)
-        .expect("Failed to create decoder");
+    let mut decoder = OpusDecoder::new(target_rate as i32, 1).expect("Failed to create decoder");
 
     // Encode frame by frame
     let mut all_payload: Vec<u8> = Vec::new();
@@ -373,6 +374,10 @@ fn main() {
 
     // Summary
     println!("\n=== Summary ===");
-    println!("Input:  {} samples ({} Hz)", input_samples.len(), target_rate);
+    println!(
+        "Input:  {} samples ({} Hz)",
+        input_samples.len(),
+        target_rate
+    );
     println!("Output: {} samples ({} Hz)", final_samples.len(), src_rate);
 }

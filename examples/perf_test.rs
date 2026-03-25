@@ -37,8 +37,11 @@ fn main() {
             let mut pcm = vec![0.0f32; frame_size];
 
             for _ in 0..100 {
-                let len = enc.encode(black_box(&input), frame_size, black_box(&mut output)).unwrap();
-                dec.decode(black_box(&output[..len]), frame_size, black_box(&mut pcm)).unwrap();
+                let len = enc
+                    .encode(black_box(&input), frame_size, black_box(&mut output))
+                    .unwrap();
+                dec.decode(black_box(&output[..len]), frame_size, black_box(&mut pcm))
+                    .unwrap();
             }
         }
     }
@@ -64,8 +67,11 @@ fn main() {
         let iterations = 1000;
 
         for _ in 0..iterations {
-            let len = enc.encode(black_box(&input), frame_size, black_box(&mut output)).unwrap();
-            dec.decode(black_box(&output[..len]), frame_size, black_box(&mut pcm)).unwrap();
+            let len = enc
+                .encode(black_box(&input), frame_size, black_box(&mut output))
+                .unwrap();
+            dec.decode(black_box(&output[..len]), frame_size, black_box(&mut pcm))
+                .unwrap();
         }
 
         let elapsed = start.elapsed();

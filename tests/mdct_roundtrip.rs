@@ -45,8 +45,14 @@ fn test_mdct_simple_roundtrip() {
     let overlap2 = overlap / 2;
 
     // Print some values
-    eprintln!("Input (overlap region): {:?}", &input[overlap2..overlap2+4]);
-    eprintln!("Output (overlap region): {:?}", &output[overlap2..overlap2+4]);
+    eprintln!(
+        "Input (overlap region): {:?}",
+        &input[overlap2..overlap2 + 4]
+    );
+    eprintln!(
+        "Output (overlap region): {:?}",
+        &output[overlap2..overlap2 + 4]
+    );
     eprintln!("Freq coefficients: {:?}", &freq[0..4]);
 
     // Calculate SNR in the non-overlap region (after TDAC)
@@ -66,7 +72,12 @@ fn test_mdct_simple_roundtrip() {
     // Check scaling
     let in_max = input.iter().cloned().fold(0.0f32, f32::max).abs();
     let out_max = output.iter().cloned().fold(0.0f32, f32::max).abs();
-    eprintln!("Input max: {:.6}, Output max: {:.6}, Ratio: {:.2}", in_max, out_max, out_max / in_max);
+    eprintln!(
+        "Input max: {:.6}, Output max: {:.6}, Ratio: {:.2}",
+        in_max,
+        out_max,
+        out_max / in_max
+    );
 
     // The roundtrip should preserve signal reasonably well
     // Due to windowing, we expect some loss but not 100x

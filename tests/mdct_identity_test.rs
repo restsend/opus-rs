@@ -32,8 +32,9 @@ fn test_mdct_roundtrip() {
         in_buf[1020..1080]
             .copy_from_slice(&pcm_in[(f + 1) * frame_size..(f + 1) * frame_size + 60]);
         // Fill the remaining overlap region
-        in_buf[1080..n + overlap]
-            .copy_from_slice(&pcm_in[(f + 1) * frame_size + 60..(f + 1) * frame_size + 60 + (n + overlap - 1080)]);
+        in_buf[1080..n + overlap].copy_from_slice(
+            &pcm_in[(f + 1) * frame_size + 60..(f + 1) * frame_size + 60 + (n + overlap - 1080)],
+        );
 
         let mut spectrum = vec![0.0f32; frame_size];
         mdct.forward(&in_buf, &mut spectrum, &window, overlap, 0, 1);

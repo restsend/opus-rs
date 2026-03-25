@@ -9,7 +9,6 @@ use opus_rs::silk::structs::*;
 use opus_rs::{Application, OpusEncoder};
 use std::f32::consts::PI;
 
-
 /// Helper: generate a voiced-like sine wave at ~200 Hz for 16 kHz
 fn generate_voiced_signal(len: usize) -> Vec<i16> {
     let mut signal = vec![0i16; len];
@@ -58,11 +57,18 @@ fn test_silk_encode_frame_no_crash() {
     );
 
     assert_eq!(ret, 0, "silk_encode_frame should return 0 (no error)");
-    assert!(n_bytes_out > 0, "Encoded frame should produce some bytes, got {}", n_bytes_out);
+    assert!(
+        n_bytes_out > 0,
+        "Encoded frame should produce some bytes, got {}",
+        n_bytes_out
+    );
 
     // Verify pulses are not all zero (something was quantized)
     let pulse_sum: i32 = enc.pulses.iter().map(|&p| p.abs() as i32).sum();
-    println!("Encoded {} bytes, pulse energy = {}", n_bytes_out, pulse_sum);
+    println!(
+        "Encoded {} bytes, pulse energy = {}",
+        n_bytes_out, pulse_sum
+    );
     assert!(pulse_sum > 0, "Pulses should be non-zero for voiced input");
 }
 
@@ -137,15 +143,15 @@ fn test_lbrr_encoding_enabled() {
     let frame_size = 160; // 20ms at 8kHz
 
     // Encoder WITHOUT LBRR
-    let mut enc_no_fec = OpusEncoder::new(sample_rate, 1, Application::Voip)
-        .expect("Encoder creation failed");
+    let mut enc_no_fec =
+        OpusEncoder::new(sample_rate, 1, Application::Voip).expect("Encoder creation failed");
     enc_no_fec.bitrate_bps = 20000;
     enc_no_fec.use_cbr = false;
     enc_no_fec.use_inband_fec = false;
 
     // Encoder WITH LBRR
-    let mut enc_with_fec = OpusEncoder::new(sample_rate, 1, Application::Voip)
-        .expect("Encoder creation failed");
+    let mut enc_with_fec =
+        OpusEncoder::new(sample_rate, 1, Application::Voip).expect("Encoder creation failed");
     enc_with_fec.bitrate_bps = 20000;
     enc_with_fec.use_cbr = false;
     enc_with_fec.use_inband_fec = true;
@@ -172,7 +178,12 @@ fn test_lbrr_encoding_enabled() {
             .encode(&input, frame_size, &mut out_with_fec)
             .expect("Encode with FEC failed");
 
-        assert!(n_no_fec >= 3, "Frame {}: no-FEC packet too short: {}", frame_idx, n_no_fec);
+        assert!(
+            n_no_fec >= 3,
+            "Frame {}: no-FEC packet too short: {}",
+            frame_idx,
+            n_no_fec
+        );
         assert!(
             n_with_fec >= 3,
             "Frame {}: FEC packet too short: {}",
@@ -205,8 +216,8 @@ fn test_lbrr_flag_in_packet() {
     let sample_rate = 8000;
     let frame_size = 160;
 
-    let mut encoder = OpusEncoder::new(sample_rate, 1, Application::Voip)
-        .expect("Encoder creation failed");
+    let mut encoder =
+        OpusEncoder::new(sample_rate, 1, Application::Voip).expect("Encoder creation failed");
     encoder.bitrate_bps = 20000;
     encoder.use_inband_fec = true;
     encoder.packet_loss_perc = 10;

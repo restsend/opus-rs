@@ -9,12 +9,12 @@ fn configure_criterion() -> Criterion {
         .measurement_time(std::time::Duration::from_millis(500)) // 500ms per bench
         .warm_up_time(std::time::Duration::from_millis(100)) // 100ms warmup
 }
-use opus_rs::silk::define::*;
 use opus_rs::celt_lpc::autocorr;
 use opus_rs::kiss_fft::{KissCpx, KissFftState, opus_fft_impl};
 use opus_rs::modes::default_mode;
 use opus_rs::pvq::{alg_quant, encode_pulses, pvq_search};
 use opus_rs::range_coder::RangeCoder;
+use opus_rs::silk::define::*;
 use opus_rs::silk::lpc_analysis::silk_burg_modified_fix;
 use opus_rs::silk::nsq::silk_nsq;
 use opus_rs::silk::pitch_analysis::silk_pitch_analysis_core;
@@ -623,16 +623,7 @@ fn bench_celt_autocorr(c: &mut Criterion) {
             &(n, lag),
             |b, &(ns, lg)| {
                 let mut ac = vec![0.0f32; lg + 1];
-                b.iter(|| {
-                    autocorr(
-                        black_box(&x),
-                        black_box(&mut ac),
-                        None,
-                        0,
-                        lg,
-                        ns,
-                    )
-                });
+                b.iter(|| autocorr(black_box(&x), black_box(&mut ac), None, 0, lg, ns));
             },
         );
     }

@@ -73,7 +73,10 @@ impl RangeCoder {
             self.nbits_total += EC_SYM_BITS as i32;
             self.rng <<= EC_SYM_BITS;
             if self.rng == 0 {
-                debug_assert!(false, "normalize_decoder: rng=0 after shift, corrupt bitstream");
+                debug_assert!(
+                    false,
+                    "normalize_decoder: rng=0 after shift, corrupt bitstream"
+                );
                 self.error = 1;
                 self.rng = 1;
                 return;
@@ -83,8 +86,7 @@ impl RangeCoder {
             self.rem = self.read_byte() as i32;
 
             let combined_sym = ((sym << EC_SYM_BITS) | self.rem) >> (EC_SYM_BITS - EC_CODE_EXTRA);
-            self.val = ((self.val << EC_SYM_BITS)
-                + (EC_SYM_MAX & !combined_sym as u32) as u64)
+            self.val = ((self.val << EC_SYM_BITS) + (EC_SYM_MAX & !combined_sym as u32) as u64)
                 & (EC_CODE_TOP as u64 - 1);
         }
     }
@@ -160,7 +162,6 @@ impl RangeCoder {
         let mut used = self.nend_bits;
         if used < bits as i32 {
             loop {
-
                 let byte = if self.end_offs < self.storage {
                     self.end_offs += 1;
                     self.buf[(self.storage - self.end_offs) as usize]
@@ -307,24 +308,30 @@ impl RangeCoder {
         ret
     }
 
+    /// Decode a symbol using an inverse CDF table.
+    /// Uses do-while pattern like C opus for better performance.
     pub fn decode_icdf(&mut self, icdf: &[u8], ftb: u32) -> i32 {
         let mut s = self.rng;
         let d = self.val as u32;
         let r = s >> ftb;
-        let mut ret = -1;
+        let mut ret = 0;
         let mut t;
+
+        // Do-while loop: at least one iteration is guaranteed
+        // This matches C opus behavior and is faster for typical small icdf tables
         loop {
-            ret += 1;
             t = s;
-            s = r * (icdf[ret as usize] as u32);
+            s = r * (icdf[ret] as u32);
+            ret += 1;
             if d >= s {
                 break;
             }
         }
+
         self.val = (d - s) as u64;
         self.rng = t - s;
         self.normalize_decoder();
-        ret
+        (ret - 1) as i32
     }
 
     pub fn decode(&mut self, ft: u32) -> u32 {
@@ -434,17 +441,13 @@ impl RangeCoder {
         let shift = EC_SYM_BITS - nbits;
         let mask = ((1u32 << nbits) - 1) << shift;
         if self.offs > 0 {
-
             self.buf[0] = ((self.buf[0] as u32 & !mask) | (val << shift)) as u8;
         } else if self.rem >= 0 {
-
             self.rem = ((self.rem as u32 & !mask) | (val << shift)) as i32;
         } else if self.rng <= (EC_CODE_TOP >> nbits) {
-
             let mask64 = (mask as u64) << EC_CODE_SHIFT;
             self.val = (self.val & !mask64) | ((val as u64) << (EC_CODE_SHIFT + shift));
         } else {
-
             self.error = -1;
         }
     }
@@ -480,7 +483,6 @@ impl RangeCoder {
         }
 
         if self.error == 0 {
-
             for i in self.offs..(self.storage - self.end_offs) {
                 self.buf[i as usize] = 0;
             }

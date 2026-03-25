@@ -224,14 +224,14 @@ fn test_nlsf_interpolation_activated_at_complexity5() {
     let sample_rate = 8000;
     let frame_size = 160;
 
-    let mut encoder_interp = OpusEncoder::new(sample_rate, 1, Application::Voip)
-        .expect("Failed to create encoder");
+    let mut encoder_interp =
+        OpusEncoder::new(sample_rate, 1, Application::Voip).expect("Failed to create encoder");
     encoder_interp.complexity = 5; // NLSF interpolation activates at complexity >= 5
     encoder_interp.bitrate_bps = 20000;
     encoder_interp.use_cbr = false;
 
-    let mut encoder_no_interp = OpusEncoder::new(sample_rate, 1, Application::Voip)
-        .expect("Failed to create encoder");
+    let mut encoder_no_interp =
+        OpusEncoder::new(sample_rate, 1, Application::Voip).expect("Failed to create encoder");
     encoder_no_interp.complexity = 0; // No interpolation
     encoder_no_interp.bitrate_bps = 20000;
     encoder_no_interp.use_cbr = false;
@@ -251,7 +251,12 @@ fn test_nlsf_interpolation_activated_at_complexity5() {
         let n_interp = encoder_interp
             .encode(&input, frame_size, &mut out_interp)
             .expect("Encode with interpolation failed");
-        assert!(n_interp >= 3, "Frame {}: Interpolation output too short: {}", frame_idx, n_interp);
+        assert!(
+            n_interp >= 3,
+            "Frame {}: Interpolation output too short: {}",
+            frame_idx,
+            n_interp
+        );
         bytes_interp.push(n_interp);
 
         let mut out_no_interp = vec![0u8; 256];
@@ -291,8 +296,8 @@ fn test_nlsf_interpolation_40ms_frames() {
     let sample_rate = 8000;
     let frame_size = 320; // 40ms at 8kHz = 320 samples
 
-    let mut encoder = OpusEncoder::new(sample_rate, 1, Application::Voip)
-        .expect("Failed to create encoder");
+    let mut encoder =
+        OpusEncoder::new(sample_rate, 1, Application::Voip).expect("Failed to create encoder");
     encoder.complexity = 5;
     encoder.bitrate_bps = 20000;
     encoder.use_cbr = false;
@@ -326,8 +331,12 @@ fn test_nlsf_interp_coefficient_bounds() {
     let order = cb.order as usize;
 
     // Two consecutive NLSF frames
-    let prev_nlsf = [3000i16, 6000, 9000, 12000, 15000, 18000, 21000, 24000, 27000, 30000];
-    let curr_nlsf = [3100i16, 6100, 9100, 12100, 15100, 18100, 21100, 24100, 27100, 30100];
+    let prev_nlsf = [
+        3000i16, 6000, 9000, 12000, 15000, 18000, 21000, 24000, 27000, 30000,
+    ];
+    let curr_nlsf = [
+        3100i16, 6100, 9100, 12100, 15100, 18100, 21100, 24100, 27100, 30100,
+    ];
 
     // Test interpolation at different coefficient values (0, 1, 2, 3, 4)
     for interp_coef_q2 in 0..=4i16 {

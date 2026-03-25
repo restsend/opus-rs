@@ -43,14 +43,12 @@ pub fn silk_find_ltp_fix(
 
         extra_shifts = xx_shifts - xx_shifts_matrix;
         if extra_shifts > 0 {
-
             xx_shifts_vector = xx_shifts;
             for i in 0..(LTP_ORDER * LTP_ORDER) {
                 xxlp_ptr[i] = silk_rshift32(xxlp_ptr[i], extra_shifts);
             }
             nrg = silk_rshift32(nrg, extra_shifts);
         } else if extra_shifts < 0 {
-
             xx_shifts_vector = xx_shifts_matrix;
             xx = silk_rshift32(xx, -extra_shifts);
         } else {
@@ -96,7 +94,6 @@ pub fn silk_ltp_analysis_filter_fix(
     let mut ltp_res_ptr_idx = 0;
 
     for k in 0..nb_subfr {
-
         let valid_pitch = pitch_l[k].max(2);
         let x_lag_ptr_idx = x_ptr_idx as isize - valid_pitch as isize;
 

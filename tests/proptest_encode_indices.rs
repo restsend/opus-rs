@@ -1,8 +1,8 @@
+use opus_rs::range_coder::RangeCoder;
 use opus_rs::silk::define::*;
 use opus_rs::silk::encode_indices::silk_encode_indices;
 use opus_rs::silk::structs::SilkEncoderState;
 use opus_rs::silk::tables_nlsf::{SILK_NLSF_CB_NB_MB, SILK_NLSF_CB_WB};
-use opus_rs::range_coder::RangeCoder;
 
 use proptest::prelude::*;
 

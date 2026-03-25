@@ -1,7 +1,6 @@
 use crate::pitch::pitch_xcorr;
 
 pub fn lpc(lpc: &mut [f32], ac: &[f32], p: usize) {
-
     let mut error = ac[0];
     if error <= 1e-10 {
         for x in lpc.iter_mut() {
@@ -11,7 +10,6 @@ pub fn lpc(lpc: &mut [f32], ac: &[f32], p: usize) {
     }
 
     for i in 0..p {
-
         let mut rr = 0.0f32;
         for j in 0..i {
             rr += lpc[j] * ac[i - j];
@@ -76,7 +74,6 @@ pub fn autocorr(
 }
 
 pub fn celt_fir(x: &[f32], num: &[f32], y: &mut [f32], n: usize, ord: usize) {
-
     for i in 0..n {
         let mut sum = x[i];
         for j in 0..ord {
@@ -89,7 +86,6 @@ pub fn celt_fir(x: &[f32], num: &[f32], y: &mut [f32], n: usize, ord: usize) {
 }
 
 pub fn celt_iir(x: &[f32], den: &[f32], y: &mut [f32], n: usize, ord: usize, mem: &mut [f32]) {
-
     for i in 0..n {
         let mut sum = x[i];
         for j in 0..ord {

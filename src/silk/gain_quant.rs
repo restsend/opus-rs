@@ -23,7 +23,6 @@ pub fn silk_gains_quant(
     let mut double_step_size_threshold: i32;
 
     for k in 0..nb_subfr {
-
         let lin2log_val = silk_lin2log(gain_q16[k]);
         ind[k] = silk_smulwb(SCALE_Q16, lin2log_val - OFFSET) as i8;
 
@@ -33,7 +32,6 @@ pub fn silk_gains_quant(
         ind[k] = silk_limit_int(ind[k] as i32, 0, N_LEVELS_QGAIN - 1) as i8;
 
         if k == 0 && conditional == 0 {
-
             ind[k] = silk_limit_int(
                 ind[k] as i32,
                 (*prev_ind as i32) + MIN_DELTA_GAIN_QUANT,
@@ -41,7 +39,6 @@ pub fn silk_gains_quant(
             ) as i8;
             *prev_ind = ind[k];
         } else {
-
             ind[k] = ind[k] - *prev_ind;
 
             double_step_size_threshold =
@@ -85,10 +82,8 @@ pub fn silk_gains_dequant(
 
     for k in 0..nb_subfr {
         if k == 0 && conditional == 0 {
-
             *prev_ind = std::cmp::max(ind[k] as i32, (*prev_ind as i32) - 16) as i8;
         } else {
-
             ind_tmp = (ind[k] as i32) + MIN_DELTA_GAIN_QUANT;
 
             double_step_size_threshold =
@@ -135,7 +130,6 @@ pub fn silk_quant_ltp_gains(
 
     min_rate_dist_q7 = i32::MAX;
     for k in 0..3 {
-
         let gain_safety = 51;
 
         let cl_ptr = SILK_LTP_GAIN_BITS_Q5_PTRS[k];
@@ -170,11 +164,8 @@ pub fn silk_quant_ltp_gains(
 
             res_nrg_total_q15 = silk_add_pos_sat32(res_nrg_total_q15, res_nrg_q15);
             rate_dist_total_q7 = silk_add_pos_sat32(rate_dist_total_q7, rate_dist_subfr_q7);
-            sum_log_gain_tmp_q7 = 0.max(
-                sum_log_gain_tmp_q7
-                    + silk_lin2log(gain_q7 + gain_safety)
-                    - 896,
-            );
+            sum_log_gain_tmp_q7 =
+                0.max(sum_log_gain_tmp_q7 + silk_lin2log(gain_q7 + gain_safety) - 896);
         }
 
         if rate_dist_total_q7 <= min_rate_dist_q7 {
@@ -202,10 +193,7 @@ pub fn silk_quant_ltp_gains(
     } else {
         silk_rshift32(best_res_nrg_total_q15, 2)
     };
-    *pred_gain_db_q7 = silk_smulbb(
-        -3,
-        silk_lin2log(res_nrg_shift) - 1920,
-    );
+    *pred_gain_db_q7 = silk_smulbb(-3, silk_lin2log(res_nrg_shift) - 1920);
 }
 
 fn silk_float_to_fixed_q7(f: f32) -> i32 {

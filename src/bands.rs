@@ -828,7 +828,6 @@ pub fn quant_band(
         b_final <<= recombine;
 
         if let Some(lb_out) = lowband_out {
-
             let scale = (n0 as f32).sqrt();
             for j in 0..n0 {
                 lb_out[j] = scale * x[j];
