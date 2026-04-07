@@ -617,6 +617,210 @@ fn bench_opus_vs_c(c: &mut Criterion) {
     group.finish();
 }
 
+fn encode_audio_packet_c(input: &[f32], sample_rate: u32, frame_size: usize) -> Vec<u8> {
+    use opusic_sys::*;
+
+    let mut err = 0i32;
+    let enc =
+        unsafe { opus_encoder_create(sample_rate as i32, 1, OPUS_APPLICATION_AUDIO, &mut err) };
+    assert_eq!(err, OPUS_OK);
+
+    unsafe {
+        opus_encoder_ctl(enc, OPUS_SET_BITRATE_REQUEST, 64_000i32);
+        opus_encoder_ctl(enc, OPUS_SET_COMPLEXITY_REQUEST, 0i32);
+    }
+
+    let mut output = vec![0u8; 1024];
+    let len = unsafe {
+        opus_encode_float(
+            enc,
+            input.as_ptr(),
+            frame_size as i32,
+            output.as_mut_ptr(),
+            output.len() as i32,
+        )
+    };
+    assert!(len > 0);
+
+    unsafe {
+        opus_encoder_destroy(enc);
+    }
+
+    output.truncate(len as usize);
+    output
+}
+
+fn bench_opus_audio_split_vs_c(c: &mut Criterion) {
+    let mut group = c.benchmark_group("opus_audio_split_vs_c");
+
+    for &(sample_rate, frame_ms) in &[(48000u32, 20usize), (48000u32, 10usize)] {
+        let frame_size = sample_rate as usize * frame_ms / 1000;
+        let input = sine_f32(frame_size, sample_rate, 440);
+        let packet = encode_audio_packet_c(&input, sample_rate, frame_size);
+
+        group.throughput(Throughput::Bytes(frame_size as u64 * 2));
+
+        group.bench_with_input(
+            BenchmarkId::new(format!("rust_encode/{sample_rate}Hz/{frame_ms}ms"), "audio"),
+            &(sample_rate, frame_size),
+            |b, &(sr, fs)| {
+                let mut enc = OpusEncoder::new(sr as i32, 1, Application::Audio).unwrap();
+                enc.bitrate_bps = 64_000;
+                enc.complexity = 0;
+                let mut output = vec![0u8; 1024];
+                b.iter(|| {
+                    enc.encode(black_box(&input), fs, black_box(&mut output))
+                        .unwrap()
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new(format!("c_encode/{sample_rate}Hz/{frame_ms}ms"), "audio"),
+            &(sample_rate, frame_size),
+            |b, &(sr, fs)| {
+                use opusic_sys::*;
+
+                let mut err = 0i32;
+                let enc =
+                    unsafe { opus_encoder_create(sr as i32, 1, OPUS_APPLICATION_AUDIO, &mut err) };
+                assert_eq!(err, OPUS_OK);
+                unsafe {
+                    opus_encoder_ctl(enc, OPUS_SET_BITRATE_REQUEST, 64_000i32);
+                    opus_encoder_ctl(enc, OPUS_SET_COMPLEXITY_REQUEST, 0i32);
+                }
+
+                let mut output = vec![0u8; 1024];
+                b.iter(|| unsafe {
+                    opus_encode_float(
+                        enc,
+                        black_box(input.as_ptr()),
+                        fs as i32,
+                        output.as_mut_ptr(),
+                        output.len() as i32,
+                    )
+                });
+
+                unsafe {
+                    opus_encoder_destroy(enc);
+                }
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new(format!("rust_decode/{sample_rate}Hz/{frame_ms}ms"), "audio"),
+            &(sample_rate, frame_size),
+            |b, &(sr, fs)| {
+                let mut dec = OpusDecoder::new(sr as i32, 1).unwrap();
+                let mut pcm = vec![0.0f32; fs];
+                b.iter(|| {
+                    dec.decode(black_box(&packet), fs, black_box(&mut pcm))
+                        .unwrap();
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new(format!("c_decode/{sample_rate}Hz/{frame_ms}ms"), "audio"),
+            &(sample_rate, frame_size),
+            |b, &(sr, fs)| {
+                use opusic_sys::*;
+
+                let mut err = 0i32;
+                let dec = unsafe { opus_decoder_create(sr as i32, 1, &mut err) };
+                assert_eq!(err, OPUS_OK);
+                let mut pcm = vec![0.0f32; fs];
+
+                b.iter(|| unsafe {
+                    opus_decode_float(
+                        dec,
+                        black_box(packet.as_ptr()),
+                        packet.len() as i32,
+                        pcm.as_mut_ptr(),
+                        fs as i32,
+                        0,
+                    )
+                });
+
+                unsafe {
+                    opus_decoder_destroy(dec);
+                }
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new(
+                format!("rust_roundtrip/{sample_rate}Hz/{frame_ms}ms"),
+                "audio",
+            ),
+            &(sample_rate, frame_size),
+            |b, &(sr, fs)| {
+                let mut enc = OpusEncoder::new(sr as i32, 1, Application::Audio).unwrap();
+                enc.bitrate_bps = 64_000;
+                enc.complexity = 0;
+                let mut dec = OpusDecoder::new(sr as i32, 1).unwrap();
+                let mut output = vec![0u8; 1024];
+                let mut pcm = vec![0.0f32; fs];
+                b.iter(|| {
+                    let len = enc
+                        .encode(black_box(&input), fs, black_box(&mut output))
+                        .unwrap();
+                    dec.decode(black_box(&output[..len]), fs, black_box(&mut pcm))
+                        .unwrap();
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new(format!("c_roundtrip/{sample_rate}Hz/{frame_ms}ms"), "audio"),
+            &(sample_rate, frame_size),
+            |b, &(sr, fs)| {
+                use opusic_sys::*;
+
+                let mut err = 0i32;
+                let enc =
+                    unsafe { opus_encoder_create(sr as i32, 1, OPUS_APPLICATION_AUDIO, &mut err) };
+                assert_eq!(err, OPUS_OK);
+                let dec = unsafe { opus_decoder_create(sr as i32, 1, &mut err) };
+                assert_eq!(err, OPUS_OK);
+                unsafe {
+                    opus_encoder_ctl(enc, OPUS_SET_BITRATE_REQUEST, 64_000i32);
+                    opus_encoder_ctl(enc, OPUS_SET_COMPLEXITY_REQUEST, 0i32);
+                }
+
+                let mut output = vec![0u8; 1024];
+                let mut pcm = vec![0.0f32; fs];
+                b.iter(|| unsafe {
+                    let len = opus_encode_float(
+                        enc,
+                        black_box(input.as_ptr()),
+                        fs as i32,
+                        output.as_mut_ptr(),
+                        output.len() as i32,
+                    );
+                    if len > 0 {
+                        opus_decode_float(
+                            dec,
+                            black_box(output.as_ptr()),
+                            len,
+                            pcm.as_mut_ptr(),
+                            fs as i32,
+                            0,
+                        );
+                    }
+                });
+
+                unsafe {
+                    opus_encoder_destroy(enc);
+                    opus_decoder_destroy(dec);
+                }
+            },
+        );
+    }
+
+    group.finish();
+}
+
 fn bench_celt_autocorr(c: &mut Criterion) {
     let mut group = c.benchmark_group("celt_autocorr");
 
@@ -781,6 +985,7 @@ criterion_group! {
         bench_silk_nsq,
         bench_silk_pitch_analysis_core,
         bench_opus_vs_c,
+        bench_opus_audio_split_vs_c,
         bench_celt_autocorr,
         bench_fft,
         bench_mdct,

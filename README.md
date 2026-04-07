@@ -45,7 +45,7 @@ let samples = decoder.decode(&output[..bytes], 320, &mut pcm).unwrap();
 cargo test
 ```
 
-All 35+ tests pass, covering MDCT identity, PVQ consistency, SILK/CELT/Hybrid encode/decode roundtrip, resampler tests, and more.
+All 170+ tests pass, covering MDCT identity, PVQ consistency, SILK/CELT/Hybrid encode/decode roundtrip, resampler tests, and more.
 
 ### WAV Roundtrip
 
@@ -62,15 +62,31 @@ cargo run --example stereo_test
 
 ## Performance: Full Opus Encoder + Decoder Roundtrip (complexity=0)
 
+Latest measurements are from 2026-04-07 (`cargo bench --bench opus_bench -- opus_vs_c --measurement-time 1`).
+
 | Config           | Rust      | C (opus-sys) | C faster by |
 |------------------|-----------|--------------|-------------|
-| 8kHz/20ms VoIP   | 16.8 µs   | 13.4 µs      | 1.25×       |
-| 16kHz/20ms VoIP  | 29.7 µs   | 21.4 µs      | 1.39×       |
-| 16kHz/10ms VoIP  | 16.0 µs   | 13.0 µs      | 1.23×       |
-| 48kHz/20ms Audio | 126.7 µs  | 42.3 µs      | 3.00×       |
-| 48kHz/10ms Audio | 70.2 µs   | 17.6 µs      | 3.99×       |
+| 8kHz/20ms VoIP   | 16.68 µs  | 13.35 µs     | 1.25×       |
+| 16kHz/20ms VoIP  | 29.33 µs  | 21.21 µs     | 1.38×       |
+| 16kHz/10ms VoIP  | 15.87 µs  | 13.01 µs     | 1.22×       |
+| 48kHz/20ms Audio | 126.21 µs | 24.35 µs     | 5.18×       |
+| 48kHz/10ms Audio | 70.19 µs  | 13.09 µs     | 5.36×       |
 
-SILK (VoIP) is ~1.3× slower than C; CELT (Audio) is ~3-4× slower.
+SILK (VoIP) is ~1.2-1.4× slower than C; CELT-heavy 48k Audio is ~5.2-5.4× slower.
+
+## Performance: 48k Audio Cost Split (encode/decode/roundtrip)
+
+Latest measurements are from 2026-04-07 (`cargo bench --bench opus_bench -- opus_audio_split_vs_c --measurement-time 1`).
+
+| Path @ 48k       | Rust      | C (opus-sys) | C faster by |
+|------------------|-----------|--------------|-------------|
+| 20ms encode      | 79.11 µs  | 14.75 µs     | 5.36×       |
+| 20ms decode      | 24.26 µs  | 9.50 µs      | 2.55×       |
+| 20ms roundtrip   | 126.21 µs | 24.35 µs     | 5.18×       |
+| 10ms encode      | 46.21 µs  | 7.93 µs      | 5.83×       |
+| 10ms decode      | 14.88 µs  | 4.86 µs      | 3.06×       |
+| 10ms roundtrip   | 70.19 µs  | 13.09 µs     | 5.36×       |
+
 
 ## License
 

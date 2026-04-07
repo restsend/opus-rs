@@ -101,6 +101,7 @@ impl RangeCoder {
         }
     }
 
+    #[inline(always)]
     pub fn enc_uint(&mut self, fl: u32, ft: u32) {
         if ft > (1 << 8) {
             let mut ft = ft - 1;
@@ -115,6 +116,7 @@ impl RangeCoder {
         }
     }
 
+    #[inline(always)]
     pub fn dec_uint(&mut self, ft: u32) -> u32 {
         if ft > (1 << 8) {
             let mut ft = ft - 1;
@@ -182,6 +184,7 @@ impl RangeCoder {
         ret
     }
 
+    #[inline(always)]
     pub fn tell_frac(&self) -> i32 {
         static CORRECTION: [u32; 8] = [35733, 38967, 42495, 46340, 50535, 55109, 60097, 65535];
         let nbits = self.nbits_total << BITRES;
@@ -195,6 +198,7 @@ impl RangeCoder {
         nbits - l
     }
 
+    #[inline(always)]
     pub fn tell(&self) -> i32 {
         (self.tell_frac() + 7) >> 3
     }
@@ -227,6 +231,7 @@ impl RangeCoder {
         }
     }
 
+    #[inline(always)]
     pub fn encode(&mut self, fl: u32, fh: u32, ft: u32) {
         if ft == 0 {
             return;
@@ -334,6 +339,7 @@ impl RangeCoder {
         (ret - 1) as i32
     }
 
+    #[inline(always)]
     pub fn decode(&mut self, ft: u32) -> u32 {
         let r = self.rng / ft;
         self.ext = r;
@@ -341,6 +347,7 @@ impl RangeCoder {
         ft - ft.min(s + 1)
     }
 
+    #[inline(always)]
     pub fn update(&mut self, fl: u32, fh: u32, ft: u32) {
         let s = self.ext * (ft - fh);
         self.val -= s as u64;

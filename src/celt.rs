@@ -1027,7 +1027,6 @@ impl CeltEncoder {
         }
 
         let buf_stride = frame_size + overlap;
-        self.w_in_buf[..buf_stride * channels].fill(0.0);
         let in_buf = &mut self.w_in_buf[..buf_stride * channels];
         for c in 0..channels {
             let channel_offset = c * syn_mem_size;
@@ -1073,7 +1072,6 @@ impl CeltEncoder {
             (false, 0.0f32, COMBFILTER_MINPERIOD)
         };
 
-        self.w_freq[..frame_size * channels].fill(0.0);
         let freq = &mut self.w_freq[..frame_size * channels];
         let (shift, b) = if is_transient {
             (mode.max_lm, 1 << lm)
@@ -1106,11 +1104,9 @@ impl CeltEncoder {
             }
         }
 
-        self.w_band_e[..nb_ebands * channels].fill(0.0);
         let band_e = &mut self.w_band_e[..nb_ebands * channels];
         compute_band_energies(mode, &freq, band_e, nb_ebands, channels, lm);
 
-        self.w_x[..frame_size * channels].fill(0.0);
         let x = &mut self.w_x[..frame_size * channels];
         normalise_bands(
             mode,
@@ -1126,7 +1122,6 @@ impl CeltEncoder {
             let _ = freq[0];
         }
 
-        self.w_band_log_e[..nb_ebands * channels].fill(0.0);
         let band_log_e = &mut self.w_band_log_e[..nb_ebands * channels];
         crate::bands::amp2log2(mode, nb_ebands, nb_ebands, &band_e, band_log_e, channels);
 
@@ -1410,7 +1405,6 @@ impl CeltEncoder {
         );
 
         {
-            self.w_band_amp_synth[..nb_ebands * channels].fill(0.0);
             let band_amp_synth = &mut self.w_band_amp_synth[..nb_ebands * channels];
             log2amp(mode, nb_ebands, band_amp_synth, &self.old_band_e, channels);
             self.w_freq_synth[..frame_size * channels].fill(0.0);

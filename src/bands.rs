@@ -67,12 +67,30 @@ pub fn bitexact_log2tan(isin: i32, icos: i32) -> i32 {
         - fract_mul(icos_shifted, fract_mul(icos_shifted, -2597) + 7932)
 }
 
+#[inline(always)]
 fn celt_sudiv(n: i32, d: i32) -> i32 {
     if n < 0 {
         -((-n + (d >> 1)) / d)
     } else {
         (n + (d >> 1)) / d
     }
+}
+
+#[inline(always)]
+fn isqrt32(mut val: u32) -> u32 {
+    let mut g = 0u32;
+    let mut bshift = ((32 - val.leading_zeros()) as i32 - 1) >> 1;
+    let mut b = 1u32 << bshift;
+    while bshift >= 0 {
+        let t = (((g << 1) + b) as u64) << bshift;
+        if t <= val as u64 {
+            g += b;
+            val -= t as u32;
+        }
+        b >>= 1;
+        bshift -= 1;
+    }
+    g
 }
 
 pub const SPREAD_NONE: i32 = 0;
@@ -194,6 +212,7 @@ pub fn haar1(x: &mut [f32], n0: usize, stride: usize) {
     }
 }
 
+#[inline(always)]
 pub fn compute_qn(n: usize, b: i32, offset: i32, pulse_cap: i32, stereo: bool) -> i32 {
     static EXP2_TABLE8: [i16; 8] = [16384, 17866, 19483, 21247, 23170, 25267, 27554, 30048];
     let mut n2 = (2 * n as i32) - 1;
@@ -218,6 +237,7 @@ pub fn compute_qn(n: usize, b: i32, offset: i32, pulse_cap: i32, stereo: bool) -
     }
 }
 
+#[inline(always)]
 pub fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i32 {
     let mut emid = 1e-15f32;
     let mut eside = 1e-15f32;
@@ -260,7 +280,9 @@ fn celt_atan2p_norm(y: f32, x: f32) -> f32 {
         let x2 = x * x;
         ATAN2_2_OVER_PI
             * x
-            * (1.0 + x2 * (A03 + x2 * (A05 + x2 * (A07 + x2 * (A09 + x2 * (A11 + x2 * (A13 + x2 * A15)))))))
+            * (1.0
+                + x2 * (A03
+                    + x2 * (A05 + x2 * (A07 + x2 * (A09 + x2 * (A11 + x2 * (A13 + x2 * A15)))))))
     }
     if x * x + y * y < 1e-18 {
         return 0.0;
@@ -308,7 +330,7 @@ pub fn compute_theta(
         itheta = stereo_itheta(x, y, stereo, n);
     }
 
-    let tell_start = ctx.rc.tell() << 3;
+    let tell_start = ctx.rc.tell_frac();
 
     if qn != 1 {
         if ctx.encode {
@@ -316,8 +338,6 @@ pub fn compute_theta(
                 itheta = (itheta * qn + 8192) >> 14;
                 if !stereo && ctx.avoid_split_noise && itheta > 0 && itheta < qn {
                     let unquantized = (itheta * 16384) / qn;
-                    // Match C opus: use bitexact cosine approximation instead of libm cosf.
-                    // This is both faster and keeps split-noise gating numerically aligned.
                     let imid = bitexact_cos(unquantized as i16) as i32;
                     let iside = bitexact_cos((16384 - unquantized) as i16) as i32;
                     let delta =
@@ -383,8 +403,7 @@ pub fn compute_theta(
             if ctx.encode {
                 ctx.rc.enc_uint(itheta as u32, (qn + 1) as u32);
             } else {
-                let itheta_dec = ctx.rc.dec_uint((qn + 1) as u32) as i32;
-                itheta = itheta_dec;
+                itheta = ctx.rc.dec_uint((qn + 1) as u32) as i32;
             }
         } else {
             let ft = ((qn >> 1) + 1) * ((qn >> 1) + 1);
@@ -403,19 +422,19 @@ pub fn compute_theta(
             } else {
                 let fm = ctx.rc.decode(ft as u32) as i32;
                 if fm < (((qn >> 1) * ((qn >> 1) + 1)) >> 1) {
-                    itheta = (((8 * fm + 1) as f32).sqrt() as i32 - 1) >> 1;
+                    itheta = (isqrt32((8 * fm + 1) as u32) as i32 - 1) >> 1;
                     let fl = (itheta * (itheta + 1)) >> 1;
                     let fs = itheta + 1;
                     ctx.rc.update(fl as u32, (fl + fs) as u32, ft as u32);
                 } else {
-                    itheta = (2 * (qn + 1) - (((8 * (ft - fm - 1) + 1) as f32).sqrt() as i32)) >> 1;
+                    itheta = (2 * (qn + 1) - isqrt32((8 * (ft - fm - 1) + 1) as u32) as i32) >> 1;
                     let fs = qn + 1 - itheta;
                     let fl = ft - (((qn + 1 - itheta) * (qn + 2 - itheta)) >> 1);
                     ctx.rc.update(fl as u32, (fl + fs) as u32, ft as u32);
                 }
             }
         }
-        itheta = (itheta as i64 * 16384 + qn as i64 / 2) as i32 / qn;
+        itheta = (itheta * 16384 + (qn >> 1)) / qn;
     } else {
         if stereo && ctx.i >= ctx.intensity {
             if ctx.encode {
@@ -441,7 +460,7 @@ pub fn compute_theta(
     }
 
     sctx.itheta = itheta;
-    sctx.qalloc = (ctx.rc.tell() << 3) - tell_start;
+    sctx.qalloc = ctx.rc.tell_frac() - tell_start;
 
     if itheta == 0 {
         sctx.imid = 32767;
@@ -454,9 +473,6 @@ pub fn compute_theta(
         sctx.delta = 16384;
         *fill &= !((1 << b_blocks) - 1);
     } else {
-        // Use the same polynomial cos approximation as C opus (bitexact_cos)
-        // to avoid expensive libm cosf calls.
-        // bitexact_cos(x) for x in [0, 16384] maps to cos(x * PI/2 / 16384) * 32768
         let imid = bitexact_cos(itheta as i16);
         sctx.imid = imid as i32;
         let iside = bitexact_cos((16384 - itheta) as i16);
