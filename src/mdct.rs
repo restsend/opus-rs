@@ -88,7 +88,10 @@ impl MdctLookup {
 
         // Assert caller invariants so LLVM can prove all loop accesses in-bounds
         // and eliminate per-element conditional checks, enabling auto-vectorization.
-        assert!(input.len() >= n + overlap);
+        // Max input index accessed = n/2 + overlap/2 - 1 (see loop analysis), so we need
+        // at least n/2 + overlap/2 elements. n + overlap is the theoretical over-estimate
+        // but the actual accesses stay within n/2 + overlap/2 due to the fold structure.
+        assert!(input.len() >= n2 + overlap2);
         assert!(window.len() >= overlap);
 
         {
@@ -222,37 +225,60 @@ impl MdctLookup {
 
         opus_fft_impl(st, f2);
 
+        // Pre-rotate: Write to temp buffer starting at overlap2 (like C's out+(overlap>>1))
+        let mut temp = vec![0.0f32; n + overlap];
         for i in 0..n4 {
-            output[overlap2 + 2 * i] = f2[i].r;
-            output[overlap2 + 2 * i + 1] = f2[i].i;
+            temp[overlap2 + 2 * i] = f2[i].r;
+            temp[overlap2 + 2 * i + 1] = f2[i].i;
         }
 
+        // Post-rotate from both ends
+        // C reads re=yp0[1], im=yp0[0] (swapped because using FFT instead of IFFT)
         for i in 0..((n4 + 1) >> 1) {
-            let re0 = output[overlap2 + 2 * i + 1];
-            let im0 = output[overlap2 + 2 * i];
+            let im0 = temp[overlap2 + 2 * i];
+            let re0 = temp[overlap2 + 2 * i + 1];
             let t0_0 = trig[i];
             let t1_0 = trig[n4 + i];
 
             let yr0 = re0 * t0_0 + im0 * t1_0;
             let yi0 = re0 * t1_0 - im0 * t0_0;
 
-            let re1 = output[overlap2 + n2 - 1 - 2 * i];
-            let im1 = output[overlap2 + n2 - 2 - 2 * i];
+            let im1 = temp[overlap2 + n2 - 2 - 2 * i];
+            let re1 = temp[overlap2 + n2 - 1 - 2 * i];
             let t0_1 = trig[n4 - i - 1];
             let t1_1 = trig[n2 - i - 1];
 
             let yr1 = re1 * t0_1 + im1 * t1_1;
             let yi1 = re1 * t1_1 - im1 * t0_1;
 
-            output[overlap2 + 2 * i] = yr0;
-            output[overlap2 + n2 - 1 - 2 * i] = yi0;
-            output[overlap2 + n2 - 2 - 2 * i] = yr1;
-            output[overlap2 + 2 * i + 1] = yi1;
+            temp[overlap2 + 2 * i] = yr0;
+            temp[overlap2 + n2 - 1 - 2 * i] = yi0;
+            temp[overlap2 + n2 - 2 - 2 * i] = yr1;
+            temp[overlap2 + 2 * i + 1] = yi1;
         }
 
-        // TDAC - mirror on both sides
+        // TDAC: Copy to output with windowing
+        // C code's TDAC reads from:
+        //   yp1 = out[0..overlap/2) - previous frame's overlap data (preserved by caller)
+        //   xp1 = out[overlap-1..overlap/2) - current frame's IMDCT output
+        // The caller must preserve overlap samples between frames for TDAC to work correctly.
+
+        // Copy post-rotated data to output[overlap/2..overlap/2+n2]
+        // This is where the IMDCT output goes (matching C's post-rotation output location)
+        for i in 0..n2 {
+            output[overlap2 + i] = temp[overlap2 + i];
+        }
+
+        // Apply TDAC to overlap region
+        // C code: xp1 = out+overlap-1, yp1 = out
+        // x1 = *xp1 (reads from out[overlap-1] down to out[overlap/2])
+        // x2 = *yp1 (reads from out[0] up to out[overlap/2-1])
+        // The key insight: x2 comes from the START of the output buffer,
+        // which contains the previous frame's overlap data (preserved by caller)
         for i in 0..overlap2 {
+            // x1: current frame's IMDCT output at the end of overlap region
             let x1 = output[overlap - 1 - i];
+            // x2: previous frame's overlap data at the start of buffer (or zeros for first frame)
             let x2 = output[i];
             let wp1 = window[i];
             let wp2 = window[overlap - 1 - i];

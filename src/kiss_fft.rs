@@ -183,7 +183,7 @@ impl KissFftState {
 
         Some(Self {
             nfft,
-            scale: base.scale,
+            scale: 1.0 / nfft as f32, // Each sub-FFT has its own scale based on its size
             shift,
             factors,
             bitrev,

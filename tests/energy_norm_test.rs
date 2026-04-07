@@ -1,4 +1,4 @@
-use opus_rs::bands::{compute_band_energies, denormalise_bands, normalise_bands};
+use opus_rs::bands::{compute_band_energies, denormalise_bands, log2amp, normalise_bands};
 use opus_rs::modes::default_mode;
 
 #[test]
@@ -38,13 +38,19 @@ fn test_energy_norm_denorm() {
 
     println!("Normalized x[0..10]: {:?}", &x[0..10]);
 
+    // Convert band_log_e through log2amp before denormalise_bands, matching how the
+    // codec uses these functions: log2amp adds e_means (keeping log domain),
+    // then denormalise_bands applies exp2 and multiplies the normalised signal.
+    let mut band_amp = vec![0.0f32; nb_ebands * channels];
+    log2amp(mode, nb_ebands, &mut band_amp, &band_log_e, channels);
+
     // Denormalize
     let mut freq_restored = vec![0.0f32; frame_size];
     denormalise_bands(
         mode,
         &x,
         &mut freq_restored,
-        &band_log_e,
+        &band_amp,
         0,
         nb_ebands,
         channels,

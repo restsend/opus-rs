@@ -92,9 +92,9 @@ pub const EBAND_5MS: [i16; 22] = [
 impl CeltMode {
     pub fn new_48000_960_120() -> Self {
         let short_mdct_size = 120;
-        let nb_short_mdcts = 8;
+        let nb_short_mdcts = 8; // = 1 << max_lm; matches C's nbShortMdcts
 
-        let max_lm = 4usize;
+        let max_lm = 3usize; // log2(nb_short_mdcts) = log2(8) = 3, matches C's maxLM
         let mdct = MdctLookup::new(2 * short_mdct_size * nb_short_mdcts, max_lm);
         Self {
             fs: 48000,

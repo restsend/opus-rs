@@ -558,6 +558,208 @@ fn comb_filter(
     }
 }
 
+/// Compute CELT pitch pre-filter parameters and apply the filter to in_buf.
+/// Returns (pf_on, gain1, pitch_index).
+/// Matches C's run_prefilter() in celt_encoder.c.
+fn run_prefilter(
+    in_buf: &mut [f32],
+    prefilter_mem: &mut [f32],
+    prefilter_period: usize,
+    prefilter_gain: f32,
+    prefilter_tapset: i32,
+    window: &[f32],
+    channels: usize,
+    frame_size: usize,
+    overlap: usize,
+) -> (bool, f32, usize) {
+    let max_period = COMBFILTER_MAXPERIOD; // 1024
+    let min_period = COMBFILTER_MINPERIOD; // 15
+    let buf_stride = frame_size + overlap;
+    let pre_size = max_period + frame_size; // 1984
+
+    // Build pre[c] = [prefilter_mem[c*max_period..(c+1)*max_period] | in_buf current frame]
+    let mut pre = vec![0.0f32; channels * pre_size];
+    for c in 0..channels {
+        pre[c * pre_size..c * pre_size + max_period]
+            .copy_from_slice(&prefilter_mem[c * max_period..(c + 1) * max_period]);
+        pre[c * pre_size + max_period..c * pre_size + pre_size].copy_from_slice(
+            &in_buf[c * buf_stride + overlap..c * buf_stride + overlap + frame_size],
+        );
+    }
+
+    // Downsample for pitch analysis
+    let pitch_buf_len = (max_period + frame_size) >> 1; // 992
+    let mut pitch_buf = vec![0.0f32; pitch_buf_len];
+    {
+        let pre_slices: Vec<&[f32]> = (0..channels)
+            .map(|c| &pre[c * pre_size..c * pre_size + pre_size])
+            .collect();
+        crate::pitch::pitch_downsample(&pre_slices, &mut pitch_buf, pitch_buf_len, channels, 2);
+    }
+
+    // Find pitch period
+    let search_max = max_period - 3 * min_period; // 979
+    let pitch_result = crate::pitch::pitch_search(
+        &pitch_buf[max_period >> 1..],
+        &pitch_buf,
+        frame_size,
+        search_max,
+    );
+    let mut pitch_index = (max_period - pitch_result).min(max_period - 2);
+
+    // Refine pitch and compute gain via remove_doubling
+    let gain1_raw = crate::pitch::remove_doubling(
+        &pitch_buf,
+        max_period,
+        min_period,
+        frame_size,
+        &mut pitch_index,
+        prefilter_period,
+        prefilter_gain,
+    );
+    let mut gain1 = gain1_raw * 0.7; // C: MULT16_16_Q15(0.7, gain1)
+
+    // Gain threshold
+    let mut pf_threshold = 0.2f32;
+    if (pitch_index as i32 - prefilter_period as i32).unsigned_abs() as usize * 10 > pitch_index {
+        pf_threshold += 0.2;
+    }
+    if prefilter_gain > 0.4 {
+        pf_threshold -= 0.1;
+    }
+    if prefilter_gain > 0.55 {
+        pf_threshold -= 0.1;
+    }
+    pf_threshold = pf_threshold.max(0.2);
+
+    let pf_on;
+    if gain1 < pf_threshold {
+        gain1 = 0.0;
+        pf_on = false;
+    } else {
+        if (gain1 - prefilter_gain).abs() < 0.1 {
+            gain1 = prefilter_gain;
+        }
+        let qg = ((gain1 * 32.0 / 3.0 + 0.5).floor() as i32 - 1).clamp(0, 7);
+        gain1 = 0.09375 * (qg + 1) as f32;
+        pf_on = true;
+    }
+
+    // Compute "before" energy to check if filter helps
+    let mut before = vec![0.0f32; channels];
+    for c in 0..channels {
+        for i in 0..frame_size {
+            before[c] += in_buf[c * buf_stride + overlap + i].abs();
+        }
+    }
+
+    // Apply the comb pre-filter (negative gain) to in_buf
+    // offset = shortMdctSize - overlap = 120 - 120 = 0 for 20ms at 48kHz
+    let offset = 0usize; // mode.short_mdct_size - overlap (always 0 for 20ms frames)
+    let prev_period = prefilter_period.max(COMBFILTER_MINPERIOD);
+
+    for c in 0..channels {
+        if offset > 0 {
+            // First segment uses old period/gain only
+            let pre_c = &pre[c * pre_size..];
+            comb_filter(
+                in_buf,
+                pre_c,
+                c * buf_stride + overlap,
+                max_period,
+                prev_period,
+                prev_period,
+                offset,
+                -prefilter_gain,
+                -prefilter_gain,
+                prefilter_tapset,
+                prefilter_tapset,
+                window,
+                0,
+            );
+        }
+
+        // Second segment: transition from old period/gain to new
+        {
+            let pre_c = &pre[c * pre_size..];
+            comb_filter(
+                in_buf,
+                pre_c,
+                c * buf_stride + overlap + offset,
+                max_period + offset,
+                prev_period,
+                pitch_index,
+                frame_size - offset,
+                -prefilter_gain,
+                -gain1,
+                prefilter_tapset,
+                0, // tapset for new period (simplified: always 0)
+                window,
+                overlap,
+            );
+        }
+    }
+
+    // Compute "after" energy
+    let mut after = vec![0.0f32; channels];
+    for c in 0..channels {
+        for i in 0..frame_size {
+            after[c] += in_buf[c * buf_stride + overlap + i].abs();
+        }
+    }
+
+    // Check if filter helped: revert if any channel got worse
+    let cancel_pitch = (0..channels).any(|c| after[c] > before[c]);
+
+    if cancel_pitch {
+        // Restore original signal from pre
+        for c in 0..channels {
+            in_buf[c * buf_stride + overlap..c * buf_stride + overlap + frame_size]
+                .copy_from_slice(
+                    &pre[c * pre_size + max_period..c * pre_size + max_period + frame_size],
+                );
+        }
+        // Update prefilter_mem with current frame
+        for c in 0..channels {
+            if frame_size >= max_period {
+                prefilter_mem[c * max_period..(c + 1) * max_period].copy_from_slice(
+                    &pre[c * pre_size + frame_size..c * pre_size + frame_size + max_period],
+                );
+            } else {
+                let shift = max_period - frame_size;
+                prefilter_mem.copy_within(
+                    c * max_period + frame_size..(c + 1) * max_period,
+                    c * max_period,
+                );
+                prefilter_mem[c * max_period + shift..(c + 1) * max_period].copy_from_slice(
+                    &pre[c * pre_size + max_period..c * pre_size + max_period + frame_size],
+                );
+            }
+        }
+        return (false, 0.0, pitch_index);
+    }
+
+    // Update prefilter_mem with current frame
+    for c in 0..channels {
+        if frame_size >= max_period {
+            prefilter_mem[c * max_period..(c + 1) * max_period].copy_from_slice(
+                &pre[c * pre_size + frame_size..c * pre_size + frame_size + max_period],
+            );
+        } else {
+            let shift = max_period - frame_size;
+            prefilter_mem.copy_within(
+                c * max_period + frame_size..(c + 1) * max_period,
+                c * max_period,
+            );
+            prefilter_mem[c * max_period + shift..(c + 1) * max_period].copy_from_slice(
+                &pre[c * pre_size + max_period..c * pre_size + max_period + frame_size],
+            );
+        }
+    }
+
+    (pf_on, gain1, pitch_index)
+}
+
 /// Max nb_ebands * max channels
 #[allow(dead_code)]
 const MAX_EBANDS_X_CH: usize = 21 * 2;
@@ -750,7 +952,7 @@ impl CeltEncoder {
     }
 
     pub fn encode(&mut self, pcm: &[f32], frame_size: usize, rc: &mut RangeCoder) {
-        self.encode_impl(pcm, frame_size, rc, 0)
+        self.encode_impl(pcm, frame_size, rc, 0, None)
     }
 
     pub fn encode_with_start_band(
@@ -760,7 +962,19 @@ impl CeltEncoder {
         rc: &mut RangeCoder,
         start_band: usize,
     ) {
-        self.encode_impl(pcm, frame_size, rc, start_band)
+        self.encode_impl(pcm, frame_size, rc, start_band, None)
+    }
+
+    /// Encode with explicit total_bits (for Hybrid mode where SILK has already used some bits)
+    pub fn encode_with_budget(
+        &mut self,
+        pcm: &[f32],
+        frame_size: usize,
+        rc: &mut RangeCoder,
+        start_band: usize,
+        total_bits: i32,
+    ) {
+        self.encode_impl(pcm, frame_size, rc, start_band, Some(total_bits))
     }
 
     fn encode_impl(
@@ -769,6 +983,7 @@ impl CeltEncoder {
         frame_size: usize,
         rc: &mut RangeCoder,
         start_band: usize,
+        explicit_total_bits: Option<i32>,
     ) {
         let mut max_pcm = 0.0f32;
         for &pv in pcm[..frame_size].iter() {
@@ -839,9 +1054,24 @@ impl CeltEncoder {
             0.0,
         );
 
-        let pf_on = false;
-        let gain1 = 0.0f32;
-        let pitch_index = 0usize;
+        // In hybrid mode (start_band != 0), the prefilter is disabled per the reference
+        // (enabled = !hybrid in celt_encoder.c). Applying it would produce incorrect
+        // combfilter cancellation in the decoder since SILK handles the low bands separately.
+        let (pf_on, gain1, pitch_index) = if start_band == 0 {
+            run_prefilter(
+                in_buf,
+                &mut self.prefilter_mem,
+                self.prefilter_period,
+                self.prefilter_gain,
+                self.prefilter_tapset,
+                mode.window,
+                channels,
+                frame_size,
+                overlap,
+            )
+        } else {
+            (false, 0.0f32, COMBFILTER_MINPERIOD)
+        };
 
         self.w_freq[..frame_size * channels].fill(0.0);
         let freq = &mut self.w_freq[..frame_size * channels];
@@ -900,7 +1130,8 @@ impl CeltEncoder {
         let band_log_e = &mut self.w_band_log_e[..nb_ebands * channels];
         crate::bands::amp2log2(mode, nb_ebands, nb_ebands, &band_e, band_log_e, channels);
 
-        let total_bits = (rc.buf.len() * 8) as i32;
+        // Use explicit total_bits if provided (for Hybrid mode), otherwise calculate from buffer
+        let total_bits = explicit_total_bits.unwrap_or_else(|| (rc.buf.len() * 8) as i32);
         self.w_error[..nb_ebands * channels].fill(0.0);
         let error = &mut self.w_error[..nb_ebands * channels];
 
@@ -910,7 +1141,8 @@ impl CeltEncoder {
             rc.encode_bit_logp(silence, 15);
         }
 
-        if !silence && rc.tell() + 16 <= total_bits {
+        // Prefilter bit is only written in non-hybrid mode (start_band == 0)
+        if start_band == 0 && !silence && rc.tell() + 16 <= total_bits {
             rc.encode_bit_logp(pf_on, 1);
             if pf_on {
                 let qg = (gain1 / 0.09375 - 1.0 + 0.5).floor() as i32;
@@ -962,14 +1194,15 @@ impl CeltEncoder {
             );
         }
 
-        let intra_ener = false;
+        // Use intra energy mode for the first frame (when old_band_e is still at initial value)
+        let intra_ener = self.old_band_e[0] <= -27.0;
         quant_coarse_energy(
             mode,
             start_band,
             nb_ebands,
             &band_log_e,
             &mut self.old_band_e,
-            (total_bits << 3) as u32,
+            total_bits as u32,
             error,
             rc,
             channels,
@@ -1053,22 +1286,18 @@ impl CeltEncoder {
 
         self.w_offsets[..nb_ebands].fill(0);
         let offsets = &mut self.w_offsets[..nb_ebands];
-        let dynalloc_logp = 6i32;
+        let mut dynalloc_logp = 6i32;
         let total_bits_bitres = total_bits << BITRES;
         let total_boost = 0i32;
-        {
-            for i in 0..nb_ebands {
-                let dynalloc_loop_logp = dynalloc_logp;
-                let boost = 0i32;
-                let tell_frac = rc.tell() << BITRES;
-
-                if tell_frac + (dynalloc_loop_logp << BITRES) < total_bits_bitres - total_boost
-                    && boost < cap[i]
-                {
-                    rc.encode_bit_logp(false, dynalloc_loop_logp as u32);
-                }
-                offsets[i] = boost;
+        // Dynamic allocation: for each band, write one FALSE bit to indicate no boost.
+        // The decoder reads matching FALSE bits to confirm zero allocation increase.
+        for i in 0..nb_ebands {
+            let tell_frac = rc.tell() << BITRES;
+            if tell_frac + (dynalloc_logp << BITRES) >= total_bits_bitres - total_boost {
+                break;
             }
+            rc.encode_bit_logp(false, dynalloc_logp as u32);
+            offsets[i] = 0;
         }
 
         let alloc_trim = alloc_trim_analysis(
@@ -1352,9 +1581,34 @@ impl CeltDecoder {
         self.decode_impl(compressed, frame_size, pcm, start_band)
     }
 
+    /// Decode from an existing RangeCoder (for Hybrid mode where SILK has already consumed bits)
+    pub fn decode_from_range_coder(
+        &mut self,
+        rc: &mut RangeCoder,
+        total_bits: i32,
+        frame_size: usize,
+        pcm: &mut [f32],
+        start_band: usize,
+    ) -> usize {
+        self.decode_impl_from_rc(rc, total_bits, frame_size, pcm, start_band)
+    }
+
     fn decode_impl(
         &mut self,
         compressed: &[u8],
+        frame_size: usize,
+        pcm: &mut [f32],
+        start_band: usize,
+    ) -> usize {
+        let total_bits = (compressed.len() * 8) as i32;
+        let mut rc = RangeCoder::new_decoder(compressed);
+        self.decode_impl_from_rc(&mut rc, total_bits, frame_size, pcm, start_band)
+    }
+
+    fn decode_impl_from_rc(
+        &mut self,
+        rc: &mut RangeCoder,
+        total_bits: i32,
         frame_size: usize,
         pcm: &mut [f32],
         start_band: usize,
@@ -1375,9 +1629,6 @@ impl CeltDecoder {
             lm = 0;
         }
 
-        let mut rc = RangeCoder::new_decoder(compressed);
-        let total_bits = (compressed.len() * 8) as i32;
-
         let tell = rc.tell();
         let mut silence = false;
         if tell >= total_bits {
@@ -1386,11 +1637,18 @@ impl CeltDecoder {
             silence = rc.decode_bit_logp(15);
         }
 
+        // Handle silence: output zeros and return early
+        if silence {
+            pcm[..frame_size * channels].fill(0.0);
+            return frame_size;
+        }
+
         let mut pf_on = false;
         let mut pitch_index = COMBFILTER_MINPERIOD;
         let mut gain1 = 0.0f32;
         let mut prefilter_tapset = 0;
-        if !silence && rc.tell() + 16 <= total_bits {
+        // Prefilter bit is only present in non-hybrid mode (start_band == 0)
+        if start_band == 0 && !silence && rc.tell() + 16 <= total_bits {
             pf_on = rc.decode_bit_logp(1);
             if pf_on {
                 let octave = rc.dec_uint(6);
@@ -1401,6 +1659,10 @@ impl CeltDecoder {
                 }
                 gain1 = 0.09375 * (qg as f32 + 1.0);
             }
+        }
+        // In hybrid mode, ensure the combfilter doesn't run from stale previous state
+        if start_band != 0 {
+            self.prefilter_gain = 0.0;
         }
 
         let mut is_transient = false;
@@ -1415,8 +1677,8 @@ impl CeltDecoder {
             start_band,
             nb_ebands,
             &mut self.old_band_e,
-            (total_bits << 3) as u32,
-            &mut rc,
+            total_bits as u32,
+            rc,
             channels,
             lm,
             is_transient || intra_ener,
@@ -1424,14 +1686,7 @@ impl CeltDecoder {
 
         self.w_tf_res[..nb_ebands].fill(0);
         let tf_res = &mut self.w_tf_res[..nb_ebands];
-        tf_decode(
-            start_band,
-            nb_ebands,
-            is_transient,
-            tf_res,
-            lm as i32,
-            &mut rc,
-        );
+        tf_decode(start_band, nb_ebands, is_transient, tf_res, lm as i32, rc);
 
         let spread_decision = if rc.tell() + 4 <= total_bits {
             rc.decode_icdf(&SPREAD_ICDF, 5)
@@ -1523,7 +1778,7 @@ impl CeltDecoder {
             fine_priority,
             channels as i32,
             lm as i32,
-            &mut rc,
+            rc,
             false,
             0,
             nb_ebands as i32 - 1,
@@ -1535,7 +1790,7 @@ impl CeltDecoder {
             nb_ebands,
             &mut self.old_band_e,
             &ebits,
-            &mut rc,
+            rc,
             channels,
         );
 
@@ -1548,13 +1803,10 @@ impl CeltDecoder {
         self.w_collapse_masks[..nb_ebands * channels].fill(0);
         let collapse_masks = &mut self.w_collapse_masks[..nb_ebands * channels];
 
-        for c in 0..channels {
-            let channel_mem_offset = c * (DECODE_BUFFER_SIZE + overlap);
-            self.decode_mem.copy_within(
-                channel_mem_offset + frame_size..channel_mem_offset + DECODE_BUFFER_SIZE + overlap,
-                channel_mem_offset,
-            );
-        }
+        // NOTE: Buffer shift must happen AFTER MDCT backward, not before.
+        // The C code does OPUS_MOVE after deemphasis, which preserves the overlap
+        // data in out_syn[0..overlap-1] for the next frame's TDAC.
+        // We'll shift the buffer at the end of decode instead.
 
         let (x_split, y_split) = x.split_at_mut(frame_size);
         let y_opt = if channels == 2 { Some(y_split) } else { None };
@@ -1581,7 +1833,7 @@ impl CeltDecoder {
             &tf_res,
             total_bits << 3,
             &mut balance,
-            &mut rc,
+            rc,
             lm as i32,
             coded_bands,
             true,
@@ -1600,7 +1852,7 @@ impl CeltDecoder {
             &ebits,
             &fine_priority,
             (total_bits - rc.tell()) << 3,
-            &mut rc,
+            rc,
             channels,
         );
 
@@ -1628,7 +1880,7 @@ impl CeltDecoder {
             mode,
             &x,
             freq,
-            &self.old_band_e,
+            &band_amp,
             start_band,
             nb_ebands,
             channels,
@@ -1644,6 +1896,16 @@ impl CeltDecoder {
 
         for c in 0..channels {
             let channel_mem_offset = c * (DECODE_BUFFER_SIZE + overlap);
+
+            // Shift decode_mem left by frame_size (matches C's OPUS_MOVE).
+            // This moves the previous frame's "future overlap" (at decode_mem[DECODE_BUFFER_SIZE..])
+            // to decode_mem[DECODE_BUFFER_SIZE - frame_size..] = the TDAC x2 read position,
+            // ensuring correct MDCT-IV aliasing cancellation across frames.
+            let mem_size = DECODE_BUFFER_SIZE + overlap;
+            self.decode_mem.copy_within(
+                channel_mem_offset + frame_size..channel_mem_offset + mem_size,
+                channel_mem_offset,
+            );
 
             let out_syn_idx = DECODE_BUFFER_SIZE - frame_size;
 

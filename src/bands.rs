@@ -1274,9 +1274,9 @@ pub fn quant_all_bands(
             }
         }
 
-        collapse_masks[i * c_channels] = x_cm;
+        collapse_masks[i * c_channels] = (x_cm & 0xFF) as u8 as u32; // Truncate to 8-bit like libopus
         if c_channels == 2 {
-            collapse_masks[i * c_channels + 1] = y_cm;
+            collapse_masks[i * c_channels + 1] = (y_cm & 0xFF) as u8 as u32;
         }
 
         balance_val += pulses[i] + tell;
@@ -1328,11 +1328,13 @@ pub fn amp2log2(
     }
 }
 
+/// Convert log2 energy to amplitude (actually just adds eMeans).
+/// This matches Opus reference implementation where log2Amp just adds the mean.
 pub fn log2amp(m: &CeltMode, end: usize, band_e: &mut [f32], band_log_e: &[f32], channels: usize) {
     for c in 0..channels {
         for i in 0..end {
-            band_e[c * m.nb_ebands + i] =
-                2.0f32.powf(band_log_e[c * m.nb_ebands + i] + m.e_means[i]);
+            // Just add eMeans, don't apply exp2 - denormalise_bands will do that
+            band_e[c * m.nb_ebands + i] = band_log_e[c * m.nb_ebands + i] + m.e_means[i];
         }
     }
 }
@@ -1381,7 +1383,8 @@ pub fn denormalise_bands(
             let base = c * frame_size + ((m.e_bands[i] as usize) << lm);
             let n = ((m.e_bands[i + 1] - m.e_bands[i]) as usize) << lm;
             let band_log = band_e[c * m.nb_ebands + i];
-            let g = (2.0f32).powf(band_log + m.e_means[i]);
+            // band_log already includes e_means from log2amp, so don't add again
+            let g = (2.0f32).powf(band_log);
             let src = &x[base..base + n];
             let dst = &mut freq[base..base + n];
             for (d, &s) in dst.iter_mut().zip(src) {

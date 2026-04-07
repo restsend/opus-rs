@@ -115,7 +115,7 @@ pub fn quant_coarse_energy(
                 }
             }
 
-            let tell = enc.tell() << 3;
+            let tell = enc.tell();
             let bits_left = budget as i32 - tell - 3 * channels as i32 * (end - i) as i32;
             if i != start && bits_left < 30 {
                 if bits_left < 24 {
@@ -168,7 +168,7 @@ pub fn unquant_coarse_energy(
     lm: usize,
     mut intra: bool,
 ) {
-    let tell = dec.tell() << 3;
+    let tell = dec.tell();
     if tell + 3 <= budget as i32 {
         intra = dec.decode_bit_logp(3);
     }
@@ -183,7 +183,7 @@ pub fn unquant_coarse_energy(
             let old_e = old_e_bands[c * m.nb_ebands + i].max(-9.0);
 
             let qi;
-            let tell = dec.tell() << 3;
+            let tell = dec.tell();
             if tell + 15 <= budget as i32 {
                 let prob_idx = 2 * i.min(20);
                 let fs = (prob_model[prob_idx] as u32) << 7;

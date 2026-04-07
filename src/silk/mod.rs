@@ -72,6 +72,7 @@ pub use noise_shape_analysis::*;
 pub use nsq::*;
 pub use nsq_del_dec::*;
 pub use pitch_analysis::*;
+pub use resampler::{SilkResampler, SilkResamplerDown1_3, SilkResamplerDown1_6};
 pub use shell_coder::*;
 pub use sigm::*;
 pub use sigproc_fix::*;

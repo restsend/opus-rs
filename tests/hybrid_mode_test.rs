@@ -32,15 +32,15 @@ fn test_hybrid_mode_encode_basic() {
     assert!(n >= 3, "Hybrid packet too short: {}", n);
     println!("Hybrid packet: {} bytes", n);
 
-    // TOC byte should indicate Hybrid mode (config 16-19 or 20-23)
+    // TOC byte should indicate Hybrid mode (config 12-15)
     let toc = output[0];
     let config = toc >> 3;
     println!("TOC byte: 0x{:02x}, config: {}", toc, config);
 
-    // Config 16-19 = Hybrid SWB, 20-23 = Hybrid FB
+    // Config 12-13 = Hybrid SWB, 14-15 = Hybrid FB (per RFC 6716)
     assert!(
-        (16..=23).contains(&config),
-        "Expected Hybrid TOC config 16-23, got {}",
+        (12..=15).contains(&config),
+        "Expected Hybrid TOC config 12-15, got {}",
         config
     );
 

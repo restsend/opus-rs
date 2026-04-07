@@ -1,4 +1,5 @@
 // WAV file encoder/decoder test using OpusEncoder/OpusDecoder
+use opus_rs::silk::resampler::SilkResampler;
 use opus_rs::{Application, OpusDecoder, OpusEncoder};
 use std::fs::File;
 use std::io::{Read, Write};
@@ -125,91 +126,71 @@ fn write_wav(path: &Path, sample_rate: u32, num_channels: u16, samples: &[i16]) 
     println!("Wrote WAV: {} samples to {:?}", samples.len(), path);
 }
 
-// Simple linear interpolation resampler
-// Converts samples from src_rate to dst_rate
-fn resample_linear(samples: &[i16], src_rate: u32, dst_rate: u32) -> Vec<i16> {
+// High-quality resampler using SILK's resampler
+// Converts samples from src_rate to dst_rate with proper anti-aliasing
+fn resample_silk(samples: &[i16], src_rate: i32, dst_rate: i32) -> Vec<i16> {
     if src_rate == dst_rate {
         return samples.to_vec();
     }
 
-    // Calculate the ratio
-    let ratio = src_rate as f64 / dst_rate as f64;
-    let dst_len = (samples.len() as f64 / ratio).round() as usize;
+    // Calculate output length
+    let out_len = ((samples.len() as i64 * dst_rate as i64) / src_rate as i64) as usize;
 
-    let mut resampled = Vec::with_capacity(dst_len);
+    let mut resampler = SilkResampler::default();
+    resampler.init(src_rate, dst_rate);
 
-    for i in 0..dst_len {
-        let src_pos = i as f64 * ratio;
-        let src_idx = src_pos as usize;
-        let frac = src_pos - src_idx as f64;
+    let mut output = vec![0i16; out_len];
+    resampler.process(&mut output, samples, samples.len() as i32);
 
-        if src_idx >= samples.len() {
-            break;
-        }
-
-        let sample = if src_idx + 1 < samples.len() {
-            let s0 = samples[src_idx] as f64;
-            let s1 = samples[src_idx + 1] as f64;
-            (s0 + (s1 - s0) * frac).round() as i16
-        } else {
-            samples[src_idx]
-        };
-
-        resampled.push(sample);
-    }
-
-    resampled
+    output
 }
 
-fn main() {
-    let input_arg = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "fixtures/answer_16k.wav".to_string());
-    let input_path = Path::new(&input_arg);
-    let encoded_path = Path::new("fixtures/encoded.opus");
-    let decoded_path = Path::new("fixtures/decoded.wav");
+struct ModeConfig {
+    app_name: &'static str,
+    rate_name: &'static str,
+    target_rate: u32,
+    app_mode: Application,
+    bitrate: i32,
+}
 
-    println!("Input file: {:?}", input_path);
+fn process_mode(config: ModeConfig, src_samples: &[i16], src_rate: u32) {
+    let ModeConfig {
+        app_name,
+        rate_name,
+        target_rate,
+        app_mode,
+        bitrate,
+    } = config;
 
-    // Read input WAV
-    println!("\n=== Reading input WAV ===");
-    let (header, samples) = read_wav(input_path);
-
-    // Determine target sample rate for Opus (must be 8000/12000/16000/24000/48000)
-    let src_rate = header.sample_rate;
-    let target_rate: u32 = if [8000, 12000, 16000, 24000, 48000].contains(&src_rate) {
-        src_rate
-    } else {
-        // For arbitrary rates, resample to 16kHz (good for speech)
-        println!(
-            "Note: Sample rate {} not natively supported by Opus, will resample to 16000 Hz",
-            src_rate
-        );
-        16000
-    };
+    println!("\n{}", "=".repeat(60));
+    println!("=== {} + {} ===", app_name, rate_name);
+    println!("{}", "=".repeat(60));
 
     // Resample if necessary
     let input_samples: Vec<i16> = if src_rate != target_rate {
-        resample_linear(&samples, src_rate, target_rate)
+        println!(
+            "Resampling {} Hz -> {} Hz (using SILK resampler)",
+            src_rate, target_rate
+        );
+        resample_silk(src_samples, src_rate as i32, target_rate as i32)
     } else {
-        samples.clone()
+        println!("Input already at target rate {} Hz", target_rate);
+        src_samples.to_vec()
     };
 
-    // Convert i16 to f32 for OpusEncoder (normalized to [-1, 1])
     let frame_size = (target_rate as usize) * 20 / 1000; // 20ms frame
-    let bitrate = 20000; // 20 kbps - better quality than 10kbps
 
-    println!("\n=== Encoding ===");
-    println!("Target sample rate: {} Hz", target_rate);
+    println!("\n--- Encoding ---");
     println!("Frame size: {} samples (20ms)", frame_size);
     println!("Bitrate: {} bps", bitrate);
+    println!("Application mode: {:?}", app_mode);
 
     // Initialize encoder
-    let mut encoder = OpusEncoder::new(target_rate as i32, 1, Application::Voip)
-        .expect("Failed to create encoder");
+    let mut encoder =
+        OpusEncoder::new(target_rate as i32, 1, app_mode).expect("Failed to create encoder");
     encoder.bitrate_bps = bitrate;
     encoder.use_cbr = true;
-    encoder.complexity = 5; // Medium complexity for better quality
+    encoder.complexity = 5;
 
     // Initialize decoder
     let mut decoder = OpusDecoder::new(target_rate as i32, 1).expect("Failed to create decoder");
@@ -245,16 +226,11 @@ fn main() {
         all_payload.len()
     );
 
-    // Save encoded data
-    std::fs::write(encoded_path, &all_payload).expect("Failed to write encoded file");
-    println!("Saved encoded data to {:?}", encoded_path);
-
     // Decode
-    println!("\n=== Decoding ===");
+    println!("\n--- Decoding ---");
 
     let mut decoded_samples: Vec<i16> = Vec::new();
     let mut pos = 0usize;
-    let mut decoded_frames = 0usize;
 
     while pos + 2 <= all_payload.len() {
         let len = u16::from_le_bytes([all_payload[pos], all_payload[pos + 1]]) as usize;
@@ -274,25 +250,23 @@ fn main() {
         for &s in &output[..n] {
             decoded_samples.push((s * 32768.0).clamp(-32768.0, 32767.0) as i16);
         }
-
-        decoded_frames += 1;
     }
 
     println!(
         "Decoded {} frames, {} samples ({:.1} s)",
-        decoded_frames,
+        frame_count,
         decoded_samples.len(),
         decoded_samples.len() as f64 / target_rate as f64
     );
 
-    // SNR calculation with cross-correlation delay search (BEFORE resampling)
+    // SNR calculation
     let compare_len = input_samples.len().min(decoded_samples.len());
     let active_start = 63 * frame_size;
     let active_end = (80 * frame_size).min(compare_len);
 
     let mut best_corr = f64::NEG_INFINITY;
     let mut best_delay = 0i32;
-    let max_delay = 320i32;
+    let max_delay = 2000i32; // Search a wide range for delay
 
     for delay in -max_delay..=max_delay {
         let mut corr = 0.0f64;
@@ -313,20 +287,14 @@ fn main() {
         }
     }
 
-    println!(
-        "Best delay (cross-correlation): {} samples ({:.1} ms)",
-        best_delay,
-        best_delay as f64 * 1000.0 / target_rate as f64
-    );
-
-    // Compute delay-compensated SNR
+    // Compute delay-compensated SNR (only over active region to exclude initialization effects)
     let delay = best_delay;
     let mut signal_energy = 0.0f64;
     let mut noise_energy = 0.0f64;
 
-    for i in 0..compare_len {
+    for i in active_start..active_end {
         let j = i as i32 + delay;
-        if j >= 0 && (j as usize) < compare_len {
+        if j >= 0 && (j as usize) < decoded_samples.len() {
             let s = input_samples[i] as f64;
             let d = decoded_samples[j as usize] as f64;
             let err = d - s;
@@ -340,44 +308,98 @@ fn main() {
     } else {
         999.0
     };
-    println!("Delay-compensated SNR: {:.2} dB", snr);
+    println!("SNR: {:.2} dB (delay: {} samples)", snr, best_delay);
 
-    // Sample dump for frame 65
-    let dump_frame = 65usize;
-    let dump_start = dump_frame * frame_size;
-    if dump_start + 20 <= input_samples.len().min(decoded_samples.len()) {
-        println!("\nFrame {} sample dump (first 20 samples):", dump_frame);
-        println!("  i  |  input  |  output  |  error");
-        for i in 0..20 {
-            let idx = dump_start + i;
-            let inp = input_samples[idx];
-            let out = decoded_samples[idx];
+    // Print SNR at specific delays for debugging
+    for &check_delay in &[0i32, 120, 316, 960, 1251, 1320, 1566, 1863, best_delay] {
+        let mut se = 0.0f64;
+        let mut ne = 0.0f64;
+        let mut cnt = 0usize;
+        for i in active_start..active_end {
+            let j = i as i32 + check_delay;
+            if j >= 0 && (j as usize) < decoded_samples.len() {
+                let s = input_samples[i] as f64;
+                let d = decoded_samples[j as usize] as f64;
+                se += s * s;
+                ne += (d - s) * (d - s);
+                cnt += 1;
+            }
+        }
+        if cnt > 0 && se > 0.0 {
+            let check_snr = 10.0 * (se / ne.max(1e-10)).log10();
             println!(
-                "  {:3} | {:6} | {:6} | {:6}",
-                i,
-                inp,
-                out,
-                out as i32 - inp as i32
+                "  SNR at delay {:5}: {:.2} dB ({} samples)",
+                check_delay, check_snr, cnt
             );
         }
     }
 
-    // If we resampled, convert decoded output back to original rate
-    let final_samples: Vec<i16> = if src_rate != target_rate {
-        resample_linear(&decoded_samples, target_rate, src_rate)
-    } else {
-        decoded_samples
-    };
-
-    // Save decoded WAV
-    write_wav(decoded_path, src_rate, 1, &final_samples);
-
-    // Summary
-    println!("\n=== Summary ===");
-    println!(
-        "Input:  {} samples ({} Hz)",
-        input_samples.len(),
-        target_rate
+    // Save output
+    let output_path = format!(
+        "fixtures/decoded_{}_{}.wav",
+        app_name.to_lowercase(),
+        rate_name
     );
-    println!("Output: {} samples ({} Hz)", final_samples.len(), src_rate);
+    write_wav(Path::new(&output_path), target_rate, 1, &decoded_samples);
+
+    println!("Encoded size: {} bytes", all_payload.len());
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let input_arg = args
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| "fixtures/answer_16k.wav".to_string());
+    let input_path = Path::new(&input_arg);
+
+    println!("Input file: {:?}", input_path);
+
+    // Read input WAV
+    println!("\n=== Reading input WAV ===");
+    let (header, samples) = read_wav(input_path);
+    let src_rate = header.sample_rate;
+
+    // Process all 4 combinations
+    let modes = [
+        ModeConfig {
+            app_name: "voip",
+            rate_name: "16k",
+            target_rate: 16000,
+            app_mode: Application::Voip,
+            bitrate: 20000,
+        },
+        ModeConfig {
+            app_name: "voip",
+            rate_name: "48k",
+            target_rate: 48000,
+            app_mode: Application::Voip,
+            bitrate: 32000,
+        },
+        ModeConfig {
+            app_name: "audio",
+            rate_name: "16k",
+            target_rate: 16000,
+            app_mode: Application::Audio,
+            bitrate: 24000,
+        },
+        ModeConfig {
+            app_name: "audio",
+            rate_name: "48k",
+            target_rate: 48000,
+            app_mode: Application::Audio,
+            bitrate: 32000,
+        },
+    ];
+
+    for config in modes {
+        process_mode(config, &samples, src_rate);
+    }
+
+    println!("\n=== Done ===");
+    println!("Output files:");
+    println!("  - fixtures/decoded_voip_16k.wav");
+    println!("  - fixtures/decoded_voip_48k.wav");
+    println!("  - fixtures/decoded_audio_16k.wav");
+    println!("  - fixtures/decoded_audio_48k.wav");
 }
