@@ -1,4 +1,5 @@
 use crate::range_coder::RangeCoder;
+use std::mem::MaybeUninit;
 
 // CELT_PVQ_U_DATA: precomputed U(N,K) table, indexed as DATA[ROW_OFFSETS[min(N,K)] + max(N,K)].
 // Equivalent to C's non-CWRS_EXTRA_ROWS CELT_PVQ_U_DATA (1272 elements).
@@ -339,13 +340,12 @@ pub fn decode_pulses(y: &mut [i32], n: u32, k: u32, rc: &mut RangeCoder) {
 ///
 /// Uses fast-select algorithm for better performance on large N.
 pub fn pvq_search(x: &[f32], y: &mut [i32], k: i32, n: usize) {
-    // Use fast-select algorithm for larger N (significant speedup)
+    // Use fast-select path for larger N (keeps batch speedup for large-band cases)
     if n >= 32 {
         pvq_search_fast_select(x, y, k, n);
         return;
     }
 
-    // For small N, use scalar greedy (lower overhead)
     pvq_search_scalar(x, y, k, n);
 }
 
@@ -362,15 +362,20 @@ pub fn pvq_search_fast_select(x: &[f32], y: &mut [i32], k: i32, n: usize) -> f32
         return 0.0;
     }
 
-    // Pre-compute |x[i]| and handle sign
-    let mut abs_x = [0.0f32; MAX_PVQ_N];
-    let mut signs = [0i32; MAX_PVQ_N];
+    // Uninit storage for abs_x and signs — written fully in 0..n below before any read.
+    // Using [MaybeUninit<T>; N] avoids zero-initializing MAX_PVQ_N elements.
+    let mut abs_x_mu = [MaybeUninit::<f32>::uninit(); MAX_PVQ_N];
+    let mut signs_mu = [MaybeUninit::<i32>::uninit(); MAX_PVQ_N];
     let mut sum = 0.0f32;
     for i in 0..n {
-        abs_x[i] = x[i].abs();
-        signs[i] = if x[i] < 0.0 { -1 } else { 1 };
-        sum += abs_x[i];
+        abs_x_mu[i].write(x[i].abs());
+        signs_mu[i].write(if x[i] < 0.0 { -1i32 } else { 1i32 });
+        // SAFETY: just written above
+        sum += unsafe { abs_x_mu[i].assume_init() };
     }
+    // SAFETY: abs_x_mu[0..n] and signs_mu[0..n] fully written above.
+    let abs_x = unsafe { std::slice::from_raw_parts(abs_x_mu.as_ptr() as *const f32, n) };
+    let signs = unsafe { std::slice::from_raw_parts(signs_mu.as_ptr() as *const i32, n) };
 
     // Pre-search (same as scalar version)
     if k > (n >> 1) as i32 && sum > 1e-15 {
@@ -397,17 +402,18 @@ pub fn pvq_search_fast_select(x: &[f32], y: &mut [i32], k: i32, n: usize) -> f32
     const BATCH_SIZE: i32 = 4;
 
     if k < BATCH_SIZE * 2 || n < 16 {
-        // Small case: use standard greedy (faster than sorting overhead)
+        // Small case: hoist yy+=1 outside the inner loop (C trick: ADD16(yy,1) before search)
         for _ in 0..k {
+            yy += 1.0;
             let mut best_id = 0;
             let rxy0 = xy + abs_x[0];
-            let ryy0 = yy + 2.0 * y[0] as f32 + 1.0;
+            let ryy0 = yy + 2.0 * y[0] as f32; // yy already has +1 from above
             let mut best_num = rxy0 * rxy0;
             let mut best_den = ryy0;
 
             for i in 1..n {
                 let rxy = xy + abs_x[i];
-                let ryy = yy + 2.0 * y[i] as f32 + 1.0;
+                let ryy = yy + 2.0 * y[i] as f32;
                 let num = rxy * rxy;
 
                 if num * best_den > best_num * ryy {
@@ -418,27 +424,32 @@ pub fn pvq_search_fast_select(x: &[f32], y: &mut [i32], k: i32, n: usize) -> f32
             }
 
             xy += abs_x[best_id];
-            yy += 2.0 * y[best_id] as f32 + 1.0;
+            yy += 2.0 * y[best_id] as f32;
             y[best_id] += 1;
         }
     } else {
-        // Larger case: use batch selection
+        // Larger case: use batch selection.
+        // scores is declared outside the loop so the stack frame is allocated once
+        // (not re-zeroed each batch iteration). Written fully in 0..n before any read.
+        let mut scores_mu = [MaybeUninit::<(f32, usize)>::uninit(); MAX_PVQ_N];
         while k > 0 {
             let batch = BATCH_SIZE.min(k);
 
             // Compute scores for all positions
-            let mut scores: [(f32, usize); MAX_PVQ_N] = [(0.0, 0); MAX_PVQ_N];
             for i in 0..n {
                 let rxy = xy + abs_x[i];
                 let ryy = yy + 2.0 * y[i] as f32 + 1.0;
-                let score = rxy * rxy / ryy; // Exact score
-                scores[i] = (score, i);
+                let score = rxy * rxy / ryy;
+                scores_mu[i].write((score, i));
             }
+            // SAFETY: scores_mu[0..n] written above.
+            let scores = unsafe {
+                std::slice::from_raw_parts_mut(scores_mu.as_mut_ptr() as *mut (f32, usize), n)
+            };
 
             // Use quick select instead of full sort (faster for small batch)
-            // Find the position of the batch-th largest element
             let pos = batch as usize;
-            scores[..n].select_nth_unstable_by(pos, |a, b| b.0.partial_cmp(&a.0).unwrap());
+            scores.select_nth_unstable_by(pos, |a, b| b.0.partial_cmp(&a.0).unwrap());
 
             // Assign pulses to top 'batch' positions
             for b in 0..batch as usize {
@@ -460,8 +471,9 @@ pub fn pvq_search_fast_select(x: &[f32], y: &mut [i32], k: i32, n: usize) -> f32
     yy
 }
 
-/// Scalar PVQ search (fallback implementation)
+/// Scalar PVQ search (fallback implementation, n < 32)
 fn pvq_search_scalar(x: &[f32], y: &mut [i32], k: i32, n: usize) {
+    debug_assert!(n <= 31);
     let mut k = k;
     let mut yy = 0.0f32;
     let mut xy = 0.0f32;
@@ -473,8 +485,11 @@ fn pvq_search_scalar(x: &[f32], y: &mut [i32], k: i32, n: usize) {
         return;
     }
 
-    // Pre-compute |x[i]| and handle sign
-    let mut abs_x = [0.0f32; MAX_PVQ_N];
+    // Use a small fixed-size array (n < 32). Initialising 32 floats = 128 bytes instead
+    // of the 1408 bytes of MAX_PVQ_N. Written fully in 0..n before any read.
+    let mut abs_x = [0.0f32; 32];
+    // y2f[i] tracks 2.0 * y[i] as f32 to avoid i32→f32 casts in the hot inner loop.
+    let mut y2f = [0.0f32; 32];
     let mut sum = 0.0f32;
     for i in 0..n {
         abs_x[i] = x[i].abs();
@@ -494,6 +509,7 @@ fn pvq_search_scalar(x: &[f32], y: &mut [i32], k: i32, n: usize) {
             let yf = yi as f32;
             yy += yf * yf;
             xy += yf * abs_x[i];
+            y2f[i] = 2.0 * yf; // keep shadow in sync
             k -= yi;
         }
 
@@ -504,27 +520,25 @@ fn pvq_search_scalar(x: &[f32], y: &mut [i32], k: i32, n: usize) {
             yy += tmp * tmp;
             yy += tmp * y[0] as f32;
             y[0] += k;
+            y2f[0] = 2.0 * y[0] as f32; // sync shadow after bulk add
             k = 0;
         }
     }
 
-    // Greedy search: assign remaining pulses one at a time
-    // Optimized to match C opus: cache Rxy^2 and use efficient comparison
+    // C trick: hoist yy+=1 outside the inner loop (saves one float add per inner iteration).
+    // y2f[i] replaces 2.0 * y[i] as f32 to avoid int-to-float cast per iteration.
     for _ in 0..k {
+        yy += 1.0;
         let mut best_id = 0;
 
-        // Pre-compute values for position 0 (out of loop to reduce branches)
         let rxy0 = xy + abs_x[0];
-        let ryy0 = yy + 2.0 * y[0] as f32 + 1.0;
+        let ryy0 = yy + y2f[0];
         let mut best_num = rxy0 * rxy0;
         let mut best_den = ryy0;
 
-        // Search remaining positions
-        // Compare: Rxy^2 * best_den > best_num * Ryy
-        // This avoids division and square roots
         for i in 1..n {
             let rxy = xy + abs_x[i];
-            let ryy = yy + 2.0 * y[i] as f32 + 1.0;
+            let ryy = yy + y2f[i];
             let num = rxy * rxy;
 
             if num * best_den > best_num * ryy {
@@ -535,7 +549,8 @@ fn pvq_search_scalar(x: &[f32], y: &mut [i32], k: i32, n: usize) {
         }
 
         xy += abs_x[best_id];
-        yy += 2.0 * y[best_id] as f32 + 1.0;
+        yy += y2f[best_id];
+        y2f[best_id] += 2.0; // y[best_id] is about to increase by 1, so 2*(y+1) = 2*y+2
         y[best_id] += 1;
     }
 
@@ -646,7 +661,12 @@ pub fn alg_quant(
     gain: f32,
     resynth: bool,
 ) -> u32 {
-    let mut y = [0i32; MAX_PVQ_N];
+    // SAFETY: pvq_search unconditionally writes y[..n] (via y[..n].fill(0) + greedy loop)
+    // before extract_collapse_mask or encode_pulses reads it. MaybeUninit<i32> can be
+    // uninit; we reinterpret as [i32] only after the pvq_search call has written 0..n.
+    let mut y_mu = [MaybeUninit::<i32>::uninit(); MAX_PVQ_N];
+    // SAFETY: pvq_search writes y_slice[..n] before any caller read.
+    let y = unsafe { std::slice::from_raw_parts_mut(y_mu.as_mut_ptr() as *mut i32, MAX_PVQ_N) };
     exp_rotation(x, n, 1, stride, k, spread);
     pvq_search(x, &mut y[..n], k, n);
     let mask = extract_collapse_mask(&y[..n], n, stride);
@@ -679,7 +699,10 @@ pub fn alg_unquant(
     rc: &mut RangeCoder,
     gain: f32,
 ) -> u32 {
-    let mut y = [0i32; MAX_PVQ_N];
+    // SAFETY: decode_pulses writes y_slice[..n] before any read (cwrsi writes
+    // every element for k>0; k==0 branch explicitly zeros y[0..n]).
+    let mut y_mu = [MaybeUninit::<i32>::uninit(); MAX_PVQ_N];
+    let y = unsafe { std::slice::from_raw_parts_mut(y_mu.as_mut_ptr() as *mut i32, MAX_PVQ_N) };
     decode_pulses(&mut y[..n], n as u32, k as u32, rc);
 
     let mask = extract_collapse_mask(&y[..n], n, stride);

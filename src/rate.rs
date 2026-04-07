@@ -39,8 +39,10 @@ pub fn bits2pulses(m: &CeltMode, band: usize, mut lm: i32, bits: i32) -> i32 {
     let mut hi = hi_limit as usize;
     let bits_minus_one = bits - 1;
 
-    for _ in 0..6 {
-        let mid = (lo + hi + 1) >> 1;
+    // Binary search with early termination when bounds converge.
+    // Most searches converge within 4-5 iterations due to small cache sizes.
+    while lo + 1 < hi {
+        let mid = (lo + hi) >> 1;
         if (cache[mid] as i32) >= bits_minus_one {
             hi = mid;
         } else {

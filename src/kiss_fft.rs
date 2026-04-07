@@ -324,16 +324,19 @@ fn kf_bfly3(
 
     // epi3 = exp(-2*pi*i/3) = -0.5 - 0.86602540i
     let epi3_i: f32 = -0.86602540;
+    let stride2 = fstride * 2;
 
     for i in 0..n {
         let base = i * mm;
-        let stride2 = fstride * 2;
+        // Reset twiddle indices per outer iteration (matches C: tw1=tw2=st->twiddles each q1)
+        let mut tw1 = 0usize;
+        let mut tw2 = 0usize;
 
         for j in 0..m {
             let idx = base + j;
 
-            let scratch1 = c_mul(&fout[idx + m], &twiddles[j * fstride]);
-            let scratch2 = c_mul(&fout[idx + m2], &twiddles[j * stride2]);
+            let scratch1 = c_mul(&fout[idx + m], &twiddles[tw1]);
+            let scratch2 = c_mul(&fout[idx + m2], &twiddles[tw2]);
 
             let scratch3 = c_add(&scratch1, &scratch2);
             let scratch0 = c_sub(&scratch1, &scratch2);
@@ -352,6 +355,9 @@ fn kf_bfly3(
                 KissCpx::new(fout_m.r - scratch0_scaled.i, fout_m.i + scratch0_scaled.r);
             fout[idx + m2] =
                 KissCpx::new(fout_m.r + scratch0_scaled.i, fout_m.i - scratch0_scaled.r);
+
+            tw1 += fstride;
+            tw2 += stride2;
         }
     }
 }
@@ -375,6 +381,11 @@ fn kf_bfly5(
         let stride2 = fstride * 2;
         let stride3 = fstride * 3;
         let stride4 = fstride * 4;
+        // Reset twiddle indices per outer iteration (matches C: tw1=tw2=tw3=tw4=st->twiddles)
+        let mut tw1 = 0usize;
+        let mut tw2 = 0usize;
+        let mut tw3 = 0usize;
+        let mut tw4 = 0usize;
 
         for u in 0..m {
             let idx0 = base + u;
@@ -386,10 +397,10 @@ fn kf_bfly5(
             // Save original value (scratch[0] in C)
             let scratch0 = fout[idx0];
 
-            let scratch1 = c_mul(&fout[idx1], &twiddles[u * fstride]);
-            let scratch2 = c_mul(&fout[idx2], &twiddles[u * stride2]);
-            let scratch3 = c_mul(&fout[idx3], &twiddles[u * stride3]);
-            let scratch4 = c_mul(&fout[idx4], &twiddles[u * stride4]);
+            let scratch1 = c_mul(&fout[idx1], &twiddles[tw1]);
+            let scratch2 = c_mul(&fout[idx2], &twiddles[tw2]);
+            let scratch3 = c_mul(&fout[idx3], &twiddles[tw3]);
+            let scratch4 = c_mul(&fout[idx4], &twiddles[tw4]);
 
             let scratch7 = c_add(&scratch1, &scratch4);
             let scratch10 = c_sub(&scratch1, &scratch4);
@@ -428,6 +439,11 @@ fn kf_bfly5(
 
             fout[idx2] = c_add(&scratch11, &scratch12);
             fout[idx3] = c_sub(&scratch11, &scratch12);
+
+            tw1 += fstride;
+            tw2 += stride2;
+            tw3 += stride3;
+            tw4 += stride4;
         }
     }
 }

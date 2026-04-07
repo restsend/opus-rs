@@ -234,13 +234,42 @@ pub fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i32 {
             eside += y[i] * y[i];
         }
     }
-    // Fast integer-friendly itheta: use atan2 on sqrts
-    // C opus uses celt_atan2p which is a polynomial, but for float we keep atan2f
-    // since the sqrt calls are the bigger cost. We combine sqrt with rsqrt:
     let mid = emid.sqrt();
     let side = eside.sqrt();
-    let theta = side.atan2(mid);
-    (0.5 + 16384.0 * theta / (std::f32::consts::PI * 0.5)) as i32
+    // Replace libm atan2f with C opus's degree-7 polynomial approximation (celt_atan2p_norm).
+    // This computes atan2(side, mid) / (π/2) ∈ [0, 1] via Remez-optimal polynomial.
+    let theta_norm = celt_atan2p_norm(side, mid);
+    (0.5 + 16384.0 * theta_norm) as i32
+}
+
+/// Polynomial approximation of atan2(y, x) / (π/2) for x,y >= 0.
+/// Matches C opus celt_atan2p_norm() from celt/mathops.h (Remez degree 7).
+/// Returns value in [0, 1] mapping [0°, 90°].
+#[inline(always)]
+fn celt_atan2p_norm(y: f32, x: f32) -> f32 {
+    #[inline(always)]
+    fn atan_norm(x: f32) -> f32 {
+        const ATAN2_2_OVER_PI: f32 = 0.636_619_77_f32;
+        const A03: f32 = -3.333_165_9e-1_f32;
+        const A05: f32 = 1.996_270_4e-1_f32;
+        const A07: f32 = -1.397_658_3e-1_f32;
+        const A09: f32 = 9.794_234_e-2_f32;
+        const A11: f32 = -5.777_359_e-2_f32;
+        const A13: f32 = 2.304_014e-2_f32;
+        const A15: f32 = -4.355_406e-3_f32;
+        let x2 = x * x;
+        ATAN2_2_OVER_PI
+            * x
+            * (1.0 + x2 * (A03 + x2 * (A05 + x2 * (A07 + x2 * (A09 + x2 * (A11 + x2 * (A13 + x2 * A15)))))))
+    }
+    if x * x + y * y < 1e-18 {
+        return 0.0;
+    }
+    if y < x {
+        atan_norm(y / x)
+    } else {
+        1.0 - atan_norm(x / y)
+    }
 }
 
 pub struct SplitCtx {
@@ -287,11 +316,10 @@ pub fn compute_theta(
                 itheta = (itheta * qn + 8192) >> 14;
                 if !stereo && ctx.avoid_split_noise && itheta > 0 && itheta < qn {
                     let unquantized = (itheta * 16384) / qn;
-                    let angle = (unquantized as f32) * (std::f32::consts::PI * 0.5 / 16384.0);
-                    let imid = (32768.0 * angle.cos()) as i32;
-                    let iside = (32768.0
-                        * ((16384 - unquantized) as f32 * (std::f32::consts::PI * 0.5 / 16384.0))
-                            .cos()) as i32;
+                    // Match C opus: use bitexact cosine approximation instead of libm cosf.
+                    // This is both faster and keeps split-noise gating numerically aligned.
+                    let imid = bitexact_cos(unquantized as i16) as i32;
+                    let iside = bitexact_cos((16384 - unquantized) as i16) as i32;
                     let delta =
                         (((n as i32 - 1) << 7) * bitexact_log2tan(iside, imid) + 16384) >> 15;
                     if delta > *b {
@@ -451,7 +479,7 @@ pub fn quant_partition(
     gain: f32,
     fill: u32,
 ) -> u32 {
-    if n > 1 && b >= (1 << 3) {
+    if n > 1 && b >= 6 {
         let mut sctx = SplitCtx {
             inv: false,
             imid: 0,
@@ -541,9 +569,18 @@ pub fn quant_partition(
         }
         cm
     } else {
-        let q = bits2pulses(ctx.m, ctx.i, lm, b);
-        let curr_bits = pulses2bits(ctx.m, ctx.i, lm, q);
+        let mut q = bits2pulses(ctx.m, ctx.i, lm, b);
+        let mut curr_bits = pulses2bits(ctx.m, ctx.i, lm, q);
         ctx.remaining_bits -= curr_bits;
+
+        // Match C opus: never exceed the budget.
+        // If selected q would make remaining_bits negative, reduce q until it fits.
+        while ctx.remaining_bits < 0 && q > 0 {
+            ctx.remaining_bits += curr_bits;
+            q -= 1;
+            curr_bits = pulses2bits(ctx.m, ctx.i, lm, q);
+            ctx.remaining_bits -= curr_bits;
+        }
 
         if q != 0 {
             let k = get_pulses(q);
