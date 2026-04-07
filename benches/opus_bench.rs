@@ -571,13 +571,18 @@ fn bench_opus_vs_c(c: &mut Criterion) {
             |b, &(sr, fs)| {
                 use opusic_sys::*;
                 let mut err = 0i32;
-                let enc =
-                    unsafe { opus_encoder_create(sr as i32, 1, OPUS_APPLICATION_VOIP, &mut err) };
+                let app = if sr == 48000 {
+                    OPUS_APPLICATION_AUDIO
+                } else {
+                    OPUS_APPLICATION_VOIP
+                };
+                let bitrate = if sr == 48000 { 64_000i32 } else { 20_000i32 };
+                let enc = unsafe { opus_encoder_create(sr as i32, 1, app, &mut err) };
                 assert_eq!(err, OPUS_OK);
                 let dec = unsafe { opus_decoder_create(sr as i32, 1, &mut err) };
                 assert_eq!(err, OPUS_OK);
                 unsafe {
-                    opus_encoder_ctl(enc, OPUS_SET_BITRATE_REQUEST, 20_000i32);
+                    opus_encoder_ctl(enc, OPUS_SET_BITRATE_REQUEST, bitrate);
                     opus_encoder_ctl(enc, OPUS_SET_COMPLEXITY_REQUEST, 0i32);
                 }
                 let mut output = vec![0u8; 1024];

@@ -61,15 +61,27 @@ pub fn silk_resampler_down_1_3(
         }
 
         // FIR symmetric decimation: 3:1, produce n/3 output samples
+        // Optimized: load coefficient once per output sample, pre-compute symmetric pairs
         let n_out = n / 3;
         for j in 0..n_out {
-            let bp = j * 3; // index into buf[] (not shifted by FIR_Order here; we use absolute offset below)
-            let buf_ptr = &buf[bp..];
+            let bp = j * 3;
             let mut res_q6 = 0i32;
-            for i in 0..18usize {
-                let sym = buf_ptr[i].wrapping_add(buf_ptr[35 - i]);
-                res_q6 = res_q6.wrapping_add(silk_smulwb(sym, fir_coefs[i] as i32));
+
+            // Unroll inner loop for better ILP: process 2 pairs at a time
+            let mut i = 0;
+            while i < 18 {
+                let coef0 = fir_coefs[i] as i32;
+                let sym0 = buf[bp + i].wrapping_add(buf[bp + 35 - i]);
+                res_q6 = res_q6.wrapping_add(silk_smulwb(sym0, coef0));
+
+                if i + 1 < 18 {
+                    let coef1 = fir_coefs[i + 1] as i32;
+                    let sym1 = buf[bp + i + 1].wrapping_add(buf[bp + 35 - i - 1]);
+                    res_q6 = res_q6.wrapping_add(silk_smulwb(sym1, coef1));
+                }
+                i += 2;
             }
+
             if out_pos < output.len() {
                 output[out_pos] = silk_sat16(silk_rshift_round(res_q6, 6)) as i16;
                 out_pos += 1;

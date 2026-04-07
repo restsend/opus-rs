@@ -621,8 +621,14 @@ fn silk_noise_shape_quantizer_voiced(
     let mut tmp2: i32;
     let mut s_lf_ar_shp_q14: i32;
 
+    let mut rand_seed = nsq.rand_seed;
+    let mut s_ltp_shp_buf_idx = nsq.s_ltp_shp_buf_idx as usize;
+    let mut s_ltp_buf_idx = nsq.s_ltp_buf_idx as usize;
+    let mut s_lf_ar_q14 = nsq.s_lf_ar_q14;
+    let mut s_diff_shp_q14 = nsq.s_diff_shp_q14;
+
     for i in 0..subfr_length {
-        nsq.rand_seed = silk_rand(nsq.rand_seed);
+        rand_seed = silk_rand(rand_seed);
 
         let ps_lpc_idx = NSQ_LPC_BUF_LENGTH - 1 + i;
         lpc_pred_q10 = if predict_lpc_order == 16 {
@@ -659,18 +665,15 @@ fn silk_noise_shape_quantizer_voiced(
         );
 
         n_ar_q12 = silk_nsq_noise_shape_feedback_loop(
-            nsq.s_diff_shp_q14,
+            s_diff_shp_q14,
             &mut nsq.s_ar2_q14,
             ar_shp_q13,
             shaping_lpc_order,
         );
-        n_ar_q12 = silk_smlawb(n_ar_q12, nsq.s_lf_ar_q14, tilt_q14);
+        n_ar_q12 = silk_smlawb(n_ar_q12, s_lf_ar_q14, tilt_q14);
 
-        n_lf_q12 = silk_smulwb(
-            nsq.s_ltp_shp_q14[(nsq.s_ltp_shp_buf_idx - 1) as usize],
-            lf_shp_q14,
-        );
-        n_lf_q12 = silk_smlawt(n_lf_q12, nsq.s_lf_ar_q14, lf_shp_q14);
+        n_lf_q12 = silk_smulwb(nsq.s_ltp_shp_q14[s_ltp_shp_buf_idx - 1], lf_shp_q14);
+        n_lf_q12 = silk_smlawt(n_lf_q12, s_lf_ar_q14, lf_shp_q14);
 
         tmp1 = (lpc_pred_q10 << 2).wrapping_sub(n_ar_q12);
         tmp1 = tmp1.wrapping_sub(n_lf_q12);
@@ -693,7 +696,7 @@ fn silk_noise_shape_quantizer_voiced(
 
         r_q10 = x_sc_q10[i] - tmp1;
 
-        if nsq.rand_seed < 0 {
+        if rand_seed < 0 {
             r_q10 = -r_q10;
         }
         r_q10 = silk_limit_32(r_q10, -(31 << 10), 30 << 10);
@@ -746,7 +749,7 @@ fn silk_noise_shape_quantizer_voiced(
         pulses[i] = silk_rshift_round(q1_q10, 10) as i8;
 
         exc_q14 = q1_q10 << 4;
-        if nsq.rand_seed < 0 {
+        if rand_seed < 0 {
             exc_q14 = -exc_q14;
         }
 
@@ -757,18 +760,23 @@ fn silk_noise_shape_quantizer_voiced(
             silk_sat16(silk_rshift_round(silk_smulww(xq_q14, gain_q10), 8)) as i16;
 
         nsq.s_lpc_q14[NSQ_LPC_BUF_LENGTH + i] = xq_q14;
-        nsq.s_diff_shp_q14 = xq_q14.wrapping_sub(x_sc_q10[i] << 4);
-        s_lf_ar_shp_q14 = nsq.s_diff_shp_q14.wrapping_sub(n_ar_q12 << 2);
-        nsq.s_lf_ar_q14 = s_lf_ar_shp_q14;
+        s_diff_shp_q14 = xq_q14.wrapping_sub(x_sc_q10[i] << 4);
+        s_lf_ar_shp_q14 = s_diff_shp_q14.wrapping_sub(n_ar_q12 << 2);
+        s_lf_ar_q14 = s_lf_ar_shp_q14;
 
-        nsq.s_ltp_shp_q14[nsq.s_ltp_shp_buf_idx as usize] =
-            s_lf_ar_shp_q14.wrapping_sub(n_lf_q12 << 2);
-        s_ltp_q15[nsq.s_ltp_buf_idx as usize] = lpc_exc_q14 << 1;
-        nsq.s_ltp_shp_buf_idx += 1;
-        nsq.s_ltp_buf_idx += 1;
+        nsq.s_ltp_shp_q14[s_ltp_shp_buf_idx] = s_lf_ar_shp_q14.wrapping_sub(n_lf_q12 << 2);
+        s_ltp_q15[s_ltp_buf_idx] = lpc_exc_q14 << 1;
+        s_ltp_shp_buf_idx += 1;
+        s_ltp_buf_idx += 1;
 
-        nsq.rand_seed = nsq.rand_seed.wrapping_add(pulses[i] as i32);
+        rand_seed = rand_seed.wrapping_add(pulses[i] as i32);
     }
+
+    nsq.rand_seed = rand_seed;
+    nsq.s_ltp_shp_buf_idx = s_ltp_shp_buf_idx as i32;
+    nsq.s_ltp_buf_idx = s_ltp_buf_idx as i32;
+    nsq.s_lf_ar_q14 = s_lf_ar_q14;
+    nsq.s_diff_shp_q14 = s_diff_shp_q14;
 }
 
 #[inline(always)]
@@ -805,8 +813,14 @@ fn silk_noise_shape_quantizer_unvoiced(
     let mut tmp1: i32;
     let mut s_lf_ar_shp_q14: i32;
 
+    let mut rand_seed = nsq.rand_seed;
+    let mut s_ltp_shp_buf_idx = nsq.s_ltp_shp_buf_idx as usize;
+    let mut s_ltp_buf_idx = nsq.s_ltp_buf_idx as usize;
+    let mut s_lf_ar_q14 = nsq.s_lf_ar_q14;
+    let mut s_diff_shp_q14 = nsq.s_diff_shp_q14;
+
     for i in 0..subfr_length {
-        nsq.rand_seed = silk_rand(nsq.rand_seed);
+        rand_seed = silk_rand(rand_seed);
 
         let ps_lpc_idx = NSQ_LPC_BUF_LENGTH - 1 + i;
         lpc_pred_q10 = if predict_lpc_order == 16 {
@@ -822,18 +836,15 @@ fn silk_noise_shape_quantizer_unvoiced(
         let ltp_pred_q13: i32 = 0;
 
         n_ar_q12 = silk_nsq_noise_shape_feedback_loop(
-            nsq.s_diff_shp_q14,
+            s_diff_shp_q14,
             &mut nsq.s_ar2_q14,
             ar_shp_q13,
             shaping_lpc_order,
         );
-        n_ar_q12 = silk_smlawb(n_ar_q12, nsq.s_lf_ar_q14, tilt_q14);
+        n_ar_q12 = silk_smlawb(n_ar_q12, s_lf_ar_q14, tilt_q14);
 
-        n_lf_q12 = silk_smulwb(
-            nsq.s_ltp_shp_q14[(nsq.s_ltp_shp_buf_idx - 1) as usize],
-            lf_shp_q14,
-        );
-        n_lf_q12 = silk_smlawt(n_lf_q12, nsq.s_lf_ar_q14, lf_shp_q14);
+        n_lf_q12 = silk_smulwb(nsq.s_ltp_shp_q14[s_ltp_shp_buf_idx - 1], lf_shp_q14);
+        n_lf_q12 = silk_smlawt(n_lf_q12, s_lf_ar_q14, lf_shp_q14);
 
         tmp1 = (lpc_pred_q10 << 2).wrapping_sub(n_ar_q12);
         tmp1 = tmp1.wrapping_sub(n_lf_q12);
@@ -842,7 +853,7 @@ fn silk_noise_shape_quantizer_unvoiced(
 
         r_q10 = x_sc_q10[i] - tmp1;
 
-        if nsq.rand_seed < 0 {
+        if rand_seed < 0 {
             r_q10 = -r_q10;
         }
         r_q10 = silk_limit_32(r_q10, -(31 << 10), 30 << 10);
@@ -895,7 +906,7 @@ fn silk_noise_shape_quantizer_unvoiced(
         pulses[i] = silk_rshift_round(q1_q10, 10) as i8;
 
         exc_q14 = q1_q10 << 4;
-        if nsq.rand_seed < 0 {
+        if rand_seed < 0 {
             exc_q14 = -exc_q14;
         }
 
@@ -906,16 +917,21 @@ fn silk_noise_shape_quantizer_unvoiced(
             silk_sat16(silk_rshift_round(silk_smulww(xq_q14, gain_q10), 8)) as i16;
 
         nsq.s_lpc_q14[NSQ_LPC_BUF_LENGTH + i] = xq_q14;
-        nsq.s_diff_shp_q14 = xq_q14.wrapping_sub(x_sc_q10[i] << 4);
-        s_lf_ar_shp_q14 = nsq.s_diff_shp_q14.wrapping_sub(n_ar_q12 << 2);
-        nsq.s_lf_ar_q14 = s_lf_ar_shp_q14;
+        s_diff_shp_q14 = xq_q14.wrapping_sub(x_sc_q10[i] << 4);
+        s_lf_ar_shp_q14 = s_diff_shp_q14.wrapping_sub(n_ar_q12 << 2);
+        s_lf_ar_q14 = s_lf_ar_shp_q14;
 
-        nsq.s_ltp_shp_q14[nsq.s_ltp_shp_buf_idx as usize] =
-            s_lf_ar_shp_q14.wrapping_sub(n_lf_q12 << 2);
-        s_ltp_q15[nsq.s_ltp_buf_idx as usize] = lpc_exc_q14 << 1;
-        nsq.s_ltp_shp_buf_idx += 1;
-        nsq.s_ltp_buf_idx += 1;
+        nsq.s_ltp_shp_q14[s_ltp_shp_buf_idx] = s_lf_ar_shp_q14.wrapping_sub(n_lf_q12 << 2);
+        s_ltp_q15[s_ltp_buf_idx] = lpc_exc_q14 << 1;
+        s_ltp_shp_buf_idx += 1;
+        s_ltp_buf_idx += 1;
 
-        nsq.rand_seed = nsq.rand_seed.wrapping_add(pulses[i] as i32);
+        rand_seed = rand_seed.wrapping_add(pulses[i] as i32);
     }
+
+    nsq.rand_seed = rand_seed;
+    nsq.s_ltp_shp_buf_idx = s_ltp_shp_buf_idx as i32;
+    nsq.s_ltp_buf_idx = s_ltp_buf_idx as i32;
+    nsq.s_lf_ar_q14 = s_lf_ar_q14;
+    nsq.s_diff_shp_q14 = s_diff_shp_q14;
 }
