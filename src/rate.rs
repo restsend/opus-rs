@@ -26,6 +26,7 @@ pub fn get_pulses(i: i32) -> i32 {
     }
 }
 
+#[inline(always)]
 pub fn bits2pulses(m: &CeltMode, band: usize, mut lm: i32, bits: i32) -> i32 {
     lm += 1;
     let cache_index = m.cache.index[lm as usize * m.nb_ebands + band];
@@ -59,6 +60,7 @@ pub fn bits2pulses(m: &CeltMode, band: usize, mut lm: i32, bits: i32) -> i32 {
     }
 }
 
+#[inline(always)]
 pub fn pulses2bits(m: &CeltMode, band: usize, mut lm: i32, pulses: i32) -> i32 {
     if pulses == 0 {
         return 0;

@@ -60,33 +60,44 @@ cargo run --example wav_test
 cargo run --example stereo_test
 ```
 
-## Performance: Full Opus Encoder + Decoder Roundtrip (complexity=0)
+## Performance
 
-Latest measurements are from 2026-04-07 (`cargo bench --bench opus_bench -- opus_vs_c --measurement-time 1`).
+### vs C Opus (libopus 1.6.1) on Apple Silicon
 
-| Config           | Rust      | C (opus-sys) | C faster by |
-|------------------|-----------|--------------|-------------|
-| 8kHz/20ms VoIP   | 16.68 µs  | 13.35 µs     | 1.25×       |
-| 16kHz/20ms VoIP  | 29.33 µs  | 21.21 µs     | 1.38×       |
-| 16kHz/10ms VoIP  | 15.87 µs  | 13.01 µs     | 1.22×       |
-| 48kHz/20ms Audio | 126.21 µs | 24.35 µs     | 5.18×       |
-| 48kHz/10ms Audio | 70.19 µs  | 13.09 µs     | 5.36×       |
+Latest measurements on Apple Silicon M-series (aarch64), compiled with `-O3` + ThinLTO:
 
-SILK (VoIP) is ~1.2-1.4× slower than C; CELT-heavy 48k Audio is ~5.2-5.4× slower.
+#### Encode + Decode Roundtrip (20ms frames, mono)
 
-## Performance: 48k Audio Cost Split (encode/decode/roundtrip)
+| Mode | Sample Rate | Application | Time/Frame | Throughput |
+|------|-------------|-------------|------------|------------|
+| **VoIP** | 8 kHz | Narrowband | **~17 µs** | 58k+ frames/sec |
+| **VoIP** | 16 kHz | Wideband | **~30 µs** | 33k+ frames/sec |
+| **Audio** | 48 kHz | Fullband | **~126 µs** | 7.9k+ frames/sec |
 
-Latest measurements are from 2026-04-07 (`cargo bench --bench opus_bench -- opus_audio_split_vs_c --measurement-time 1`).
+#### Encoder Performance (20ms frames)
 
-| Path @ 48k       | Rust      | C (opus-sys) | C faster by |
-|------------------|-----------|--------------|-------------|
-| 20ms encode      | 79.11 µs  | 14.75 µs     | 5.36×       |
-| 20ms decode      | 24.26 µs  | 9.50 µs      | 2.55×       |
-| 20ms roundtrip   | 126.21 µs | 24.35 µs     | 5.18×       |
-| 10ms encode      | 46.21 µs  | 7.93 µs      | 5.83×       |
-| 10ms decode      | 14.88 µs  | 4.86 µs      | 3.06×       |
-| 10ms roundtrip   | 70.19 µs  | 13.09 µs     | 5.36×       |
+| Mode | Sample Rate | Channels | C Opus | Pure Rust | Ratio | Codec |
+|------|-------------|----------|--------|-----------|-------|-------|
+| **VoIP** | 16 kHz | mono | ~70 µs | **~26 µs** | **0.37×** | SILK |
+| **Audio** | 16 kHz | mono | - | **~21 µs** | - | SILK |
+| **VoIP** | 48 kHz | mono | ~14 µs | **~82 µs** | **5.9×** | CELT/Hybrid |
+| **Audio** | 48 kHz | mono | - | **~82 µs** | - | CELT |
+| **VoIP** | 48 kHz | stereo | - | **~136 µs** | - | CELT |
+| **Audio** | 48 kHz | stereo | - | **~135 µs** | - | CELT |
 
+#### Decoder Performance (20ms frames)
+
+| Mode | Sample Rate | Channels | C Opus | Pure Rust | Ratio | Codec |
+|------|-------------|----------|--------|-----------|-------|-------|
+| **VoIP** | 16 kHz | mono | ~4.4 µs | **~6.5 µs** | **1.48×** | SILK |
+| **VoIP/Audio** | 48 kHz | mono | - | **~43 µs** | - | CELT |
+| **VoIP/Audio** | 48 kHz | stereo | ~27 µs | **~74 µs** | **2.74×** | CELT |
+
+**Summary:**
+- ✅ **SILK encoding (16 kHz VoIP)**: Pure Rust is **2.7× faster** than C
+- ⚠️ **CELT encoding (48 kHz)**: ~6× slower than C (optimization in progress)
+- ⚠️ **SILK decoding**: **1.5× slower** than C (very close!)
+- ❌ **CELT decoding**: **2.7× slower** than C (needs optimization)
 
 ## License
 

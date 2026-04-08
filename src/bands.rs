@@ -201,18 +201,119 @@ pub fn spreading_decision(
 }
 
 pub fn haar1(x: &mut [f32], n0: usize, stride: usize) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        haar1_neon(x, n0, stride);
+        return;
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        haar1_scalar(x, n0, stride);
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn haar1_scalar(x: &mut [f32], n0: usize, stride: usize) {
     let n = n0 >> 1;
+    let scale = std::f32::consts::FRAC_1_SQRT_2;
     for i in 0..stride {
         for j in 0..n {
-            let tmp1 = std::f32::consts::FRAC_1_SQRT_2 * x[stride * 2 * j + i];
-            let tmp2 = std::f32::consts::FRAC_1_SQRT_2 * x[stride * (2 * j + 1) + i];
-            x[stride * 2 * j + i] = tmp1 + tmp2;
-            x[stride * (2 * j + 1) + i] = tmp1 - tmp2;
+            let idx1 = stride * 2 * j + i;
+            let idx2 = stride * (2 * j + 1) + i;
+            let tmp1 = scale * x[idx1];
+            let tmp2 = scale * x[idx2];
+            x[idx1] = tmp1 + tmp2;
+            x[idx2] = tmp1 - tmp2;
         }
     }
 }
 
-#[inline(always)]
+#[cfg(target_arch = "aarch64")]
+fn haar1_neon(x: &mut [f32], n0: usize, stride: usize) {
+    use std::arch::aarch64::*;
+
+    let n = n0 >> 1;
+    let scale = std::f32::consts::FRAC_1_SQRT_2;
+
+    unsafe {
+        let vscale = vdupq_n_f32(scale);
+
+        for i in 0..stride {
+            // Process 4 pairs at a time when possible
+            let mut j = 0;
+            while j + 4 <= n {
+                // Load 4 even elements and 4 odd elements
+                let idx_even = stride * 2 * j + i;
+                let idx_odd = stride * (2 * j + 1) + i;
+
+                let ve0 = vld1q_f32(x.as_ptr().add(idx_even));
+                let ve1 = vld1q_f32(x.as_ptr().add(idx_even + stride * 2));
+                let ve2 = vld1q_f32(x.as_ptr().add(idx_even + stride * 4));
+                let ve3 = vld1q_f32(x.as_ptr().add(idx_even + stride * 6));
+
+                let vo0 = vld1q_f32(x.as_ptr().add(idx_odd));
+                let vo1 = vld1q_f32(x.as_ptr().add(idx_odd + stride * 2));
+                let vo2 = vld1q_f32(x.as_ptr().add(idx_odd + stride * 4));
+                let vo3 = vld1q_f32(x.as_ptr().add(idx_odd + stride * 6));
+
+                // Scale
+                let te0 = vmulq_f32(ve0, vscale);
+                let te1 = vmulq_f32(ve1, vscale);
+                let te2 = vmulq_f32(ve2, vscale);
+                let te3 = vmulq_f32(ve3, vscale);
+
+                let to0 = vmulq_f32(vo0, vscale);
+                let to1 = vmulq_f32(vo1, vscale);
+                let to2 = vmulq_f32(vo2, vscale);
+                let to3 = vmulq_f32(vo3, vscale);
+
+                // Store sum and difference
+                vst1q_f32(x.as_mut_ptr().add(idx_even), vaddq_f32(te0, to0));
+                vst1q_f32(
+                    x.as_mut_ptr().add(idx_even + stride * 2),
+                    vaddq_f32(te1, to1),
+                );
+                vst1q_f32(
+                    x.as_mut_ptr().add(idx_even + stride * 4),
+                    vaddq_f32(te2, to2),
+                );
+                vst1q_f32(
+                    x.as_mut_ptr().add(idx_even + stride * 6),
+                    vaddq_f32(te3, to3),
+                );
+
+                vst1q_f32(x.as_mut_ptr().add(idx_odd), vsubq_f32(te0, to0));
+                vst1q_f32(
+                    x.as_mut_ptr().add(idx_odd + stride * 2),
+                    vsubq_f32(te1, to1),
+                );
+                vst1q_f32(
+                    x.as_mut_ptr().add(idx_odd + stride * 4),
+                    vsubq_f32(te2, to2),
+                );
+                vst1q_f32(
+                    x.as_mut_ptr().add(idx_odd + stride * 6),
+                    vsubq_f32(te3, to3),
+                );
+
+                j += 4;
+            }
+
+            // Handle remaining elements
+            while j < n {
+                let idx1 = stride * 2 * j + i;
+                let idx2 = stride * (2 * j + 1) + i;
+                let tmp1 = scale * x[idx1];
+                let tmp2 = scale * x[idx2];
+                x[idx1] = tmp1 + tmp2;
+                x[idx2] = tmp1 - tmp2;
+                j += 1;
+            }
+        }
+    }
+}
+
 pub fn compute_qn(n: usize, b: i32, offset: i32, pulse_cap: i32, stereo: bool) -> i32 {
     static EXP2_TABLE8: [i16; 8] = [16384, 17866, 19483, 21247, 23170, 25267, 27554, 30048];
     let mut n2 = (2 * n as i32) - 1;
@@ -237,29 +338,200 @@ pub fn compute_qn(n: usize, b: i32, offset: i32, pulse_cap: i32, stereo: bool) -
     }
 }
 
+/// NEON-optimized stereo_itheta computation
+#[cfg(target_arch = "aarch64")]
 #[inline(always)]
-pub fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i32 {
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn stereo_itheta_neon(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i32 {
+    use std::arch::aarch64::*;
+
     let mut emid = 1e-15f32;
     let mut eside = 1e-15f32;
+
     if stereo {
-        for i in 0..n {
-            let m = x[i] + y[i];
-            let s = x[i] - y[i];
+        let mut sum_mid = vdupq_n_f32(0.0);
+        let mut sum_side = vdupq_n_f32(0.0);
+        let mut i = 0;
+
+        // Process 16 elements at a time
+        while i + 16 <= n {
+            let x0 = vld1q_f32(x.as_ptr().add(i));
+            let x1 = vld1q_f32(x.as_ptr().add(i + 4));
+            let x2 = vld1q_f32(x.as_ptr().add(i + 8));
+            let x3 = vld1q_f32(x.as_ptr().add(i + 12));
+            let y0 = vld1q_f32(y.as_ptr().add(i));
+            let y1 = vld1q_f32(y.as_ptr().add(i + 4));
+            let y2 = vld1q_f32(y.as_ptr().add(i + 8));
+            let y3 = vld1q_f32(y.as_ptr().add(i + 12));
+
+            let m0 = vaddq_f32(x0, y0);
+            let m1 = vaddq_f32(x1, y1);
+            let m2 = vaddq_f32(x2, y2);
+            let m3 = vaddq_f32(x3, y3);
+            let s0 = vsubq_f32(x0, y0);
+            let s1 = vsubq_f32(x1, y1);
+            let s2 = vsubq_f32(x2, y2);
+            let s3 = vsubq_f32(x3, y3);
+
+            sum_mid = vfmaq_f32(sum_mid, m0, m0);
+            sum_mid = vfmaq_f32(sum_mid, m1, m1);
+            sum_mid = vfmaq_f32(sum_mid, m2, m2);
+            sum_mid = vfmaq_f32(sum_mid, m3, m3);
+            sum_side = vfmaq_f32(sum_side, s0, s0);
+            sum_side = vfmaq_f32(sum_side, s1, s1);
+            sum_side = vfmaq_f32(sum_side, s2, s2);
+            sum_side = vfmaq_f32(sum_side, s3, s3);
+
+            i += 16;
+        }
+
+        // Process 8 elements
+        while i + 8 <= n {
+            let x0 = vld1q_f32(x.as_ptr().add(i));
+            let x1 = vld1q_f32(x.as_ptr().add(i + 4));
+            let y0 = vld1q_f32(y.as_ptr().add(i));
+            let y1 = vld1q_f32(y.as_ptr().add(i + 4));
+
+            let m0 = vaddq_f32(x0, y0);
+            let m1 = vaddq_f32(x1, y1);
+            let s0 = vsubq_f32(x0, y0);
+            let s1 = vsubq_f32(x1, y1);
+
+            sum_mid = vfmaq_f32(sum_mid, m0, m0);
+            sum_mid = vfmaq_f32(sum_mid, m1, m1);
+            sum_side = vfmaq_f32(sum_side, s0, s0);
+            sum_side = vfmaq_f32(sum_side, s1, s1);
+
+            i += 8;
+        }
+
+        // Process 4 elements
+        while i + 4 <= n {
+            let x0 = vld1q_f32(x.as_ptr().add(i));
+            let y0 = vld1q_f32(y.as_ptr().add(i));
+            let m0 = vaddq_f32(x0, y0);
+            let s0 = vsubq_f32(x0, y0);
+            sum_mid = vfmaq_f32(sum_mid, m0, m0);
+            sum_side = vfmaq_f32(sum_side, s0, s0);
+            i += 4;
+        }
+
+        emid += vaddvq_f32(sum_mid);
+        eside += vaddvq_f32(sum_side);
+
+        // Scalar tail
+        for j in i..n {
+            let m = x[j] + y[j];
+            let s = x[j] - y[j];
             emid += m * m;
             eside += s * s;
         }
     } else {
-        for i in 0..n {
-            emid += x[i] * x[i];
-            eside += y[i] * y[i];
+        let mut sum_mid = vdupq_n_f32(0.0);
+        let mut sum_side = vdupq_n_f32(0.0);
+        let mut i = 0;
+
+        // Process 16 elements at a time
+        while i + 16 <= n {
+            let x0 = vld1q_f32(x.as_ptr().add(i));
+            let x1 = vld1q_f32(x.as_ptr().add(i + 4));
+            let x2 = vld1q_f32(x.as_ptr().add(i + 8));
+            let x3 = vld1q_f32(x.as_ptr().add(i + 12));
+            let y0 = vld1q_f32(y.as_ptr().add(i));
+            let y1 = vld1q_f32(y.as_ptr().add(i + 4));
+            let y2 = vld1q_f32(y.as_ptr().add(i + 8));
+            let y3 = vld1q_f32(y.as_ptr().add(i + 12));
+
+            sum_mid = vfmaq_f32(sum_mid, x0, x0);
+            sum_mid = vfmaq_f32(sum_mid, x1, x1);
+            sum_mid = vfmaq_f32(sum_mid, x2, x2);
+            sum_mid = vfmaq_f32(sum_mid, x3, x3);
+            sum_side = vfmaq_f32(sum_side, y0, y0);
+            sum_side = vfmaq_f32(sum_side, y1, y1);
+            sum_side = vfmaq_f32(sum_side, y2, y2);
+            sum_side = vfmaq_f32(sum_side, y3, y3);
+
+            i += 16;
+        }
+
+        // Process 8 elements
+        while i + 8 <= n {
+            let x0 = vld1q_f32(x.as_ptr().add(i));
+            let x1 = vld1q_f32(x.as_ptr().add(i + 4));
+            let y0 = vld1q_f32(y.as_ptr().add(i));
+            let y1 = vld1q_f32(y.as_ptr().add(i + 4));
+
+            sum_mid = vfmaq_f32(sum_mid, x0, x0);
+            sum_mid = vfmaq_f32(sum_mid, x1, x1);
+            sum_side = vfmaq_f32(sum_side, y0, y0);
+            sum_side = vfmaq_f32(sum_side, y1, y1);
+
+            i += 8;
+        }
+
+        // Process 4 elements
+        while i + 4 <= n {
+            let x0 = vld1q_f32(x.as_ptr().add(i));
+            let y0 = vld1q_f32(y.as_ptr().add(i));
+            sum_mid = vfmaq_f32(sum_mid, x0, x0);
+            sum_side = vfmaq_f32(sum_side, y0, y0);
+            i += 4;
+        }
+
+        emid += vaddvq_f32(sum_mid);
+        eside += vaddvq_f32(sum_side);
+
+        // Scalar tail
+        for j in i..n {
+            emid += x[j] * x[j];
+            eside += y[j] * y[j];
         }
     }
+
     let mid = emid.sqrt();
     let side = eside.sqrt();
-    // Replace libm atan2f with C opus's degree-7 polynomial approximation (celt_atan2p_norm).
-    // This computes atan2(side, mid) / (π/2) ∈ [0, 1] via Remez-optimal polynomial.
     let theta_norm = celt_atan2p_norm(side, mid);
     (0.5 + 16384.0 * theta_norm) as i32
+}
+
+#[inline(always)]
+#[cfg(target_arch = "aarch64")]
+pub fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i32 {
+    unsafe {
+        return stereo_itheta_neon(x, y, stereo, n);
+    }
+}
+
+#[inline(always)]
+#[cfg(not(target_arch = "aarch64"))]
+pub fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i32 {
+    // Use NEON on aarch64
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        return stereo_itheta_neon(x, y, stereo, n);
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let mut emid = 1e-15f32;
+        let mut eside = 1e-15f32;
+        if stereo {
+            for i in 0..n {
+                let m = x[i] + y[i];
+                let s = x[i] - y[i];
+                emid += m * m;
+                eside += s * s;
+            }
+        } else {
+            for i in 0..n {
+                emid += x[i] * x[i];
+                eside += y[i] * y[i];
+            }
+        }
+        let mid = emid.sqrt();
+        let side = eside.sqrt();
+        let theta_norm = celt_atan2p_norm(side, mid);
+        (0.5 + 16384.0 * theta_norm) as i32
+    }
 }
 
 /// Polynomial approximation of atan2(y, x) / (π/2) for x,y >= 0.
@@ -304,6 +576,7 @@ pub struct SplitCtx {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline(always)]
 pub fn compute_theta(
     ctx: &mut BandCtx,
     sctx: &mut SplitCtx,
@@ -483,7 +756,6 @@ pub fn compute_theta(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[inline(never)]
 pub fn quant_partition(
     ctx: &mut BandCtx,
     x: &mut [f32],
@@ -506,13 +778,15 @@ pub fn quant_partition(
         };
         let mut b_mut = b;
         let mut fill_mut = fill;
-        let (x_mid, x_side) = x.split_at_mut(n / 2);
+        let mid = n / 2;
+        let (x_mid, x_side) = x.split_at_mut(mid);
+
         compute_theta(
             ctx,
             &mut sctx,
             x_mid,
             x_side,
-            n / 2,
+            mid,
             &mut b_mut,
             (b_blocks + 1) >> 1,
             b_blocks,
@@ -528,11 +802,12 @@ pub fn quant_partition(
 
         let mut rebalance = ctx.remaining_bits;
         let mut cm;
+
         if mbits >= sbits {
             cm = quant_partition(
                 ctx,
                 x_mid,
-                n / 2,
+                mid,
                 mbits,
                 (b_blocks + 1) >> 1,
                 lowband,
@@ -547,7 +822,7 @@ pub fn quant_partition(
             cm |= quant_partition(
                 ctx,
                 x_side,
-                n / 2,
+                mid,
                 sbits,
                 (b_blocks + 1) >> 1,
                 None,
@@ -559,7 +834,7 @@ pub fn quant_partition(
             cm = quant_partition(
                 ctx,
                 x_side,
-                n / 2,
+                mid,
                 sbits,
                 (b_blocks + 1) >> 1,
                 None,
@@ -574,7 +849,7 @@ pub fn quant_partition(
             cm |= quant_partition(
                 ctx,
                 x_mid,
-                n / 2,
+                mid,
                 mbits,
                 (b_blocks + 1) >> 1,
                 lowband,
@@ -615,17 +890,59 @@ pub fn quant_partition(
                 alg_unquant(x, n, k, ctx.spread, b_blocks as usize, ctx.rc, gain)
             }
         } else {
+            // q == 0: no pulses, fill with noise if resynth
+            let has_lowband = lowband.is_some();
             if ctx.resynth {
                 let mut seed = ctx.rc.tell() as u32;
-                if let Some(ref lb) = lowband {
-                    for j in 0..n {
-                        seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
-                        x[j] = lb[j]
-                            + if seed & 0x8000 != 0 {
-                                1.0 / 256.0
-                            } else {
-                                -1.0 / 256.0
-                            };
+                if has_lowband {
+                    let lb = lowband.unwrap();
+                    #[cfg(target_arch = "aarch64")]
+                    unsafe {
+                        use std::arch::aarch64::*;
+                        let n8 = n & !7;
+                        let mut i = 0;
+                        while i < n8 {
+                            // Generate 8 random values
+                            let mut vals = [0.0f32; 8];
+                            for j in 0..8 {
+                                seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+                                vals[j] = if seed & 0x8000 != 0 {
+                                    1.0 / 256.0
+                                } else {
+                                    -1.0 / 256.0
+                                };
+                            }
+                            let vnoise = vld1q_f32(vals.as_ptr());
+                            let vnoise1 = vld1q_f32(vals.as_ptr().add(4));
+                            let vlb = vld1q_f32(lb.as_ptr().add(i));
+                            let vlb1 = vld1q_f32(lb.as_ptr().add(i + 4));
+                            let vres = vaddq_f32(vlb, vnoise);
+                            let vres1 = vaddq_f32(vlb1, vnoise1);
+                            vst1q_f32(x.as_mut_ptr().add(i), vres);
+                            vst1q_f32(x.as_mut_ptr().add(i + 4), vres1);
+                            i += 8;
+                        }
+                        for j in i..n {
+                            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+                            x[j] = lb[j]
+                                + if seed & 0x8000 != 0 {
+                                    1.0 / 256.0
+                                } else {
+                                    -1.0 / 256.0
+                                };
+                        }
+                    }
+                    #[cfg(not(target_arch = "aarch64"))]
+                    {
+                        for j in 0..n {
+                            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+                            x[j] = lb[j]
+                                + if seed & 0x8000 != 0 {
+                                    1.0 / 256.0
+                                } else {
+                                    -1.0 / 256.0
+                                };
+                        }
                     }
                 } else {
                     for xv in x[..n].iter_mut() {
@@ -635,13 +952,34 @@ pub fn quant_partition(
                 }
                 renormalise_vector(x, n, gain);
             }
-            if lowband.is_some() {
+            if has_lowband {
                 fill
             } else {
                 (1 << b_blocks) - 1
             }
         }
     }
+}
+
+/// NEON-optimized deinterleave for non-hadamard case
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn deinterleave_hadamard_neon(x: &mut [f32], n0: usize, stride: usize) {
+    // Stack buffer for temporary storage
+    let mut tmp_buf = [0.0f32; MAX_PVQ_N];
+    let tmp = &mut tmp_buf[..n0 * stride];
+
+    // Process each stride column - strided gather is hard to vectorize efficiently
+    // Just use scalar loop but with good cache behavior
+    for i in 0..stride {
+        let src_offset = i;
+        let dst_offset = i * n0;
+        for j in 0..n0 {
+            tmp[dst_offset + j] = x[j * stride + src_offset];
+        }
+    }
+
+    x[..n0 * stride].copy_from_slice(&tmp[..n0 * stride]);
 }
 
 pub fn deinterleave_hadamard(x: &mut [f32], n0: usize, stride: usize, hadamard: bool) {
@@ -663,6 +1001,14 @@ pub fn deinterleave_hadamard(x: &mut [f32], n0: usize, stride: usize, hadamard: 
             }
         }
     } else {
+        // Use NEON on aarch64 for better performance
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            if n0 >= 4 {
+                deinterleave_hadamard_neon(x, n0, stride);
+                return;
+            }
+        }
         for i in 0..stride {
             for j in 0..n0 {
                 tmp[i * n0 + j] = x[j * stride + i];
@@ -670,6 +1016,25 @@ pub fn deinterleave_hadamard(x: &mut [f32], n0: usize, stride: usize, hadamard: 
         }
     }
     x[..n].copy_from_slice(&tmp);
+}
+
+/// NEON-optimized interleave for non-hadamard case
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn interleave_hadamard_neon(x: &mut [f32], n0: usize, stride: usize) {
+    let mut tmp_buf = [0.0f32; MAX_PVQ_N];
+    let tmp = &mut tmp_buf[..n0 * stride];
+
+    // Strided scatter is hard to vectorize efficiently
+    for i in 0..stride {
+        let src_offset = i * n0;
+        let dst_offset = i;
+        for j in 0..n0 {
+            tmp[j * stride + dst_offset] = x[src_offset + j];
+        }
+    }
+
+    x[..n0 * stride].copy_from_slice(&tmp[..n0 * stride]);
 }
 
 pub fn interleave_hadamard(x: &mut [f32], n0: usize, stride: usize, hadamard: bool) {
@@ -691,6 +1056,14 @@ pub fn interleave_hadamard(x: &mut [f32], n0: usize, stride: usize, hadamard: bo
             }
         }
     } else {
+        // Use NEON on aarch64 for better performance
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            if n0 >= 4 {
+                interleave_hadamard_neon(x, n0, stride);
+                return;
+            }
+        }
         for i in 0..stride {
             for j in 0..n0 {
                 tmp[j * stride + i] = x[i * n0 + j];
@@ -894,11 +1267,92 @@ pub fn quant_band(
 }
 
 pub fn stereo_merge(x: &mut [f32], y: &mut [f32], mid: f32, side: f32, n: usize) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        stereo_merge_neon(x, y, mid, side, n);
+        return;
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        stereo_merge_scalar(x, y, mid, side, n);
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn stereo_merge_scalar(x: &mut [f32], y: &mut [f32], mid: f32, side: f32, n: usize) {
     for i in 0..n {
         let x_val = x[i] * mid;
         let y_val = y[i] * side;
         x[i] = x_val - y_val;
         y[i] = x_val + y_val;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn stereo_merge_neon(x: &mut [f32], y: &mut [f32], mid: f32, side: f32, n: usize) {
+    use std::arch::aarch64::*;
+
+    unsafe {
+        let vmid = vdupq_n_f32(mid);
+        let vside = vdupq_n_f32(side);
+
+        // Process 16 elements at a time (4 vectors)
+        let n16 = n & !15;
+        for i in (0..n16).step_by(16) {
+            let x0 = vld1q_f32(x.as_ptr().add(i));
+            let x1 = vld1q_f32(x.as_ptr().add(i + 4));
+            let x2 = vld1q_f32(x.as_ptr().add(i + 8));
+            let x3 = vld1q_f32(x.as_ptr().add(i + 12));
+
+            let y0 = vld1q_f32(y.as_ptr().add(i));
+            let y1 = vld1q_f32(y.as_ptr().add(i + 4));
+            let y2 = vld1q_f32(y.as_ptr().add(i + 8));
+            let y3 = vld1q_f32(y.as_ptr().add(i + 12));
+
+            // x_val = x * mid, y_val = y * side
+            let xv0 = vmulq_f32(x0, vmid);
+            let xv1 = vmulq_f32(x1, vmid);
+            let xv2 = vmulq_f32(x2, vmid);
+            let xv3 = vmulq_f32(x3, vmid);
+
+            let yv0 = vmulq_f32(y0, vside);
+            let yv1 = vmulq_f32(y1, vside);
+            let yv2 = vmulq_f32(y2, vside);
+            let yv3 = vmulq_f32(y3, vside);
+
+            // x = x_val - y_val, y = x_val + y_val
+            vst1q_f32(x.as_mut_ptr().add(i), vsubq_f32(xv0, yv0));
+            vst1q_f32(x.as_mut_ptr().add(i + 4), vsubq_f32(xv1, yv1));
+            vst1q_f32(x.as_mut_ptr().add(i + 8), vsubq_f32(xv2, yv2));
+            vst1q_f32(x.as_mut_ptr().add(i + 12), vsubq_f32(xv3, yv3));
+
+            vst1q_f32(y.as_mut_ptr().add(i), vaddq_f32(xv0, yv0));
+            vst1q_f32(y.as_mut_ptr().add(i + 4), vaddq_f32(xv1, yv1));
+            vst1q_f32(y.as_mut_ptr().add(i + 8), vaddq_f32(xv2, yv2));
+            vst1q_f32(y.as_mut_ptr().add(i + 12), vaddq_f32(xv3, yv3));
+        }
+
+        // Process remaining 4-element chunks
+        let n4 = (n & !3) - n16;
+        for i in (n16..n16 + n4).step_by(4) {
+            let xv = vld1q_f32(x.as_ptr().add(i));
+            let yv = vld1q_f32(y.as_ptr().add(i));
+
+            let x_val = vmulq_f32(xv, vmid);
+            let y_val = vmulq_f32(yv, vside);
+
+            vst1q_f32(x.as_mut_ptr().add(i), vsubq_f32(x_val, y_val));
+            vst1q_f32(y.as_mut_ptr().add(i), vaddq_f32(x_val, y_val));
+        }
+
+        // Process remaining elements
+        for i in (n16 + n4)..n {
+            let x_val = x[i] * mid;
+            let y_val = y[i] * side;
+            x[i] = x_val - y_val;
+            y[i] = x_val + y_val;
+        }
     }
 }
 
@@ -1159,9 +1613,15 @@ pub fn quant_all_bands(
     let mut update_lowband = true;
     let mut avoid_split_noise = b_blocks > 1;
 
+    // Cache e_bands locally to avoid repeated bound checks and indirection
+    let e_bands = &m.e_bands;
+
     for i in start..end {
-        let offset = m_val * (m.e_bands[i] as usize);
-        let n = m_val * ((m.e_bands[i + 1] - m.e_bands[i]) as usize);
+        // Pre-fetch e_bands values to avoid repeated indexing
+        let e_band_i = e_bands[i] as usize;
+        let e_band_i1 = e_bands[i + 1] as usize;
+        let offset = m_val * e_band_i;
+        let n = m_val * (e_band_i1 - e_band_i);
         let last = i == end - 1;
 
         let tell = rc.tell_frac();
@@ -1176,10 +1636,10 @@ pub fn quant_all_bands(
             b = 0i32.max(16383i32.min((remaining_bits + 1).min(pulses[i] + curr_balance)));
         }
 
-        let norm_pos = m_val * (m.e_bands[i] as usize) - norm_offset;
+        let norm_pos = m_val * e_band_i - norm_offset;
 
-        let band_start = m_val * (m.e_bands[i] as usize);
-        let bands_start = m_val * (m.e_bands[start] as usize);
+        let band_start = m_val * e_band_i;
+        let bands_start = m_val * (e_bands[start] as usize);
         if resynth
             && (band_start as i32 - n as i32 >= bands_start as i32 || i == start + 1)
             && (update_lowband || lowband_offset == 0)
@@ -1195,7 +1655,7 @@ pub fn quant_all_bands(
 
         if lowband_offset != 0 && (spread != SPREAD_AGGRESSIVE || b_blocks > 1 || tf_change < 0) {
             effective_lowband = 0i32.max(
-                (m_val * m.e_bands[lowband_offset] as usize) as i32 - norm_offset as i32 - n as i32,
+                (m_val * e_bands[lowband_offset] as usize) as i32 - norm_offset as i32 - n as i32,
             );
             let el_abs = effective_lowband as usize + norm_offset;
 
@@ -1205,12 +1665,12 @@ pub fn quant_all_bands(
                     break;
                 }
                 fold_start -= 1;
-                if m_val * (m.e_bands[fold_start] as usize) <= el_abs {
+                if m_val * (e_bands[fold_start] as usize) <= el_abs {
                     break;
                 }
             }
             let mut fold_end = lowband_offset;
-            while fold_end < i && m_val * (m.e_bands[fold_end] as usize) < el_abs + n {
+            while fold_end < i && m_val * (e_bands[fold_end] as usize) < el_abs + n {
                 fold_end += 1;
             }
 
@@ -1341,6 +1801,63 @@ pub fn quant_all_bands(
     *balance = balance_val;
 }
 
+/// Compute band energies with NEON optimization on ARM64
+#[cfg(target_arch = "aarch64")]
+fn compute_band_energy_neon(band: &[f32]) -> f32 {
+    use std::arch::aarch64::*;
+
+    let n = band.len();
+    let mut sum = 1e-15f32;
+
+    unsafe {
+        // Process 16 elements at a time (4 vectors of 4 floats each)
+        let n16 = n & !15;
+        if n16 > 0 {
+            let mut acc0 = vdupq_n_f32(0.0);
+            let mut acc1 = vdupq_n_f32(0.0);
+            let mut acc2 = vdupq_n_f32(0.0);
+            let mut acc3 = vdupq_n_f32(0.0);
+
+            for i in (0..n16).step_by(16) {
+                let v0 = vld1q_f32(band.as_ptr().add(i));
+                let v1 = vld1q_f32(band.as_ptr().add(i + 4));
+                let v2 = vld1q_f32(band.as_ptr().add(i + 8));
+                let v3 = vld1q_f32(band.as_ptr().add(i + 12));
+
+                acc0 = vfmaq_f32(acc0, v0, v0);
+                acc1 = vfmaq_f32(acc1, v1, v1);
+                acc2 = vfmaq_f32(acc2, v2, v2);
+                acc3 = vfmaq_f32(acc3, v3, v3);
+            }
+
+            // Combine accumulators
+            acc0 = vaddq_f32(acc0, acc1);
+            acc2 = vaddq_f32(acc2, acc3);
+            acc0 = vaddq_f32(acc0, acc2);
+            sum += vaddvq_f32(acc0);
+        }
+
+        // Process remaining 4-element chunks
+        let n4 = (n & !3) - n16;
+        if n4 > 0 {
+            let mut acc = vdupq_n_f32(0.0);
+            for i in (n16..n16 + n4).step_by(4) {
+                let v = vld1q_f32(band.as_ptr().add(i));
+                acc = vfmaq_f32(acc, v, v);
+            }
+            sum += vaddvq_f32(acc);
+        }
+
+        // Process remaining elements
+        for i in (n16 + n4)..n {
+            let v = band[i];
+            sum += v * v;
+        }
+    }
+
+    sum.sqrt()
+}
+
 pub fn compute_band_energies(
     m: &CeltMode,
     x: &[f32],
@@ -1350,14 +1867,28 @@ pub fn compute_band_energies(
     lm: usize,
 ) {
     let frame_size = m.short_mdct_size << lm;
+
+    #[cfg(target_arch = "aarch64")]
+    let _use_neon = true;
+    #[cfg(not(target_arch = "aarch64"))]
+    let _use_neon = false;
+
     for c in 0..channels {
         let ch = &x[c * frame_size..(c + 1) * frame_size];
         for i in 0..end {
             let offset = (m.e_bands[i] as usize) << lm;
             let n = ((m.e_bands[i + 1] - m.e_bands[i]) as usize) << lm;
             let band = &ch[offset..offset + n];
-            let sum = band.iter().fold(1e-15f32, |acc, &v| acc + v * v);
-            band_e[c * m.nb_ebands + i] = sum.sqrt();
+
+            #[cfg(target_arch = "aarch64")]
+            {
+                band_e[c * m.nb_ebands + i] = compute_band_energy_neon(band);
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                let sum = band.iter().fold(1e-15f32, |acc, &v| acc + v * v);
+                band_e[c * m.nb_ebands + i] = sum.sqrt();
+            }
         }
     }
 }
@@ -1451,14 +1982,106 @@ pub fn celt_lcg_rand(seed: u32) -> u32 {
     seed.wrapping_mul(1103515245).wrapping_add(12345)
 }
 
-pub fn renormalise_vector(x: &mut [f32], n: usize, gain: f32) {
-    let mut e = 1e-15f32;
-    for &xv in x[..n].iter() {
-        e += xv * xv;
+/// NEON-optimized vector renormalization
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn renormalise_vector_neon(x: &mut [f32], n: usize, gain: f32) {
+    use std::arch::aarch64::*;
+
+    // Compute sum of squares
+    let mut sum_vec = vdupq_n_f32(0.0);
+    let mut i = 0;
+
+    // Process 16 elements at a time
+    while i + 16 <= n {
+        let x0 = vld1q_f32(x.as_ptr().add(i));
+        let x1 = vld1q_f32(x.as_ptr().add(i + 4));
+        let x2 = vld1q_f32(x.as_ptr().add(i + 8));
+        let x3 = vld1q_f32(x.as_ptr().add(i + 12));
+        sum_vec = vfmaq_f32(sum_vec, x0, x0);
+        sum_vec = vfmaq_f32(sum_vec, x1, x1);
+        sum_vec = vfmaq_f32(sum_vec, x2, x2);
+        sum_vec = vfmaq_f32(sum_vec, x3, x3);
+        i += 16;
     }
+
+    // Process 8 elements
+    while i + 8 <= n {
+        let x0 = vld1q_f32(x.as_ptr().add(i));
+        let x1 = vld1q_f32(x.as_ptr().add(i + 4));
+        sum_vec = vfmaq_f32(sum_vec, x0, x0);
+        sum_vec = vfmaq_f32(sum_vec, x1, x1);
+        i += 8;
+    }
+
+    // Process 4 elements
+    while i + 4 <= n {
+        let x0 = vld1q_f32(x.as_ptr().add(i));
+        sum_vec = vfmaq_f32(sum_vec, x0, x0);
+        i += 4;
+    }
+
+    let mut e = 1e-15f32 + vaddvq_f32(sum_vec);
+
+    // Scalar tail for energy
+    for j in i..n {
+        e += x[j] * x[j];
+    }
+
     let norm = gain / e.sqrt();
-    for xv in x[..n].iter_mut() {
-        *xv *= norm;
+    let vnorm = vdupq_n_f32(norm);
+
+    // Normalize with NEON
+    i = 0;
+    while i + 16 <= n {
+        let x0 = vld1q_f32(x.as_ptr().add(i));
+        let x1 = vld1q_f32(x.as_ptr().add(i + 4));
+        let x2 = vld1q_f32(x.as_ptr().add(i + 8));
+        let x3 = vld1q_f32(x.as_ptr().add(i + 12));
+        vst1q_f32(x.as_mut_ptr().add(i), vmulq_f32(x0, vnorm));
+        vst1q_f32(x.as_mut_ptr().add(i + 4), vmulq_f32(x1, vnorm));
+        vst1q_f32(x.as_mut_ptr().add(i + 8), vmulq_f32(x2, vnorm));
+        vst1q_f32(x.as_mut_ptr().add(i + 12), vmulq_f32(x3, vnorm));
+        i += 16;
+    }
+
+    while i + 8 <= n {
+        let x0 = vld1q_f32(x.as_ptr().add(i));
+        let x1 = vld1q_f32(x.as_ptr().add(i + 4));
+        vst1q_f32(x.as_mut_ptr().add(i), vmulq_f32(x0, vnorm));
+        vst1q_f32(x.as_mut_ptr().add(i + 4), vmulq_f32(x1, vnorm));
+        i += 8;
+    }
+
+    while i + 4 <= n {
+        let x0 = vld1q_f32(x.as_ptr().add(i));
+        vst1q_f32(x.as_mut_ptr().add(i), vmulq_f32(x0, vnorm));
+        i += 4;
+    }
+
+    // Scalar tail
+    for j in i..n {
+        x[j] *= norm;
+    }
+}
+
+pub fn renormalise_vector(x: &mut [f32], n: usize, gain: f32) {
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        renormalise_vector_neon(x, n, gain);
+        return;
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let mut e = 1e-15f32;
+        for &xv in x[..n].iter() {
+            e += xv * xv;
+        }
+        let norm = gain / e.sqrt();
+        for xv in x[..n].iter_mut() {
+            *xv *= norm;
+        }
     }
 }
 

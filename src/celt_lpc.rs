@@ -74,23 +74,153 @@ pub fn autocorr(
 }
 
 pub fn celt_fir(x: &[f32], num: &[f32], y: &mut [f32], n: usize, ord: usize) {
-    for i in 0..n {
-        let mut sum = x[i];
-        for j in 0..ord {
-            if i > j {
-                sum += num[j] * x[i - j - 1];
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        celt_fir_neon(x, num, y, n, ord);
+        return;
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for i in 0..n {
+            let mut sum = x[i];
+            for j in 0..ord {
+                if i > j {
+                    sum += num[j] * x[i - j - 1];
+                }
             }
+            y[i] = sum;
         }
-        y[i] = sum;
     }
 }
 
 pub fn celt_iir(x: &[f32], den: &[f32], y: &mut [f32], n: usize, ord: usize, mem: &mut [f32]) {
-    for i in 0..n {
-        let mut sum = x[i];
-        for j in 0..ord {
-            sum -= den[j] * mem[j];
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        celt_iir_neon(x, den, y, n, ord, mem);
+        return;
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for i in 0..n {
+            let mut sum = x[i];
+            for j in 0..ord {
+                sum -= den[j] * mem[j];
+            }
+            for j in (1..ord).rev() {
+                mem[j] = mem[j - 1];
+            }
+            mem[0] = sum;
+            y[i] = sum;
         }
+    }
+}
+
+/// NEON-accelerated FIR filter for aarch64.
+/// y[i] = x[i] + sum(num[j] * x[i-j-1])
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn celt_fir_neon(x: &[f32], num: &[f32], y: &mut [f32], n: usize, ord: usize) {
+    use std::arch::aarch64::*;
+
+    // For small orders, use scalar code
+    if ord < 4 {
+        for i in 0..n {
+            let mut sum = x[i];
+            for j in 0..ord {
+                if i > j {
+                    sum += num[j] * x[i - j - 1];
+                }
+            }
+            y[i] = sum;
+        }
+        return;
+    }
+
+    // Process each output sample
+    for i in 0..n {
+        let mut sum = vdupq_n_f32(x[i]);
+
+        // Process filter coefficients in chunks of 4
+        let mut j = 0;
+        while j + 4 <= ord && i > j + 3 {
+            let coeff = vld1q_f32(num.as_ptr().add(j));
+            let x_vals = vld1q_f32(x.as_ptr().add(i - j - 4));
+            let x_reversed = vrev64q_f32(x_vals);
+            let x_reversed = vextq_f32(x_reversed, x_reversed, 2);
+            sum = vfmaq_f32(sum, coeff, x_reversed);
+            j += 4;
+        }
+
+        // Horizontal sum
+        let sum_low = vget_low_f32(sum);
+        let sum_high = vget_high_f32(sum);
+        let sum_pair = vadd_f32(sum_low, sum_high);
+        let mut result = vget_lane_f32(sum_pair, 0) + vget_lane_f32(sum_pair, 1);
+
+        // Scalar tail
+        while j < ord {
+            if i > j {
+                result += num[j] * x[i - j - 1];
+            }
+            j += 1;
+        }
+
+        y[i] = result;
+    }
+}
+
+/// NEON-accelerated IIR filter for aarch64.
+/// y[i] = x[i] - sum(den[j] * mem[j])
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn celt_iir_neon(x: &[f32], den: &[f32], y: &mut [f32], n: usize, ord: usize, mem: &mut [f32]) {
+    use std::arch::aarch64::*;
+
+    // For small orders, use scalar code
+    if ord < 4 {
+        for i in 0..n {
+            let mut sum = x[i];
+            for j in 0..ord {
+                sum -= den[j] * mem[j];
+            }
+            for j in (1..ord).rev() {
+                mem[j] = mem[j - 1];
+            }
+            mem[0] = sum;
+            y[i] = sum;
+        }
+        return;
+    }
+
+    for i in 0..n {
+        // Compute feedback: sum(den[j] * mem[j])
+        let mut feedback = vdupq_n_f32(0.0);
+
+        let mut j = 0;
+        while j + 4 <= ord {
+            let coeff = vld1q_f32(den.as_ptr().add(j));
+            let mem_vals = vld1q_f32(mem.as_ptr().add(j));
+            feedback = vfmaq_f32(feedback, coeff, mem_vals);
+            j += 4;
+        }
+
+        // Horizontal sum of feedback
+        let fb_low = vget_low_f32(feedback);
+        let fb_high = vget_high_f32(feedback);
+        let fb_pair = vadd_f32(fb_low, fb_high);
+        let mut fb_sum = vget_lane_f32(fb_pair, 0) + vget_lane_f32(fb_pair, 1);
+
+        // Scalar tail for feedback
+        while j < ord {
+            fb_sum += den[j] * mem[j];
+            j += 1;
+        }
+
+        let sum = x[i] - fb_sum;
+
+        // Update memory: shift and insert new value
         for j in (1..ord).rev() {
             mem[j] = mem[j - 1];
         }

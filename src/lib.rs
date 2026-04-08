@@ -14,7 +14,7 @@ pub mod silk;
 
 pub use silk::{SilkResampler, SilkResamplerDown1_3, SilkResamplerDown1_6};
 
-use celt::{CeltDecoder, CeltEncoder};
+pub use celt::{CeltDecoder, CeltEncoder};
 use hp_cutoff::hp_cutoff;
 use range_coder::RangeCoder;
 use silk::control_codec::silk_control_encoder;

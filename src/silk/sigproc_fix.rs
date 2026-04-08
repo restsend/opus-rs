@@ -103,31 +103,39 @@ pub fn silk_biquad_alt_stride2(
     s: &mut [i32],
     len: usize,
 ) {
-    let a0_l_q28 = (-a_q28[0]) & 0x00003FFF;
-    let a0_u_q28 = -a_q28[0] >> 14;
-    let a1_l_q28 = (-a_q28[1]) & 0x00003FFF;
-    let a1_u_q28 = -a_q28[1] >> 14;
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        silk_biquad_alt_stride2_neon(input_output, b_q28, a_q28, s, len);
+        return;
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let a0_l_q28 = (-a_q28[0]) & 0x00003FFF;
+        let a0_u_q28 = -a_q28[0] >> 14;
+        let a1_l_q28 = (-a_q28[1]) & 0x00003FFF;
+        let a1_u_q28 = -a_q28[1] >> 14;
 
-    for k in 0..len {
-        let out32_q14_0 = silk_smlawb(s[0], b_q28[0], input_output[2 * k] as i32) << 2;
-        let out32_q14_1 = silk_smlawb(s[2], b_q28[0], input_output[2 * k + 1] as i32) << 2;
+        for k in 0..len {
+            let out32_q14_0 = silk_smlawb(s[0], b_q28[0], input_output[2 * k] as i32) << 2;
+            let out32_q14_1 = silk_smlawb(s[2], b_q28[0], input_output[2 * k + 1] as i32) << 2;
 
-        s[0] = s[1] + silk_rshift_round(silk_smulwb(out32_q14_0, a0_l_q28), 14);
-        s[2] = s[3] + silk_rshift_round(silk_smulwb(out32_q14_1, a0_l_q28), 14);
-        s[0] = silk_smlawb(s[0], out32_q14_0, a0_u_q28);
-        s[2] = silk_smlawb(s[2], out32_q14_1, a0_u_q28);
-        s[0] = silk_smlawb(s[0], b_q28[1], input_output[2 * k] as i32);
-        s[2] = silk_smlawb(s[2], b_q28[1], input_output[2 * k + 1] as i32);
+            s[0] = s[1] + silk_rshift_round(silk_smulwb(out32_q14_0, a0_l_q28), 14);
+            s[2] = s[3] + silk_rshift_round(silk_smulwb(out32_q14_1, a0_l_q28), 14);
+            s[0] = silk_smlawb(s[0], out32_q14_0, a0_u_q28);
+            s[2] = silk_smlawb(s[2], out32_q14_1, a0_u_q28);
+            s[0] = silk_smlawb(s[0], b_q28[1], input_output[2 * k] as i32);
+            s[2] = silk_smlawb(s[2], b_q28[1], input_output[2 * k + 1] as i32);
 
-        s[1] = silk_rshift_round(silk_smulwb(out32_q14_0, a1_l_q28), 14);
-        s[3] = silk_rshift_round(silk_smulwb(out32_q14_1, a1_l_q28), 14);
-        s[1] = silk_smlawb(s[1], out32_q14_0, a1_u_q28);
-        s[3] = silk_smlawb(s[3], out32_q14_1, a1_u_q28);
-        s[1] = silk_smlawb(s[1], b_q28[2], input_output[2 * k] as i32);
-        s[3] = silk_smlawb(s[3], b_q28[2], input_output[2 * k + 1] as i32);
+            s[1] = silk_rshift_round(silk_smulwb(out32_q14_0, a1_l_q28), 14);
+            s[3] = silk_rshift_round(silk_smulwb(out32_q14_1, a1_l_q28), 14);
+            s[1] = silk_smlawb(s[1], out32_q14_0, a1_u_q28);
+            s[3] = silk_smlawb(s[3], out32_q14_1, a1_u_q28);
+            s[1] = silk_smlawb(s[1], b_q28[2], input_output[2 * k] as i32);
+            s[3] = silk_smlawb(s[3], b_q28[2], input_output[2 * k + 1] as i32);
 
-        input_output[2 * k] = silk_sat16(silk_rshift(out32_q14_0 + (1 << 14) - 1, 14)) as i16;
-        input_output[2 * k + 1] = silk_sat16(silk_rshift(out32_q14_1 + (1 << 14) - 1, 14)) as i16;
+            input_output[2 * k] = silk_sat16(silk_rshift(out32_q14_0 + (1 << 14) - 1, 14)) as i16;
+            input_output[2 * k + 1] = silk_sat16(silk_rshift(out32_q14_1 + (1 << 14) - 1, 14)) as i16;
+        }
     }
 }
 
@@ -439,7 +447,11 @@ pub fn silk_sum_sqr_shift(energy: &mut i32, shift: &mut i32, x: &[i16], len: usi
     {
         nrg = unsafe { silk_sum_sqr_shift_neon(x, len, shft) };
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
+    {
+        nrg = unsafe { silk_sum_sqr_shift_sse4_1(x, len, shft) };
+    }
+    #[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "sse4.1"))))]
     {
         nrg = 0;
         i = 0;
@@ -506,7 +518,11 @@ pub fn silk_inner_prod_aligned(ptr1: &[i16], ptr2: &[i16], len: usize) -> i32 {
     unsafe {
         return silk_inner_prod_aligned_neon(ptr1, ptr2, len);
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
+    unsafe {
+        return silk_inner_prod_aligned_sse4_1(ptr1, ptr2, len);
+    }
+    #[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "sse4.1"))))]
     silk_inner_prod_aligned_scalar(ptr1, ptr2, len)
 }
 
@@ -541,9 +557,7 @@ fn silk_inner_prod_aligned_scalar(ptr1: &[i16], ptr2: &[i16], len: usize) -> i32
 }
 
 /// NEON-accelerated i16 dot-product for aarch64.
-/// Uses 4 × `vmlal_s16` per iteration to accumulate into int32×4 vectors,
-/// widening to int64 only for the final reduction (matching ARM Cortex-A SMLA
-/// semantics without saturation issues).
+/// Uses 4 × accumulators for maximum instruction-level parallelism.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -557,7 +571,7 @@ unsafe fn silk_inner_prod_aligned_neon(ptr1: &[i16], ptr2: &[i16], len: usize) -
 
     let mut i = 0;
 
-    // Process 32 elements per iteration (4 × vmlal_s16, each handling 8 elements)
+    // Process 32 elements per iteration for maximum ILP
     while i + 32 <= len {
         let a0 = vld1q_s16(ptr1.as_ptr().add(i));
         let b0 = vld1q_s16(ptr2.as_ptr().add(i));
@@ -589,7 +603,7 @@ unsafe fn silk_inner_prod_aligned_neon(ptr1: &[i16], ptr2: &[i16], len: usize) -
         i += 8;
     }
 
-    // Horizontal reduce: sum all four accumulators into one i64 to avoid i32 overflow
+    // Horizontal reduce: sum all four accumulators into one i64
     let sum01 = vpaddq_s32(acc0, acc1);
     let sum23 = vpaddq_s32(acc2, acc3);
     let sum = vpaddq_s32(sum01, sum23);
@@ -602,8 +616,6 @@ unsafe fn silk_inner_prod_aligned_neon(ptr1: &[i16], ptr2: &[i16], len: usize) -
         i += 1;
     }
 
-    // Clamp to i32 range (same semantics as wrapping — overflow is defined away
-    // by the fixed-point algorithm's guarantees)
     result as i32
 }
 
@@ -1029,4 +1041,332 @@ pub fn silk_shr32(a: i32, shift: i32) -> i32 {
         return a;
     }
     a >> shift
+}
+
+// ============================================================================
+// x86_64 SSE4.1 Optimizations
+// ============================================================================
+
+#[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
+use std::arch::x86_64::*;
+
+/// SSE4.1-accelerated i16 dot-product for x86_64.
+/// Uses _mm_madd_epi16 for multiply-accumulate with 32-bit accumulation.
+#[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
+#[inline(always)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn silk_inner_prod_aligned_sse4_1(ptr1: &[i16], ptr2: &[i16], len: usize) -> i32 {
+    let mut acc1 = _mm_setzero_si128();
+    let mut acc2 = _mm_setzero_si128();
+    let mut i = 0;
+
+    // Process 16 elements per iteration (8 per accumulator)
+    while i + 16 <= len {
+        let a1 = _mm_loadu_si128(ptr1.as_ptr().add(i) as *const __m128i);
+        let b1 = _mm_loadu_si128(ptr2.as_ptr().add(i) as *const __m128i);
+        let a2 = _mm_loadu_si128(ptr1.as_ptr().add(i + 8) as *const __m128i);
+        let b2 = _mm_loadu_si128(ptr2.as_ptr().add(i + 8) as *const __m128i);
+
+        acc1 = _mm_madd_epi16(acc1, a1, b1);
+        acc2 = _mm_madd_epi16(acc2, a2, b2);
+
+        i += 16;
+    }
+
+    // Process remaining 8 elements
+    if i + 8 <= len {
+        let a = _mm_loadu_si128(ptr1.as_ptr().add(i) as *const __m128i);
+        let b = _mm_loadu_si128(ptr2.as_ptr().add(i) as *const __m128i);
+        acc1 = _mm_madd_epi16(acc1, a, b);
+        i += 8;
+    }
+
+    // Sum accumulators
+    acc1 = _mm_add_epi32(acc1, acc2);
+
+    // Horizontal sum: [a, b, c, d] -> [a+b, c+d, a+b, c+d] -> [a+b+c+d, ...]
+    let sum = _mm_add_epi32(acc1, _mm_srli_si128(acc1, 8));
+    let sum = _mm_add_epi32(sum, _mm_srli_si128(sum, 4));
+    let mut result = _mm_cvtsi128_si32(sum);
+
+    // Scalar tail
+    while i < len {
+        result = result.wrapping_add((ptr1[i] as i32).wrapping_mul(ptr2[i] as i32));
+        i += 1;
+    }
+
+    result
+}
+
+/// SSE4.1-accelerated xcorr_kernel for i16 data.
+/// Computes sum[k] = Σ x[i] * y[i+k] for k=0..3 simultaneously.
+#[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
+#[inline(always)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn xcorr_kernel_sse4_1(x: &[i16], y: &[i16], sum: &mut [i32; 4], mut len: usize) {
+    debug_assert!(x.len() >= len);
+    debug_assert!(y.len() >= len + 3);
+
+    let mut acc0 = _mm_setzero_si128(); // sum[0], sum[1]
+    let mut acc1 = _mm_setzero_si128(); // sum[2], sum[3]
+
+    let mut xi = x.as_ptr();
+    let mut yi = y.as_ptr();
+
+    // Process 4 elements per iteration
+    while len >= 4 {
+        // Load x[0..3] broadcasted
+        let x0 = _mm_set1_epi16(*xi.add(0));
+        let x1 = _mm_set1_epi16(*xi.add(1));
+        let x2 = _mm_set1_epi16(*xi.add(2));
+        let x3 = _mm_set1_epi16(*xi.add(3));
+
+        // Load y[0..7] for processing
+        let y0_7 = _mm_loadu_si128(yi as *const __m128i);
+        let y4_11 = _mm_loadu_si128(yi.add(4) as *const __m128i);
+
+        // acc0[0] += x[0] * y[0], acc0[1] += x[0] * y[1]
+        // We need y[0..1] for x[0], y[1..2] for x[1], etc.
+        let y01 = y0_7;
+        let y12 = _mm_alignr_epi8(y4_11, y0_7, 2);
+        let y23 = _mm_alignr_epi8(y4_11, y0_7, 4);
+        let y34 = _mm_alignr_epi8(y4_11, y0_7, 6);
+
+        acc0 = _mm_madd_epi16(acc0, x0, y01);
+        acc0 = _mm_madd_epi16(acc0, x1, y12);
+        acc1 = _mm_madd_epi16(acc1, x2, y23);
+        acc1 = _mm_madd_epi16(acc1, x3, y34);
+
+        xi = xi.add(4);
+        yi = yi.add(4);
+        len -= 4;
+    }
+
+    // Combine accumulators
+    let mut temp = [0i32; 4];
+    _mm_storeu_si128(temp.as_mut_ptr() as *mut __m128i, acc0);
+    sum[0] = sum[0].wrapping_add(temp[0]);
+    sum[1] = sum[1].wrapping_add(temp[1]);
+    _mm_storeu_si128(temp.as_mut_ptr() as *mut __m128i, acc1);
+    sum[2] = sum[2].wrapping_add(temp[0]);
+    sum[3] = sum[3].wrapping_add(temp[1]);
+
+    // Scalar tail
+    let mut y_0 = *yi;
+    let mut y_1 = *yi.add(1);
+    let mut y_2 = *yi.add(2);
+    let mut y_3: i16 = 0;
+    let mut yi_idx = 3;
+
+    for j in 0..len {
+        y_3 = *yi.add(yi_idx);
+        yi_idx += 1;
+        sum[0] = sum[0].wrapping_add((*xi.add(j) as i32).wrapping_mul(y_0 as i32));
+        sum[1] = sum[1].wrapping_add((*xi.add(j) as i32).wrapping_mul(y_1 as i32));
+        sum[2] = sum[2].wrapping_add((*xi.add(j) as i32).wrapping_mul(y_2 as i32));
+        sum[3] = sum[3].wrapping_add((*xi.add(j) as i32).wrapping_mul(y_3 as i32));
+        y_0 = y_1;
+        y_1 = y_2;
+        y_2 = y_3;
+    }
+}
+
+/// SSE4.1-accelerated squared-sum with right-shift for x86_64.
+/// Computes Σ (x[i]^2 >> shft) for i=0..len-1.
+#[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
+#[inline(always)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn silk_sum_sqr_shift_sse4_1(x: &[i16], len: usize, shft: i32) -> i32 {
+    let mut acc = _mm_setzero_si128();
+    let mut i = 0;
+
+    // Process 8 elements at a time
+    while i + 8 <= len {
+        let v = _mm_loadu_si128(x.as_ptr().add(i) as *const __m128i);
+
+        // Square: _mm_madd_epi16(a, a) computes a[0]*a[0] + a[1]*a[1] per 32-bit lane
+        let sq = _mm_madd_epi16(v, v);
+
+        // Shift right by shft
+        let shifted = if shft > 0 {
+            _mm_srli_epi32(sq, shft as u32)
+        } else {
+            sq
+        };
+
+        acc = _mm_add_epi32(acc, shifted);
+        i += 8;
+    }
+
+    // Horizontal sum
+    let sum = _mm_add_epi32(acc, _mm_srli_si128(acc, 8));
+    let sum = _mm_add_epi32(sum, _mm_srli_si128(sum, 4));
+    let mut nrg = _mm_cvtsi128_si32(sum);
+
+    // Scalar tail
+    while i < len {
+        let v = x[i] as i32;
+        let sq = (v * v) as u32;
+        nrg = nrg.wrapping_add((sq >> shft) as i32);
+        i += 1;
+    }
+
+    nrg
+}
+
+
+/// NEON-accelerated biquad filter (stride 2) for aarch64.
+/// Based on silk_biquad_alt_stride2_neon from C code.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn silk_biquad_alt_stride2_neon(
+    input_output: &mut [i16],
+    b_q28: &[i32],
+    a_q28: &[i32],
+    s: &mut [i32],
+    len: usize,
+) {
+    use std::arch::aarch64::*;
+
+    // Offset for rounding: (1 << 14) - 1
+    let offset_s32x2 = vdup_n_s32((1 << 14) - 1);
+    let offset_s32x4 = vcombine_s32(offset_s32x2, offset_s32x2);
+
+    // Negate A_Q28 values and split in two parts (matching C implementation)
+    let a_q28_s32x2 = vneg_s32(vld1_s32(a_q28.as_ptr()));
+    let a_l_s32x2 = vreinterpret_s32_u32(vshr_n_u32(
+        vreinterpret_u32_s32(vshl_n_s32(a_q28_s32x2, 18)),
+        3,
+    ));
+    let mut a_u_s32x2 = vshr_n_s32(a_q28_s32x2, 14);
+    a_u_s32x2 = vshr_n_s32(vshl_n_s32(a_u_s32x2, 16), 1);
+
+    let b_q28_s32x2 = vld1_s32(b_q28.as_ptr());
+    let t_s32x2 = vld1_s32(b_q28.as_ptr().add(1));
+
+    // Zip coefficients for vectorized use
+    let t0_s32x2x2 = vzip_s32(a_l_s32x2, a_l_s32x2);
+    let t1_s32x2x2 = vzip_s32(a_u_s32x2, a_u_s32x2);
+    let t2_s32x2x2 = vzip_s32(t_s32x2, t_s32x2);
+
+    let a_l_s32x4 = vcombine_s32(t0_s32x2x2.0, t0_s32x2x2.1);
+    let a_u_s32x4 = vcombine_s32(t1_s32x2x2.0, t1_s32x2x2.1);
+    let b_q28_s32x4 = vcombine_s32(t2_s32x2x2.0, t2_s32x2x2.1);
+
+    // Load and transpose state vector
+    let mut s_s32x4 = vld1q_s32(s.as_ptr());
+    let s_s32x2x2 = vtrn_s32(vget_low_s32(s_s32x4), vget_high_s32(s_s32x4));
+    s_s32x4 = vcombine_s32(s_s32x2x2.0, s_s32x2x2.1);
+
+    let mut k = 0;
+    while k + 1 < len {
+        // Load 4 input samples: in[2*k + 0,1,2,3]
+        let in_s16x4 = vld1_s16(input_output.as_ptr().add(2 * k));
+        let in_s32x4 = vshll_n_s16(in_s16x4, 15);
+
+        // t = vqdmulhq_lane_s32(in << 15, B_Q28_s32x2, 0) = SMULWB(B[0], in)
+        let t_s32x4 = vqdmulhq_lane_s32(in_s32x4, b_q28_s32x2, 0);
+
+        // Process first pair
+        let in_low = vcombine_s32(vget_low_s32(in_s32x4), vget_low_s32(in_s32x4));
+        let t_low = vget_low_s32(t_s32x4);
+
+        // out32_Q14 = (S[0,1] + SMULWB(B[0], in[0,1])) << 2
+        let mut out32_q14_s32x2 = vadd_s32(vget_low_s32(s_s32x4), t_low);
+        out32_q14_s32x2 = vshl_n_s32(out32_q14_s32x2, 2);
+
+        // S[0,1] = S[2,3]; S[2,3] = 0
+        s_s32x4 = vcombine_s32(vget_high_s32(s_s32x4), vdup_n_s32(0));
+
+        // out32_Q14 broadcast
+        let out32_q14_s32x4 = vcombine_s32(out32_q14_s32x2, out32_q14_s32x2);
+
+        // S += vqdmulhq_s32(out32_Q14, A_L) >> 14 (rounded)
+        let tmp_s32x4 = vqdmulhq_s32(out32_q14_s32x4, a_l_s32x4);
+        s_s32x4 = vrsraq_n_s32(s_s32x4, tmp_s32x4, 14);
+
+        // S += vqdmulhq_s32(out32_Q14, A_U)
+        let tmp_s32x4 = vqdmulhq_s32(out32_q14_s32x4, a_u_s32x4);
+        s_s32x4 = vaddq_s32(s_s32x4, tmp_s32x4);
+
+        // S += vqdmulhq_s32(in, B_Q28[1,1,2,2])
+        let tmp_s32x4 = vqdmulhq_s32(in_low, b_q28_s32x4);
+        s_s32x4 = vaddq_s32(s_s32x4, tmp_s32x4);
+
+        // Process second pair
+        let in_high = vcombine_s32(vget_high_s32(in_s32x4), vget_high_s32(in_s32x4));
+        let t_high = vget_high_s32(t_s32x4);
+
+        let mut out32_q14_1_s32x2 = vadd_s32(vget_low_s32(s_s32x4), t_high);
+        out32_q14_1_s32x2 = vshl_n_s32(out32_q14_1_s32x2, 2);
+
+        s_s32x4 = vcombine_s32(vget_high_s32(s_s32x4), vdup_n_s32(0));
+
+        let out32_q14_1_s32x4 = vcombine_s32(out32_q14_1_s32x2, out32_q14_1_s32x2);
+
+        let tmp_s32x4 = vqdmulhq_s32(out32_q14_1_s32x4, a_l_s32x4);
+        s_s32x4 = vrsraq_n_s32(s_s32x4, tmp_s32x4, 14);
+
+        let tmp_s32x4 = vqdmulhq_s32(out32_q14_1_s32x4, a_u_s32x4);
+        s_s32x4 = vaddq_s32(s_s32x4, tmp_s32x4);
+
+        let tmp_s32x4 = vqdmulhq_s32(in_high, b_q28_s32x4);
+        s_s32x4 = vaddq_s32(s_s32x4, tmp_s32x4);
+
+        // Combine outputs and saturate
+        let out32_q14_combined = vcombine_s32(out32_q14_s32x2, out32_q14_1_s32x2);
+        let out_s32x4 = vaddq_s32(out32_q14_combined, offset_s32x4);
+        let out_s16x4 = vqshrn_n_s32(out_s32x4, 14);
+
+        vst1_s16(input_output.as_mut_ptr().add(2 * k), out_s16x4);
+
+        k += 2;
+    }
+
+    // Process leftover (if len is odd)
+    if k < len {
+        let in0 = input_output[2 * k] as i32;
+        let in1 = input_output[2 * k + 1] as i32;
+
+        let out32_q14_0 = silk_smlawb(vgetq_lane_s32(s_s32x4, 0), b_q28[0], in0) << 2;
+        let out32_q14_1 = silk_smlawb(vgetq_lane_s32(s_s32x4, 2), b_q28[0], in1) << 2;
+
+        // Scalar fallback for last iteration
+        let a0_l = (-a_q28[0]) & 0x00003FFF;
+        let a0_u = -a_q28[0] >> 14;
+        let a1_l = (-a_q28[1]) & 0x00003FFF;
+        let a1_u = -a_q28[1] >> 14;
+
+        let s0_new = vgetq_lane_s32(s_s32x4, 1)
+            + silk_rshift_round(silk_smulwb(out32_q14_0, a0_l), 14);
+        let s2_new = vgetq_lane_s32(s_s32x4, 3)
+            + silk_rshift_round(silk_smulwb(out32_q14_1, a0_l), 14);
+
+        let s0_new = silk_smlawb(s0_new, out32_q14_0, a0_u);
+        let s2_new = silk_smlawb(s2_new, out32_q14_1, a0_u);
+        let s0_new = silk_smlawb(s0_new, b_q28[1], in0);
+        let s2_new = silk_smlawb(s2_new, b_q28[1], in1);
+
+        let s1_new = silk_rshift_round(silk_smulwb(out32_q14_0, a1_l), 14);
+        let s3_new = silk_rshift_round(silk_smulwb(out32_q14_1, a1_l), 14);
+        let s1_new = silk_smlawb(s1_new, out32_q14_0, a1_u);
+        let s3_new = silk_smlawb(s3_new, out32_q14_1, a1_u);
+        let s1_new = silk_smlawb(s1_new, b_q28[2], in0);
+        let s3_new = silk_smlawb(s3_new, b_q28[2], in1);
+
+        input_output[2 * k] = silk_sat16(silk_rshift(out32_q14_0 + (1 << 14) - 1, 14)) as i16;
+        input_output[2 * k + 1] = silk_sat16(silk_rshift(out32_q14_1 + (1 << 14) - 1, 14)) as i16;
+
+        s[0] = s0_new;
+        s[1] = s1_new;
+        s[2] = s2_new;
+        s[3] = s3_new;
+    } else {
+        // Transpose state back
+        vst1q_lane_s32(&mut s[0], s_s32x4, 0);
+        vst1q_lane_s32(&mut s[1], s_s32x4, 2);
+        vst1q_lane_s32(&mut s[2], s_s32x4, 1);
+        vst1q_lane_s32(&mut s[3], s_s32x4, 3);
+    }
 }

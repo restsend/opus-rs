@@ -314,6 +314,13 @@ pub fn pitch_downsample(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, fa
         return;
     }
 
+    // NEON optimized path for mono/stereo with factor=2
+    #[cfg(target_arch = "aarch64")]
+    if factor == 2 && c <= 2 {
+        pitch_downsample_neon(x, x_lp, len, c, offset);
+        return;
+    }
+
     for i in 1..len {
         let mut val = 0.0f32;
         for k in 0..c {
@@ -330,6 +337,12 @@ pub fn pitch_downsample(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, fa
         x_lp[i] = val;
     }
 
+    pitch_downsample_boundary(x, x_lp, c, offset);
+}
+
+#[inline]
+fn pitch_downsample_boundary(x: &[&[f32]], x_lp: &mut [f32], c: usize, offset: usize) {
+    // Handle first sample
     {
         let mut val = 0.0f32;
         for k in 0..c {
@@ -343,6 +356,71 @@ pub fn pitch_downsample(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, fa
         }
         x_lp[0] = val;
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn pitch_downsample_neon(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, offset: usize) {
+    use std::arch::aarch64::*;
+    
+    unsafe {
+        let v025 = vdupq_n_f32(0.25);
+        let v05 = vdupq_n_f32(0.5);
+        
+        if c == 1 {
+            let x0 = x[0];
+            // Process 4 samples at a time
+            let mut i = 1;
+            while i + 4 <= len {
+                let idx_m = 2 * i - offset;
+                let idx_p = 2 * i + offset;
+                let idx_c = 2 * i;
+                
+                // Load 4 samples from each position
+                let vm = vld1q_f32(x0.as_ptr().add(idx_m));
+                let vp = vld1q_f32(x0.as_ptr().add(idx_p));
+                let vc = vld1q_f32(x0.as_ptr().add(idx_c));
+                
+                // val = 0.25 * m + 0.25 * p + 0.5 * c
+                let mut val = vmulq_f32(vm, v025);
+                val = vfmaq_f32(val, vp, v025);
+                val = vfmaq_f32(val, vc, v05);
+                
+                vst1q_f32(x_lp.as_mut_ptr().add(i), val);
+                i += 4;
+            }
+            
+            // Handle remaining samples
+            while i < len {
+                let idx_m = 2 * i - offset;
+                let idx_p = 2 * i + offset;
+                let idx_c = 2 * i;
+                
+                if idx_p < x0.len() {
+                    x_lp[i] = 0.25 * x0[idx_m] + 0.25 * x0[idx_p] + 0.5 * x0[idx_c];
+                }
+                i += 1;
+            }
+        } else {
+            // Stereo path
+            let x0 = x[0];
+            let x1 = x[1];
+            let mut i = 1;
+            while i < len {
+                let idx_m = 2 * i - offset;
+                let idx_p = 2 * i + offset;
+                let idx_c = 2 * i;
+                
+                if idx_p < x0.len() {
+                    let v0 = 0.25 * x0[idx_m] + 0.25 * x0[idx_p] + 0.5 * x0[idx_c];
+                    let v1 = 0.25 * x1[idx_m] + 0.25 * x1[idx_p] + 0.5 * x1[idx_c];
+                    x_lp[i] = v0 + v1;
+                }
+                i += 1;
+            }
+        }
+    }
+    
+    pitch_downsample_boundary(x, x_lp, c, offset);
 
     let mut ac = [0.0f32; 5];
     autocorr(&x_lp[0..len], &mut ac, None, 0, 4, len);
@@ -374,6 +452,7 @@ pub fn pitch_downsample(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, fa
     celt_fir5(x_lp, &lpc2, len);
 }
 
+#[inline(always)]
 fn find_best_pitch(
     xcorr: &[f32],
     y: &[f32],
@@ -387,10 +466,43 @@ fn find_best_pitch(
     best_pitch[0] = 0;
     best_pitch[1] = 1;
 
-    let mut syy = 1.0f32;
-    for j in 0..len {
-        syy += y[j] * y[j];
-    }
+    // Use NEON for initial syy computation
+    #[cfg(target_arch = "aarch64")]
+    let mut syy = unsafe {
+        use std::arch::aarch64::*;
+        let mut sum_vec = vdupq_n_f32(0.0);
+        let mut j = 0;
+        while j + 16 <= len {
+            let y0 = vld1q_f32(y.as_ptr().add(j));
+            let y1 = vld1q_f32(y.as_ptr().add(j + 4));
+            let y2 = vld1q_f32(y.as_ptr().add(j + 8));
+            let y3 = vld1q_f32(y.as_ptr().add(j + 12));
+            sum_vec = vfmaq_f32(sum_vec, y0, y0);
+            sum_vec = vfmaq_f32(sum_vec, y1, y1);
+            sum_vec = vfmaq_f32(sum_vec, y2, y2);
+            sum_vec = vfmaq_f32(sum_vec, y3, y3);
+            j += 16;
+        }
+        while j + 4 <= len {
+            let y0 = vld1q_f32(y.as_ptr().add(j));
+            sum_vec = vfmaq_f32(sum_vec, y0, y0);
+            j += 4;
+        }
+        let mut sum = 1.0f32 + vaddvq_f32(sum_vec);
+        while j < len {
+            sum += y[j] * y[j];
+            j += 1;
+        }
+        sum
+    };
+    #[cfg(not(target_arch = "aarch64"))]
+    let mut syy = {
+        let mut sum = 1.0f32;
+        for j in 0..len {
+            sum += y[j] * y[j];
+        }
+        sum
+    };
 
     for i in 0..max_pitch {
         if xcorr[i] > 0.0 {
@@ -418,6 +530,79 @@ fn find_best_pitch(
 }
 
 pub fn pitch_search(x_lp: &[f32], y: &[f32], mut len: usize, mut max_pitch: usize) -> usize {
+    let mut best_pitch = [0, 0];
+
+    max_pitch >>= 1;
+    len >>= 1;
+    let lag = len + max_pitch;
+    let len4 = len >> 1;
+    let lag4 = lag >> 1;
+
+    // Stack-allocate for typical sizes (max_pitch up to 512 -> len4 up to 240, lag4 up to 480)
+    const MAX_LEN4: usize = 512;
+    const MAX_LAG4: usize = 1024;
+    const MAX_PITCH: usize = 512;
+    
+    let mut x_lp4_stack = [0.0f32; MAX_LEN4];
+    let mut y_lp4_stack = [0.0f32; MAX_LAG4];
+    let mut xcorr_stack = [0.0f32; MAX_PITCH];
+    
+    let x_lp4: &mut [f32];
+    let y_lp4: &mut [f32];
+    let xcorr: &mut [f32];
+    
+    if len4 <= MAX_LEN4 && lag4 <= MAX_LAG4 && max_pitch <= MAX_PITCH {
+        x_lp4 = &mut x_lp4_stack[..len4];
+        y_lp4 = &mut y_lp4_stack[..lag4];
+        xcorr = &mut xcorr_stack[..max_pitch];
+    } else {
+        // Fall back to heap for unusual sizes
+        return pitch_search_heap(x_lp, y, len << 1, max_pitch << 1);
+    }
+
+    for j in 0..len4 {
+        x_lp4[j] = x_lp[2 * j];
+    }
+    for j in 0..lag4 {
+        y_lp4[j] = y[2 * j];
+    }
+
+    pitch_xcorr(x_lp4, y_lp4, xcorr, len >> 1, max_pitch >> 1);
+
+    find_best_pitch(xcorr, y_lp4, len >> 1, max_pitch >> 1, &mut best_pitch);
+
+    for i in 0..max_pitch {
+        xcorr[i] = -1.0;
+        if (i as i32 - 2 * best_pitch[0] as i32).abs() > 2
+            && (i as i32 - 2 * best_pitch[1] as i32).abs() > 2
+        {
+            continue;
+        }
+        xcorr[i] = inner_prod(x_lp, &y[i..], len);
+        if xcorr[i] < -1.0 {
+            xcorr[i] = -1.0;
+        }
+    }
+
+    find_best_pitch(xcorr, y, len, max_pitch, &mut best_pitch);
+
+    let mut offset = 0;
+    if best_pitch[0] > 0 && best_pitch[0] < max_pitch - 1 {
+        let a = xcorr[best_pitch[0] - 1];
+        let b = xcorr[best_pitch[0]];
+        let c = xcorr[best_pitch[0] + 1];
+        if (c - a) > 0.7 * (b - a) {
+            offset = 1;
+        } else if (a - c) > 0.7 * (b - c) {
+            offset = -1;
+        }
+    }
+
+    ((2 * best_pitch[0]) as isize).wrapping_sub(offset as isize) as usize
+}
+
+// Heap allocation fallback for unusual sizes
+fn pitch_search_heap(x_lp: &[f32], y: &[f32], mut len: usize, mut max_pitch: usize) -> usize {
     let mut best_pitch = [0, 0];
 
     max_pitch >>= 1;
@@ -478,6 +663,24 @@ fn compute_pitch_gain(xy: f32, xx: f32, yy: f32) -> f32 {
 
 static SECOND_CHECK: [usize; 16] = [0, 0, 3, 2, 3, 2, 5, 2, 3, 2, 3, 2, 5, 2, 3, 2];
 
+/// Optimized sum of squares using inner_prod_neon on aarch64
+#[inline(always)]
+fn sum_squares(x: &[f32], n: usize) -> f32 {
+    // Use inner_prod with x, x for sum of squares - already NEON-optimized
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        inner_prod_neon(x, x, n)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let mut sum = 0.0f32;
+        for i in 0..n {
+            sum += x[i] * x[i];
+        }
+        sum
+    }
+}
+
 pub fn remove_doubling(
     x: &[f32],
     mut max_period: usize,
@@ -503,17 +706,16 @@ pub fn remove_doubling(
     let mut t = *t0_ptr;
     let t0 = *t0_ptr;
 
-    let mut yy_lookup = vec![0.0f32; max_period + 1];
-    let (xx, xy) = {
-        let mut sum_xx = 0.0f32;
-        let mut sum_xy = 0.0f32;
-        for i in 0..n {
-            sum_xx += x_target[i] * x_target[i];
-            sum_xy += x_target[i] * x[max_period - t0 + i];
-        }
-        (sum_xx, sum_xy)
-    };
+    // Stack allocation for yy_lookup (max_period can be up to COMBFILTER_MAXPERIOD/2 = 512)
+    const MAX_YY_SIZE: usize = 1024;
+    let mut yy_lookup_buf = [0.0f32; MAX_YY_SIZE];
+    let yy_lookup = &mut yy_lookup_buf[..=max_period];
 
+    // NEON-optimized xx calculation
+    let xx = sum_squares(x_target, n);
+    let xy = inner_prod(x_target, &x[max_period - t0..], n);
+
+    // Compute yy_lookup
     yy_lookup[0] = xx;
     let mut yy_curr = xx;
     for i in 1..=max_period {

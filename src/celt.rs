@@ -13,6 +13,69 @@ use crate::rate::{BITRES, clt_compute_allocation};
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::*;
 
+/// NEON-optimized sum of absolute values
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn sum_abs_neon(x: &[f32], n: usize) -> f32 {
+    let mut sum_vec = vdupq_n_f32(0.0);
+    let mut i = 0;
+    
+    // Process 16 elements at a time
+    while i + 16 <= n {
+        let x0 = vld1q_f32(x.as_ptr().add(i));
+        let x1 = vld1q_f32(x.as_ptr().add(i + 4));
+        let x2 = vld1q_f32(x.as_ptr().add(i + 8));
+        let x3 = vld1q_f32(x.as_ptr().add(i + 12));
+        
+        // vabsq_f32 computes absolute value
+        sum_vec = vfmaq_f32(sum_vec, vabsq_f32(x0), vdupq_n_f32(1.0));
+        sum_vec = vfmaq_f32(sum_vec, vabsq_f32(x1), vdupq_n_f32(1.0));
+        sum_vec = vfmaq_f32(sum_vec, vabsq_f32(x2), vdupq_n_f32(1.0));
+        sum_vec = vfmaq_f32(sum_vec, vabsq_f32(x3), vdupq_n_f32(1.0));
+        
+        i += 16;
+    }
+    
+    // Process 8 elements
+    while i + 8 <= n {
+        let x0 = vld1q_f32(x.as_ptr().add(i));
+        let x1 = vld1q_f32(x.as_ptr().add(i + 4));
+        sum_vec = vfmaq_f32(sum_vec, vabsq_f32(x0), vdupq_n_f32(1.0));
+        sum_vec = vfmaq_f32(sum_vec, vabsq_f32(x1), vdupq_n_f32(1.0));
+        i += 8;
+    }
+    
+    // Process 4 elements
+    while i + 4 <= n {
+        let x0 = vld1q_f32(x.as_ptr().add(i));
+        sum_vec = vfmaq_f32(sum_vec, vabsq_f32(x0), vdupq_n_f32(1.0));
+        i += 4;
+    }
+    
+    let mut sum = vaddvq_f32(sum_vec);
+    
+    // Scalar tail
+    for j in i..n {
+        sum += x[j].abs();
+    }
+    
+    sum
+}
+
+/// Sum of absolute values - dispatches to NEON on aarch64
+#[inline(always)]
+fn sum_abs(x: &[f32]) -> f32 {
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        return sum_abs_neon(x, x.len());
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        x.iter().map(|&v| v.abs()).sum()
+    }
+}
+
 #[allow(dead_code)]
 const MAX_FRAME_SIZE: usize = 2880;
 
@@ -466,6 +529,29 @@ fn comb_filter_const(
     g11: f32,
     g12: f32,
 ) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        comb_filter_const_neon(y, x, y_idx, x_idx, t, n, g10, g11, g12);
+        return;
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        comb_filter_const_scalar(y, x, y_idx, x_idx, t, n, g10, g11, g12);
+    }
+}
+
+#[inline]
+fn comb_filter_const_scalar(
+    y: &mut [f32],
+    x: &[f32],
+    y_idx: usize,
+    x_idx: usize,
+    t: usize,
+    n: usize,
+    g10: f32,
+    g11: f32,
+    g12: f32,
+) {
     let mut x1;
     let mut x2;
     let mut x3;
@@ -485,6 +571,23 @@ fn comb_filter_const(
         x2 = x1;
         x1 = x0;
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn comb_filter_const_neon(
+    y: &mut [f32],
+    x: &[f32],
+    y_idx: usize,
+    x_idx: usize,
+    t: usize,
+    n: usize,
+    g10: f32,
+    g11: f32,
+    g12: f32,
+) {
+    // For now, use scalar version - NEON would need more complex handling
+    // due to the sliding delay line pattern
+    comb_filter_const_scalar(y, x, y_idx, x_idx, t, n, g10, g11, g12);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -571,6 +674,11 @@ fn run_prefilter(
     channels: usize,
     frame_size: usize,
     overlap: usize,
+    // Pre-allocated buffers to avoid vec! allocation
+    pre: &mut [f32],
+    pitch_buf: &mut [f32],
+    before: &mut [f32],
+    after: &mut [f32],
 ) -> (bool, f32, usize) {
     let max_period = COMBFILTER_MAXPERIOD; // 1024
     let min_period = COMBFILTER_MINPERIOD; // 15
@@ -578,7 +686,6 @@ fn run_prefilter(
     let pre_size = max_period + frame_size; // 1984
 
     // Build pre[c] = [prefilter_mem[c*max_period..(c+1)*max_period] | in_buf current frame]
-    let mut pre = vec![0.0f32; channels * pre_size];
     for c in 0..channels {
         pre[c * pre_size..c * pre_size + max_period]
             .copy_from_slice(&prefilter_mem[c * max_period..(c + 1) * max_period]);
@@ -589,12 +696,11 @@ fn run_prefilter(
 
     // Downsample for pitch analysis
     let pitch_buf_len = (max_period + frame_size) >> 1; // 992
-    let mut pitch_buf = vec![0.0f32; pitch_buf_len];
     {
         let pre_slices: Vec<&[f32]> = (0..channels)
             .map(|c| &pre[c * pre_size..c * pre_size + pre_size])
             .collect();
-        crate::pitch::pitch_downsample(&pre_slices, &mut pitch_buf, pitch_buf_len, channels, 2);
+        crate::pitch::pitch_downsample(&pre_slices, pitch_buf, pitch_buf_len, channels, 2);
     }
 
     // Find pitch period
@@ -646,11 +752,10 @@ fn run_prefilter(
     }
 
     // Compute "before" energy to check if filter helps
-    let mut before = vec![0.0f32; channels];
+    let before = &mut before[..channels];
     for c in 0..channels {
-        for i in 0..frame_size {
-            before[c] += in_buf[c * buf_stride + overlap + i].abs();
-        }
+        let start = c * buf_stride + overlap;
+        before[c] = sum_abs(&in_buf[start..start + frame_size]);
     }
 
     // Apply the comb pre-filter (negative gain) to in_buf
@@ -701,11 +806,10 @@ fn run_prefilter(
     }
 
     // Compute "after" energy
-    let mut after = vec![0.0f32; channels];
+    let after = &mut after[..channels];
     for c in 0..channels {
-        for i in 0..frame_size {
-            after[c] += in_buf[c * buf_stride + overlap + i].abs();
-        }
+        let start = c * buf_stride + overlap;
+        after[c] = sum_abs(&in_buf[start..start + frame_size]);
     }
 
     // Check if filter helped: revert if any channel got worse
@@ -806,6 +910,11 @@ pub struct CeltEncoder {
     w_collapse_masks: Vec<u32>,
     w_band_amp_synth: Vec<f32>,
     w_freq_synth: Vec<f32>,
+    // Pre-allocated buffers for run_prefilter to avoid vec! allocation
+    w_prefilter_pre: Vec<f32>,
+    w_prefilter_pitch_buf: Vec<f32>,
+    w_prefilter_before: Vec<f32>,
+    w_prefilter_after: Vec<f32>,
 }
 
 const INTEN_THRESHOLDS: [i32; 21] = [
@@ -948,6 +1057,13 @@ impl CeltEncoder {
             w_collapse_masks: vec![0; nb_x_ch],
             w_band_amp_synth: vec![0.0; nb_x_ch],
             w_freq_synth: vec![0.0; frame_x_ch],
+            // Max sizes for run_prefilter buffers (for max frame_size=2880)
+            // pre_size = max_period + frame_size = 1024 + 2880 = 3904 per channel
+            // pitch_buf_len = (max_period + frame_size) >> 1 = 1952
+            w_prefilter_pre: vec![0.0; channels * (COMBFILTER_MAXPERIOD + MAX_FRAME_SIZE)],
+            w_prefilter_pitch_buf: vec![0.0; (COMBFILTER_MAXPERIOD + MAX_FRAME_SIZE) >> 1],
+            w_prefilter_before: vec![0.0; channels],
+            w_prefilter_after: vec![0.0; channels],
         }
     }
 
@@ -985,6 +1101,7 @@ impl CeltEncoder {
         start_band: usize,
         explicit_total_bits: Option<i32>,
     ) {
+        
         let mut max_pcm = 0.0f32;
         for &pv in pcm[..frame_size].iter() {
             max_pcm = max_pcm.max(pv.abs());
@@ -994,6 +1111,7 @@ impl CeltEncoder {
         let channels = self.channels;
         let nb_ebands = mode.nb_ebands;
         let overlap = mode.overlap;
+        
 
         let mut lm = 0;
         while (mode.short_mdct_size << lm) != frame_size {
@@ -1038,6 +1156,7 @@ impl CeltEncoder {
             );
         }
 
+        
         let mut tf_estimate = 0.0f32;
         let mut tf_chan = 0;
         let mut weak_transient = false;
@@ -1067,6 +1186,10 @@ impl CeltEncoder {
                 channels,
                 frame_size,
                 overlap,
+                &mut self.w_prefilter_pre,
+                &mut self.w_prefilter_pitch_buf,
+                &mut self.w_prefilter_before,
+                &mut self.w_prefilter_after,
             )
         } else {
             (false, 0.0f32, COMBFILTER_MINPERIOD)
@@ -1887,6 +2010,7 @@ impl CeltDecoder {
             (mode.max_lm - lm, 1)
         };
         let n = frame_size / b;
+
 
         for c in 0..channels {
             let channel_mem_offset = c * (DECODE_BUFFER_SIZE + overlap);
