@@ -26,12 +26,10 @@ pub fn silk_decoder_set_fs(dec: &mut SilkDecoderState, fs_khz: i32, fs_api_hz: i
         } else {
             dec.pitch_contour_icdf = &crate::silk::tables::SILK_PITCH_CONTOUR_10_MS_NB_ICDF;
         }
+    } else if dec.nb_subfr == MAX_NB_SUBFR as i32 {
+        dec.pitch_contour_icdf = &crate::silk::tables::SILK_PITCH_CONTOUR_ICDF;
     } else {
-        if dec.nb_subfr == MAX_NB_SUBFR as i32 {
-            dec.pitch_contour_icdf = &crate::silk::tables::SILK_PITCH_CONTOUR_ICDF;
-        } else {
-            dec.pitch_contour_icdf = &crate::silk::tables::SILK_PITCH_CONTOUR_10_MS_ICDF;
-        }
+        dec.pitch_contour_icdf = &crate::silk::tables::SILK_PITCH_CONTOUR_10_MS_ICDF;
     }
 
     dec.pitch_lag_low_bits_icdf = match fs_khz {

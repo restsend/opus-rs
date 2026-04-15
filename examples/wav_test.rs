@@ -420,5 +420,7 @@ fn main() {
     println!("  - fixtures/decoded_voip_48k.wav");
     println!("  - fixtures/decoded_audio_16k.wav");
     println!("  - fixtures/decoded_audio_48k.wav");
-    println!("  - fixtures/decoded_voip_48k_silk_only.wav  (diagnostic: hybrid decode without CELT)");
+    println!(
+        "  - fixtures/decoded_voip_48k_silk_only.wav  (diagnostic: hybrid decode without CELT)"
+    );
 }

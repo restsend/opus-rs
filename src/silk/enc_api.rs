@@ -176,7 +176,7 @@ pub fn silk_encode_frame(
     let bits_margin = if use_cbr != 0 { 5 } else { max_bits / 4 };
 
     let rc_copy = rc.clone();
-    let nsq_copy = ps_enc.s_nsq.clone();
+    let nsq_copy = ps_enc.s_nsq;
     let seed_copy = ps_enc.s_cmn.indices.seed;
     let ec_prev_lag_index_copy = ps_enc.s_cmn.ec_prev_lag_index;
     let ec_prev_signal_type_copy = ps_enc.s_cmn.ec_prev_signal_type;
@@ -197,7 +197,7 @@ pub fn silk_encode_frame(
         } else {
             if iter > 0 {
                 *rc = rc_copy.clone();
-                ps_enc.s_nsq = nsq_copy.clone();
+                ps_enc.s_nsq = nsq_copy;
                 ps_enc.s_cmn.indices.seed = seed_copy;
                 ps_enc.s_cmn.ec_prev_lag_index = ec_prev_lag_index_copy;
                 ps_enc.s_cmn.ec_prev_signal_type = ec_prev_signal_type_copy;
@@ -267,7 +267,7 @@ pub fn silk_encode_frame(
                 ps_enc.s_cmn.frame_length as usize,
             );
 
-            n_bits = rc.tell() as i32;
+            n_bits = rc.tell();
 
             if iter == max_iter && !found_lower && n_bits > max_bits {
                 if let Some(rc_c2) = &rc_copy2 {
@@ -279,7 +279,7 @@ pub fn silk_encode_frame(
                     ps_enc.s_cmn.indices.gains_indices[i] = 4;
                 }
                 if cond_coding != CODE_CONDITIONALLY {
-                    ps_enc.s_cmn.indices.gains_indices[0] = s_enc_ctrl.last_gain_index_prev as i8;
+                    ps_enc.s_cmn.indices.gains_indices[0] = s_enc_ctrl.last_gain_index_prev;
                 }
                 ps_enc.s_cmn.ec_prev_lag_index = ec_prev_lag_index_copy;
                 ps_enc.s_cmn.ec_prev_signal_type = ec_prev_signal_type_copy;
@@ -301,7 +301,7 @@ pub fn silk_encode_frame(
                     ps_enc.s_cmn.frame_length as usize,
                 );
 
-                n_bits = rc.tell() as i32;
+                n_bits = rc.tell();
             }
 
             if use_cbr == 0 && iter == 0 && n_bits <= max_bits {
@@ -346,7 +346,7 @@ pub fn silk_encode_frame(
                 rc_copy2 = Some(rc.clone());
                 let offs = rc.offs as usize;
                 ec_buf_copy[..offs].copy_from_slice(&rc.buf[..offs]);
-                nsq_copy2 = Some(ps_enc.s_nsq.clone());
+                nsq_copy2 = Some(ps_enc.s_nsq);
                 last_gain_index_copy2 = ps_enc.s_shape.last_gain_index;
             }
         } else {
@@ -381,7 +381,7 @@ pub fn silk_encode_frame(
                 + silk_div32_16(
                     (gain_mult_upper - gain_mult_lower) * (max_bits - n_bits_lower),
                     n_bits_upper - n_bits_lower,
-                ) as i32;
+                );
 
             let lower_limit = silk_add_rshift32(gain_mult_lower, delta, 2);
             let upper_limit = silk_sub_rshift32(gain_mult_upper, delta, 2);
@@ -626,7 +626,7 @@ pub fn silk_encode(
             if fi < MAX_FRAMES_PER_PACKET {
                 ps_enc.s_cmn.indices_lbrr[fi] = ps_enc.s_cmn.indices;
 
-                let gain_inc = ps_enc.s_cmn.lbrr_gain_increases.max(0).min(16) as i8;
+                let gain_inc = ps_enc.s_cmn.lbrr_gain_increases.clamp(0, 16) as i8;
                 for g in 0..ps_enc.s_cmn.nb_subfr as usize {
                     let new_gain = (ps_enc.s_cmn.indices_lbrr[fi].gains_indices[g] as i32
                         + gain_inc as i32)

@@ -13,8 +13,8 @@ use opus_rs::celt_lpc::autocorr;
 use opus_rs::kiss_fft::{KissCpx, KissFftState, opus_fft_impl};
 use opus_rs::modes::default_mode;
 use opus_rs::pvq::{alg_quant, alg_unquant, decode_pulses, encode_pulses, pvq_search};
-use opus_rs::rate::clt_compute_allocation;
 use opus_rs::range_coder::RangeCoder;
+use opus_rs::rate::clt_compute_allocation;
 use opus_rs::silk::define::*;
 use opus_rs::silk::lpc_analysis::silk_burg_modified_fix;
 use opus_rs::silk::nsq::silk_nsq;
@@ -47,10 +47,10 @@ fn sine_f32(samples: usize, sample_rate: u32, freq: u32) -> Vec<f32> {
 /// Read a WAV file and return f32 samples (mono)
 fn read_wav_f32(path: &str) -> Vec<f32> {
     let bytes = std::fs::read(path).expect("Failed to read WAV file");
-    
+
     // Simple WAV parser - assumes 16-bit PCM mono
     let data_start = find_data_chunk(&bytes);
-    
+
     bytes[data_start..]
         .chunks_exact(2)
         .map(|chunk| {
@@ -63,7 +63,7 @@ fn read_wav_f32(path: &str) -> Vec<f32> {
 fn find_data_chunk(bytes: &[u8]) -> usize {
     // Look for "data" marker after RIFF header
     for i in 36..bytes.len().saturating_sub(8) {
-        if &bytes[i..i+4] == b"data" {
+        if &bytes[i..i + 4] == b"data" {
             return i + 8; // Skip "data" + size
         }
     }
@@ -73,10 +73,10 @@ fn find_data_chunk(bytes: &[u8]) -> usize {
 /// Get real audio frames for benchmarking
 fn get_real_audio_frames(sample_rate: u32, frame_ms: usize) -> Vec<Vec<f32>> {
     let frame_size = sample_rate as usize * frame_ms / 1000;
-    
+
     // Load 16kHz source
     let source = read_wav_f32("fixtures/answer_16k.wav");
-    
+
     // Resample if needed (simple approach)
     let resampled: Vec<f32> = if sample_rate == 16000 {
         source
@@ -89,9 +89,10 @@ fn get_real_audio_frames(sample_rate: u32, frame_ms: usize) -> Vec<Vec<f32>> {
     } else {
         source
     };
-    
+
     // Split into frames
-    resampled.chunks_exact(frame_size)
+    resampled
+        .chunks_exact(frame_size)
         .map(|c| c.to_vec())
         .collect()
 }
@@ -591,8 +592,11 @@ fn bench_opus_vs_c(c: &mut Criterion) {
         let frame_size = sample_rate as usize * frame_ms / 1000;
         let frames = get_real_audio_frames(sample_rate, frame_ms);
         let num_frames = frames.len();
-        
-        println!("Loaded {} frames of real audio for {}Hz/{}ms", num_frames, sample_rate, frame_ms);
+
+        println!(
+            "Loaded {} frames of real audio for {}Hz/{}ms",
+            num_frames, sample_rate, frame_ms
+        );
 
         group.throughput(Throughput::Bytes((frame_size * num_frames * 2) as u64));
 
@@ -1015,7 +1019,7 @@ fn bench_pvq(c: &mut Criterion) {
                 let mut rc = RangeCoder::new_encoder(1024);
                 encode_pulses(&y, ns as u32, ks as u32, &mut rc);
                 let data = rc.finish();
-                
+
                 b.iter(|| {
                     let mut rc_dec = RangeCoder::new_decoder(&data);
                     let mut y_dec = vec![0i32; ns];
@@ -1053,7 +1057,7 @@ fn bench_pvq(c: &mut Criterion) {
             },
         );
     }
-    
+
     // alg_unquant (decode path)
     for &(n, k) in &[(16usize, 8i32), (64, 16)] {
         // First encode to get valid bitstream
@@ -1061,7 +1065,7 @@ fn bench_pvq(c: &mut Criterion) {
         let mut rc_enc = RangeCoder::new_encoder(1024);
         alg_quant(&mut x_enc, n, k, 2, 1, &mut rc_enc, 1.0, true);
         let data = rc_enc.finish();
-        
+
         let mut x: Vec<f32> = vec![0.0; n];
         group.bench_with_input(
             BenchmarkId::new(format!("alg_unquant/n{n}/k{k}"), ""),
@@ -1090,7 +1094,7 @@ fn bench_pvq(c: &mut Criterion) {
 
 fn bench_celt_internal(c: &mut Criterion) {
     let mut group = c.benchmark_group("celt_internal");
-    
+
     // Benchmark range coder operations
     group.bench_function("range_coder/enc_uint_small", |b| {
         let mut rc = RangeCoder::new_encoder(1024);
@@ -1101,7 +1105,7 @@ fn bench_celt_internal(c: &mut Criterion) {
             }
         });
     });
-    
+
     group.bench_function("range_coder/enc_bits", |b| {
         let mut rc = RangeCoder::new_encoder(1024);
         b.iter(|| {
@@ -1111,14 +1115,14 @@ fn bench_celt_internal(c: &mut Criterion) {
             }
         });
     });
-    
+
     group.bench_function("range_coder/dec_uint_small", |b| {
         let mut rc = RangeCoder::new_encoder(1024);
         for i in 0..100 {
             rc.enc_uint((i % 16) as u32, 16);
         }
         let data = rc.finish();
-        
+
         b.iter(|| {
             let mut rc_dec = RangeCoder::new_decoder(&data);
             for _ in 0..100 {
@@ -1126,7 +1130,7 @@ fn bench_celt_internal(c: &mut Criterion) {
             }
         });
     });
-    
+
     // Benchmark encode_bit_logp (common in CELT)
     group.bench_function("range_coder/encode_bit_logp", |b| {
         let mut rc = RangeCoder::new_encoder(1024);
@@ -1137,27 +1141,27 @@ fn bench_celt_internal(c: &mut Criterion) {
             }
         });
     });
-    
+
     // Benchmark tell_frac
     group.bench_function("range_coder/tell_frac", |b| {
         let mut rc = RangeCoder::new_encoder(1024);
         for i in 0..50 {
             rc.enc_uint((i % 16) as u32, 16);
         }
-        
+
         b.iter(|| {
             for _ in 0..100 {
                 let _ = black_box(rc.tell_frac());
             }
         });
     });
-    
+
     group.finish();
 }
 
 fn bench_rate(c: &mut Criterion) {
     let mut group = c.benchmark_group("rate");
-    
+
     // Benchmark clt_compute_allocation
     group.bench_function("clt_compute_allocation", |b| {
         let mode = default_mode();
@@ -1171,7 +1175,7 @@ fn bench_rate(c: &mut Criterion) {
         let mut intensity = 0i32;
         let mut dual_stereo = 0i32;
         let mut rc = RangeCoder::new_encoder(1024);
-        
+
         b.iter(|| {
             offsets.fill(0);
             pulses.fill(0);
@@ -1181,7 +1185,7 @@ fn bench_rate(c: &mut Criterion) {
             intensity = 0;
             dual_stereo = 0;
             rc = RangeCoder::new_encoder(1024);
-            
+
             let _ = clt_compute_allocation(
                 black_box(mode),
                 0, // start
@@ -1199,13 +1203,13 @@ fn bench_rate(c: &mut Criterion) {
                 1, // c (channels)
                 3, // lm
                 &mut rc,
-                true, // encode
-                0, // prev
+                true,                   // encode
+                0,                      // prev
                 (nb_ebands - 1) as i32, // signal_bandwidth
             );
         });
     });
-    
+
     group.finish();
 }
 

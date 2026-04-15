@@ -1,7 +1,6 @@
 #[cfg(target_arch = "aarch64")]
 use crate::celt_lpc::{autocorr, lpc};
 
-/// Inner product with NEON optimization on aarch64
 pub fn inner_prod(x: &[f32], y: &[f32], n: usize) -> f32 {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     unsafe {
@@ -15,7 +14,7 @@ pub fn inner_prod(x: &[f32], y: &[f32], n: usize) -> f32 {
     }
     #[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
     unsafe {
-        return inner_prod_sse(x, y, n);
+        inner_prod_sse(x, y, n)
     }
     #[cfg(not(any(
         target_arch = "aarch64",
@@ -30,7 +29,6 @@ pub fn inner_prod(x: &[f32], y: &[f32], n: usize) -> f32 {
     }
 }
 
-/// Dual inner product with NEON optimization on aarch64
 pub fn dual_inner_prod(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32) {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     unsafe {
@@ -44,7 +42,7 @@ pub fn dual_inner_prod(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32
     }
     #[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
     unsafe {
-        return dual_inner_prod_sse(x, y1, y2, n);
+        dual_inner_prod_sse(x, y1, y2, n)
     }
     #[cfg(not(any(
         target_arch = "aarch64",
@@ -61,7 +59,6 @@ pub fn dual_inner_prod(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32
     }
 }
 
-/// Pitch cross-correlation with NEON optimization on aarch64
 pub fn pitch_xcorr(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitch: usize) {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     unsafe {
@@ -71,10 +68,6 @@ pub fn pitch_xcorr(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitc
     }
     #[cfg(target_arch = "aarch64")]
     {
-        // For large max_pitch, use xcorr_kernel_neon which computes 4 correlations
-        // simultaneously with shared y-vector loads. For small max_pitch (e.g. autocorr
-        // with lag ≤ 24), the kernel setup overhead exceeds the data-sharing benefit,
-        // so individual inner_prod_neon calls are faster on Apple Silicon.
         if max_pitch >= 32 {
             unsafe {
                 return pitch_xcorr_neon(x, y, xcorr, len, max_pitch);
@@ -87,7 +80,7 @@ pub fn pitch_xcorr(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitc
     }
     #[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
     unsafe {
-        return pitch_xcorr_sse(x, y, xcorr, len, max_pitch);
+        pitch_xcorr_sse(x, y, xcorr, len, max_pitch)
     }
     #[cfg(not(any(
         target_arch = "aarch64",
@@ -109,7 +102,6 @@ unsafe fn inner_prod_neon(x: &[f32], y: &[f32], n: usize) -> f32 {
     let mut xy = vdupq_n_f32(0.0);
     let mut i = 0;
 
-    // Process 8 elements at a time
     while i + 8 <= n {
         let x0 = vld1q_f32(x.as_ptr().add(i));
         let y0 = vld1q_f32(y.as_ptr().add(i));
@@ -122,7 +114,6 @@ unsafe fn inner_prod_neon(x: &[f32], y: &[f32], n: usize) -> f32 {
         i += 8;
     }
 
-    // Process 4 more elements
     if i + 4 <= n {
         let x0 = vld1q_f32(x.as_ptr().add(i));
         let y0 = vld1q_f32(y.as_ptr().add(i));
@@ -130,10 +121,8 @@ unsafe fn inner_prod_neon(x: &[f32], y: &[f32], n: usize) -> f32 {
         i += 4;
     }
 
-    // Horizontal sum
     let mut sum = vaddvq_f32(xy);
 
-    // Scalar tail
     for j in i..n {
         sum += x[j] * y[j];
     }
@@ -151,7 +140,6 @@ unsafe fn dual_inner_prod_neon(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (
     let mut xy2 = vdupq_n_f32(0.0);
     let mut i = 0;
 
-    // Process 8 elements at a time
     while i + 8 <= n {
         let x0 = vld1q_f32(x.as_ptr().add(i));
         let x4 = vld1q_f32(x.as_ptr().add(i + 4));
@@ -169,7 +157,6 @@ unsafe fn dual_inner_prod_neon(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (
         i += 8;
     }
 
-    // Process 4 more elements
     if i + 4 <= n {
         let x0 = vld1q_f32(x.as_ptr().add(i));
         let y1_0 = vld1q_f32(y1.as_ptr().add(i));
@@ -192,9 +179,6 @@ unsafe fn dual_inner_prod_neon(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (
     (s1, s2)
 }
 
-/// Compute 4 cross-correlation values using NEON lane multiplies
-/// sum[k] = Σ(x[i+k] * y[i]) for k=0..3
-/// Matches C implementation: celt_neon_intr.c xcorr_kernel_neon_float
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -211,11 +195,8 @@ unsafe fn xcorr_kernel_neon(x: &[f32], y: &[f32], sum: &mut [f32; 4], mut len: u
     let mut xi = x.as_ptr();
     let mut yi = y.as_ptr();
 
-    // Load initial y[0..3]
     let mut yy = vld1q_f32(yi);
 
-    // Process 8 elements at a time
-    // Note: loop condition is len > 8 (not >=) to avoid reading past array bounds
     while len > 8 {
         yi = yi.add(4);
         let yy1 = vld1q_f32(yi);
@@ -227,7 +208,6 @@ unsafe fn xcorr_kernel_neon(x: &[f32], y: &[f32], sum: &mut [f32; 4], mut len: u
         let xx1 = vld1q_f32(xi);
         xi = xi.add(4);
 
-        // Compute 4 correlations using lane multiplies with rotated y vectors
         summ = vfmaq_lane_f32(summ, yy, vget_low_f32(xx0), 0);
         let yext = vextq_f32(yy, yy1, 1);
         summ = vfmaq_lane_f32(summ, yext, vget_low_f32(xx0), 1);
@@ -248,8 +228,6 @@ unsafe fn xcorr_kernel_neon(x: &[f32], y: &[f32], sum: &mut [f32; 4], mut len: u
         len -= 8;
     }
 
-    // Process 4 more elements
-    // Note: condition is len > 4 (not >=) to avoid reading past array bounds
     if len > 4 {
         yi = yi.add(4);
         let yy1 = vld1q_f32(yi);
@@ -269,8 +247,6 @@ unsafe fn xcorr_kernel_neon(x: &[f32], y: &[f32], sum: &mut [f32; 4], mut len: u
         len -= 4;
     }
 
-    // Process remaining elements one at a time
-    // Note: --len > 0 means loop while len-1 > 0, i.e., len > 1
     while len > 1 {
         let xx = vld1_dup_f32(xi);
         xi = xi.add(1);
@@ -280,7 +256,6 @@ unsafe fn xcorr_kernel_neon(x: &[f32], y: &[f32], sum: &mut [f32; 4], mut len: u
         len -= 1;
     }
 
-    // Final element
     let xx = vld1_dup_f32(xi);
     summ = vfmaq_lane_f32(summ, yy, xx, 0);
 
@@ -303,7 +278,6 @@ unsafe fn pitch_xcorr_neon(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, 
 
     let mut i = 0;
 
-    // Process 4 pitch values at a time using kernel
     while i + 4 <= max_pitch {
         let mut sum = [0.0f32; 4];
         unsafe { xcorr_kernel_neon(x, &y[i..], &mut sum, len) };
@@ -314,13 +288,10 @@ unsafe fn pitch_xcorr_neon(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, 
         i += 4;
     }
 
-    // Scalar tail
     for j in i..max_pitch {
         xcorr[j] = unsafe { inner_prod_neon(x, &y[j..], len) };
     }
 }
-
-// ─── x86_64 SSE implementations ─────────────────────────────────────────────
 
 #[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
 #[inline(always)]
@@ -332,7 +303,6 @@ unsafe fn inner_prod_sse(x: &[f32], y: &[f32], n: usize) -> f32 {
     let mut sum1 = _mm_setzero_ps();
     let mut i = 0;
 
-    // Process 8 elements per iteration using two independent accumulators for ILP
     while i + 8 <= n {
         let x0 = _mm_loadu_ps(x.as_ptr().add(i));
         let y0 = _mm_loadu_ps(y.as_ptr().add(i));
@@ -343,7 +313,6 @@ unsafe fn inner_prod_sse(x: &[f32], y: &[f32], n: usize) -> f32 {
         i += 8;
     }
 
-    // Process 4 more elements
     if i + 4 <= n {
         let x0 = _mm_loadu_ps(x.as_ptr().add(i));
         let y0 = _mm_loadu_ps(y.as_ptr().add(i));
@@ -351,7 +320,6 @@ unsafe fn inner_prod_sse(x: &[f32], y: &[f32], n: usize) -> f32 {
         i += 4;
     }
 
-    // Merge accumulators and horizontal sum
     let sum = _mm_add_ps(sum0, sum1);
     let tmp = _mm_movehl_ps(sum, sum);
     let sum = _mm_add_ps(sum, tmp);
@@ -359,7 +327,6 @@ unsafe fn inner_prod_sse(x: &[f32], y: &[f32], n: usize) -> f32 {
     let sum = _mm_add_ss(sum, tmp2);
     let mut result = _mm_cvtss_f32(sum);
 
-    // Scalar tail
     while i < n {
         result += x[i] * y[i];
         i += 1;
@@ -387,21 +354,18 @@ unsafe fn dual_inner_prod_sse(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f
         i += 4;
     }
 
-    // Horizontal sum for xy1
     let tmp = _mm_movehl_ps(xy1, xy1);
     let xy1 = _mm_add_ps(xy1, tmp);
     let tmp2 = _mm_shuffle_ps(xy1, xy1, 0x55);
     let xy1 = _mm_add_ss(xy1, tmp2);
     let mut s1 = _mm_cvtss_f32(xy1);
 
-    // Horizontal sum for xy2
     let tmp = _mm_movehl_ps(xy2, xy2);
     let xy2 = _mm_add_ps(xy2, tmp);
     let tmp2 = _mm_shuffle_ps(xy2, xy2, 0x55);
     let xy2 = _mm_add_ss(xy2, tmp2);
     let mut s2 = _mm_cvtss_f32(xy2);
 
-    // Scalar tail
     while i < n {
         s1 += x[i] * y1[i];
         s2 += x[i] * y2[i];
@@ -411,9 +375,6 @@ unsafe fn dual_inner_prod_sse(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f
     (s1, s2)
 }
 
-/// Compute 4 cross-correlation values using SSE
-/// sum[k] = Σ x[i] * y[i+k] for k=0..3
-/// Matches the C xcorr_kernel_sse in pitch_sse.c
 #[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -425,31 +386,28 @@ unsafe fn xcorr_kernel_sse(x: &[f32], y: &[f32], sum: &mut [f32; 4], len: usize)
 
     let mut j = 0;
 
-    // Process 4 x-elements at a time, advancing y by 4 but needing y[j..j+7]
     while j + 4 <= len {
         let x0 = _mm_loadu_ps(x.as_ptr().add(j));
         let yj = _mm_loadu_ps(y.as_ptr().add(j));
         let y3 = _mm_loadu_ps(y.as_ptr().add(j + 3));
 
-        // xsum1 += x[j+0] * {y[j], y[j+1], y[j+2], y[j+3]}
         xsum1 = _mm_add_ps(xsum1, _mm_mul_ps(_mm_shuffle_ps(x0, x0, 0x00), yj));
-        // xsum2 += x[j+1] * {y[j+1], y[j+2], y[j+3], y[j+4]}
+
         xsum2 = _mm_add_ps(
             xsum2,
             _mm_mul_ps(_mm_shuffle_ps(x0, x0, 0x55), _mm_shuffle_ps(yj, y3, 0x49)),
         );
-        // xsum1 += x[j+2] * {y[j+2], y[j+3], y[j+4], y[j+5]}
+
         xsum1 = _mm_add_ps(
             xsum1,
             _mm_mul_ps(_mm_shuffle_ps(x0, x0, 0xaa), _mm_shuffle_ps(yj, y3, 0x9e)),
         );
-        // xsum2 += x[j+3] * {y[j+3], y[j+4], y[j+5], y[j+6]}
+
         xsum2 = _mm_add_ps(xsum2, _mm_mul_ps(_mm_shuffle_ps(x0, x0, 0xff), y3));
 
         j += 4;
     }
 
-    // Scalar tail (up to 3 remaining x elements; each still broadcasts into 4 sums)
     if j < len {
         xsum1 = _mm_add_ps(
             xsum1,
@@ -489,7 +447,6 @@ unsafe fn xcorr_kernel_sse(x: &[f32], y: &[f32], sum: &mut [f32; 4], len: usize)
 unsafe fn pitch_xcorr_sse(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitch: usize) {
     let mut i = 0;
 
-    // Process 4 pitch lags at a time using xcorr_kernel_sse
     while i + 4 <= max_pitch {
         let mut sum = [0.0f32; 4];
         xcorr_kernel_sse(x, &y[i..], &mut sum, len);
@@ -500,13 +457,10 @@ unsafe fn pitch_xcorr_sse(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, m
         i += 4;
     }
 
-    // Scalar tail
     for j in i..max_pitch {
         xcorr[j] = inner_prod_sse(x, &y[j..], len);
     }
 }
-
-// ─── x86_64 AVX implementations ─────────────────────────────────────────────
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx,fma")]
@@ -563,7 +517,6 @@ unsafe fn dual_inner_prod_avx(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f
     let mut acc2b = _mm256_setzero_ps();
     let mut i = 0usize;
 
-    // 16-element unroll: two independent acc pairs hide FMA latency
     while i + 16 <= n {
         let xv0 = _mm256_loadu_ps(x.as_ptr().add(i));
         let xv1 = _mm256_loadu_ps(x.as_ptr().add(i + 8));
@@ -571,8 +524,8 @@ unsafe fn dual_inner_prod_avx(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f
         let y2v0 = _mm256_loadu_ps(y2.as_ptr().add(i));
         let y1v1 = _mm256_loadu_ps(y1.as_ptr().add(i + 8));
         let y2v1 = _mm256_loadu_ps(y2.as_ptr().add(i + 8));
-        acc1  = _mm256_fmadd_ps(xv0, y1v0, acc1);
-        acc2  = _mm256_fmadd_ps(xv0, y2v0, acc2);
+        acc1 = _mm256_fmadd_ps(xv0, y1v0, acc1);
+        acc2 = _mm256_fmadd_ps(xv0, y2v0, acc2);
         acc1b = _mm256_fmadd_ps(xv1, y1v1, acc1b);
         acc2b = _mm256_fmadd_ps(xv1, y2v1, acc2b);
         i += 16;
@@ -620,79 +573,90 @@ unsafe fn dual_inner_prod_avx(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f
 unsafe fn pitch_xcorr_avx(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitch: usize) {
     let mut i = 0;
 
-    // Process 4 pitch lags at a time using xcorr_kernel_avx
-    // This mirrors the NEON approach (pitch_xcorr_neon / xcorr_kernel_neon)
     while i + 4 <= max_pitch {
         let mut sum = [0.0f32; 4];
         xcorr_kernel_avx(x, &y[i..], &mut sum, len);
-        xcorr[i]     = sum[0];
+        xcorr[i] = sum[0];
         xcorr[i + 1] = sum[1];
         xcorr[i + 2] = sum[2];
         xcorr[i + 3] = sum[3];
         i += 4;
     }
 
-    // Scalar tail for remaining lags
     for j in i..max_pitch {
         xcorr[j] = inner_prod_avx(x, &y[j..], len);
     }
 }
 
-/// Compute 4 cross-correlation values using AVX+FMA.
-/// sum[k] += Σ x[j] * y[j+k], k=0..3
-/// Mirrors SSE xcorr_kernel_sse but uses FMA and 8-element main loop.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx,fma")]
 unsafe fn xcorr_kernel_avx(x: &[f32], y: &[f32], sum: &mut [f32; 4], len: usize) {
     use std::arch::x86_64::*;
 
-    // Use SSE (128-bit) for the 4-accumulator sums — same register width as NEON xcorr_kernel_neon
     let mut xsum1 = _mm_loadu_ps(sum.as_ptr());
     let mut xsum2 = _mm_setzero_ps();
 
     let mut j = 0;
 
-    // Process 8 x-elements per iteration (two groups of 4), sharing y loads
-    // Each group of 4 needs y[j..j+7] — we load y[j], y[j+3], y[j+4], y[j+7]
     while j + 8 <= len {
-        // First group of 4: x[j..j+3], y[j..j+6]
         let x0 = _mm_loadu_ps(x.as_ptr().add(j));
-        let yj  = _mm_loadu_ps(y.as_ptr().add(j));
-        let y3  = _mm_loadu_ps(y.as_ptr().add(j + 3));
+        let yj = _mm_loadu_ps(y.as_ptr().add(j));
+        let y3 = _mm_loadu_ps(y.as_ptr().add(j + 3));
 
         xsum1 = _mm_fmadd_ps(_mm_shuffle_ps(x0, x0, 0x00), yj, xsum1);
-        xsum2 = _mm_fmadd_ps(_mm_shuffle_ps(x0, x0, 0x55), _mm_shuffle_ps(yj, y3, 0x49), xsum2);
-        xsum1 = _mm_fmadd_ps(_mm_shuffle_ps(x0, x0, 0xaa), _mm_shuffle_ps(yj, y3, 0x9e), xsum1);
+        xsum2 = _mm_fmadd_ps(
+            _mm_shuffle_ps(x0, x0, 0x55),
+            _mm_shuffle_ps(yj, y3, 0x49),
+            xsum2,
+        );
+        xsum1 = _mm_fmadd_ps(
+            _mm_shuffle_ps(x0, x0, 0xaa),
+            _mm_shuffle_ps(yj, y3, 0x9e),
+            xsum1,
+        );
         xsum2 = _mm_fmadd_ps(_mm_shuffle_ps(x0, x0, 0xff), y3, xsum2);
 
-        // Second group of 4: x[j+4..j+7], y[j+4..j+10]
         let x1 = _mm_loadu_ps(x.as_ptr().add(j + 4));
         let yj4 = _mm_loadu_ps(y.as_ptr().add(j + 4));
-        let y7  = _mm_loadu_ps(y.as_ptr().add(j + 7));
+        let y7 = _mm_loadu_ps(y.as_ptr().add(j + 7));
 
         xsum1 = _mm_fmadd_ps(_mm_shuffle_ps(x1, x1, 0x00), yj4, xsum1);
-        xsum2 = _mm_fmadd_ps(_mm_shuffle_ps(x1, x1, 0x55), _mm_shuffle_ps(yj4, y7, 0x49), xsum2);
-        xsum1 = _mm_fmadd_ps(_mm_shuffle_ps(x1, x1, 0xaa), _mm_shuffle_ps(yj4, y7, 0x9e), xsum1);
+        xsum2 = _mm_fmadd_ps(
+            _mm_shuffle_ps(x1, x1, 0x55),
+            _mm_shuffle_ps(yj4, y7, 0x49),
+            xsum2,
+        );
+        xsum1 = _mm_fmadd_ps(
+            _mm_shuffle_ps(x1, x1, 0xaa),
+            _mm_shuffle_ps(yj4, y7, 0x9e),
+            xsum1,
+        );
         xsum2 = _mm_fmadd_ps(_mm_shuffle_ps(x1, x1, 0xff), y7, xsum2);
 
         j += 8;
     }
 
-    // Process remaining 4 x-elements
     if j + 4 <= len {
         let x0 = _mm_loadu_ps(x.as_ptr().add(j));
-        let yj  = _mm_loadu_ps(y.as_ptr().add(j));
-        let y3  = _mm_loadu_ps(y.as_ptr().add(j + 3));
+        let yj = _mm_loadu_ps(y.as_ptr().add(j));
+        let y3 = _mm_loadu_ps(y.as_ptr().add(j + 3));
 
         xsum1 = _mm_fmadd_ps(_mm_shuffle_ps(x0, x0, 0x00), yj, xsum1);
-        xsum2 = _mm_fmadd_ps(_mm_shuffle_ps(x0, x0, 0x55), _mm_shuffle_ps(yj, y3, 0x49), xsum2);
-        xsum1 = _mm_fmadd_ps(_mm_shuffle_ps(x0, x0, 0xaa), _mm_shuffle_ps(yj, y3, 0x9e), xsum1);
+        xsum2 = _mm_fmadd_ps(
+            _mm_shuffle_ps(x0, x0, 0x55),
+            _mm_shuffle_ps(yj, y3, 0x49),
+            xsum2,
+        );
+        xsum1 = _mm_fmadd_ps(
+            _mm_shuffle_ps(x0, x0, 0xaa),
+            _mm_shuffle_ps(yj, y3, 0x9e),
+            xsum1,
+        );
         xsum2 = _mm_fmadd_ps(_mm_shuffle_ps(x0, x0, 0xff), y3, xsum2);
 
         j += 4;
     }
 
-    // Scalar tail (up to 3 remaining x elements; each broadcasts into all 4 sums)
     if j < len {
         xsum1 = _mm_fmadd_ps(
             _mm_set1_ps(*x.as_ptr().add(j)),
@@ -755,7 +719,6 @@ pub fn pitch_downsample(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, fa
         return;
     }
 
-    // NEON optimized path for mono/stereo with factor=2
     #[cfg(target_arch = "aarch64")]
     if factor == 2 && c <= 2 {
         pitch_downsample_neon(x, x_lp, len, c, offset);
@@ -783,7 +746,6 @@ pub fn pitch_downsample(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, fa
 
 #[inline]
 fn pitch_downsample_boundary(x: &[&[f32]], x_lp: &mut [f32], c: usize, offset: usize) {
-    // Handle first sample
     {
         let mut val = 0.0f32;
         for k in 0..c {
@@ -809,19 +771,17 @@ fn pitch_downsample_neon(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, o
 
         if c == 1 {
             let x0 = x[0];
-            // Process 4 samples at a time
+
             let mut i = 1;
             while i + 4 <= len {
                 let idx_m = 2 * i - offset;
                 let idx_p = 2 * i + offset;
                 let idx_c = 2 * i;
 
-                // Load 4 samples from each position
                 let vm = vld1q_f32(x0.as_ptr().add(idx_m));
                 let vp = vld1q_f32(x0.as_ptr().add(idx_p));
                 let vc = vld1q_f32(x0.as_ptr().add(idx_c));
 
-                // val = 0.25 * m + 0.25 * p + 0.5 * c
                 let mut val = vmulq_f32(vm, v025);
                 val = vfmaq_f32(val, vp, v025);
                 val = vfmaq_f32(val, vc, v05);
@@ -830,7 +790,6 @@ fn pitch_downsample_neon(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, o
                 i += 4;
             }
 
-            // Handle remaining samples
             while i < len {
                 let idx_m = 2 * i - offset;
                 let idx_p = 2 * i + offset;
@@ -842,7 +801,6 @@ fn pitch_downsample_neon(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, o
                 i += 1;
             }
         } else {
-            // Stereo path
             let x0 = x[0];
             let x1 = x[1];
             let mut i = 1;
@@ -907,7 +865,6 @@ fn find_best_pitch(
     best_pitch[0] = 0;
     best_pitch[1] = 1;
 
-    // Use NEON for initial syy computation
     #[cfg(target_arch = "aarch64")]
     let mut syy = unsafe {
         use std::arch::aarch64::*;
@@ -1019,7 +976,6 @@ pub fn pitch_search(x_lp: &[f32], y: &[f32], mut len: usize, mut max_pitch: usiz
     let len4 = len >> 1;
     let lag4 = lag >> 1;
 
-    // Stack-allocate for typical sizes (max_pitch up to 512 -> len4 up to 240, lag4 up to 480)
     const MAX_LEN4: usize = 512;
     const MAX_LAG4: usize = 1024;
     const MAX_PITCH: usize = 512;
@@ -1037,7 +993,6 @@ pub fn pitch_search(x_lp: &[f32], y: &[f32], mut len: usize, mut max_pitch: usiz
         y_lp4 = &mut y_lp4_stack[..lag4];
         xcorr = &mut xcorr_stack[..max_pitch];
     } else {
-        // Fall back to heap for unusual sizes
         return pitch_search_heap(x_lp, y, len << 1, max_pitch << 1);
     }
 
@@ -1082,7 +1037,6 @@ pub fn pitch_search(x_lp: &[f32], y: &[f32], mut len: usize, mut max_pitch: usiz
     ((2 * best_pitch[0]) as isize).wrapping_sub(offset as isize) as usize
 }
 
-// Heap allocation fallback for unusual sizes
 fn pitch_search_heap(x_lp: &[f32], y: &[f32], mut len: usize, mut max_pitch: usize) -> usize {
     let mut best_pitch = [0, 0];
 
@@ -1144,10 +1098,8 @@ fn compute_pitch_gain(xy: f32, xx: f32, yy: f32) -> f32 {
 
 static SECOND_CHECK: [usize; 16] = [0, 0, 3, 2, 3, 2, 5, 2, 3, 2, 3, 2, 5, 2, 3, 2];
 
-/// Optimized sum of squares using inner_prod_neon on aarch64
 #[inline(always)]
 fn sum_squares(x: &[f32], n: usize) -> f32 {
-    // Use inner_prod with x, x for sum of squares - already NEON-optimized
     #[cfg(target_arch = "aarch64")]
     unsafe {
         inner_prod_neon(x, x, n)
@@ -1187,16 +1139,13 @@ pub fn remove_doubling(
     let mut t = *t0_ptr;
     let t0 = *t0_ptr;
 
-    // Stack allocation for yy_lookup (max_period can be up to COMBFILTER_MAXPERIOD/2 = 512)
     const MAX_YY_SIZE: usize = 1024;
     let mut yy_lookup_buf = [0.0f32; MAX_YY_SIZE];
     let yy_lookup = &mut yy_lookup_buf[..=max_period];
 
-    // NEON-optimized xx calculation
     let xx = sum_squares(x_target, n);
     let xy = inner_prod(x_target, &x[max_period - t0..], n);
 
-    // Compute yy_lookup
     yy_lookup[0] = xx;
     let mut yy_curr = xx;
     for i in 1..=max_period {

@@ -21,7 +21,7 @@ pub fn silk_vq_wmat_ec(
     let mut sum1_q15: i32;
     let mut sum2_q24: i32;
 
-    neg_xx_q24[0] = -silk_lshift(xx_q17_in[xx_q17_in_ptr + 0], 7);
+    neg_xx_q24[0] = -silk_lshift(xx_q17_in[xx_q17_in_ptr], 7);
     neg_xx_q24[1] = -silk_lshift(xx_q17_in[xx_q17_in_ptr + 1], 7);
     neg_xx_q24[2] = -silk_lshift(xx_q17_in[xx_q17_in_ptr + 2], 7);
     neg_xx_q24[3] = -silk_lshift(xx_q17_in[xx_q17_in_ptr + 3], 7);
@@ -45,7 +45,7 @@ pub fn silk_vq_wmat_ec(
         sum2_q24 = silk_mla(sum2_q24, xx_q17[xx_q17_ptr + 3], cb_row[3] as i32);
         sum2_q24 = silk_mla(sum2_q24, xx_q17[xx_q17_ptr + 4], cb_row[4] as i32);
         sum2_q24 = silk_lshift(sum2_q24, 1);
-        sum2_q24 = silk_mla(sum2_q24, xx_q17[xx_q17_ptr + 0], cb_row[0] as i32);
+        sum2_q24 = silk_mla(sum2_q24, xx_q17[xx_q17_ptr], cb_row[0] as i32);
         sum1_q15 = silk_smlawb(sum1_q15, sum2_q24, cb_row[0] as i32);
 
         sum2_q24 = silk_mla(neg_xx_q24[1], xx_q17[xx_q17_ptr + 7], cb_row[2] as i32);

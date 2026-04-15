@@ -39,7 +39,7 @@ fn silk_vad_get_noise_levels(p_x: &[i32; VAD_N_BANDS], ps_silk_vad: &mut SilkVAD
             VAD_NOISE_LEVEL_SMOOTH_COEF_Q16
         } else {
             let tmp = silk_smulww(inv_nrg, nl);
-            silk_smulwb(tmp, (VAD_NOISE_LEVEL_SMOOTH_COEF_Q16 as i32) << 1)
+            silk_smulwb(tmp, VAD_NOISE_LEVEL_SMOOTH_COEF_Q16 << 1)
         };
 
         let coef = silk_max_int(coef, min_coef);
@@ -88,7 +88,6 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
 
     let alloc_size = x_offset_3 + decimated_framelength1;
 
-    // MAX_FRAME_LENGTH = 320, so alloc_size ≤ (320/8 + 320/4)*2 + 320/2 = 400
     const MAX_VAD_X_SIZE: usize = 400;
     debug_assert!(alloc_size <= MAX_VAD_X_SIZE);
     let mut x_buf = [0i16; MAX_VAD_X_SIZE];
@@ -149,7 +148,7 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
             sum_squared = 0;
             for i in 0..dec_subframe_length {
                 let x_tmp = (x[x_offset[b] + i + dec_subframe_offset] >> 3) as i32;
-                sum_squared = silk_smlabb(sum_squared, x_tmp as i32, x_tmp as i32);
+                sum_squared = silk_smlabb(sum_squared, x_tmp, x_tmp);
             }
 
             if s < VAD_INTERNAL_SUBFRAMES - 1 {
@@ -179,12 +178,12 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
 
             let mut snr_q7 = silk_lin2log(nrg_to_noise_ratio_q8[b]) - 8 * 128;
 
-            sum_squared = silk_smlabb(sum_squared, snr_q7 as i32, snr_q7 as i32);
+            sum_squared = silk_smlabb(sum_squared, snr_q7, snr_q7);
 
             if speech_nrg < (1 << 20) {
-                snr_q7 = silk_smulwb(silk_sqrt_approx(speech_nrg) << 6, snr_q7 as i32);
+                snr_q7 = silk_smulwb(silk_sqrt_approx(speech_nrg) << 6, snr_q7);
             }
-            input_tilt = silk_smlawb(input_tilt, TILT_WEIGHTS[b], snr_q7 as i32);
+            input_tilt = silk_smlawb(input_tilt, TILT_WEIGHTS[b], snr_q7);
         } else {
             nrg_to_noise_ratio_q8[b] = 256;
         }
@@ -214,14 +213,14 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
         speech_nrg <<= 16;
 
         speech_nrg = silk_sqrt_approx(speech_nrg);
-        sa_q15 = silk_smulwb(32768 + speech_nrg, sa_q15 as i32);
+        sa_q15 = silk_smulwb(32768 + speech_nrg, sa_q15);
     }
 
     ps_enc.s_cmn.speech_activity_q8 = silk_min_int(sa_q15 >> 7, u8::MAX as i32);
 
     let mut smooth_coef_q16;
-    let inner = silk_smulwb(sa_q15, sa_q15 as i32);
-    smooth_coef_q16 = silk_smulwb(VAD_SNR_SMOOTH_COEF_Q18, inner as i32);
+    let inner = silk_smulwb(sa_q15, sa_q15);
+    smooth_coef_q16 = silk_smulwb(VAD_SNR_SMOOTH_COEF_Q18, inner);
 
     if ps_enc.s_cmn.frame_length == 10 * ps_enc.s_cmn.fs_khz {
         smooth_coef_q16 >>= 1;

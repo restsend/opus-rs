@@ -39,7 +39,7 @@ pub fn silk_gains_quant(
             ) as i8;
             *prev_ind = ind[k];
         } else {
-            ind[k] = ind[k] - *prev_ind;
+            ind[k] -= *prev_ind;
 
             double_step_size_threshold =
                 2 * MAX_DELTA_GAIN_QUANT - N_LEVELS_QGAIN + (*prev_ind as i32);
@@ -135,7 +135,7 @@ pub fn silk_quant_ltp_gains(
         let cl_ptr = SILK_LTP_GAIN_BITS_Q5_PTRS[k];
         let cbk_ptr = SILK_LTP_VQ_PTRS_Q7[k];
         let cbk_gain_ptr = SILK_LTP_VQ_GAIN_PTRS_Q7[k];
-        let cbk_size = SILK_LTP_VQ_SIZES[k as usize];
+        let cbk_size = SILK_LTP_VQ_SIZES[k];
 
         res_nrg_total_q15 = 0;
         rate_dist_total_q7 = 0;
@@ -173,9 +173,7 @@ pub fn silk_quant_ltp_gains(
             best_res_nrg_total_q15 = res_nrg_total_q15;
             best_sum_log_gain_q7 = sum_log_gain_tmp_q7;
             *periodicity_index = k as i8;
-            for i in 0..nb_subfr {
-                cbk_index[i] = temp_idx[i];
-            }
+            cbk_index[..nb_subfr].copy_from_slice(&temp_idx[..nb_subfr]);
         }
     }
 

@@ -2,7 +2,7 @@ use crate::silk::define::MAX_LPC_ORDER;
 use crate::silk::macros::*;
 
 pub fn silk_interpolate(x0: &[i16], x1: &[i16], ifact_q2: i32, d: usize) -> [i16; MAX_LPC_ORDER] {
-    debug_assert!(ifact_q2 >= 0 && ifact_q2 <= 4);
+    debug_assert!((0..=4).contains(&ifact_q2));
     let mut xi = [0i16; MAX_LPC_ORDER];
     for i in 0..d {
         xi[i] = silk_add_rshift(
@@ -15,7 +15,7 @@ pub fn silk_interpolate(x0: &[i16], x1: &[i16], ifact_q2: i32, d: usize) -> [i16
 }
 
 pub fn silk_interpolate_inplace(xi: &mut [i16], x0: &[i16], x1: &[i16], ifact_q2: i32, d: usize) {
-    debug_assert!(ifact_q2 >= 0 && ifact_q2 <= 4);
+    debug_assert!((0..=4).contains(&ifact_q2));
     for i in 0..d {
         xi[i] = silk_add_rshift(
             x0[i] as i32,

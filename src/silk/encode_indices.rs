@@ -101,7 +101,7 @@ pub fn silk_encode_indices(
         if cond_coding == CODE_CONDITIONALLY && ps_enc_c.s_cmn.ec_prev_signal_type == TYPE_VOICED {
             let mut delta_lag_index =
                 ps_indices.lag_index as i32 - ps_enc_c.s_cmn.ec_prev_lag_index as i32;
-            if delta_lag_index < -8 || delta_lag_index > 11 {
+            if !(-8..=11).contains(&delta_lag_index) {
                 delta_lag_index = 0;
             } else {
                 delta_lag_index += 9;
@@ -111,8 +111,7 @@ pub fn silk_encode_indices(
         }
         if encode_absolute_lag_index {
             let half_fs = ps_enc_c.s_cmn.fs_khz / 2;
-            // Clamp lag_index so pitch_high_bits fits in SILK_PITCH_LAG_ICDF (32 entries)
-            // and pitch_low_bits fits in the low-bits table (fs_khz/2 entries).
+
             let max_lag_index = (SILK_PITCH_LAG_ICDF.len() as i32 - 1) * half_fs + (half_fs - 1);
             let lag_index = (ps_indices.lag_index as i32).min(max_lag_index);
 
@@ -136,12 +135,10 @@ pub fn silk_encode_indices(
             } else {
                 &SILK_PITCH_CONTOUR_10_MS_ICDF[..]
             }
+        } else if ps_enc_c.s_cmn.fs_khz == 8 {
+            &SILK_PITCH_CONTOUR_NB_ICDF[..]
         } else {
-            if ps_enc_c.s_cmn.fs_khz == 8 {
-                &SILK_PITCH_CONTOUR_NB_ICDF[..]
-            } else {
-                &SILK_PITCH_CONTOUR_ICDF[..]
-            }
+            &SILK_PITCH_CONTOUR_ICDF[..]
         };
         ps_range_enc.encode_icdf(ps_indices.contour_index as i32, contour_icdf, 8);
 

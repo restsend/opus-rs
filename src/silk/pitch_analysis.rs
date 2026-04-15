@@ -99,7 +99,7 @@ pub fn silk_find_pitch_lags_fix(
         thrhld_q13 = silk_smlabb(thrhld_q13, -1229, ps_enc.s_cmn.prev_signal_type >> 1);
 
         thrhld_q13 = silk_smlawb(thrhld_q13, -1638, ps_enc.s_cmn.input_tilt_q15);
-        thrhld_q13 = silk_sat16(thrhld_q13) as i32;
+        thrhld_q13 = silk_sat16(thrhld_q13);
 
         let mut ltp_corr_q15 = ps_enc.ltp_corr_q15;
         if silk_pitch_analysis_core(
@@ -165,7 +165,7 @@ pub fn silk_pitch_analysis_core(
     if shift > 0 {
         let s = (shift + 1) >> 1;
         for i in 0..frame_length {
-            frame_scaled_buf[i] = (frame_unscaled[i] >> s) as i16;
+            frame_scaled_buf[i] = frame_unscaled[i] >> s;
         }
         frame = &frame_scaled_buf[..frame_length];
     } else {
@@ -256,15 +256,14 @@ pub fn silk_pitch_analysis_core(
     let mut c_combined = [0i16; CSTRIDE_4KHZ];
     if nb_subfr == PE_MAX_NB_SUBFR {
         for i in (MIN_LAG_4KHZ..=MAX_LAG_4KHZ).rev() {
-            let mut sum =
-                c[i - MIN_LAG_4KHZ] as i32 + c[1 * CSTRIDE_4KHZ + (i - MIN_LAG_4KHZ)] as i32;
-            sum = silk_smlawb(sum, sum, (-(i as i32) << 4) as i32);
+            let mut sum = c[i - MIN_LAG_4KHZ] as i32 + c[CSTRIDE_4KHZ + (i - MIN_LAG_4KHZ)] as i32;
+            sum = silk_smlawb(sum, sum, -(i as i32) << 4);
             c_combined[i - MIN_LAG_4KHZ] = sum as i16;
         }
     } else {
         for i in (MIN_LAG_4KHZ..=MAX_LAG_4KHZ).rev() {
             let mut sum = (c[i - MIN_LAG_4KHZ] as i32) << 1;
-            sum = silk_smlawb(sum, sum, (-(i as i32) << 4) as i32);
+            sum = silk_smlawb(sum, sum, -(i as i32) << 4);
             c_combined[i - MIN_LAG_4KHZ] = sum as i16;
         }
     }
@@ -509,7 +508,6 @@ pub fn silk_pitch_analysis_core(
             fs_khz as usize,
         );
 
-        let mut lag_counter = 0;
         let contour_bias_q15 = silk_div32_16(1638, (lag as i16).into());
 
         let energy_target = silk_inner_prod_aligned(
@@ -518,7 +516,7 @@ pub fn silk_pitch_analysis_core(
             nb_subfr * sf_length,
         )
         .wrapping_add(1);
-        for d in start_lag..=end_lag {
+        for (lag_counter, d) in (start_lag..=end_lag).enumerate() {
             for j in 0..nb_cbk_search_st3 {
                 let mut cross_corr = 0i32;
                 let mut energy = energy_target;
@@ -529,7 +527,7 @@ pub fn silk_pitch_analysis_core(
                 if cross_corr > 0 {
                     let mut cc_max_new = silk_div32_varq(cross_corr, energy, 14);
                     let diff = i16::MAX as i32 - silk_mul(contour_bias_q15, j as i32);
-                    cc_max_new = silk_smulwb(cc_max_new, diff as i32);
+                    cc_max_new = silk_smulwb(cc_max_new, diff);
                     let lag_cb_ptr_st3_0: &[i8] = if nb_subfr == PE_MAX_NB_SUBFR {
                         &SILK_CB_LAGS_STAGE3[0]
                     } else {
@@ -542,7 +540,6 @@ pub fn silk_pitch_analysis_core(
                     }
                 }
             }
-            lag_counter += 1;
         }
 
         for k in 0..nb_subfr {
@@ -593,7 +590,7 @@ fn silk_p_ana_calc_corr_st3(
     let mut xcorr32 = [0i32; SCRATCH_SIZE];
     let mut scratch_mem = [0i32; SCRATCH_SIZE];
 
-    let mut target_ptr_idx = PE_LTP_MEM_LENGTH_MS * (if fs_khz > 8 { fs_khz as usize } else { 8 });
+    let mut target_ptr_idx = PE_LTP_MEM_LENGTH_MS * (if fs_khz > 8 { fs_khz } else { 8 });
     for k in 0..nb_subfr {
         let (lag_cb_ptr_curr, lag_range_ptr_curr, nb_cbk_search): (&[i8], &[i8; 2], usize) =
             if nb_subfr == PE_MAX_NB_SUBFR {
@@ -629,9 +626,8 @@ fn silk_p_ana_calc_corr_st3(
         let delta = lag_range_ptr_curr[0];
         for i in 0..nb_cbk_search {
             let idx = (lag_cb_ptr_curr[i] - delta) as usize;
-            for j in 0..PE_NB_STAGE3_LAGS {
-                cross_corr_st3[k][i][j] = scratch_mem[idx + j];
-            }
+            cross_corr_st3[k][i][..PE_NB_STAGE3_LAGS]
+                .copy_from_slice(&scratch_mem[idx..(PE_NB_STAGE3_LAGS + idx)]);
         }
         target_ptr_idx += sf_length;
     }
@@ -648,7 +644,7 @@ fn silk_p_ana_calc_energy_st3(
 ) {
     let mut scratch_mem = [0i32; SCRATCH_SIZE];
 
-    let mut target_ptr_idx = PE_LTP_MEM_LENGTH_MS * (if fs_khz > 8 { fs_khz as usize } else { 8 });
+    let mut target_ptr_idx = PE_LTP_MEM_LENGTH_MS * (if fs_khz > 8 { fs_khz } else { 8 });
     for k in 0..nb_subfr {
         let (lag_cb_ptr_curr, lag_range_ptr_curr, nb_cbk_search): (&[i8], &[i8; 2], usize) =
             if nb_subfr == PE_MAX_NB_SUBFR {
@@ -689,9 +685,8 @@ fn silk_p_ana_calc_energy_st3(
         let delta = lag_range_ptr_curr[0];
         for i in 0..nb_cbk_search {
             let idx = (lag_cb_ptr_curr[i] - delta) as usize;
-            for j in 0..PE_NB_STAGE3_LAGS {
-                energies_st3[k][i][j] = scratch_mem[idx + j];
-            }
+            energies_st3[k][i][..PE_NB_STAGE3_LAGS]
+                .copy_from_slice(&scratch_mem[idx..(PE_NB_STAGE3_LAGS + idx)]);
         }
         target_ptr_idx += sf_length;
     }

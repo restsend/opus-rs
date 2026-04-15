@@ -84,17 +84,10 @@ impl MdctLookup {
 
         let mut f_buf = [MaybeUninit::<f32>::uninit(); MAX_N2];
         let mut f2_buf = [MaybeUninit::<KissCpx>::uninit(); MAX_N4];
-        // SAFETY: f_buf[0..n2] is fully written by the three fold loops below
-        // (loop1 + loop2 + loop3 write exactly 2*n4 = n2 elements).
-        // f2_buf[0..n4] is fully written by the pre-rotation loop.
+
         let f = unsafe { std::slice::from_raw_parts_mut(f_buf.as_mut_ptr() as *mut f32, n2) };
         let f2 = unsafe { std::slice::from_raw_parts_mut(f2_buf.as_mut_ptr() as *mut KissCpx, n4) };
 
-        // Assert caller invariants so LLVM can prove all loop accesses in-bounds
-        // and eliminate per-element conditional checks, enabling auto-vectorization.
-        // Max input index accessed = n/2 + overlap/2 - 1 (see loop analysis), so we need
-        // at least n/2 + overlap/2 elements. n + overlap is the theoretical over-estimate
-        // but the actual accesses stay within n/2 + overlap/2 due to the fold structure.
         assert!(input.len() >= n2 + overlap2);
         assert!(window.len() >= overlap);
 
@@ -103,15 +96,12 @@ impl MdctLookup {
             let mut xp1 = overlap2;
             let mut xp2 = n2 - 1 + overlap2;
             let mut wp1 = overlap2;
-            // wp2 can underflow on the final post-loop decrement (value never read after),
-            // so saturating_sub is used only here; all other pointers stay non-negative.
+
             let mut wp2 = overlap2.saturating_sub(1);
 
-            let limit = (overlap + 3) / 4;
-            let mid = if n4 > limit { n4 - limit } else { 0 };
+            let limit = overlap.div_ceil(4);
+            let mid = n4.saturating_sub(limit);
 
-            // Loop 1: windowed fold (first overlap region).
-            // All indices proved valid when input.len()>=n+overlap, window.len()>=overlap.
             let loop1_iters = limit.min(n4);
             for _ in 0..loop1_iters {
                 let w1 = window[wp1];
@@ -129,7 +119,6 @@ impl MdctLookup {
                 wp2 = wp2.saturating_sub(2);
             }
 
-            // Loop 2: no window (middle region, straight interleaved copy).
             for _ in limit..mid {
                 f[yp] = input[xp2];
                 yp += 1;
@@ -140,8 +129,6 @@ impl MdctLookup {
                 xp2 -= 2;
             }
 
-            // Loop 3: windowed fold (second overlap region).
-            // At loop3 start, xp1 = n2 exactly (identity: overlap2 + 2*mid = n2).
             let loop3_iters = if mid > limit { n4 - mid } else { 0 };
             let mut wp1_l3 = 0usize;
             let mut wp2_l3 = overlap.saturating_sub(1);
@@ -162,7 +149,6 @@ impl MdctLookup {
             }
         }
 
-        // Pre-rotation with bitrev indexing
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             if std::arch::is_x86_feature_detected!("avx") {
@@ -206,7 +192,6 @@ impl MdctLookup {
 
         opus_fft_impl(st, f2);
 
-        // Post-rotation
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             if std::arch::is_x86_feature_detected!("avx") {
@@ -270,7 +255,7 @@ impl MdctLookup {
         let (trig, _) = self.get_trig(shift);
 
         let mut f2_buf = [MaybeUninit::<KissCpx>::uninit(); MAX_N4];
-        // SAFETY: f2_buf[0..n4] is fully written by the pre-rotation loop below.
+
         let f2 = unsafe { std::slice::from_raw_parts_mut(f2_buf.as_mut_ptr() as *mut KissCpx, n4) };
 
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -318,7 +303,6 @@ impl MdctLookup {
 
         opus_fft_impl(st, f2);
 
-        // Post-rotate: write directly from f2 into output[overlap2..overlap2+n2].
         assert!(output.len() >= overlap2 + n2);
 
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -386,7 +370,6 @@ impl MdctLookup {
             output[overlap2 + 2 * i + 1] = yi1;
         }
 
-        // Apply TDAC to overlap region
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             if std::arch::is_x86_feature_detected!("avx") {
@@ -578,7 +561,6 @@ unsafe fn mdct_tdac_avx(output: &mut [f32], window: &[f32], overlap: usize) {
     }
 }
 
-/// NEON-optimized MDCT pre-rotation: complex multiply with trig table + bitrev scatter
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn mdct_pre_rotation_neon(
@@ -598,34 +580,26 @@ fn mdct_pre_rotation_neon(
         let bitrev_ptr = bitrev.as_ptr();
         let f2_ptr = f2.as_mut_ptr() as *mut f32;
 
-        // Process 4 complex pairs at a time
         let n4_vec = n4 & !3;
         let mut i = 0;
 
         while i < n4_vec {
-            // Gather trig values: t0 = trig[i..i+4], t1 = trig[n4+i..n4+i+4]
             let t0 = vld1q_f32(trig_ptr.add(i));
             let t1 = vld1q_f32(trig_ptr.add(n4 + i));
 
-            // Load re/im as interleaved from f[2*i], f[2*i+1]
-            // f layout: [re0, im0, re1, im1, re2, im2, re3, im3, ...]
-            let f0 = vld1q_f32(f_ptr.add(2 * i)); // re0, im0, re1, im1
-            let f1 = vld1q_f32(f_ptr.add(2 * i + 4)); // re2, im2, re3, im3
+            let f0 = vld1q_f32(f_ptr.add(2 * i));
+            let f1 = vld1q_f32(f_ptr.add(2 * i + 4));
 
-            // Deinterleave re and im using vuzpq (unzip even/odd)
             let even_odd = vuzpq_f32(f0, f1);
-            let re_v = even_odd.0; // [re0, re1, re2, re3]
-            let im_v = even_odd.1; // [im0, im1, im2, im3]
+            let re_v = even_odd.0;
+            let im_v = even_odd.1;
 
-            // Complex multiply: yr = re*t0 - im*t1, yi = im*t0 + re*t1
             let yr = vsubq_f32(vmulq_f32(re_v, t0), vmulq_f32(im_v, t1));
             let yi = vaddq_f32(vmulq_f32(im_v, t0), vmulq_f32(re_v, t1));
 
-            // Apply scale
             let yr = vmulq_f32(yr, vscale);
             let yi = vmulq_f32(yi, vscale);
 
-            // Scatter to bitrev positions (unavoidable scalar)
             let yr_arr: [f32; 4] = std::mem::transmute(yr);
             let yi_arr: [f32; 4] = std::mem::transmute(yi);
 
@@ -638,7 +612,6 @@ fn mdct_pre_rotation_neon(
             i += 4;
         }
 
-        // Scalar tail
         for i in n4_vec..n4 {
             let re = *f_ptr.add(2 * i);
             let im = *f_ptr.add(2 * i + 1);
@@ -653,7 +626,6 @@ fn mdct_pre_rotation_neon(
     }
 }
 
-/// NEON-optimized MDCT post-rotation: complex multiply with trig table + stride scatter
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn mdct_post_rotation_neon(
@@ -666,7 +638,6 @@ fn mdct_post_rotation_neon(
 ) {
     use std::arch::aarch64::*;
 
-    // When stride > 1, NEON isn't beneficial due to scattered writes
     if stride > 1 {
         for i in 0..n4 {
             let fp = &f2[i];
@@ -685,34 +656,27 @@ fn mdct_post_rotation_neon(
         let trig_ptr = trig.as_ptr();
         let out_ptr = output.as_mut_ptr();
 
-        // Process 4 complex pairs at a time (stride=1)
         let n4_vec = n4 & !3;
         let mut i = 0;
 
         while i < n4_vec {
-            // Load 4 KissCpx values (interleaved r,i)
-            let c0 = vld1q_f32(f2_ptr.add(2 * i)); // r0, i0, r1, i1
-            let c1 = vld1q_f32(f2_ptr.add(2 * i + 4)); // r2, i2, r3, i3
+            let c0 = vld1q_f32(f2_ptr.add(2 * i));
+            let c1 = vld1q_f32(f2_ptr.add(2 * i + 4));
 
-            // Load trig
             let t0 = vld1q_f32(trig_ptr.add(i));
             let t1 = vld1q_f32(trig_ptr.add(n4 + i));
 
-            // Deinterleave r and i
             let ri = vuzpq_f32(c0, c1);
-            let r_v = ri.0; // [r0, r1, r2, r3]
-            let i_v = ri.1; // [i0, i1, i2, i3]
+            let r_v = ri.0;
+            let i_v = ri.1;
 
-            // yr = i * t1 - r * t0
             let yr = vsubq_f32(vmulq_f32(i_v, t1), vmulq_f32(r_v, t0));
-            // yi = r * t1 + i * t0
+
             let yi = vaddq_f32(vmulq_f32(r_v, t1), vmulq_f32(i_v, t0));
 
-            // Store yr to output[2*i, 2*i+2, 2*i+4, 2*i+6]
             let yr_arr: [f32; 4] = std::mem::transmute(yr);
             let yi_arr: [f32; 4] = std::mem::transmute(yi);
 
-            // output[i*2] = yr, output[n2-1-2*i] = yi (strided by 2)
             for j in 0..4 {
                 *out_ptr.add((i + j) * 2) = yr_arr[j];
                 *out_ptr.add(n2 - 1 - 2 * (i + j)) = yi_arr[j];
@@ -721,7 +685,6 @@ fn mdct_post_rotation_neon(
             i += 4;
         }
 
-        // Scalar tail
         for i in n4_vec..n4 {
             let fp = &f2[i];
             let t0 = trig[i];
@@ -734,7 +697,6 @@ fn mdct_post_rotation_neon(
     }
 }
 
-/// NEON-optimized MDCT backward pre-rotation: complex multiply with trig table + bitrev scatter
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn mdct_backward_pre_rotation_neon(
@@ -748,7 +710,6 @@ fn mdct_backward_pre_rotation_neon(
 ) {
     use std::arch::aarch64::*;
 
-    // Fall back to scalar for non-unit stride (scattered input access)
     if stride != 1 {
         for i in 0..n4 {
             let rev = bitrev[i] as usize;
@@ -773,46 +734,37 @@ fn mdct_backward_pre_rotation_neon(
         let mut i = 0;
 
         while i < n4_vec {
-            // Load 4 x1 values from input[2*i], input[2*(i+1)], ... (stride 2)
             let f0 = vld1q_f32(in_ptr.add(2 * i));
             let f1 = vld1q_f32(in_ptr.add(2 * i + 4));
             let deint_x1 = vuzpq_f32(f0, f1);
-            let x1_v = deint_x1.0; // [x1[i], x1[i+1], x1[i+2], x1[i+3]]
+            let x1_v = deint_x1.0;
 
-            // Load 4 x2 values from input[n2-1-2*i], input[n2-3-2*i], ... (stride 2, backward)
-            // x2[i..i+3] are at indices: n2-1-2i, n2-3-2i, n2-5-2i, n2-7-2i
-            // Contiguous block: input[n2-7-2*i .. n2-1-2*i+1]
             let g0 = vld1q_f32(in_ptr.add(n2 - 7 - 2 * i));
             let g1 = vld1q_f32(in_ptr.add(n2 - 3 - 2 * i));
             let deint_x2 = vuzpq_f32(g0, g1);
-            // deint_x2.0 = [in[n2-7-2i], in[n2-5-2i], in[n2-3-2i], in[n2-1-2i]]
-            //            = [x2[i+3], x2[i+2], x2[i+1], x2[i]]
+
             let x2_raw = deint_x2.0;
             let x2_v = vrev64q_f32(x2_raw);
-            let x2_v = vextq_f32(x2_v, x2_v, 2); // reverse → [x2[i], x2[i+1], x2[i+2], x2[i+3]]
+            let x2_v = vextq_f32(x2_v, x2_v, 2);
 
-            // Load trig (contiguous)
             let t0 = vld1q_f32(trig_ptr.add(i));
             let t1 = vld1q_f32(trig_ptr.add(n4 + i));
 
-            // Complex multiply: yr = x2*t0 + x1*t1, yi = x1*t0 - x2*t1
             let yr = vaddq_f32(vmulq_f32(x2_v, t0), vmulq_f32(x1_v, t1));
             let yi = vsubq_f32(vmulq_f32(x1_v, t0), vmulq_f32(x2_v, t1));
 
-            // Scatter to bitrev positions (scalar stores)
             let yr_arr: [f32; 4] = std::mem::transmute(yr);
             let yi_arr: [f32; 4] = std::mem::transmute(yi);
 
             for j in 0..4 {
                 let rev = *bitrev_ptr.add(i + j) as usize;
-                *f2_ptr.add(2 * rev) = yi_arr[j]; // f2[rev].r = yi
-                *f2_ptr.add(2 * rev + 1) = yr_arr[j]; // f2[rev].i = yr
+                *f2_ptr.add(2 * rev) = yi_arr[j];
+                *f2_ptr.add(2 * rev + 1) = yr_arr[j];
             }
 
             i += 4;
         }
 
-        // Scalar tail
         for i in n4_vec..n4 {
             let rev = *bitrev_ptr.add(i) as usize;
             let x1 = *in_ptr.add(2 * i);
@@ -827,7 +779,6 @@ fn mdct_backward_pre_rotation_neon(
     }
 }
 
-/// NEON-optimized backward MDCT post-rotation (pairs from both ends)
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn mdct_backward_post_rotation_neon(
@@ -842,8 +793,6 @@ fn mdct_backward_post_rotation_neon(
         let trig_ptr = trig.as_ptr();
         let out_base = output.as_mut_ptr().add(overlap2);
 
-        // Process pairs from both ends: i and n4-1-i
-        // Each iteration produces 4 output values
         let half = (n4 + 1) >> 1;
 
         let mut i = 0;
@@ -851,8 +800,6 @@ fn mdct_backward_post_rotation_neon(
             let j0 = n4 - 1 - i;
             let j1 = n4 - 1 - (i + 1);
 
-            // Load 4 f2 values (i, i+1 from low end; j1, j0 from high end)
-            // Process i and j0 as a pair
             let re0 = f2[i].i;
             let im0 = f2[i].r;
             let t0_0 = *trig_ptr.add(i);
@@ -872,7 +819,6 @@ fn mdct_backward_post_rotation_neon(
             *out_base.add(n2 - 2 - 2 * i) = yr1;
             *out_base.add(2 * i + 1) = yi1;
 
-            // Process i+1 and j1
             let re0b = f2[i + 1].i;
             let im0b = f2[i + 1].r;
             let t0_0b = *trig_ptr.add(i + 1);
@@ -895,7 +841,6 @@ fn mdct_backward_post_rotation_neon(
             i += 2;
         }
 
-        // Handle odd center element
         if i < half {
             let j = n4 - 1 - i;
             let im0 = f2[i].r;
@@ -920,7 +865,6 @@ fn mdct_backward_post_rotation_neon(
     }
 }
 
-/// NEON-optimized TDAC (time-domain aliasing cancellation)
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn mdct_tdac_neon(output: &mut [f32], window: &[f32], overlap: usize) {
@@ -928,7 +872,6 @@ fn mdct_tdac_neon(output: &mut [f32], window: &[f32], overlap: usize) {
 
     let overlap2 = overlap / 2;
     if overlap2 < 4 {
-        // Too small for NEON
         for i in 0..overlap2 {
             let x1 = output[overlap - 1 - i];
             let x2 = output[i];
@@ -947,27 +890,22 @@ fn mdct_tdac_neon(output: &mut [f32], window: &[f32], overlap: usize) {
         let mut i = 0;
 
         while i < n4 {
-            // Load output[i..i+4] (forward) and output[overlap-1-i..overlap-4-i] (reverse)
             let x2_fwd = vld1q_f32(out_ptr.add(i));
-            let x1_rev = vld1q_f32(out_ptr.add(overlap - 4 - i)); // reversed order
+            let x1_rev = vld1q_f32(out_ptr.add(overlap - 4 - i));
 
-            // Reverse x1_rev to get [overlap-1-i, overlap-2-i, overlap-3-i, overlap-4-i]
             let x1 = vrev64q_f32(x1_rev);
-            let x1 = vextq_f32(x1, x1, 2); // swap the two 64-bit halves
+            let x1 = vextq_f32(x1, x1, 2);
 
-            // Load window[i..i+4] and window[overlap-1-i..overlap-4-i]
             let wp1_fwd = vld1q_f32(win_ptr.add(i));
             let wp2_rev = vld1q_f32(win_ptr.add(overlap - 4 - i));
             let wp2 = vrev64q_f32(wp2_rev);
             let wp2 = vextq_f32(wp2, wp2, 2);
             let wp1 = wp1_fwd;
 
-            // output[i] = x2 * wp2 - x1 * wp1
             let out_fwd = vsubq_f32(vmulq_f32(x2_fwd, wp2), vmulq_f32(x1, wp1));
-            // output[overlap-1-i] = x2 * wp1 + x1 * wp2
+
             let out_rev = vaddq_f32(vmulq_f32(x2_fwd, wp1), vmulq_f32(x1, wp2));
 
-            // Reverse out_rev for storage
             let out_rev = vrev64q_f32(out_rev);
             let out_rev = vextq_f32(out_rev, out_rev, 2);
 

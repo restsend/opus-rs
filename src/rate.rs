@@ -76,8 +76,6 @@ pub fn get_pulses(i: i32) -> i32 {
     }
 }
 
-/// Binary search for pulse count from bit budget.
-/// Uses unsafe get_unchecked to eliminate bounds checks in the hot loop.
 #[inline(always)]
 pub fn bits2pulses(m: &CeltMode, band: usize, mut lm: i32, bits: i32) -> i32 {
     lm += 1;
@@ -97,7 +95,6 @@ pub fn bits2pulses(m: &CeltMode, band: usize, mut lm: i32, bits: i32) -> i32 {
         while lo + 1 < hi {
             let mid = (lo + hi) >> 1;
             if *cache_ptr.add(mid) as i32 >= bits_minus_one {
-                // mid is valid: mid < hi <= cache[0]
                 hi = mid;
             } else {
                 lo = mid;
@@ -130,7 +127,7 @@ pub fn pulses2bits(m: &CeltMode, band: usize, mut lm: i32, pulses: i32) -> i32 {
         return 0;
     }
     let cache = &m.cache.bits[cache_index as usize..];
-    // Safety: pulses is always a value returned by bits2pulses which is <= cache[0]
+
     unsafe { (*cache.as_ptr().add(pulses as usize) as i32) + 1 }
 }
 
@@ -224,10 +221,8 @@ pub fn clt_compute_allocation(
             if bitsj >= thresh[j] || done {
                 done = true;
                 psum += min(bitsj, cap[j]);
-            } else {
-                if bitsj >= (c << BITRES) {
-                    psum += c << BITRES;
-                }
+            } else if bitsj >= (c << BITRES) {
+                psum += c << BITRES;
             }
         }
         if psum > total {
@@ -277,9 +272,9 @@ pub fn clt_compute_allocation(
         start,
         end,
         skip_start,
-        &bits1,
-        &bits2,
-        &thresh,
+        bits1,
+        bits2,
+        thresh,
         cap,
         total,
         balance_out,
@@ -346,10 +341,8 @@ fn interp_bits2pulses(
             if tmp >= thresh[j] || done {
                 done = true;
                 psum += min(tmp, cap[j]);
-            } else {
-                if tmp >= alloc_floor {
-                    psum += alloc_floor;
-                }
+            } else if tmp >= alloc_floor {
+                psum += alloc_floor;
             }
         }
         if psum > total {
@@ -411,10 +404,8 @@ fn interp_bits2pulses(
                     break;
                 }
                 rc.encode_bit_logp(false, 1);
-            } else {
-                if rc.decode_bit_logp(1) {
-                    break;
-                }
+            } else if rc.decode_bit_logp(1) {
+                break;
             }
             psum += 1 << BITRES;
             band_bits -= 1 << BITRES;
@@ -517,14 +508,9 @@ fn interp_bits2pulses(
             }
 
             ebits[j] = max(0, bits[j] + offset + (den << (BITRES - 1)));
-            // Replace integer division by runtime `den` (idiv, ~20-90 cycle latency) with
-            // multiply-by-magic-number via static LUT. den ∈ [1, 353] for all Opus configs.
-            // magic = ceil(2^32/den); floor(n/den) = (n as u64 * magic as u64) >> 32.
-            // black_box on the LUT load prevents LLVM from recognizing the pattern as
-            // division and re-folding it back into idiv.
-            let num = ebits[j]; // >= 0 after max(0, ...)
-            // Safety: den = c*n + bonus, where c∈{1,2}, n∈[1,176], bonus∈{0,1} → den∈[1,353].
-            // DIV_MAGIC_LUT has 354 entries (indices 0..353).
+
+            let num = ebits[j];
+
             let magic =
                 std::hint::black_box(unsafe { *DIV_MAGIC_LUT.get_unchecked(den as usize) } as u64);
             ebits[j] = if den == 1 {

@@ -44,7 +44,7 @@ pub fn silk_decode_core(
 
     let s_ltp_q15_len = ps_dec.ltp_mem_length as usize + ps_dec.frame_length as usize;
     let s_ltp_len = ps_dec.ltp_mem_length as usize;
-    // Max: ltp_mem_length(320) + frame_length(320) = 640
+
     const MAX_S_LTP_Q15: usize = 640;
     const MAX_S_LTP: usize = 320;
     debug_assert!(s_ltp_q15_len <= MAX_S_LTP_Q15);
@@ -122,12 +122,10 @@ pub fn silk_decode_core(
                         s_ltp[ps_dec.ltp_mem_length as usize - i - 1] as i32,
                     );
                 }
-            } else {
-                if gain_adj_q16 != (1 << 16) {
-                    for i in 0..(lag + LTP_ORDER as i32 / 2) as usize {
-                        s_ltp_q15[s_ltp_buf_idx as usize - i - 1] =
-                            silk_smulww(gain_adj_q16, s_ltp_q15[s_ltp_buf_idx as usize - i - 1]);
-                    }
+            } else if gain_adj_q16 != (1 << 16) {
+                for i in 0..(lag + LTP_ORDER as i32 / 2) as usize {
+                    s_ltp_q15[s_ltp_buf_idx as usize - i - 1] =
+                        silk_smulww(gain_adj_q16, s_ltp_q15[s_ltp_buf_idx as usize - i - 1]);
                 }
             }
         }
@@ -170,9 +168,9 @@ pub fn silk_decode_core(
                 s_ltp_buf_idx += 1;
             }
         } else {
-            for i in 0..ps_dec.subfr_length as usize {
-                res_q14[i] = ps_dec.exc_q14[pexc_q14_idx + i];
-            }
+            res_q14[..(ps_dec.subfr_length as usize)].copy_from_slice(
+                &ps_dec.exc_q14[pexc_q14_idx..(ps_dec.subfr_length as usize + pexc_q14_idx)],
+            );
         }
 
         for i in 0..ps_dec.subfr_length as usize {

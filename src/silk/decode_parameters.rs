@@ -31,14 +31,12 @@ fn silk_decode_pitch(
                 crate::silk::tables::SILK_CB_LAGS_STAGE2_10_MS[k % 2]
                     [contour_index % PE_NB_CBKS_STAGE2_10MS] as i32
             }
+        } else if nb_subfr == PE_MAX_NB_SUBFR as i32 {
+            crate::silk::tables::SILK_CB_LAGS_STAGE3[k % 4][contour_index % PE_NB_CBKS_STAGE3_MAX]
+                as i32
         } else {
-            if nb_subfr == PE_MAX_NB_SUBFR as i32 {
-                crate::silk::tables::SILK_CB_LAGS_STAGE3[k % 4]
-                    [contour_index % PE_NB_CBKS_STAGE3_MAX] as i32
-            } else {
-                crate::silk::tables::SILK_CB_LAGS_STAGE3_10_MS[k % 2]
-                    [contour_index % PE_NB_CBKS_STAGE3_10MS] as i32
-            }
+            crate::silk::tables::SILK_CB_LAGS_STAGE3_10_MS[k % 2]
+                [contour_index % PE_NB_CBKS_STAGE3_10MS] as i32
         };
         pitch_l[k] = (lag + delta).max(min_lag).min(max_lag);
     }

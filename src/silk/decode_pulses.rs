@@ -19,8 +19,6 @@ fn silk_shell_decoder(pulses0: &mut [i16], ps_range_dec: &mut RangeCoder, pulses
     let mut pulses2: [i16; 4] = [0; 4];
     let mut pulses1: [i16; 8] = [0; 8];
 
-    debug_assert!(SHELL_CODEC_FRAME_LENGTH == 16);
-
     let (p3_0, p3_1) = decode_split(ps_range_dec, pulses4, &SILK_SHELL_CODE_TABLE3);
     pulses3[0] = p3_0;
     pulses3[1] = p3_1;
@@ -137,19 +135,17 @@ pub fn silk_decode_pulses(
     let cdf_ptr = &SILK_PULSES_PER_BLOCK_ICDF[rate_level_index];
     for i in 0..iter {
         n_lshifts[i] = 0;
-        sum_pulses[i] = ps_range_dec.decode_icdf(cdf_ptr, 8) as i32;
+        sum_pulses[i] = ps_range_dec.decode_icdf(cdf_ptr, 8);
 
         while sum_pulses[i] == (SILK_MAX_PULSES as i32 + 1) {
             n_lshifts[i] += 1;
 
             if n_lshifts[i] == 10 {
                 sum_pulses[i] = ps_range_dec
-                    .decode_icdf(&SILK_PULSES_PER_BLOCK_ICDF[N_RATE_LEVELS - 1][1..], 8)
-                    as i32;
+                    .decode_icdf(&SILK_PULSES_PER_BLOCK_ICDF[N_RATE_LEVELS - 1][1..], 8);
             } else {
-                sum_pulses[i] = ps_range_dec
-                    .decode_icdf(&SILK_PULSES_PER_BLOCK_ICDF[N_RATE_LEVELS - 1], 8)
-                    as i32;
+                sum_pulses[i] =
+                    ps_range_dec.decode_icdf(&SILK_PULSES_PER_BLOCK_ICDF[N_RATE_LEVELS - 1], 8);
             }
         }
     }
@@ -193,5 +189,4 @@ pub fn silk_decode_pulses(
 }
 
 const LOG2_SHELL_CODEC_FRAME_LENGTH: usize = 4;
-const MAX_NB_SHELL_BLOCKS: usize =
-    (MAX_FRAME_LENGTH + SHELL_CODEC_FRAME_LENGTH - 1) / SHELL_CODEC_FRAME_LENGTH;
+const MAX_NB_SHELL_BLOCKS: usize = MAX_FRAME_LENGTH.div_ceil(SHELL_CODEC_FRAME_LENGTH);

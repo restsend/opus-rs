@@ -1,16 +1,12 @@
 use crate::silk::macros::*;
 
-// Coefficients for the reference 1:3 FIR downsampler (48kHz → 16kHz).
-// Format: [AR2_coef_0 (Q14), AR2_coef_1 (Q14), FIR_coef_0..FIR_coef_17 (Q14)]
-// 36-tap symmetric FIR (RESAMPLER_DOWN_ORDER_FIR2=36).
 pub const SILK_RESAMPLER_1_3_COEFS: [i16; 20] = [
     16102, -15162, -13, 0, 20, 26, 5, -31, -43, -4, 65, 90, 7, -157, -248, -44, 593, 1583, 2612,
     3271,
 ];
 const RESAMPLER_DOWN_ORDER_FIR2: usize = 36;
-const RESAMPLER_DOWN_BATCH_48K: usize = 480; // 10ms at 48kHz
+const RESAMPLER_DOWN_BATCH_48K: usize = 480;
 
-/// State for the reference 48kHz → 16kHz downsampler (AR2 + FIR).
 #[derive(Clone)]
 pub struct SilkResamplerDown1_3 {
     pub ar2: [i32; 2],
@@ -26,9 +22,6 @@ impl Default for SilkResamplerDown1_3 {
     }
 }
 
-/// Downsample 48kHz input to 16kHz output (3:1 ratio) using the reference
-/// AR2 + symmetric-FIR method from silk_resampler_private_down_FIR.
-/// `input` must contain exactly 3× as many samples as `output`.
 pub fn silk_resampler_down_1_3(
     state: &mut SilkResamplerDown1_3,
     output: &mut [i16],
@@ -46,11 +39,9 @@ pub fn silk_resampler_down_1_3(
     while in_pos < total_in {
         let n = (total_in - in_pos).min(RESAMPLER_DOWN_BATCH_48K);
 
-        // Stack buffer: [FIR history (36) | AR2-filtered current batch (n)]
         let mut buf = [0i32; BUF_SIZE];
         buf[..RESAMPLER_DOWN_ORDER_FIR2].copy_from_slice(&state.fir);
 
-        // AR2 filter: produce n Q8 samples into buf[36..36+n]
         let buf_out = &mut buf[RESAMPLER_DOWN_ORDER_FIR2..RESAMPLER_DOWN_ORDER_FIR2 + n];
         for k in 0..n {
             let out32 = state.ar2[0].wrapping_add((input[in_pos + k] as i32) << 8);
@@ -60,14 +51,11 @@ pub fn silk_resampler_down_1_3(
             state.ar2[1] = silk_smulwb(out_q10, a1 as i32);
         }
 
-        // FIR symmetric decimation: 3:1, produce n/3 output samples
-        // Optimized: load coefficient once per output sample, pre-compute symmetric pairs
         let n_out = n / 3;
         for j in 0..n_out {
             let bp = j * 3;
             let mut res_q6 = 0i32;
 
-            // Unroll inner loop for better ILP: process 2 pairs at a time
             let mut i = 0;
             while i < 18 {
                 let coef0 = fir_coefs[i] as i32;
@@ -88,7 +76,6 @@ pub fn silk_resampler_down_1_3(
             }
         }
 
-        // Update FIR history: save last 36 input AR2-samples
         state
             .fir
             .copy_from_slice(&buf[n..n + RESAMPLER_DOWN_ORDER_FIR2]);
@@ -97,36 +84,19 @@ pub fn silk_resampler_down_1_3(
     }
 }
 
-/// State for the two-stage 48kHz → 8kHz downsampler.
-/// Stage 1: AR2+FIR 3:1 (48→16kHz), Stage 2: IIR 2:1 (16→8kHz).
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct SilkResamplerDown1_6 {
     pub stage1: SilkResamplerDown1_3,
     pub stage2: [i32; 2],
 }
 
-impl Default for SilkResamplerDown1_6 {
-    fn default() -> Self {
-        Self {
-            stage1: SilkResamplerDown1_3::default(),
-            stage2: [0; 2],
-        }
-    }
-}
-
-/// Downsample 48kHz input to 8kHz output (6:1 ratio).
-/// `input` must contain exactly 6× as many samples as `output`.
-/// Processes in batches of 480 input samples (10ms) using a fixed stack buffer —
-/// no heap allocation. Two-stage cascade (3:1 then 2:1) is more efficient than a
-/// single 6:1 stage because the second stage operates on 1/3 of the samples.
 pub fn silk_resampler_down_1_6(
     state: &mut SilkResamplerDown1_6,
     output: &mut [i16],
     input: &[i16],
 ) {
-    // Intermediate batch: 480 input → 160 at 16kHz → 80 at 8kHz (per batch)
-    const BATCH_IN: usize = RESAMPLER_DOWN_BATCH_48K; // 480
-    const BATCH_MID: usize = BATCH_IN / 3; // 160
+    const BATCH_IN: usize = RESAMPLER_DOWN_BATCH_48K;
+    const BATCH_MID: usize = BATCH_IN / 3;
 
     let mut in_pos = 0usize;
     let mut out_pos = 0usize;
@@ -336,15 +306,11 @@ impl SilkResampler {
         rest: &[i16],
         rest_len: i32,
     ) {
-        // Process input in batches to avoid large buffer allocations
-        // Max batch_size = 48kHz * 10ms = 480, and we 2x upsample in the process
-        // So we need buffers that can handle 2 * batch_size + FIR_ORDER
         const MAX_BATCH_IN: usize = 480;
-        const MAX_BUF: usize = 2 * MAX_BATCH_IN + RESAMPLER_ORDER_FIR_12; // 968
+        const MAX_BUF: usize = 2 * MAX_BATCH_IN + RESAMPLER_ORDER_FIR_12;
 
         let mut out_idx = 0usize;
 
-        // Process first_block
         let mut in_idx = 0usize;
         let mut remaining = first_len;
 
@@ -426,7 +392,6 @@ impl SilkResampler {
                 .copy_from_slice(&buf[2 * n_samples_in..2 * n_samples_in + RESAMPLER_ORDER_FIR_12]);
         }
 
-        // Process rest
         let mut in_idx = 0usize;
         let mut remaining = rest_len;
 
@@ -561,14 +526,14 @@ pub fn silk_resampler_down2(s: &mut [i32], out: &mut [i16], input: &[i16], in_le
         in32 = (input[2 * k] as i32) << 10;
 
         y = in32.wrapping_sub(s[0]);
-        x = silk_smlawb(y, y, SILK_RESAMPLER_DOWN2_1 as i32);
+        x = silk_smlawb(y, y, SILK_RESAMPLER_DOWN2_1);
         out32 = s[0].wrapping_add(x);
         s[0] = in32.wrapping_add(x);
 
         in32 = (input[2 * k + 1] as i32) << 10;
 
         y = in32.wrapping_sub(s[1]);
-        x = silk_smulwb(y, SILK_RESAMPLER_DOWN2_0 as i32);
+        x = silk_smulwb(y, SILK_RESAMPLER_DOWN2_0);
         out32 = out32.wrapping_add(s[1]);
         out32 = out32.wrapping_add(x);
         s[1] = in32.wrapping_add(x);
@@ -638,7 +603,6 @@ pub fn silk_resampler_down2_3(s: &mut [i32], out: &mut [i16], input: &[i16], in_
                 SILK_RESAMPLER_2_3_COEFS_LQ[4] as i32,
             );
 
-            // Output with gain compensation (shift 9 to reduce gain to ~1.0x)
             out[out_idx] = silk_sat16(silk_rshift_round(res_q6, 9)) as i16;
             out_idx += 1;
 
@@ -659,7 +623,6 @@ pub fn silk_resampler_down2_3(s: &mut [i32], out: &mut [i16], input: &[i16], in_
                 SILK_RESAMPLER_2_3_COEFS_LQ[2] as i32,
             );
 
-            // Output with gain compensation (shift 8 instead of 6)
             out[out_idx] = silk_sat16(silk_rshift_round(res_q6, 8)) as i16;
             out_idx += 1;
 

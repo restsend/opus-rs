@@ -7,45 +7,25 @@ pub const EC_CODE_BOT: u32 = EC_CODE_TOP >> EC_SYM_BITS;
 pub const EC_CODE_EXTRA: u32 = (EC_CODE_BITS - 2) % EC_SYM_BITS + 1;
 pub const BITRES: i32 = 3;
 
-/// Small divisor table for fast unsigned division (matches C opus SMALL_DIV_TABLE).
-/// Table entry i = floor(2^32 / (2*i+1)) for i >= 1, used for fast division by odd numbers.
 const SMALL_DIV_TABLE: [u32; 128] = [
-    0xFFFFFFFF, 0x55555555, 0x33333333, 0x24924924,
-    0x1C71C71C, 0x1745D174, 0x13B13B13, 0x11111111,
-    0x0F0F0F0F, 0x0D79435E, 0x0C30C30C, 0x0B21642C,
-    0x0A3D70A3, 0x097B425E, 0x08D3DCB0, 0x08421084,
-    0x07C1F07C, 0x07507507, 0x06EB3E45, 0x06906906,
-    0x063E7063, 0x05F417D0, 0x05B05B05, 0x0572620A,
-    0x05397829, 0x05050505, 0x04D4873E, 0x04A7904A,
-    0x047DC11F, 0x0456C797, 0x04325C53, 0x04104104,
-    0x03F03F03, 0x03D22635, 0x03B5CC0E, 0x039B0AD1,
-    0x0381C0E0, 0x0369D036, 0x03531DEC, 0x033D91D2,
-    0x0329161F, 0x03159721, 0x03030303, 0x02F14990,
-    0x02E05C0B, 0x02D02D02, 0x02C0B02C, 0x02B1DA46,
-    0x02A3A0FD, 0x0295FAD4, 0x0288DF0C, 0x027C4597,
-    0x02702702, 0x02647C69, 0x02593F69, 0x024E6A17,
-    0x0243F6F0, 0x0239E0D5, 0x02302302, 0x0226B902,
-    0x021D9EAD, 0x0214D021, 0x020C49BA, 0x02040810,
-    0x01FC07F0, 0x01F44659, 0x01ECC07B, 0x01E573AC,
-    0x01DE5D6E, 0x01D77B65, 0x01D0CB58, 0x01CA4B30,
-    0x01C3F8F0, 0x01BDD2B8, 0x01B7D6C3, 0x01B20364,
-    0x01AC5701, 0x01A6D01A, 0x01A16D3F, 0x019C2D14,
-    0x01970E4F, 0x01920FB4, 0x018D3018, 0x01886E5F,
-    0x0183C977, 0x017F405F, 0x017AD220, 0x01767DCE,
-    0x01724287, 0x016E1F76, 0x016A13CD, 0x01661EC6,
-    0x01623FA7, 0x015E75BB, 0x015AC056, 0x01571ED3,
-    0x01539094, 0x01501501, 0x014CAB88, 0x0149539E,
-    0x01460CBC, 0x0142D662, 0x013FB013, 0x013C995A,
-    0x013991C2, 0x013698DF, 0x0133AE45, 0x0130D190,
-    0x012E025C, 0x012B404A, 0x01288B01, 0x0125E227,
-    0x01234567, 0x0120B470, 0x011E2EF3, 0x011BB4A4,
-    0x01194538, 0x0116E068, 0x011485F0, 0x0112358E,
-    0x010FEF01, 0x010DB20A, 0x010B7E6E, 0x010953F3,
-    0x01073260, 0x0105197F, 0x0103091B, 0x01010101,
+    0xFFFFFFFF, 0x55555555, 0x33333333, 0x24924924, 0x1C71C71C, 0x1745D174, 0x13B13B13, 0x11111111,
+    0x0F0F0F0F, 0x0D79435E, 0x0C30C30C, 0x0B21642C, 0x0A3D70A3, 0x097B425E, 0x08D3DCB0, 0x08421084,
+    0x07C1F07C, 0x07507507, 0x06EB3E45, 0x06906906, 0x063E7063, 0x05F417D0, 0x05B05B05, 0x0572620A,
+    0x05397829, 0x05050505, 0x04D4873E, 0x04A7904A, 0x047DC11F, 0x0456C797, 0x04325C53, 0x04104104,
+    0x03F03F03, 0x03D22635, 0x03B5CC0E, 0x039B0AD1, 0x0381C0E0, 0x0369D036, 0x03531DEC, 0x033D91D2,
+    0x0329161F, 0x03159721, 0x03030303, 0x02F14990, 0x02E05C0B, 0x02D02D02, 0x02C0B02C, 0x02B1DA46,
+    0x02A3A0FD, 0x0295FAD4, 0x0288DF0C, 0x027C4597, 0x02702702, 0x02647C69, 0x02593F69, 0x024E6A17,
+    0x0243F6F0, 0x0239E0D5, 0x02302302, 0x0226B902, 0x021D9EAD, 0x0214D021, 0x020C49BA, 0x02040810,
+    0x01FC07F0, 0x01F44659, 0x01ECC07B, 0x01E573AC, 0x01DE5D6E, 0x01D77B65, 0x01D0CB58, 0x01CA4B30,
+    0x01C3F8F0, 0x01BDD2B8, 0x01B7D6C3, 0x01B20364, 0x01AC5701, 0x01A6D01A, 0x01A16D3F, 0x019C2D14,
+    0x01970E4F, 0x01920FB4, 0x018D3018, 0x01886E5F, 0x0183C977, 0x017F405F, 0x017AD220, 0x01767DCE,
+    0x01724287, 0x016E1F76, 0x016A13CD, 0x01661EC6, 0x01623FA7, 0x015E75BB, 0x015AC056, 0x01571ED3,
+    0x01539094, 0x01501501, 0x014CAB88, 0x0149539E, 0x01460CBC, 0x0142D662, 0x013FB013, 0x013C995A,
+    0x013991C2, 0x013698DF, 0x0133AE45, 0x0130D190, 0x012E025C, 0x012B404A, 0x01288B01, 0x0125E227,
+    0x01234567, 0x0120B470, 0x011E2EF3, 0x011BB4A4, 0x01194538, 0x0116E068, 0x011485F0, 0x0112358E,
+    0x010FEF01, 0x010DB20A, 0x010B7E6E, 0x010953F3, 0x01073260, 0x0105197F, 0x0103091B, 0x01010101,
 ];
 
-/// Inline macro for tell_frac computation to avoid function call overhead.
-/// This should be used in hot loops where tell_frac is called frequently.
 #[macro_export]
 macro_rules! tell_frac_inline {
     ($rc:expr) => {{
@@ -54,8 +34,7 @@ macro_rules! tell_frac_inline {
         let l = 32 - $rc.rng.leading_zeros() as i32;
         let r = $rc.rng >> (l - 16);
         let b = (r >> 12).wrapping_sub(8);
-        // SAFETY: b is always in 0..8 because r is rng normalized to 16 bits,
-        // so r >> 12 is in 8..15, and b = (r>>12) - 8 is in 0..7.
+
         let correction = unsafe { *CORRECTION.get_unchecked(b as usize) };
         let b = b + (r > correction) as u32;
         nbits - (l << 3) - b as i32
@@ -80,12 +59,7 @@ pub struct RangeCoder {
 
 impl RangeCoder {
     pub fn new_encoder(size: u32) -> Self {
-        // Avoid zero-initialization: allocate without initializing.
-        // The encoder writes bytes sequentially and tracks position via offs/end_offs.
-        let mut buf = Vec::with_capacity(size as usize);
-        unsafe {
-            buf.set_len(size as usize);
-        }
+        let buf = vec![0u8; size as usize];
         RangeCoder {
             buf,
             storage: size,
@@ -102,8 +76,6 @@ impl RangeCoder {
         }
     }
 
-    /// Reset encoder state for reuse with a (possibly different) buffer size.
-    /// Reuses the existing allocation if it's large enough, avoiding per-frame heap allocation.
     #[inline]
     pub fn reset_for_encode(&mut self, size: u32) {
         if self.buf.len() < size as usize {
@@ -146,14 +118,17 @@ impl RangeCoder {
         };
 
         rc.rem = rc.read_byte() as i32;
-        rc.val = rc.rng.wrapping_sub(1).wrapping_sub(rc.rem as u32 >> (EC_SYM_BITS - EC_CODE_EXTRA));
+        rc.val = rc
+            .rng
+            .wrapping_sub(1)
+            .wrapping_sub(rc.rem as u32 >> (EC_SYM_BITS - EC_CODE_EXTRA));
 
         rc.normalize_decoder();
         rc
     }
 
     #[inline(always)]
-	fn normalize_decoder(&mut self) {
+    fn normalize_decoder(&mut self) {
         let mut guard = 0u32;
         while self.rng <= EC_CODE_BOT {
             guard += 1;
@@ -169,8 +144,7 @@ impl RangeCoder {
             self.rem = self.read_byte() as i32;
 
             let combined_sym = ((sym << EC_SYM_BITS) | self.rem) >> (EC_SYM_BITS - EC_CODE_EXTRA);
-            self.val = (self.val << EC_SYM_BITS)
-                .wrapping_add(EC_SYM_MAX & !combined_sym as u32)
+            self.val = (self.val << EC_SYM_BITS).wrapping_add(EC_SYM_MAX & !combined_sym as u32)
                 & (EC_CODE_TOP - 1);
         }
     }
@@ -241,9 +215,6 @@ impl RangeCoder {
         self.nbits_total += bits as i32;
     }
 
-    /// Efficiently pad with zero bits up to a target bit count.
-    /// This is much faster than calling enc_bits(0, 1) in a loop because it
-    /// processes whole bytes at once.
     pub fn pad_to_bits(&mut self, target_bits: i32) {
         let remaining = target_bits - self.nbits_total;
         if remaining <= 0 {
@@ -251,23 +222,25 @@ impl RangeCoder {
         }
         let mut remaining = remaining as u32;
 
-        // First, fill the current partial byte
-        let partial = (EC_SYM_BITS as u32 - (self.nend_bits as u32 & (EC_SYM_BITS - 1))) & (EC_SYM_BITS - 1);
+        let partial =
+            (EC_SYM_BITS - (self.nend_bits as u32 & (EC_SYM_BITS - 1))) & (EC_SYM_BITS - 1);
         if partial > 0 && remaining >= partial {
             self.enc_bits(0, partial.min(remaining));
             remaining -= partial.min(remaining);
         }
 
-        // Write full zero bytes using bulk memset
         let full_bytes = remaining / EC_SYM_BITS;
         if full_bytes > 0 {
             let available = self.storage - self.offs - self.end_offs;
             let write_count = full_bytes.min(available);
             if write_count > 0 {
-                // Fill from the end of the buffer (backward), which is where end bits go
                 let start = (self.storage - self.end_offs - write_count) as usize;
                 unsafe {
-                    std::ptr::write_bytes(self.buf.as_mut_ptr().add(start), 0, write_count as usize);
+                    std::ptr::write_bytes(
+                        self.buf.as_mut_ptr().add(start),
+                        0,
+                        write_count as usize,
+                    );
                 }
                 self.end_offs += write_count;
             }
@@ -278,7 +251,6 @@ impl RangeCoder {
             remaining -= full_bytes * EC_SYM_BITS;
         }
 
-        // Write remaining bits (< 8)
         if remaining > 0 {
             self.enc_bits(0, remaining);
         }
@@ -312,11 +284,8 @@ impl RangeCoder {
         ret
     }
 
-    /// Compute the fractional number of bits used.
-    /// This is a hot path function - force inlining for performance.
     #[inline(always)]
     pub fn tell_frac(&self) -> i32 {
-        // CORRECTION table moved to static to reduce stack pressure
         static CORRECTION: [u32; 8] = [35733, 38967, 42495, 46340, 50535, 55109, 60097, 65535];
         let nbits = self.nbits_total << BITRES;
         let l = 32 - self.rng.leading_zeros() as i32;
@@ -328,7 +297,6 @@ impl RangeCoder {
 
     #[inline(always)]
     pub fn tell(&self) -> i32 {
-        // Inline tell_frac computation to avoid function call
         const CORRECTION: [u32; 8] = [35733, 38967, 42495, 46340, 50535, 55109, 60097, 65535];
         let nbits = self.nbits_total << BITRES;
         let l = 32 - self.rng.leading_zeros() as i32;
@@ -339,9 +307,6 @@ impl RangeCoder {
         (tell_frac + 7) >> 3
     }
 
-    /// Fast tell that only returns integer bits used (no fraction).
-    /// This is much faster than tell_frac() but less precise.
-    /// Use when only approximate bit position is needed.
     #[inline(always)]
     pub fn tell_fast(&self) -> i32 {
         self.nbits_total
@@ -368,7 +333,7 @@ impl RangeCoder {
             }
             if self.ext > 0 {
                 let sym = (EC_SYM_MAX as i32 + carry) & EC_SYM_MAX as i32;
-                // SAFETY: ext counts deferred bytes that must be written
+
                 let ext = self.ext as usize;
                 for _j in 0..ext {
                     self.write_byte(sym as u8);
@@ -381,18 +346,13 @@ impl RangeCoder {
         }
     }
 
-    /// Fast unsigned division using small divisor table (matches C opus celt_udiv).
-    /// For divisors <= 256, uses a multiply-high approach that's faster than hardware division.
-    /// Algorithm: factor d = 2^t * v where v is odd, then compute
-    /// q ≈ (SMALL_DIV_TABLE[(v-1)/2] * (n >> t)) >> 32 with correction.
     #[inline(always)]
     fn celt_udiv(n: u32, d: u32) -> u32 {
         if d <= 256 {
             let t = d.trailing_zeros();
             let v = d >> t;
             let idx = (v - 1) >> 1;
-            // SAFETY: d <= 256, v = d >> t (odd), idx = (v-1)/2.
-            // Max odd v for d<=256 is 255, idx = 127, which is < SMALL_DIV_TABLE.len()=128.
+
             let table_val = unsafe { *SMALL_DIV_TABLE.get_unchecked(idx as usize) };
             let q = ((table_val as u64 * (n >> t) as u64) >> 32) as u32;
             return q + (n.wrapping_sub(q.wrapping_mul(d)) >= d) as u32;
@@ -400,13 +360,14 @@ impl RangeCoder {
         n / d
     }
 
-    /// All arithmetic on `val` uses wrapping_* to match C opus unsigned 32-bit behavior.
     #[inline(always)]
     pub fn encode(&mut self, fl: u32, fh: u32, ft: u32) {
         debug_assert!(ft > 0, "encode: ft must be > 0");
         let r = Self::celt_udiv(self.rng, ft);
         if fl > 0 {
-            self.val = self.val.wrapping_add(self.rng.wrapping_sub(r.wrapping_mul(ft.wrapping_sub(fl))));
+            self.val = self
+                .val
+                .wrapping_add(self.rng.wrapping_sub(r.wrapping_mul(ft.wrapping_sub(fl))));
             self.rng = r.wrapping_mul(fh.wrapping_sub(fl));
         } else {
             self.rng = self.rng.wrapping_sub(r.wrapping_mul(ft.wrapping_sub(fh)));
@@ -417,12 +378,10 @@ impl RangeCoder {
     #[inline(always)]
     fn normalize_encoder(&mut self) {
         while self.rng <= EC_CODE_BOT {
-            // Inline carry_out + write_byte to avoid function call overhead in hot loop
             let c = (self.val >> EC_CODE_SHIFT) as i32;
             if c != EC_SYM_MAX as i32 {
                 let carry = c >> EC_SYM_BITS;
                 if self.rem >= 0 {
-                    // Inline write_byte
                     if self.offs + self.end_offs < self.storage {
                         unsafe {
                             *self.buf.get_unchecked_mut(self.offs as usize) =
@@ -476,7 +435,9 @@ impl RangeCoder {
         let r = self.rng >> ftb;
         if s > 0 {
             let val = unsafe { *icdf.get_unchecked((s - 1) as usize) as u32 };
-            self.val = self.val.wrapping_add(self.rng.wrapping_sub(r.wrapping_mul(val)));
+            self.val = self
+                .val
+                .wrapping_add(self.rng.wrapping_sub(r.wrapping_mul(val)));
             let lower = unsafe { *icdf.get_unchecked(s as usize) };
             self.rng = r.wrapping_mul(val.wrapping_sub(lower as u32));
         } else {
@@ -500,8 +461,6 @@ impl RangeCoder {
         ret
     }
 
-    /// Decode a symbol using an inverse CDF table.
-    /// Uses do-while pattern like C opus for better performance.
     #[inline(always)]
     pub fn decode_icdf(&mut self, icdf: &[u8], ftb: u32) -> i32 {
         let mut s = self.rng;
@@ -510,8 +469,6 @@ impl RangeCoder {
         let mut ret = 0;
         let mut t;
 
-        // Do-while loop: at least one iteration is guaranteed
-        // This matches C opus behavior and is faster for typical small icdf tables
         loop {
             t = s;
             s = r.wrapping_mul(icdf[ret] as u32);
@@ -750,23 +707,14 @@ mod tests {
         assert_eq!(s2, 2);
     }
 
-    /// encode_icdf 的最后一个符号（s == icdf.len() - 1）之前会 panic（index OOB），
-    /// 修复后应当正确编解码为最后一个符号索引。
     #[test]
     fn test_icdf_last_symbol_no_oob() {
-        // ftb=8 → 总频率 256
-        // 3 个符号，每个频率约 85，均不为 0
-        // icdf 语义：icdf[i] = (总频率 - 前 i+1 个符号的累积频率)
-        // symbol 0: 256 - 86 = 170  → icdf[0] = 170
-        // symbol 1: 170 - 85 = 85   → icdf[1] = 85
-        // symbol 2: 85  - 85 = 0    → icdf[2] = 0  (最后必须为 0)
         let icdf: &[u8] = &[170, 85, 0];
         let ftb = 8u32;
 
-        // 对每个符号做一次 encode → done → decode，验证无 panic 且往返正确
         for sym in 0..3i32 {
             let mut enc = RangeCoder::new_encoder(256);
-            enc.encode_icdf(sym, icdf, ftb); // sym==2 之前会 OOB panic
+            enc.encode_icdf(sym, icdf, ftb);
             enc.done();
             let data = enc.buf[..enc.offs as usize].to_vec();
 
@@ -776,12 +724,8 @@ mod tests {
         }
     }
 
-    /// decode_icdf 在 icdf 末尾不为 0 时会死循环/OOB；
-    /// 用标准（末尾为 0）的表验证解码器正常终止。
     #[test]
     fn test_icdf_decode_terminates() {
-        // 使用真实 Opus 风格的 ICDF 表（末尾必须为 0）
-        // ftb=8，总频率=256；四个等概率符号各占 64
         let icdf: &[u8] = &[192, 128, 64, 0];
         let ftb = 8u32;
 

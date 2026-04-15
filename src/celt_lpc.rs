@@ -41,7 +41,6 @@ pub fn autocorr(
     lag: usize,
     n: usize,
 ) {
-    // Avoid heap allocation when no window is applied
     let xx_vec;
     let xx: &[f32] = if let Some(win) = window {
         if x.len() < n {
@@ -115,15 +114,12 @@ pub fn celt_iir(x: &[f32], den: &[f32], y: &mut [f32], n: usize, ord: usize, mem
     }
 }
 
-/// NEON-accelerated FIR filter for aarch64.
-/// y[i] = x[i] + sum(num[j] * x[i-j-1])
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn celt_fir_neon(x: &[f32], num: &[f32], y: &mut [f32], n: usize, ord: usize) {
     use std::arch::aarch64::*;
 
-    // For small orders, use scalar code
     if ord < 4 {
         for i in 0..n {
             let mut sum = x[i];
@@ -137,11 +133,9 @@ unsafe fn celt_fir_neon(x: &[f32], num: &[f32], y: &mut [f32], n: usize, ord: us
         return;
     }
 
-    // Process each output sample
     for i in 0..n {
         let mut sum = vdupq_n_f32(x[i]);
 
-        // Process filter coefficients in chunks of 4
         let mut j = 0;
         while j + 4 <= ord && i > j + 3 {
             let coeff = vld1q_f32(num.as_ptr().add(j));
@@ -152,13 +146,11 @@ unsafe fn celt_fir_neon(x: &[f32], num: &[f32], y: &mut [f32], n: usize, ord: us
             j += 4;
         }
 
-        // Horizontal sum
         let sum_low = vget_low_f32(sum);
         let sum_high = vget_high_f32(sum);
         let sum_pair = vadd_f32(sum_low, sum_high);
         let mut result = vget_lane_f32(sum_pair, 0) + vget_lane_f32(sum_pair, 1);
 
-        // Scalar tail
         while j < ord {
             if i > j {
                 result += num[j] * x[i - j - 1];
@@ -170,8 +162,6 @@ unsafe fn celt_fir_neon(x: &[f32], num: &[f32], y: &mut [f32], n: usize, ord: us
     }
 }
 
-/// NEON-accelerated IIR filter for aarch64.
-/// y[i] = x[i] - sum(den[j] * mem[j])
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -185,7 +175,6 @@ unsafe fn celt_iir_neon(
 ) {
     use std::arch::aarch64::*;
 
-    // For small orders, use scalar code
     if ord < 4 {
         for i in 0..n {
             let mut sum = x[i];
@@ -202,7 +191,6 @@ unsafe fn celt_iir_neon(
     }
 
     for i in 0..n {
-        // Compute feedback: sum(den[j] * mem[j])
         let mut feedback = vdupq_n_f32(0.0);
 
         let mut j = 0;
@@ -213,13 +201,11 @@ unsafe fn celt_iir_neon(
             j += 4;
         }
 
-        // Horizontal sum of feedback
         let fb_low = vget_low_f32(feedback);
         let fb_high = vget_high_f32(feedback);
         let fb_pair = vadd_f32(fb_low, fb_high);
         let mut fb_sum = vget_lane_f32(fb_pair, 0) + vget_lane_f32(fb_pair, 1);
 
-        // Scalar tail for feedback
         while j < ord {
             fb_sum += den[j] * mem[j];
             j += 1;
@@ -227,7 +213,6 @@ unsafe fn celt_iir_neon(
 
         let sum = x[i] - fb_sum;
 
-        // Update memory: shift and insert new value
         for j in (1..ord).rev() {
             mem[j] = mem[j - 1];
         }

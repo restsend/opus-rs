@@ -62,7 +62,7 @@ pub fn silk_find_pred_coefs_fix(
             &mut ps_enc_ctrl.ltp_red_cod_gain_q7,
             &xxltp_q17,
             &x_xltp_q17,
-            ps_enc.s_cmn.subfr_length as i32,
+            ps_enc.s_cmn.subfr_length,
             ps_enc.s_cmn.nb_subfr as usize,
             0,
         );
@@ -153,7 +153,6 @@ pub fn silk_process_gains_fix(
 ) {
     let ps_shape_st = &mut ps_enc.s_shape;
     let s_q15: i32;
-    let inv_max_sqr_val_q16: i32;
     let mut gain_q16: i32;
     let mut gain_squared_q16: i32;
     let mut res_nrg_part: i32;
@@ -174,7 +173,7 @@ pub fn silk_process_gains_fix(
         21627_i32,
     );
     let log2lin_val = silk_log2lin(log2lin_arg);
-    inv_max_sqr_val_q16 = silk_div32_16(log2lin_val, ps_enc.s_cmn.subfr_length);
+    let inv_max_sqr_val_q16 = silk_div32_16(log2lin_val, ps_enc.s_cmn.subfr_length);
 
     for k in 0..ps_enc.s_cmn.nb_subfr as usize {
         let res_nrg = ps_enc_ctrl.res_nrg[k];

@@ -23,7 +23,6 @@ pub fn silk_nsq(
 ) {
     let mut lag: usize;
     let mut start_idx: usize;
-    let lsf_interpolation_flag: i32;
     let mut a_q12: &[i16];
     let mut b_q14: &[i16];
     let mut ar_shp_q13: &[i16];
@@ -38,14 +37,14 @@ pub fn silk_nsq(
 
     lag = nsq.lag_prev as usize;
 
-    if ps_indices.nlsf_interp_coef_q2 == 4 {
-        lsf_interpolation_flag = 0;
+    let lsf_interpolation_flag: i32 = if ps_indices.nlsf_interp_coef_q2 == 4 {
+        0
     } else {
-        lsf_interpolation_flag = 1;
-    }
+        1
+    };
 
-    nsq.s_ltp_shp_buf_idx = ps_enc_c.ltp_mem_length as i32;
-    nsq.s_ltp_buf_idx = ps_enc_c.ltp_mem_length as i32;
+    nsq.s_ltp_shp_buf_idx = ps_enc_c.ltp_mem_length;
+    nsq.s_ltp_buf_idx = ps_enc_c.ltp_mem_length;
 
     let pxq_idx = ps_enc_c.ltp_mem_length as usize;
 
@@ -76,7 +75,7 @@ pub fn silk_nsq(
                     0,
                 );
                 nsq.rewhite_flag = 1;
-                nsq.s_ltp_buf_idx = ps_enc_c.ltp_mem_length as i32;
+                nsq.s_ltp_buf_idx = ps_enc_c.ltp_mem_length;
             }
         }
 
@@ -183,7 +182,7 @@ pub fn silk_nsq_scale_states(
             nsq.s_ltp_shp_q14[i] = silk_smulww(gain_adj_q16, nsq.s_ltp_shp_q14[i]);
         }
 
-        if signal_type == TYPE_VOICED as i32 && nsq.rewhite_flag == 0 {
+        if signal_type == TYPE_VOICED && nsq.rewhite_flag == 0 {
             let ltp_start = (nsq.s_ltp_buf_idx as usize)
                 .wrapping_sub(lag)
                 .wrapping_sub(LTP_ORDER / 2);
@@ -245,7 +244,6 @@ fn silk_nsq_noise_shape_feedback_loop(
     }
 }
 
-/// Fully unrolled noise shape feedback loop for order=12 (cx0 shaping_lpc_order).
 #[inline(always)]
 fn silk_nsq_noise_shape_feedback_loop_order12(
     data0_val: i32,
@@ -253,11 +251,6 @@ fn silk_nsq_noise_shape_feedback_loop_order12(
     coef: &[i16],
 ) -> i32 {
     unsafe {
-        // Shift data1 delay line and compute dot product simultaneously.
-        // Entry: data1[0..11] = old state, data0_val = newest sample
-        // Exit:  data1 = [data0_val, old[0], old[1], ..., old[10]]
-        // out = 6 + sum(data[k] * coef[k]) for k=0..11, data[0]=data0_val, data[k]=old[k-1]
-
         let d0 = data0_val;
         let d1 = *data1.get_unchecked(0);
         let d2 = *data1.get_unchecked(1);
@@ -330,7 +323,7 @@ fn silk_noise_shape_quantizer(
     let shp_lag_base = (nsq.s_ltp_shp_buf_idx as usize).wrapping_sub(lag) + HARM_SHAPE_FIR_TAPS / 2;
     let pred_lag_base = (nsq.s_ltp_buf_idx as usize).wrapping_sub(lag) + LTP_ORDER / 2;
 
-    if signal_type == TYPE_VOICED as i32 {
+    if signal_type == TYPE_VOICED {
         silk_noise_shape_quantizer_voiced(
             nsq,
             x_sc_q10,

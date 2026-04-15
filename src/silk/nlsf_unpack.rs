@@ -13,16 +13,11 @@ pub fn silk_nlsf_unpack(
 
     for i in (0..order).step_by(2) {
         let entry = ec_sel_ptr[i / 2];
-        ec_ix[i] = silk_smulbb(
-            ((entry >> 1) & 7) as i32,
-            (2 * NLSF_QUANT_MAX_AMPLITUDE + 1) as i32,
-        ) as i16;
+        ec_ix[i] = silk_smulbb(((entry >> 1) & 7) as i32, 2 * NLSF_QUANT_MAX_AMPLITUDE + 1) as i16;
         pred_q8[i] = ps_nlsf_cb.pred_q8[i + ((entry & 1) as usize) * (order - 1)];
 
-        ec_ix[i + 1] = silk_smulbb(
-            ((entry >> 5) & 7) as i32,
-            (2 * NLSF_QUANT_MAX_AMPLITUDE + 1) as i32,
-        ) as i16;
+        ec_ix[i + 1] =
+            silk_smulbb(((entry >> 5) & 7) as i32, 2 * NLSF_QUANT_MAX_AMPLITUDE + 1) as i16;
         pred_q8[i + 1] = ps_nlsf_cb.pred_q8[i + (((entry >> 4) & 1) as usize) * (order - 1) + 1];
     }
 }

@@ -1,6 +1,6 @@
 use crate::silk::define::*;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct SilkStereoState {
     pub s_mid: [i16; 2],
 
@@ -9,17 +9,6 @@ pub struct SilkStereoState {
     pub left: i16,
 
     pub side: Vec<i16>,
-}
-
-impl Default for SilkStereoState {
-    fn default() -> Self {
-        Self {
-            s_mid: [0; 2],
-            s_side: [0; 2],
-            left: 0,
-            side: Vec::new(),
-        }
-    }
 }
 
 #[derive(Clone, Copy)]

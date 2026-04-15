@@ -306,7 +306,7 @@ pub fn silk_nlsf2a(a_q12: &mut [i16], nlsf: &[i16], d: usize) {
         let cos_val = SILK_LSF_COS_TAB_FIX_Q12[f_int] as i32;
         let delta = SILK_LSF_COS_TAB_FIX_Q12[f_int + 1] as i32 - cos_val;
         cos_lsf_qa[ordering[k] as usize] =
-            silk_rshift_round((cos_val << 8) + (delta as i32 * f_frac as i32), 20 - 16);
+            silk_rshift_round((cos_val << 8) + (delta * f_frac as i32), 20 - 16);
     }
 
     let dd = d >> 1;
@@ -369,7 +369,6 @@ pub fn silk_process_nlsfs(
     ps_enc_ctrl: &mut SilkEncoderControl,
     nlsf_q15: &mut [i16],
 ) {
-    let do_interp: i32;
     let mut nlsf_interp_q15 = [0i16; MAX_LPC_ORDER];
     let mut p_cb = &SILK_NLSF_CB_WB;
     if ps_enc.s_cmn.fs_khz == 8 || ps_enc.s_cmn.fs_khz == 12 {
@@ -391,7 +390,7 @@ pub fn silk_process_nlsfs(
     let mut w_q5 = [0i16; MAX_LPC_ORDER];
     silk_nlsf_vq_weights_laroia(&mut w_q5, nlsf_q15, order);
 
-    do_interp = (use_interp && interp_coef_q2 < 4) as i32;
+    let do_interp: i32 = (use_interp && interp_coef_q2 < 4) as i32;
     if do_interp != 0 {
         let prev_nlsf_q15 = ps_enc.s_cmn.prev_nlsf_q15;
         for i in 0..order {

@@ -1,15 +1,6 @@
 use crate::range_coder::RangeCoder;
 use std::mem::MaybeUninit;
 
-// CELT_PVQ_U_DATA: precomputed U(N,K) table, indexed as DATA[ROW_OFFSETS[min(N,K)] + max(N,K)].
-// Equivalent to C's non-CWRS_EXTRA_ROWS CELT_PVQ_U_DATA (1272 elements).
-// Row offsets: {0,176,351,525,698,870,1041,1131,1178,1207,1226,1240,1248,1254,1257}
-// Row r stores U(r, K) for K = r..max_K; access via DATA[OFFSETS[r] + K].
-// CELT_PVQ_U_DATA: precomputed U(N,K) table.
-// Access: CELT_PVQ_U(n,k) = DATA[CELT_PVQ_U_ROW[min(n,k)] + max(n,k)].
-// Ported from C opus (non-CWRS_EXTRA_ROWS, 1272 elements).
-// Row offsets: {0,176,351,525,698,870,1041,1131,1178,1207,1226,1240,1248,1254,1257}
-// Row r stores U(r, K) for K=r..max: DATA[OFFSETS[r]+K] = U(r, K).
 pub const CELT_PVQ_U_DATA: [u32; 1272] = [
     1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -104,20 +95,15 @@ pub const CELT_PVQ_U_DATA: [u32; 1272] = [
     921406335, 1759885185, 3248227095, 251595969, 579168825, 1267854873, 2653649025, 1409933619,
 ];
 
-// Row offsets into CELT_PVQ_U_DATA. Row r starts at CELT_PVQ_U_ROW[r].
-// CELT_PVQ_U(n, k) = CELT_PVQ_U_DATA[CELT_PVQ_U_ROW[min(n,k)] + max(n,k)]
 const CELT_PVQ_U_ROW: [u32; 15] = [
     0, 176, 351, 525, 698, 870, 1041, 1131, 1178, 1207, 1226, 1240, 1248, 1254, 1257,
 ];
 
-/// O(1) table lookup for U(n,k) = U(k,n).
-/// Fast path: valid for all (n,k) where min(n,k) <= 14 (covers most CELT use).
-/// Falls back to compute_u() for out-of-range values.
 #[inline(always)]
 pub fn celt_pvq_u_lookup(n: u32, k: u32) -> u32 {
     let r = n.min(k) as usize;
     let c = n.max(k) as usize;
-    // Check bounds first — table has 15 rows (indices 0-14)
+
     if r >= CELT_PVQ_U_ROW.len() {
         return compute_u(n, k);
     }
@@ -156,8 +142,6 @@ pub fn ncwrs(n: u32, k: u32) -> u32 {
     u[k as usize].wrapping_add(u[k as usize + 1])
 }
 
-/// Compute U(n, k) directly using recurrence (no table).
-/// Used as fallback when table lookup is out of range.
 fn compute_u(n: u32, k: u32) -> u32 {
     if n == 0 {
         return if k == 0 { 1 } else { 0 };
@@ -179,13 +163,11 @@ fn compute_u(n: u32, k: u32) -> u32 {
     u[k as usize]
 }
 
-/// V(n, k) = U(n, k) + U(n, k+1): total PVQ codewords for band of size n with k pulses.
 #[inline(always)]
 pub fn celt_pvq_u(n: u32, k: u32) -> u32 {
     celt_pvq_u_lookup(n, k)
 }
 
-/// V(n, k) = U(n, k) + U(n, k+1).
 #[inline(always)]
 pub fn celt_pvq_v(n: u32, k: u32) -> u32 {
     celt_pvq_u_lookup(n, k).wrapping_add(celt_pvq_u_lookup(n, k + 1))
@@ -202,39 +184,31 @@ fn unext(u: &mut [u32], len: usize, mut u0: u32) {
     u[j - 1] = u0;
 }
 
-/// Encode a PVQ pulse vector y[0..n] into a codeword index.
-/// O(n) algorithm using precomputed U(n,k) table lookup.
-/// Ported from C opus non-SMALL_FOOTPRINT icwrs().
 #[inline(always)]
 pub fn icwrs(n: u32, _k: u32, y: &[i32]) -> u32 {
     if n == 1 {
-        // Special case: single dimension, codeword = sign bit
         return if y[0] < 0 { 1 } else { 0 };
     }
     debug_assert!(n >= 2, "icwrs: n must be >= 2");
     let mut j = (n - 1) as usize;
-    // Start with sign bit of last element
+
     let mut i: u32 = if y[j] < 0 { 1 } else { 0 };
-    let mut k = y[j].unsigned_abs() as u32;
-    // Process remaining elements (j = n-2 down to 0)
-    // n - j goes from 2 to n; use table: U(n-j, k)
+    let mut k = y[j].unsigned_abs();
+
     while j > 0 {
         j -= 1;
         let yj = y[j];
-        let m = (n - j as u32) as u32; // m = n - j, ranges 2..n
+        let m = n - j as u32;
         i = i.wrapping_add(celt_pvq_u_lookup(m, k));
-        k += yj.unsigned_abs() as u32;
-        // Branchless sign check: if yj < 0, add U(m, k+1)
-        let sign_mask = yj >> 31; // 0 or -1
+        k += yj.unsigned_abs();
+
+        let sign_mask = yj >> 31;
         let lookup = (sign_mask as u32) & celt_pvq_u_lookup(m, k + 1);
         i = i.wrapping_add(lookup);
     }
     i
 }
 
-/// Decode a PVQ codeword index i into pulse vector y[0..n].
-/// O(n) algorithm using precomputed U(n,k) table lookup.
-/// Ported from C opus non-SMALL_FOOTPRINT cwrsi().
 #[inline(always)]
 pub fn cwrsi(n: u32, k: u32, mut i: u32, y: &mut [i32]) {
     debug_assert!(k > 0, "cwrsi: k must be > 0");
@@ -246,15 +220,12 @@ pub fn cwrsi(n: u32, k: u32, mut i: u32, y: &mut [i32]) {
     }
 
     let mut curr_n = n;
-    // Use i32 for curr_k to match C opus signed arithmetic
+
     let mut curr_k = k as i32;
     let mut j = 0usize;
 
-    // Main loop: process dimensions n down to 3
     while curr_n > 2 {
         if curr_k >= curr_n as i32 {
-            // "Lots of pulses" case: curr_k >= curr_n.
-            // Row index = curr_n, which is guaranteed <= 14 here.
             let p_kp1 = celt_pvq_u_lookup(curr_n, (curr_k + 1) as u32);
             let s: i32 = if i >= p_kp1 {
                 i -= p_kp1;
@@ -266,7 +237,6 @@ pub fn cwrsi(n: u32, k: u32, mut i: u32, y: &mut [i32]) {
             let q = celt_pvq_u_lookup(curr_n, curr_n);
             let mut p;
             if q > i {
-                // Backtrack from curr_n downward
                 curr_k = curr_n as i32;
                 loop {
                     curr_k -= 1;
@@ -276,7 +246,6 @@ pub fn cwrsi(n: u32, k: u32, mut i: u32, y: &mut [i32]) {
                     }
                 }
             } else {
-                // Backtrack from curr_k downward
                 p = celt_pvq_u_lookup(curr_n, curr_k as u32);
                 while p > i && curr_k > 0 {
                     curr_k -= 1;
@@ -287,8 +256,6 @@ pub fn cwrsi(n: u32, k: u32, mut i: u32, y: &mut [i32]) {
             let val = k0 - curr_k;
             y[j] = (val + s) ^ s;
         } else {
-            // "Lots of dimensions" case: curr_k < curr_n.
-            // Row index = curr_k, which is < curr_n, so curr_k <= 14 if orig min(n,k)<=14.
             let p_k = celt_pvq_u_lookup(curr_k as u32, curr_n);
             let p_kp1 = celt_pvq_u_lookup((curr_k + 1) as u32, curr_n);
             if p_k <= i && i < p_kp1 {
@@ -305,7 +272,7 @@ pub fn cwrsi(n: u32, k: u32, mut i: u32, y: &mut [i32]) {
                 0
             };
             let k0 = curr_k;
-            // Backtrack curr_k downward
+
             let mut p;
             loop {
                 curr_k -= 1;
@@ -322,7 +289,6 @@ pub fn cwrsi(n: u32, k: u32, mut i: u32, y: &mut [i32]) {
         curr_n -= 1;
     }
 
-    // curr_n == 2: closed-form
     let p2 = (2u32).wrapping_mul(curr_k as u32).wrapping_add(1);
     let s2: i32 = if i >= p2 {
         i -= p2;
@@ -338,7 +304,6 @@ pub fn cwrsi(n: u32, k: u32, mut i: u32, y: &mut [i32]) {
     y[j] = ((k0 - curr_k) + s2) ^ s2;
     j += 1;
 
-    // curr_n == 1: last element
     let s1 = -(i as i32);
     y[j] = (curr_k + s1) ^ s1;
 }
@@ -367,20 +332,6 @@ pub fn decode_pulses(y: &mut [i32], n: u32, k: u32, rc: &mut RangeCoder) {
     cwrsi(n, k, fl, y);
 }
 
-/// PVQ search with C opus-style pre-search optimization.
-/// When K > N/2, we project onto the pyramid first to get a good initial
-/// distribution of pulses, then do greedy refinement.
-///
-/// Uses fast-select algorithm for better performance on large N.
-/// QEXT refine algorithm - directly compute pulse allocation without greedy search
-/// Based on C opus op_pvq_refine
-///
-/// Xn: normalized input (|X| / sum(|X|))
-/// iy: output pulse allocation
-/// iy0: initial pulse allocation (or None for first call)
-/// K: target pulse count
-/// up: upsampling factor for up_iy
-/// margin: allowed deviation from up*iy0
 #[allow(non_snake_case)]
 fn op_pvq_refine(
     Xn: &[f32],
@@ -391,18 +342,15 @@ fn op_pvq_refine(
     margin: i32,
     N: usize,
 ) -> bool {
-    // Fixed-point style computation: work with Q8 (multiply by 256)
     let K8 = (K as f32) * 256.0;
 
-    // Initial projection: iy[i] = floor(0.5 + K * Xn[i])
     let mut iysum = 0i32;
     for i in 0..N {
         let tmp = K8 * Xn[i];
-        iy[i] = (tmp + 128.0) as i32 >> 8; // floor(0.5 + tmp/256)
+        iy[i] = (tmp + 128.0) as i32 >> 8;
         iysum += iy[i];
     }
 
-    // Clamp to margin if iy0 provided
     if let Some(iy0_ref) = iy0 {
         for i in 0..N {
             let min_val = up * iy0_ref[i] - (margin - 1);
@@ -412,49 +360,36 @@ fn op_pvq_refine(
         iysum = iy.iter().sum();
     }
 
-    // Check if sum is way off - if so, fail and fall back to default
     if (iysum - K).abs() > 32 {
-        return true; // failed
+        return true;
     }
 
-    // Adjust to match K exactly
     let dir = if iysum < K { 1 } else { -1 };
     let mut remaining = (K - iysum).abs();
 
-    // rounding[i] = K*Xn[i] - iy[i]*256 (how much we rounded)
     let mut rounding: [f32; 32] = [0.0; 32];
     for i in 0..N {
         rounding[i] = K8 * Xn[i] - ((iy[i] as f32) * 256.0);
     }
 
-    // Adjust pulses to match K
     while remaining > 0 {
-        // Find position with max rounding in adjustment direction
         let mut best_i = 0;
         let mut best_round = if dir == 1 { -1e30f32 } else { 1e30f32 };
 
         for i in 0..N {
             let can_adjust = if dir == 1 {
-                // Can increase if within margin
-                iy0.map_or(true, |iy0_ref| {
-                    (iy[i] - up * iy0_ref[i]).abs() < (margin - 1)
-                })
+                iy0.is_none_or(|iy0_ref| (iy[i] - up * iy0_ref[i]).abs() < (margin - 1))
             } else {
-                // Can decrease if > 0 (or within margin constraints)
                 iy[i] != 0
-                    && iy0.map_or(true, |iy0_ref| {
-                        (iy[i] - up * iy0_ref[i]).abs() < (margin - 1)
-                    })
+                    && iy0.is_none_or(|iy0_ref| (iy[i] - up * iy0_ref[i]).abs() < (margin - 1))
             };
 
-            if can_adjust {
-                if dir == 1 && rounding[i] > best_round {
-                    best_round = rounding[i];
-                    best_i = i;
-                } else if dir == -1 && rounding[i] < best_round && iy[i] != 0 {
-                    best_round = rounding[i];
-                    best_i = i;
-                }
+            if can_adjust
+                && ((dir == 1 && rounding[i] > best_round)
+                    || (dir == -1 && rounding[i] < best_round && iy[i] != 0))
+            {
+                best_round = rounding[i];
+                best_i = i;
             }
         }
 
@@ -463,11 +398,9 @@ fn op_pvq_refine(
         remaining -= 1;
     }
 
-    false // success
+    false
 }
 
-/// QEXT mode PVQ search for N > 2 with extra_bits >= 2
-/// Skips greedy search, uses refine algorithm directly
 pub fn pvq_search_qext(
     x: &[f32],
     y: &mut [i32],
@@ -480,14 +413,12 @@ pub fn pvq_search_qext(
     debug_assert!(n <= 32);
     debug_assert!(extra_bits >= 2);
 
-    // Compute sum of absolute values and normalize
     let mut sum = 0.0f32;
     for i in 0..n {
         sum += x[i].abs();
     }
 
     if sum < 1e-15 {
-        // Fallback: put all pulses in first bin
         y[0] = k;
         up_y[0] = ((1 << extra_bits) - 1) * k;
         for i in 1..n {
@@ -499,7 +430,6 @@ pub fn pvq_search_qext(
         return (up_y[0] as f32) * (up_y[0] as f32);
     }
 
-    // Normalize X to Xn = |X| / sum
     #[allow(non_snake_case)]
     let mut Xn: [f32; 32] = [0.0; 32];
     let rcp_sum = 1.0 / sum;
@@ -507,16 +437,13 @@ pub fn pvq_search_qext(
         Xn[i] = x[i].abs() * rcp_sum;
     }
 
-    // First refine: get iy (base pulse allocation)
     let failed1 = op_pvq_refine(&Xn, y, None, k, 1, k + 1, n);
 
-    // Second refine: get up_y (upsampled pulse allocation)
     let up = (1 << extra_bits) - 1;
     let up_k = up * k;
     let margin = up;
     let failed2 = op_pvq_refine(&Xn, up_y, Some(y), up_k, up, margin, n);
 
-    // If failed, fall back to simple allocation
     if failed1 || failed2 {
         y[0] = k;
         up_y[0] = up_k;
@@ -526,18 +453,15 @@ pub fn pvq_search_qext(
         }
     }
 
-    // Compute refine = up_y - up * y
     for i in 0..n {
         refine[i] = up_y[i] - up * y[i];
     }
 
-    // Compute yy = sum of squares
     let mut yy = 0.0f32;
     for i in 0..n {
         yy += (up_y[i] as f32) * (up_y[i] as f32);
     }
 
-    // Restore signs
     for i in 0..n {
         if x[i] < 0.0 {
             y[i] = -y[i];
@@ -549,8 +473,6 @@ pub fn pvq_search_qext(
     yy
 }
 
-/// Fast path for N=2 PVQ search (closed-form solution)
-/// Based on C opus op_pvq_search_N2
 #[inline(always)]
 fn pvq_search_n2(x: &[f32], y: &mut [i32], k: i32) {
     debug_assert!(x.len() >= 2 && y.len() >= 2);
@@ -565,24 +487,15 @@ fn pvq_search_n2(x: &[f32], y: &mut [i32], k: i32) {
         return;
     }
 
-    // Direct projection: iy[0] = round(K * |x[0]| / sum)
     let rcp_sum = 1.0 / sum;
     let y0 = (k as f32 * abs_x0 * rcp_sum + 0.5).floor() as i32;
     let y0 = y0.clamp(0, k);
     let y1 = k - y0;
 
-    // Restore signs
     y[0] = if x[0] >= 0.0 { y0 } else { -y0 };
     y[1] = if x[1] >= 0.0 { y1 } else { -y1 };
 }
 
-/// Fast path for N=4 - SSE2 vectorized greedy PVQ search.
-///
-/// Scores all 4 candidates in parallel using rsqrt for rxy/sqrt(ryy), then finds
-/// argmax with scalar sequential scan (preserving strictly-greater-than tie-breaking:
-/// equal scores keep the lower index). y2f[0..4] and y[0..4] are kept in xmm
-/// registers across the loop to avoid the stack spill that LLVM produces for the
-/// scalar version when alg_quant's register pressure is high.
 #[inline]
 fn pvq_search_n4(x: &[f32], y: &mut [i32], k: i32) {
     debug_assert!(x.len() >= 4 && y.len() >= 4);
@@ -595,46 +508,37 @@ fn pvq_search_n4(x: &[f32], y: &mut [i32], k: i32) {
         return;
     }
 
-    // x86_64 SSE2 path: keep y2f and y in xmm registers.
     #[cfg(target_arch = "x86_64")]
     unsafe {
         use std::arch::x86_64::*;
 
-        // abs_x = [|x0|, |x1|, |x2|, |x3|]
         let sign_mask = _mm_castsi128_ps(_mm_set1_epi32(0x7FFF_FFFFu32 as i32));
         let vx = _mm_loadu_ps(x.as_ptr());
         let vabs = _mm_and_ps(vx, sign_mask);
 
-        // sign bits: -1 if x < 0, else 0  (i.e. 0 = positive, -1 = negative for XOR trick)
-        // We want s = (x < 0) as i32, which is 0 or 1.
-        // Use: movemask approach — or directly compute via comparison.
         let vzero_f = _mm_setzero_ps();
-        // mask = 0xFFFFFFFF where x < 0
+
         let vneg_mask = _mm_cmplt_ps(vx, vzero_f);
-        // s = 1 where x < 0, 0 otherwise (as i32)
+
         let vsigns = _mm_and_si128(_mm_castps_si128(vneg_mask), _mm_set1_epi32(1));
 
-        let vabs_x = vabs; // stays constant: [ax0, ax1, ax2, ax3]
-        let mut vy2f = _mm_setzero_ps(); // [y2f0, y2f1, y2f2, y2f3]
-        let mut vy = _mm_setzero_si128(); // [y0, y1, y2, y3] as i32
+        let vabs_x = vabs;
+        let mut vy2f = _mm_setzero_ps();
+        let mut vy = _mm_setzero_si128();
         let mut xy = 0.0f32;
         let mut yy = 0.0f32;
 
-        // delta to add to winning y2f: +2.0 at the selected lane
         let vtwo = _mm_set1_ps(2.0);
-        // delta to add to winning y: +1 at the selected lane
+
         let vone_i = _mm_set1_epi32(1);
 
         for _ in 0..k {
-            // rxy[i] = xy + abs_x[i],  ryy[i] = yy + y2f[i] + 1.0
             let vxy = _mm_set1_ps(xy);
             let vrxy = _mm_add_ps(vabs_x, vxy);
             let vyy1 = _mm_add_ps(vy2f, _mm_set1_ps(yy + 1.0));
-            // score[i] = rxy[i] * rsqrt(ryy[i])  (matches pvq_search_avx2 approach)
+
             let vscore = _mm_mul_ps(vrxy, _mm_rsqrt_ps(vyy1));
 
-            // Find argmax with sequential strictly-greater-than scan (tie → lower index).
-            // Extract 4 floats and scan — 4 comparisons, no memory traffic.
             let s0 = _mm_cvtss_f32(vscore);
             let s1 = _mm_cvtss_f32(_mm_shuffle_ps(vscore, vscore, 0b01_01_01_01));
             let s2 = _mm_cvtss_f32(_mm_shuffle_ps(vscore, vscore, 0b10_10_10_10));
@@ -654,46 +558,36 @@ fn pvq_search_n4(x: &[f32], y: &mut [i32], k: i32) {
             }
             let _ = best_score;
 
-            // Build a lane-select mask for best_i: lane best_i = all-ones, others = 0.
-            // Use: compare epi32 against broadcast(best_i), then use as float mask.
             let vbest = _mm_set1_epi32(best_i as i32);
             let vlane = _mm_setr_epi32(0, 1, 2, 3);
             let vmask = _mm_castsi128_ps(_mm_cmpeq_epi32(vlane, vbest));
 
-            // xy += abs_x[best_i]
             let vpick_ax = _mm_and_ps(vabs_x, vmask);
-            // horizontal sum of vmask-selected lane (only one lane nonzero)
+
             let vpick_ax_hi = _mm_movehl_ps(vpick_ax, vpick_ax);
             let vpick_ax2 = _mm_add_ps(vpick_ax, vpick_ax_hi);
             let vpick_ax3 = _mm_add_ss(vpick_ax2, _mm_shuffle_ps(vpick_ax2, vpick_ax2, 1));
             xy += _mm_cvtss_f32(vpick_ax3);
 
-            // yy = ryy[best_i]  (note: assign, not +=)
             let vpick_ryy = _mm_and_ps(vyy1, vmask);
             let vpick_ryy_hi = _mm_movehl_ps(vpick_ryy, vpick_ryy);
             let vpick_ryy2 = _mm_add_ps(vpick_ryy, vpick_ryy_hi);
             let vpick_ryy3 = _mm_add_ss(vpick_ryy2, _mm_shuffle_ps(vpick_ryy2, vpick_ryy2, 1));
             yy = _mm_cvtss_f32(vpick_ryy3);
 
-            // y2f[best_i] += 2.0
             let vadd2 = _mm_and_ps(vtwo, vmask);
             vy2f = _mm_add_ps(vy2f, vadd2);
 
-            // y[best_i] += 1
             let vadd1 = _mm_and_si128(vone_i, _mm_castps_si128(vmask));
             vy = _mm_add_epi32(vy, vadd1);
         }
 
-        // Restore signs: out[i] = (y[i] ^ -s[i]) + s[i]
-        // -s[i] in i32: 0 -> 0, 1 -> -1 = 0xFFFFFFFF
-        let vneg_s = _mm_sub_epi32(_mm_setzero_si128(), vsigns); // -s
+        let vneg_s = _mm_sub_epi32(_mm_setzero_si128(), vsigns);
         let vy_xor = _mm_xor_si128(vy, vneg_s);
         let vy_out = _mm_add_epi32(vy_xor, vsigns);
         _mm_storeu_si128(y.as_mut_ptr() as *mut __m128i, vy_out);
-        return;
     }
 
-    // Fallback scalar path (non-x86_64).
     #[cfg(not(target_arch = "x86_64"))]
     {
         let ax0 = x[0].abs();
@@ -780,7 +674,6 @@ fn pvq_search_n4(x: &[f32], y: &mut [i32], k: i32) {
 
 #[inline(always)]
 pub fn pvq_search(x: &[f32], y: &mut [i32], k: i32, n: usize) {
-    // Fast path for K=1: single pulse goes to largest dimension
     if k == 1 {
         let mut best_i = 0;
         let mut best_abs = x[0].abs();
@@ -799,32 +692,27 @@ pub fn pvq_search(x: &[f32], y: &mut [i32], k: i32, n: usize) {
         return;
     }
 
-    // Fast path for N=2 (closed-form solution, no iteration needed)
     if n == 2 {
         pvq_search_n2(x, y, k);
         return;
     }
 
-    // Fast path for N=4 (common in Opus, simple greedy search)
     if n == 4 {
         pvq_search_n4(x, y, k);
         return;
     }
 
-    // Use fast-select path for larger N (keeps batch speedup for large-band cases)
     if n >= 32 {
         pvq_search_fast_select(x, y, k, n);
         return;
     }
 
-    // Use NEON on ARM64 for small N (where we have enough registers)
     #[cfg(target_arch = "aarch64")]
     if n <= 16 {
         pvq_search_neon(x, y, k, n);
         return;
     }
 
-    // Use AVX2 on x86_64 for k > 4 (enough pulses to amortize SIMD overhead)
     #[cfg(target_arch = "x86_64")]
     if k > 4 && std::arch::is_x86_feature_detected!("avx2") {
         unsafe {
@@ -836,7 +724,6 @@ pub fn pvq_search(x: &[f32], y: &mut [i32], k: i32, n: usize) {
     pvq_search_scalar(x, y, k, n);
 }
 
-/// NEON-optimized initialization for fast_select
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -851,7 +738,6 @@ unsafe fn pvq_fast_select_init_neon(
     let mut sum_vec = vdupq_n_f32(0.0);
     let mut i = 0;
 
-    // Process 16 elements at a time
     while i + 16 <= n {
         let vx0 = vld1q_f32(x.as_ptr().add(i));
         let vx1 = vld1q_f32(x.as_ptr().add(i + 4));
@@ -873,7 +759,6 @@ unsafe fn pvq_fast_select_init_neon(
         sum_vec = vaddq_f32(sum_vec, vabs2);
         sum_vec = vaddq_f32(sum_vec, vabs3);
 
-        // Extract signs
         for j in 0..16 {
             signs[i + j].write(if x[i + j] < 0.0 { -1i32 } else { 1i32 });
         }
@@ -881,7 +766,6 @@ unsafe fn pvq_fast_select_init_neon(
         i += 16;
     }
 
-    // Process 8 elements
     while i + 8 <= n {
         let vx0 = vld1q_f32(x.as_ptr().add(i));
         let vx1 = vld1q_f32(x.as_ptr().add(i + 4));
@@ -902,7 +786,6 @@ unsafe fn pvq_fast_select_init_neon(
         i += 8;
     }
 
-    // Process 4 elements
     while i + 4 <= n {
         let vx = vld1q_f32(x.as_ptr().add(i));
         let vabs = vabsq_f32(vx);
@@ -918,7 +801,6 @@ unsafe fn pvq_fast_select_init_neon(
 
     let mut sum = vaddvq_f32(sum_vec);
 
-    // Scalar tail
     for j in i..n {
         let abs_xi = x[j].abs();
         abs_x[j].write(abs_xi);
@@ -929,8 +811,6 @@ unsafe fn pvq_fast_select_init_neon(
     sum
 }
 
-/// Fast-select PVQ search using batch assignment
-/// This approximates the greedy search by allocating pulses in batches
 #[inline]
 pub fn pvq_search_fast_select(x: &[f32], y: &mut [i32], k: i32, n: usize) -> f32 {
     let mut k = k;
@@ -943,12 +823,9 @@ pub fn pvq_search_fast_select(x: &[f32], y: &mut [i32], k: i32, n: usize) -> f32
         return 0.0;
     }
 
-    // Uninit storage for abs_x and signs — written fully in 0..n below before any read.
-    // Using [MaybeUninit<T>; N] avoids zero-initializing MAX_PVQ_N elements.
     let mut abs_x_mu = [MaybeUninit::<f32>::uninit(); MAX_PVQ_N];
     let mut signs_mu = [MaybeUninit::<i32>::uninit(); MAX_PVQ_N];
 
-    // Use NEON on aarch64 for initialization
     #[cfg(target_arch = "aarch64")]
     let sum = unsafe { pvq_fast_select_init_neon(x, n, &mut abs_x_mu, &mut signs_mu) };
     #[cfg(not(target_arch = "aarch64"))]
@@ -962,14 +839,12 @@ pub fn pvq_search_fast_select(x: &[f32], y: &mut [i32], k: i32, n: usize) -> f32
         s
     };
 
-    // SAFETY: abs_x_mu[0..n] and signs_mu[0..n] fully written above.
     let abs_x = unsafe { std::slice::from_raw_parts(abs_x_mu.as_ptr() as *const f32, n) };
     let signs = unsafe { std::slice::from_raw_parts(signs_mu.as_ptr() as *const i32, n) };
 
-    // Pre-search (same as scalar version)
     if k > (n >> 1) as i32 && sum > 1e-15 {
         let rcp = (k as f32 + 0.8) / sum;
-        // SAFETY: abs_x has n elements (from slice created above), y has at least n elements
+
         let abs_x_ptr = abs_x.as_ptr();
         let y_ptr = y.as_mut_ptr();
         unsafe {
@@ -993,12 +868,9 @@ pub fn pvq_search_fast_select(x: &[f32], y: &mut [i32], k: i32, n: usize) -> f32
         }
     }
 
-    // Batch assignment for remaining pulses
-    // For small K, use greedy; for larger K, use batch selection
     const BATCH_SIZE: i32 = 4;
 
     if k < BATCH_SIZE * 2 || n < 16 {
-        // Small case: use y2f cache with NEON-vectorized greedy search.
         #[cfg(target_arch = "aarch64")]
         {
             use std::arch::aarch64::*;
@@ -1044,7 +916,6 @@ pub fn pvq_search_fast_select(x: &[f32], y: &mut [i32], k: i32, n: usize) -> f32
                         i += 4;
                     }
 
-                    // Scalar tail
                     while i < n {
                         let rxy = xy + *abs_x_ptr.add(i);
                         let ryy = yy + *y2f_ptr.add(i);
@@ -1064,7 +935,7 @@ pub fn pvq_search_fast_select(x: &[f32], y: &mut [i32], k: i32, n: usize) -> f32
                     k -= 1;
                 }
             }
-        } // end aarch64 cfg block
+        }
         #[cfg(not(target_arch = "aarch64"))]
         {
             let mut y2f = [0.0f32; MAX_PVQ_N];
@@ -1115,12 +986,8 @@ pub fn pvq_search_fast_select(x: &[f32], y: &mut [i32], k: i32, n: usize) -> f32
             }
         }
     } else {
-        // Larger case: use batch selection with y2f cache.
-        // scores is declared outside the loop so the stack frame is allocated once
-        // (not re-zeroed each batch iteration). Written fully in 0..n before any read.
-        // Use MaybeUninit for y2f to avoid zeroing all MAX_PVQ_N elements.
         let mut y2f_mu = [MaybeUninit::<f32>::uninit(); MAX_PVQ_N];
-        // SAFETY: y has at least n elements
+
         let y_ptr = y.as_mut_ptr();
         for i in 0..n {
             unsafe {
@@ -1130,13 +997,12 @@ pub fn pvq_search_fast_select(x: &[f32], y: &mut [i32], k: i32, n: usize) -> f32
         let y2f =
             unsafe { std::slice::from_raw_parts_mut(y2f_mu.as_mut_ptr() as *mut f32, MAX_PVQ_N) };
         let mut scores_mu = [MaybeUninit::<(f32, usize)>::uninit(); MAX_PVQ_N];
-        // SAFETY: abs_x has n elements
+
         let abs_x_ptr = abs_x.as_ptr();
         let y2f_ptr = y2f.as_mut_ptr();
         while k > 0 {
             let batch = BATCH_SIZE.min(k);
 
-            // Compute scores for all positions using raw pointers
             unsafe {
                 for i in 0..n {
                     let rxy = xy + *abs_x_ptr.add(i);
@@ -1145,14 +1011,13 @@ pub fn pvq_search_fast_select(x: &[f32], y: &mut [i32], k: i32, n: usize) -> f32
                     scores_mu[i].write((score, i));
                 }
             }
-            // SAFETY: scores_mu[0..n] written above.
+
             let scores = unsafe {
                 std::slice::from_raw_parts_mut(scores_mu.as_mut_ptr() as *mut (f32, usize), n)
             };
 
-            // Use quick select instead of full sort (faster for small batch)
             let pos = batch as usize;
-            // Use total ordering to avoid partial_cmp().unwrap() overhead and bounds checks
+
             scores.select_nth_unstable_by(pos, |a, b| {
                 if a.0 > b.0 {
                     std::cmp::Ordering::Less
@@ -1163,7 +1028,6 @@ pub fn pvq_search_fast_select(x: &[f32], y: &mut [i32], k: i32, n: usize) -> f32
                 }
             });
 
-            // Assign pulses to top 'batch' positions using raw pointers
             unsafe {
                 for b in 0..batch as usize {
                     let idx = scores[b].1;
@@ -1178,7 +1042,6 @@ pub fn pvq_search_fast_select(x: &[f32], y: &mut [i32], k: i32, n: usize) -> f32
         }
     }
 
-    // Restore signs using raw pointers
     unsafe {
         let y_ptr = y.as_mut_ptr();
         for i in 0..n {
@@ -1189,7 +1052,6 @@ pub fn pvq_search_fast_select(x: &[f32], y: &mut [i32], k: i32, n: usize) -> f32
     yy
 }
 
-/// NEON-optimized initialization for PVQ search (n <= 16)
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -1204,7 +1066,6 @@ unsafe fn pvq_search_scalar_init_neon(
     let mut sum_vec = vdupq_n_f32(0.0);
     let mut i = 0;
 
-    // Process 16 elements at a time
     while i + 16 <= n {
         let vx0 = vld1q_f32(x.as_ptr().add(i));
         let vx1 = vld1q_f32(x.as_ptr().add(i + 4));
@@ -1226,7 +1087,6 @@ unsafe fn pvq_search_scalar_init_neon(
         sum_vec = vaddq_f32(sum_vec, vabs2);
         sum_vec = vaddq_f32(sum_vec, vabs3);
 
-        // Extract signs
         for j in 0..16 {
             sign_x[i + j] = (x[i + j] < 0.0) as i32;
         }
@@ -1234,7 +1094,6 @@ unsafe fn pvq_search_scalar_init_neon(
         i += 16;
     }
 
-    // Process 8 elements
     while i + 8 <= n {
         let vx0 = vld1q_f32(x.as_ptr().add(i));
         let vx1 = vld1q_f32(x.as_ptr().add(i + 4));
@@ -1255,7 +1114,6 @@ unsafe fn pvq_search_scalar_init_neon(
         i += 8;
     }
 
-    // Process 4 elements
     while i + 4 <= n {
         let vx = vld1q_f32(x.as_ptr().add(i));
         let vabs = vabsq_f32(vx);
@@ -1271,7 +1129,6 @@ unsafe fn pvq_search_scalar_init_neon(
 
     let mut sum = vaddvq_f32(sum_vec);
 
-    // Scalar tail
     for j in i..n {
         let xi = x[j];
         let abs_xi = xi.abs();
@@ -1283,7 +1140,6 @@ unsafe fn pvq_search_scalar_init_neon(
     sum
 }
 
-/// Fast path for small K (K <= 4): skip pre-search, direct greedy allocation
 #[inline(always)]
 fn pvq_search_small_k(x: &[f32], y: &mut [i32], k: i32, n: usize) {
     debug_assert!(k <= 4 && k > 0);
@@ -1293,7 +1149,6 @@ fn pvq_search_small_k(x: &[f32], y: &mut [i32], k: i32, n: usize) {
     let mut y2f = [0.0f32; 32];
     let mut sign_x = [0i32; 32];
 
-    // SAFETY: x has at least n elements, abs_x and sign_x have 32 elements, n <= 31
     unsafe {
         let x_ptr = x.as_ptr();
         let abs_x_ptr = abs_x.as_mut_ptr();
@@ -1308,7 +1163,6 @@ fn pvq_search_small_k(x: &[f32], y: &mut [i32], k: i32, n: usize) {
     let mut yy = 0.0f32;
     let mut xy = 0.0f32;
 
-    // SAFETY: abs_x, y2f have 32 elements, n <= 31; y has at least n elements.
     let abs_x_ptr = abs_x.as_ptr();
     let y2f_ptr = y2f.as_mut_ptr();
     let y_ptr = y.as_mut_ptr();
@@ -1321,7 +1175,6 @@ fn pvq_search_small_k(x: &[f32], y: &mut [i32], k: i32, n: usize) {
             let mut best_num = rxy0 * rxy0;
             let mut best_den = yy + *y2f_ptr;
 
-            // 2-way unrolled inner loop
             let mut i = 1;
             while i + 1 < n {
                 let rxy1 = xy + *abs_x_ptr.add(i);
@@ -1359,8 +1212,6 @@ fn pvq_search_small_k(x: &[f32], y: &mut [i32], k: i32, n: usize) {
         }
     }
 
-    // Restore signs
-    // SAFETY: y has at least n elements, sign_x has 32 elements, n <= 31
     unsafe {
         let y_ptr = y.as_mut_ptr();
         let sign_ptr = sign_x.as_ptr();
@@ -1377,25 +1228,21 @@ fn pvq_search_scalar(x: &[f32], y: &mut [i32], k: i32, n: usize) {
     let mut yy = 0.0f32;
     let mut xy = 0.0f32;
 
-    // Clear y array
     y[..n].fill(0);
 
     if k <= 0 {
         return;
     }
 
-    // Fast path for very small K: skip pre-search overhead
     if k <= 4 {
         pvq_search_small_k(x, y, k, n);
         return;
     }
 
-    // Use a small fixed-size array (n < 32). Written fully in 0..n before any read.
     let mut abs_x = [0.0f32; 32];
     let mut y2f = [0.0f32; 32];
     let mut sign_x = [0i32; 32];
 
-    // Use NEON for initialization on aarch64
     #[cfg(target_arch = "aarch64")]
     let sum = unsafe { pvq_search_scalar_init_neon(x, n, &mut abs_x, &mut sign_x) };
     #[cfg(all(not(target_arch = "aarch64"), target_arch = "x86_64"))]
@@ -1427,13 +1274,9 @@ fn pvq_search_scalar(x: &[f32], y: &mut [i32], k: i32, n: usize) {
         s
     };
 
-    // C opus optimization: pre-search by projecting on the pyramid
-    // Only when K > N/2 (many pulses case) - this is critical for performance
-    // For small K, the overhead of pre-search outweighs the benefits
     if k > (n >> 1) as i32 && sum > 1e-15 {
-        // Use K + 0.8 to guarantee we don't get more than K pulses
         let rcp = (k as f32 + 0.8) / sum;
-        // SAFETY: abs_x has 32 elements, y has at least n elements, y2f has 32 elements, n <= 31
+
         let abs_x_ptr = abs_x.as_ptr();
         let y2f_ptr = y2f.as_mut_ptr();
         let y_ptr = y.as_mut_ptr();
@@ -1448,8 +1291,6 @@ fn pvq_search_scalar(x: &[f32], y: &mut [i32], k: i32, n: usize) {
                 k -= yi;
             }
 
-            // Safety check: if pulsesLeft is way too high (shouldn't happen),
-            // put all remaining pulses in first bin
             if k > n as i32 + 3 {
                 let tmp = k as f32;
                 yy += tmp * tmp;
@@ -1461,11 +1302,6 @@ fn pvq_search_scalar(x: &[f32], y: &mut [i32], k: i32, n: usize) {
         }
     }
 
-    // Greedy pulse allocation - C opus style cross-multiply comparison
-    // Track unsquared Rxy to save one multiply per comparison:
-    //   best_den * Rxy > Ryy * best_num  <=>  Rxy^2/Ryy > best_num^2/best_den
-    // SAFETY: abs_x and y2f have 32 elements, n <= 31; y has at least n elements.
-    //         best_id is always in 0..n after the loop.
     let abs_x_ptr = abs_x.as_ptr();
     let y2f_ptr = y2f.as_mut_ptr();
     let y_ptr = y.as_mut_ptr();
@@ -1475,7 +1311,7 @@ fn pvq_search_scalar(x: &[f32], y: &mut [i32], k: i32, n: usize) {
 
             let rxy0 = xy + *abs_x_ptr;
             let mut best_id = 0usize;
-            let mut best_num = rxy0 * rxy0; // track Rxy² (matches C opus)
+            let mut best_num = rxy0 * rxy0;
             let mut best_den = yy + *y2f_ptr;
 
             let mut i = 1;
@@ -1483,7 +1319,7 @@ fn pvq_search_scalar(x: &[f32], y: &mut [i32], k: i32, n: usize) {
                 let rxy = xy + *abs_x_ptr.add(i);
                 let ryy = yy + *y2f_ptr.add(i);
                 let rxy_sq = rxy * rxy;
-                // Compare Rxy²/Ryy to find max cosine similarity
+
                 if best_den * rxy_sq > ryy * best_num {
                     best_num = rxy_sq;
                     best_den = ryy;
@@ -1500,11 +1336,6 @@ fn pvq_search_scalar(x: &[f32], y: &mut [i32], k: i32, n: usize) {
         }
     }
 
-    // Restore signs using branchless bit manipulation
-    // C opus: iy[j] = (iy[j]^-signx[j]) + signx[j]
-    // This is equivalent to: if signx[j] { -iy[j] } else { iy[j] }
-    // but avoids branch misprediction
-    // SAFETY: y has at least n elements, sign_x has 32 elements, n <= 31
     unsafe {
         let y_ptr = y.as_mut_ptr();
         let sign_ptr = sign_x.as_ptr();
@@ -1515,7 +1346,6 @@ fn pvq_search_scalar(x: &[f32], y: &mut [i32], k: i32, n: usize) {
     }
 }
 
-/// ARM NEON optimized PVQ search for small N (N <= 16)
 #[cfg(target_arch = "aarch64")]
 #[inline]
 fn pvq_search_neon(x: &[f32], y: &mut [i32], k: i32, n: usize) {
@@ -1532,7 +1362,6 @@ fn pvq_search_neon(x: &[f32], y: &mut [i32], k: i32, n: usize) {
         return;
     }
 
-    // Fast path for small K: skip pre-search overhead, use smaller stack arrays
     if k <= 4 {
         let mut abs_x_arr = [0.0f32; 16];
         let mut y2f_arr = [0.0f32; 16];
@@ -1559,8 +1388,6 @@ fn pvq_search_neon(x: &[f32], y: &mut [i32], k: i32, n: usize) {
         let mut yy_local = 0.0f32;
         let mut xy_local = 0.0f32;
 
-        // Scalar greedy search - for k<=4, the NEON overhead isn't worth it
-        // SAFETY: abs_x_arr and y2f_arr have 16 elements, y has at least n elements, n <= 16
         let abs_x_ptr = abs_x_arr.as_ptr();
         let y2f_ptr = y2f_arr.as_mut_ptr();
         let y_ptr = y.as_mut_ptr();
@@ -1590,7 +1417,6 @@ fn pvq_search_neon(x: &[f32], y: &mut [i32], k: i32, n: usize) {
             }
         }
 
-        // SAFETY: y has at least n elements, sign_x_arr has 16 elements, n <= 16
         unsafe {
             let sign_ptr = sign_x_arr.as_ptr();
             for i in 0..n {
@@ -1601,16 +1427,11 @@ fn pvq_search_neon(x: &[f32], y: &mut [i32], k: i32, n: usize) {
         return;
     }
 
-    // Use MaybeUninit to avoid zero-initializing 20+20+16 = 224 bytes when
-    // only [0..n] elements are needed. n <= 16, so at most 64 bytes used.
     let mut abs_x_mu = [MaybeUninit::<f32>::uninit(); 20];
     let mut y2f_mu = [MaybeUninit::<f32>::uninit(); 20];
     let mut sign_x_mu = [MaybeUninit::<i32>::uninit(); 16];
     let mut sum;
 
-    // Initialize abs_x, sign_x, and sum using NEON.
-    // SAFETY: NEON stores write exactly 4 f32/i32 elements per iteration,
-    // fully initializing abs_x_mu[0..n4] and sign_x_mu[0..n4].
     let n4 = n & !3;
     unsafe {
         let mut vsum = vdupq_n_f32(0.0);
@@ -1638,13 +1459,10 @@ fn pvq_search_neon(x: &[f32], y: &mut [i32], k: i32, n: usize) {
         sign_x_mu[i].write((xi < 0.0) as i32);
     }
 
-    // SAFETY: abs_x_mu[0..n] and sign_x_mu[0..n] fully written above.
-    // Cast to ordinary slices for the rest of the function.
     let abs_x = unsafe { std::slice::from_raw_parts_mut(abs_x_mu.as_mut_ptr() as *mut f32, 20) };
     let y2f = unsafe { std::slice::from_raw_parts_mut(y2f_mu.as_mut_ptr() as *mut f32, 20) };
     let sign_x = unsafe { std::slice::from_raw_parts_mut(sign_x_mu.as_mut_ptr() as *mut i32, 16) };
 
-    // Pre-search using NEON
     let ran_presearch = k > (n >> 1) as i32 && sum > 1e-15;
     if ran_presearch {
         let rcp = (k as f32 + 0.8) / sum;
@@ -1694,16 +1512,11 @@ fn pvq_search_neon(x: &[f32], y: &mut [i32], k: i32, n: usize) {
             k = 0;
         }
     } else {
-        // No pre-search: y2f must be 0 since y[i] = 0 for all i.
-        // With MaybeUninit, we must explicitly zero [0..n].
         for i in 0..n {
             y2f[i] = 0.0;
         }
     }
 
-    // Greedy pulse allocation using NEON-vectorized inner loop.
-    // Uses approximate rsqrt for score comparison, processing 4 positions
-    // per iteration. Scalar lane scan for max position.
     unsafe {
         let abs_x_ptr = abs_x.as_ptr();
         let y2f_ptr = y2f.as_mut_ptr();
@@ -1737,7 +1550,6 @@ fn pvq_search_neon(x: &[f32], y: &mut [i32], k: i32, n: usize) {
                 j += 4;
             }
 
-            // Scalar tail
             while j < n {
                 let rxy = xy + *abs_x_ptr.add(j);
                 let ryy = yy + *y2f_ptr.add(j);
@@ -1757,8 +1569,6 @@ fn pvq_search_neon(x: &[f32], y: &mut [i32], k: i32, n: usize) {
         }
     }
 
-    // Restore signs using branchless bit manipulation
-    // SAFETY: y has at least n elements, sign_x has 16 elements (from MaybeUninit), n <= 16
     unsafe {
         let y_ptr = y.as_mut_ptr();
         let sign_ptr = sign_x.as_ptr();
@@ -1769,8 +1579,6 @@ fn pvq_search_neon(x: &[f32], y: &mut [i32], k: i32, n: usize) {
     }
 }
 
-/// AVX2 PVQ search for n <= 31 with k > 4.
-/// Uses SIMD rsqrt for score computation (mirrors pvq_search_neon strategy).
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2,fma")]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -1786,7 +1594,6 @@ unsafe fn pvq_search_avx2(x: &[f32], y: &mut [i32], k: i32, n: usize) {
 
     y[..n].fill(0);
 
-    // Init: abs_x, sign_x, sum — use AVX2 abs + vectorized sign extraction
     let mut abs_x = [0.0f32; 32];
     let mut y2f = [0.0f32; 32];
     let mut sign_x = [0i32; 32];
@@ -1801,14 +1608,13 @@ unsafe fn pvq_search_avx2(x: &[f32], y: &mut [i32], k: i32, n: usize) {
         let a = _mm256_andnot_ps(sign_mask, v);
         _mm256_storeu_ps(abs_x.as_mut_ptr().add(i), a);
         acc = _mm256_add_ps(acc, a);
-        // sign_x[j] = 1 if x[j] < 0, else 0 — using AVX2 compare
-        // _mm256_cmp_ps(v, vzero, _CMP_LT_OS) gives all-1s mask for negative lanes
+
         let neg_mask = _mm256_cmp_ps(v, vzero_ps, _CMP_LT_OS);
         let sign_i = _mm256_and_si256(_mm256_castps_si256(neg_mask), vone_i);
         _mm256_storeu_si256(sign_x.as_mut_ptr().add(i) as *mut __m256i, sign_i);
         i += 8;
     }
-    // Horizontal sum
+
     let lo4 = _mm256_castps256_ps128(acc);
     let hi4 = _mm256_extractf128_ps(acc, 1);
     let s4 = _mm_add_ps(lo4, hi4);
@@ -1823,31 +1629,30 @@ unsafe fn pvq_search_avx2(x: &[f32], y: &mut [i32], k: i32, n: usize) {
         sign_x[j] = (xi < 0.0) as i32;
     }
 
-    // Pre-search: project onto pyramid to pre-assign pulses
     if k > (n >> 1) as i32 && sum > 1e-15 {
         let rcp = (k as f32 + 0.8) / sum;
         let vrcp = _mm256_set1_ps(rcp);
         let mut vyy_acc = _mm256_setzero_ps();
         let mut vxy_acc = _mm256_setzero_ps();
-        let mut vk_acc = _mm256_setzero_ps(); // sum of yi as floats
+        let mut vk_acc = _mm256_setzero_ps();
         let mut i = 0;
         while i + 8 <= n {
             let vabs = _mm256_loadu_ps(abs_x.as_ptr().add(i));
             let vyi_f32 = _mm256_mul_ps(vabs, vrcp);
-            // float -> int truncation -> back to float (matches C behavior)
+
             let vyi_i = _mm256_cvttps_epi32(vyi_f32);
             _mm256_storeu_si256(y.as_mut_ptr().add(i) as *mut __m256i, vyi_i);
             let vyi_f = _mm256_cvtepi32_ps(vyi_i);
-            // Accumulate: yy += yi^2, xy += yi*abs_x, k_sum += yi
+
             vyy_acc = _mm256_fmadd_ps(vyi_f, vyi_f, vyy_acc);
             vxy_acc = _mm256_fmadd_ps(vyi_f, vabs, vxy_acc);
             vk_acc = _mm256_add_ps(vk_acc, vyi_f);
-            // y2f[i] = 2.0 * yi
+
             let vy2f = _mm256_add_ps(vyi_f, vyi_f);
             _mm256_storeu_ps(y2f.as_mut_ptr().add(i), vy2f);
             i += 8;
         }
-        // Reduce accumulators
+
         let hsum = |v: __m256| -> f32 {
             let lo = _mm256_castps256_ps128(v);
             let hi = _mm256_extractf128_ps(v, 1);
@@ -1859,7 +1664,7 @@ unsafe fn pvq_search_avx2(x: &[f32], y: &mut [i32], k: i32, n: usize) {
         yy += hsum(vyy_acc);
         xy += hsum(vxy_acc);
         k -= hsum(vk_acc) as i32;
-        // Scalar tail
+
         while i < n {
             let yi = (abs_x[i] * rcp) as i32;
             y[i] = yi;
@@ -1879,27 +1684,18 @@ unsafe fn pvq_search_avx2(x: &[f32], y: &mut [i32], k: i32, n: usize) {
         }
     }
 
-    // Greedy search: each pulse iteration finds the best position.
-    //
-    // Two-pass argmax strategy for n <= 31 (at most 4 AVX chunks of 8):
-    //   Pass 1: compute all scores, maintain running 256-bit max (pure _mm256_max_ps,
-    //           no scalar extracts or branches inside the loop).
-    //   Pass 2: broadcast the global max, compare scores, movemask → trailing_zeros.
-    //
-    // Scores are stored in a small stack array (at most 32 f32 = 128 bytes).
     let abs_x_ptr = abs_x.as_ptr();
     let y2f_ptr = y2f.as_mut_ptr();
     let y_ptr = y.as_mut_ptr();
     let n8 = n & !7;
-    let n_ceil8 = (n + 7) & !7; // round up to next multiple of 8 for score buffer
-    let mut scores = [0.0f32; 32]; // stores all scores for argmax pass
+    let n_ceil8 = (n + 7) & !7;
+    let mut scores = [0.0f32; 32];
 
     while k > 0 {
         yy += 1.0;
         let vxy = _mm256_set1_ps(xy);
         let vyy = _mm256_set1_ps(yy);
 
-        // Pass 1: compute scores into stack array, track 256-bit running max
         let mut vmax = _mm256_setzero_ps();
         let mut j = 0;
         while j < n8 {
@@ -1912,7 +1708,7 @@ unsafe fn pvq_search_avx2(x: &[f32], y: &mut [i32], k: i32, n: usize) {
             vmax = _mm256_max_ps(vmax, score);
             j += 8;
         }
-        // Scalar tail scores — written into scores[] for uniform pass-2 scan
+
         while j < n {
             let rxy = xy + *abs_x_ptr.add(j);
             let ryy = yy + *y2f_ptr.add(j);
@@ -1920,8 +1716,6 @@ unsafe fn pvq_search_avx2(x: &[f32], y: &mut [i32], k: i32, n: usize) {
             j += 1;
         }
 
-        // Pass 2: find global max scalar, then locate its lane
-        // Global max from the SIMD accumulator (covers n8 elements)
         let global_max = {
             let hi = _mm256_extractf128_ps(vmax, 1);
             let lo = _mm256_castps256_ps128(vmax);
@@ -1930,16 +1724,14 @@ unsafe fn pvq_search_avx2(x: &[f32], y: &mut [i32], k: i32, n: usize) {
             let m1 = _mm_max_ss(m2, _mm_shuffle_ps(m2, m2, 1));
             _mm_cvtss_f32(m1)
         };
-        // Also check scalar tail elements
+
         let mut gmax = global_max;
         for j in n8..n {
             if scores[j] > gmax {
                 gmax = scores[j];
             }
         }
-        // Find first lane with score == gmax
-        // Use AVX compare + movemask over the full scores[] buffer (rounded to n_ceil8)
-        // Lanes beyond n in the last chunk are 0.0 < gmax, so they won't match.
+
         let vgmax = _mm256_set1_ps(gmax);
         let mut best_id: usize = 0;
         let mut j = 0;
@@ -1960,7 +1752,6 @@ unsafe fn pvq_search_avx2(x: &[f32], y: &mut [i32], k: i32, n: usize) {
         k -= 1;
     }
 
-    // Restore signs
     for i in 0..n {
         let s = sign_x[i];
         y[i] = (y[i] ^ -s) + s;
@@ -1981,7 +1772,6 @@ fn exp_rotation1(x: &mut [f32], len: usize, stride: usize, c: f32, s: f32) {
 }
 
 #[inline]
-#[allow(dead_code)]
 fn exp_rotation1_scalar(x: &mut [f32], len: usize, stride: usize, c: f32, s: f32) {
     let ms = -s;
     for i in 0..(len - stride) {
@@ -2000,11 +1790,6 @@ fn exp_rotation1_scalar(x: &mut [f32], len: usize, stride: usize, c: f32, s: f32
     }
 }
 
-/// NEON "optimized" Givens rotation for exp_rotation1.
-/// NOTE: A true NEON vectorization is not possible here because the Givens
-/// rotation cascade has a sequential dependency — each iteration reads values
-/// modified by the previous iteration. Processing in parallel (as the old NEON
-/// code did) breaks round-trip invertibility. Delegates to scalar.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn exp_rotation1_neon(x: &mut [f32], len: usize, stride: usize, c: f32, s: f32) {
@@ -2065,15 +1850,13 @@ unsafe fn extract_collapse_mask_neon(iy: &[i32], n: usize, b: usize) -> u32 {
         let base = i * n0;
         let slice = &iy[base..base + n0];
 
-        // Check if any element is non-zero using NEON
         let mut any_nonzero = false;
         let n4 = n0 & !3;
         let mut j = 0;
 
         while j < n4 {
             let v = vld1q_s32(slice.as_ptr().add(j));
-            // Check if any lane is non-zero by OR reduction
-            // If OR of all elements is 0, then all are zero
+
             let or_val = vorrq_s32(v, vextq_s32(v, v, 2));
             let or_val = vorrq_s32(or_val, vextq_s32(or_val, or_val, 1));
             if vgetq_lane_s32(or_val, 0) != 0 {
@@ -2127,7 +1910,6 @@ pub fn extract_collapse_mask(iy: &[i32], n: usize, b: usize) -> u32 {
     }
 }
 
-/// AVX2+FMA vector renormalization (mirrors bands.rs renormalise_vector_avx2)
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2,fma")]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -2151,7 +1933,7 @@ unsafe fn renormalise_vector_avx2(x: &mut [f32], n: usize, gain: f32) {
         i += 8;
     }
     let acc = _mm256_add_ps(acc0, acc1);
-    // Horizontal sum of acc
+
     let lo = _mm256_castps256_ps128(acc);
     let hi = _mm256_extractf128_ps(acc, 1);
     let s4 = _mm_add_ps(lo, hi);
@@ -2182,8 +1964,6 @@ unsafe fn renormalise_vector_avx2(x: &mut [f32], n: usize, gain: f32) {
     }
 }
 
-/// AVX2+FMA resynth for alg_quant: i32→f32 conversion, squared sum, scale.
-/// n <= 32 (small-N path in alg_quant).
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2,fma")]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -2194,7 +1974,6 @@ unsafe fn alg_quant_resynth_avx2(y: &[i32], x: &mut [f32], n: usize, gain: f32) 
     let mut i = 0;
 
     while i + 8 <= n {
-        // Load 8 i32, convert to f32, store to x, accumulate squared sum
         let yi = _mm256_loadu_si256(y.as_ptr().add(i) as *const __m256i);
         let yf = _mm256_cvtepi32_ps(yi);
         _mm256_storeu_ps(x.as_mut_ptr().add(i), yf);
@@ -2202,7 +1981,6 @@ unsafe fn alg_quant_resynth_avx2(y: &[i32], x: &mut [f32], n: usize, gain: f32) 
         i += 8;
     }
 
-    // Horizontal sum of acc0
     let lo = _mm256_castps256_ps128(acc0);
     let hi = _mm256_extractf128_ps(acc0, 1);
     let s4 = _mm_add_ps(lo, hi);
@@ -2210,7 +1988,6 @@ unsafe fn alg_quant_resynth_avx2(y: &[i32], x: &mut [f32], n: usize, gain: f32) 
     let s1 = _mm_add_ss(s2, _mm_shuffle_ps(s2, s2, 1));
     let mut ryy = _mm_cvtss_f32(s1);
 
-    // Scalar tail
     for j in i..n {
         let v = y[j] as f32;
         x[j] = v;
@@ -2231,8 +2008,6 @@ unsafe fn alg_quant_resynth_avx2(y: &[i32], x: &mut [f32], n: usize, gain: f32) 
     }
 }
 
-/// AVX2 abs+sum initialization for pvq_search_scalar (n <= 31).
-/// Computes abs_x = |x|, sign_x = (x < 0) as i32, returns sum of abs_x.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2")]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -2252,14 +2027,13 @@ unsafe fn pvq_search_scalar_init_avx2(
         let a = _mm256_andnot_ps(sign_mask, v);
         _mm256_storeu_ps(abs_x.as_mut_ptr().add(i), a);
         acc = _mm256_add_ps(acc, a);
-        // Signs: scalar, short loops are fine for n<=32
+
         for j in 0..8 {
             sign_x[i + j] = (x[i + j] < 0.0) as i32;
         }
         i += 8;
     }
 
-    // Horizontal sum
     let lo = _mm256_castps256_ps128(acc);
     let hi = _mm256_extractf128_ps(acc, 1);
     let s4 = _mm_add_ps(lo, hi);
@@ -2276,7 +2050,6 @@ unsafe fn pvq_search_scalar_init_avx2(
     sum
 }
 
-/// NEON-optimized vector renormalization
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -2377,7 +2150,6 @@ pub fn renormalise_vector(x: &mut [f32], n: usize, gain: f32) {
     }
 }
 
-/// NEON-optimized resynth for alg_quant (n <= 32)
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -2388,28 +2160,22 @@ unsafe fn alg_quant_resynth_neon(y: &[i32], x: &mut [f32], n: usize, gain: f32) 
     let n8 = n & !7;
     let mut i = 0;
 
-    // Process 8 elements at a time: int -> float, square and accumulate
     while i < n8 {
-        // Load 8 i32 values
         let yi0 = vld1q_s32(y.as_ptr().add(i));
         let yi1 = vld1q_s32(y.as_ptr().add(i + 4));
 
-        // Convert to f32
         let yf0 = vcvtq_f32_s32(yi0);
         let yf1 = vcvtq_f32_s32(yi1);
 
-        // Store to x
         vst1q_f32(x.as_mut_ptr().add(i), yf0);
         vst1q_f32(x.as_mut_ptr().add(i + 4), yf1);
 
-        // Accumulate sum of squares
         sum_vec = vfmaq_f32(sum_vec, yf0, yf0);
         sum_vec = vfmaq_f32(sum_vec, yf1, yf1);
 
         i += 8;
     }
 
-    // Scalar tail
     let mut ryy = vaddvq_f32(sum_vec);
     for j in i..n {
         let v = y[j] as f32;
@@ -2417,11 +2183,9 @@ unsafe fn alg_quant_resynth_neon(y: &[i32], x: &mut [f32], n: usize, gain: f32) 
         ryy += v * v;
     }
 
-    // Normalize
     let g = gain / (1e-15 + ryy).sqrt();
     let vg = vdupq_n_f32(g);
 
-    // Process 8 elements at a time for scaling
     i = 0;
     while i < n8 {
         let vx0 = vld1q_f32(x.as_ptr().add(i));
@@ -2433,14 +2197,11 @@ unsafe fn alg_quant_resynth_neon(y: &[i32], x: &mut [f32], n: usize, gain: f32) 
         i += 8;
     }
 
-    // Scalar tail
     for j in i..n {
         x[j] *= g;
     }
 }
 
-/// Dispatch wrapper: i32-to-f32 conversion + normalize for alg_quant resynth.
-/// Used on non-aarch64 targets; dispatches to AVX2 if available.
 #[cfg(not(target_arch = "aarch64"))]
 #[inline(always)]
 fn alg_quant_resynth_scalar(y: &[i32], x: &mut [f32], n: usize, gain: f32) {
@@ -2463,20 +2224,16 @@ fn alg_quant_resynth_scalar(y: &[i32], x: &mut [f32], n: usize, gain: f32) {
     }
 }
 
-/// QEXT mode: encode refine value
 fn ec_enc_refine(rc: &mut RangeCoder, refine: i32, up: i32, extra_bits: i32) {
     let half_up = up / 2;
     let large = refine.abs() > half_up;
 
-    // Encode whether refine is large
     rc.encode_bit_logp(large, 1);
 
     if large {
-        // Large: encode sign and magnitude
         rc.enc_bits((refine < 0) as u32, 1);
         rc.enc_bits((refine.abs() - half_up - 1) as u32, (extra_bits - 1) as u32);
     } else {
-        // Small: encode directly
         rc.enc_bits((refine + half_up) as u32, extra_bits as u32);
     }
 }
@@ -2493,8 +2250,6 @@ pub fn alg_quant(
     resynth: bool,
 ) -> u32 {
     if n <= 32 {
-        // Use MaybeUninit to avoid zeroing 128 bytes when pvq_search
-        // will overwrite y[0..n] anyway (all search functions do y[..n].fill(0)).
         let mut y_buf = [MaybeUninit::<i32>::uninit(); 32];
         let y = unsafe { std::slice::from_raw_parts_mut(y_buf.as_mut_ptr() as *mut i32, n) };
 
@@ -2531,8 +2286,6 @@ pub fn alg_quant(
     }
 }
 
-/// QEXT-enabled version of alg_quant
-/// When extra_bits >= 2, uses fast path that skips greedy search
 pub fn alg_quant_qext(
     x: &mut [f32],
     n: usize,
@@ -2544,24 +2297,20 @@ pub fn alg_quant_qext(
     resynth: bool,
     extra_bits: Option<i32>,
 ) -> u32 {
-    // Use stack-allocated array for common cases (n <= 32 covers most bands)
     if n <= 32 {
         let mut y_buf = [0i32; 32];
         let y = &mut y_buf[..n];
 
         exp_rotation(x, n, 1, stride, k, spread);
 
-        // Check if we can use QEXT fast path
-        let use_qext = extra_bits.map_or(false, |eb| eb >= 2);
+        let use_qext = extra_bits.is_some_and(|eb| eb >= 2);
 
         if use_qext && n == 2 {
-            // N=2 QEXT path (simpler)
             let eb = extra_bits.unwrap();
             pvq_search_n2(x, y, k);
             let mask = extract_collapse_mask(y, n, stride);
             encode_pulses(y, n as u32, k as u32, rc);
 
-            // Encode refine value (simplified for N=2)
             let up = (1 << eb) - 1;
             let abs_x0 = x[0].abs();
             let abs_x1 = x[1].abs();
@@ -2587,7 +2336,6 @@ pub fn alg_quant_qext(
         }
 
         if use_qext && n > 2 && n <= 32 {
-            // N>2 QEXT path using refine algorithm
             let eb = extra_bits.unwrap();
             let mut up_y = [0i32; 32];
             let mut refine = [0i32; 32];
@@ -2595,18 +2343,16 @@ pub fn alg_quant_qext(
             let mask = extract_collapse_mask(&up_y, n, stride);
             encode_pulses(y, n as u32, k as u32, rc);
 
-            // Encode refine values
             let up = (1 << eb) - 1;
             for i in 0..n - 1 {
                 ec_enc_refine(rc, refine[i], up, eb);
             }
-            // For last element, encode sign if y[N-1] == 0
+
             if y[n - 1] == 0 {
                 rc.enc_bits((up_y[n - 1] < 0) as u32, 1);
             }
 
             if resynth {
-                // Use up_y for resynth (higher precision)
                 #[cfg(target_arch = "aarch64")]
                 unsafe {
                     alg_quant_resynth_neon(&up_y, x, n, gain);
@@ -2618,7 +2364,6 @@ pub fn alg_quant_qext(
             return mask;
         }
 
-        // Standard path (no QEXT)
         pvq_search(x, y, k, n);
         let mask = extract_collapse_mask(y, n, stride);
         encode_pulses(y, n as u32, k as u32, rc);
@@ -2634,7 +2379,6 @@ pub fn alg_quant_qext(
         }
         mask
     } else {
-        // Fallback for large n (rare) - QEXT not supported
         let mut y_mu = [MaybeUninit::<i32>::uninit(); MAX_PVQ_N];
         let y = unsafe { std::slice::from_raw_parts_mut(y_mu.as_mut_ptr() as *mut i32, MAX_PVQ_N) };
 
@@ -2670,16 +2414,12 @@ pub fn alg_unquant(
     rc: &mut RangeCoder,
     gain: f32,
 ) -> u32 {
-    // SAFETY: decode_pulses writes y_slice[..n] before any read (cwrsi writes
-    // every element for k>0; k==0 branch explicitly zeros y[0..n]).
     let mut y_mu = [MaybeUninit::<i32>::uninit(); MAX_PVQ_N];
     let y = unsafe { std::slice::from_raw_parts_mut(y_mu.as_mut_ptr() as *mut i32, MAX_PVQ_N) };
     decode_pulses(&mut y[..n], n as u32, k as u32, rc);
 
-    // DIAG: print decoded PVQ vector
-
     let mask = extract_collapse_mask(&y[..n], n, stride);
-    // Fuse int-to-float conversion and norm computation
+
     let mut ryy = 0.0f32;
     for i in 0..n {
         let v = y[i] as f32;

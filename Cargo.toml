@@ -8,8 +8,6 @@ license = "BSD-3-Clause"
 repository = "https://github.com/restsend/opus-rs"
 
 [dependencies]
-num-complex = "0.4"
-once_cell = "1.17"
 
 [dev-dependencies]
 opusic-sys = "0.6.0"
@@ -19,8 +17,6 @@ proptest = "1"
 [[bench]]
 name = "opus_bench"
 harness = false
-
-[build-dependencies]
 
 [profile.release]
 opt-level = 3

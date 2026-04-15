@@ -372,9 +372,9 @@ pub fn silk_noise_shape_quantizer_del_dec(
             }
         }
 
-        let winner_rand_state = ps_del_dec[winner_ind].rand_state[last_smple_idx as usize];
+        let winner_rand_state = ps_del_dec[winner_ind].rand_state[last_smple_idx];
         for k in 0..n_states {
-            if ps_del_dec[k].rand_state[last_smple_idx as usize] != winner_rand_state {
+            if ps_del_dec[k].rand_state[last_smple_idx] != winner_rand_state {
                 ps_sample_state[k][0].rd_q10 =
                     ps_sample_state[k][0].rd_q10.saturating_add(i32::MAX >> 4);
                 ps_sample_state[k][1].rd_q10 =
@@ -634,7 +634,7 @@ pub fn silk_nsq_del_dec(
                     ps_common.predict_lpc_order as usize,
                     0,
                 );
-                ps_nsq.s_ltp_buf_idx = ps_common.ltp_mem_length as i32;
+                ps_nsq.s_ltp_buf_idx = ps_common.ltp_mem_length;
                 ps_nsq.rewhite_flag = 1;
             }
         }
@@ -648,7 +648,7 @@ pub fn silk_nsq_del_dec(
             &s_ltp,
             &mut s_ltp_q15,
             k,
-            ps_common.n_states_delayed_decision as i32,
+            ps_common.n_states_delayed_decision,
             ltp_scale_q14,
             gains_q16,
             pitch_l,
@@ -671,20 +671,20 @@ pub fn silk_nsq_del_dec(
             ar_shp_q13,
             lag,
             harm_shape_fir_packed_q14,
-            tilt_q14[k] as i32,
+            tilt_q14[k],
             lf_shp_q14[k],
             gains_q16[k],
             lambda_q10,
             offset_q10,
-            ps_common.subfr_length as i32,
+            ps_common.subfr_length,
             subfr_nsq,
-            ps_common.shaping_lpc_order as i32,
-            ps_common.predict_lpc_order as i32,
-            ps_common.warping_q16 as i32,
-            ps_common.n_states_delayed_decision as i32,
+            ps_common.shaping_lpc_order,
+            ps_common.predict_lpc_order,
+            ps_common.warping_q16,
+            ps_common.n_states_delayed_decision,
             &mut smpl_buf_idx,
             decision_delay,
-            ps_common.frame_counter as i32,
+            ps_common.frame_counter,
         );
 
         x_ptr += ps_common.subfr_length as usize;
@@ -708,7 +708,7 @@ pub fn silk_nsq_del_dec(
     ps_nsq.lag_prev = pitch_l[ps_common.nb_subfr as usize - 1];
 
     let gain_q10_final = silk_rshift(gains_q16[ps_common.nb_subfr as usize - 1], 6);
-    let mut last_smple_idx = (smpl_buf_idx + decision_delay) as i32;
+    let mut last_smple_idx = smpl_buf_idx + decision_delay;
     for i in 0..decision_delay {
         last_smple_idx = (last_smple_idx - 1 + DECISION_DELAY as i32) % DECISION_DELAY as i32;
         let pulse_idx = (pulses_ptr as i32 + i - decision_delay) as isize;

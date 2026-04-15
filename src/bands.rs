@@ -24,13 +24,8 @@ pub struct BandCtx<'a> {
     pub seed: u32,
 }
 
-/// Bit-exact cosine approximation matching C opus's bitexact_cos().
-/// Input: x in [0, 16384] representing angle * 16384 / (π/2).
-/// Output: cos(x * π/2 / 16384) * 32768 as i16.
-/// Matches C opus celt/bands.c bitexact_cos() exactly.
 #[inline]
 fn bitexact_cos(x: i16) -> i16 {
-    // FRAC_MUL16(a,b) = (16384 + (a as i16 as i32) * (b as i16 as i32)) >> 15
     #[inline(always)]
     fn frac_mul16(a: i16, b: i16) -> i16 {
         ((16384i32 + (a as i32) * (b as i32)) >> 15) as i16
@@ -228,29 +223,29 @@ unsafe fn haar1_avx(x: &mut [f32], n0: usize) {
     let mut j = 0;
     while j + 8 <= n {
         let ptr = x.as_mut_ptr().add(2 * j);
-        let a = _mm256_loadu_ps(ptr);        // [e0,o0,e1,o1,e4,o4,e5,o5]
-        let b = _mm256_loadu_ps(ptr.add(4)); // [e2,o2,e3,o3,e6,o6,e7,o7]
+        let a = _mm256_loadu_ps(ptr);
+        let b = _mm256_loadu_ps(ptr.add(4));
 
-        let t0 = _mm256_unpacklo_ps(a, b);   // [e0,e2,o0,o2,e4,e6,o4,o6]
-        let t1 = _mm256_unpackhi_ps(a, b);   // [e1,e3,o1,o3,e5,e7,o5,o7]
+        let t0 = _mm256_unpacklo_ps(a, b);
+        let t1 = _mm256_unpackhi_ps(a, b);
 
-        let even = _mm256_unpacklo_ps(t0, t1); // [e0,e1,e2,e3,e4,e5,e6,e7]
-        let odd  = _mm256_unpackhi_ps(t0, t1); // [o0,o1,o2,o3,o4,o5,o6,o7]
+        let even = _mm256_unpacklo_ps(t0, t1);
+        let odd = _mm256_unpackhi_ps(t0, t1);
 
-        let sum  = _mm256_mul_ps(_mm256_add_ps(even, odd), scale);
+        let sum = _mm256_mul_ps(_mm256_add_ps(even, odd), scale);
         let diff = _mm256_mul_ps(_mm256_sub_ps(even, odd), scale);
 
-        let r0 = _mm256_unpacklo_ps(sum, diff); // [s0,d0,s1,d1,s4,d4,s5,d5]
-        let r1 = _mm256_unpackhi_ps(sum, diff); // [s2,d2,s3,d3,s6,d6,s7,d7]
+        let r0 = _mm256_unpacklo_ps(sum, diff);
+        let r1 = _mm256_unpackhi_ps(sum, diff);
 
-        let out0 = _mm256_permute2f128_ps(r0, r1, 0x20); // [s0,d0,s1,d1,s2,d2,s3,d3]
-        let out1 = _mm256_permute2f128_ps(r0, r1, 0x31); // [s4,d4,s5,d5,s6,d6,s7,d7]
+        let out0 = _mm256_permute2f128_ps(r0, r1, 0x20);
+        let out1 = _mm256_permute2f128_ps(r0, r1, 0x31);
 
         _mm256_storeu_ps(ptr, out0);
         _mm256_storeu_ps(ptr.add(8), out1);
         j += 8;
     }
-    // scalar tail
+
     let scale = std::f32::consts::FRAC_1_SQRT_2;
     while j < n {
         let idx1 = 2 * j;
@@ -291,10 +286,8 @@ fn haar1_neon(x: &mut [f32], n0: usize, stride: usize) {
         let vscale = vdupq_n_f32(scale);
 
         for i in 0..stride {
-            // Process 4 pairs at a time when possible
             let mut j = 0;
             while j + 4 <= n {
-                // Load 4 even elements and 4 odd elements
                 let idx_even = stride * 2 * j + i;
                 let idx_odd = stride * (2 * j + 1) + i;
 
@@ -308,7 +301,6 @@ fn haar1_neon(x: &mut [f32], n0: usize, stride: usize) {
                 let vo2 = vld1q_f32(x.as_ptr().add(idx_odd + stride * 4));
                 let vo3 = vld1q_f32(x.as_ptr().add(idx_odd + stride * 6));
 
-                // Scale
                 let te0 = vmulq_f32(ve0, vscale);
                 let te1 = vmulq_f32(ve1, vscale);
                 let te2 = vmulq_f32(ve2, vscale);
@@ -319,7 +311,6 @@ fn haar1_neon(x: &mut [f32], n0: usize, stride: usize) {
                 let to2 = vmulq_f32(vo2, vscale);
                 let to3 = vmulq_f32(vo3, vscale);
 
-                // Store sum and difference
                 vst1q_f32(x.as_mut_ptr().add(idx_even), vaddq_f32(te0, to0));
                 vst1q_f32(
                     x.as_mut_ptr().add(idx_even + stride * 2),
@@ -351,7 +342,6 @@ fn haar1_neon(x: &mut [f32], n0: usize, stride: usize) {
                 j += 4;
             }
 
-            // Handle remaining elements
             while j < n {
                 let idx1 = stride * 2 * j + i;
                 let idx2 = stride * (2 * j + 1) + i;
@@ -390,7 +380,6 @@ pub fn compute_qn(n: usize, b: i32, offset: i32, pulse_cap: i32, stereo: bool) -
     }
 }
 
-/// NEON-optimized stereo_itheta computation
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -405,7 +394,6 @@ unsafe fn stereo_itheta_neon(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i3
         let mut sum_side = vdupq_n_f32(0.0);
         let mut i = 0;
 
-        // Process 16 elements at a time
         while i + 16 <= n {
             let x0 = vld1q_f32(x.as_ptr().add(i));
             let x1 = vld1q_f32(x.as_ptr().add(i + 4));
@@ -437,7 +425,6 @@ unsafe fn stereo_itheta_neon(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i3
             i += 16;
         }
 
-        // Process 8 elements
         while i + 8 <= n {
             let x0 = vld1q_f32(x.as_ptr().add(i));
             let x1 = vld1q_f32(x.as_ptr().add(i + 4));
@@ -457,7 +444,6 @@ unsafe fn stereo_itheta_neon(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i3
             i += 8;
         }
 
-        // Process 4 elements
         while i + 4 <= n {
             let x0 = vld1q_f32(x.as_ptr().add(i));
             let y0 = vld1q_f32(y.as_ptr().add(i));
@@ -471,7 +457,6 @@ unsafe fn stereo_itheta_neon(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i3
         emid += vaddvq_f32(sum_mid);
         eside += vaddvq_f32(sum_side);
 
-        // Scalar tail
         for j in i..n {
             let m = x[j] + y[j];
             let s = x[j] - y[j];
@@ -483,7 +468,6 @@ unsafe fn stereo_itheta_neon(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i3
         let mut sum_side = vdupq_n_f32(0.0);
         let mut i = 0;
 
-        // Process 16 elements at a time
         while i + 16 <= n {
             let x0 = vld1q_f32(x.as_ptr().add(i));
             let x1 = vld1q_f32(x.as_ptr().add(i + 4));
@@ -506,7 +490,6 @@ unsafe fn stereo_itheta_neon(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i3
             i += 16;
         }
 
-        // Process 8 elements
         while i + 8 <= n {
             let x0 = vld1q_f32(x.as_ptr().add(i));
             let x1 = vld1q_f32(x.as_ptr().add(i + 4));
@@ -521,7 +504,6 @@ unsafe fn stereo_itheta_neon(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i3
             i += 8;
         }
 
-        // Process 4 elements
         while i + 4 <= n {
             let x0 = vld1q_f32(x.as_ptr().add(i));
             let y0 = vld1q_f32(y.as_ptr().add(i));
@@ -533,7 +515,6 @@ unsafe fn stereo_itheta_neon(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i3
         emid += vaddvq_f32(sum_mid);
         eside += vaddvq_f32(sum_side);
 
-        // Scalar tail
         for j in i..n {
             emid += x[j] * x[j];
             eside += y[j] * y[j];
@@ -557,7 +538,6 @@ pub fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i32 {
 #[inline(always)]
 #[cfg(not(target_arch = "aarch64"))]
 pub fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i32 {
-    // Use NEON on aarch64
     #[cfg(target_arch = "aarch64")]
     unsafe {
         return stereo_itheta_neon(x, y, stereo, n);
@@ -586,15 +566,12 @@ pub fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i32 {
     }
 }
 
-/// Polynomial approximation of atan2(y, x) / (π/2) for x,y >= 0.
-/// Matches C opus celt_atan2p_norm() from celt/mathops.h (Remez degree 7).
-/// Returns value in [0, 1] mapping [0°, 90°].
 #[inline(always)]
 fn celt_atan2p_norm(y: f32, x: f32) -> f32 {
     #[inline(always)]
     fn atan_norm(x: f32) -> f32 {
-        const ATAN2_2_OVER_PI: f32 = 0.636_619_77_f32;
-        const A03: f32 = -3.333_165_9e-1_f32;
+        const ATAN2_2_OVER_PI: f32 = std::f32::consts::FRAC_2_PI;
+        const A03: f32 = -3.333_166e-1_f32;
         const A05: f32 = 1.996_270_4e-1_f32;
         const A07: f32 = -1.397_658_3e-1_f32;
         const A09: f32 = 9.794_234_e-2_f32;
@@ -627,7 +604,6 @@ pub struct SplitCtx {
     pub qalloc: i32,
 }
 
-/// Encode-only compute_theta - eliminates all decode branches at compile time.
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
 fn compute_theta_encode(
@@ -651,9 +627,6 @@ fn compute_theta_encode(
         qn = 1;
     }
 
-    // Fast path: when qn == 1 and not stereo-intensity, theta is fixed at 8192.
-    // Skip expensive stereo_itheta (NEON vector op over n elements) and tell_frac.
-    // This is common for low-bitrate bands where split energy ratio isn't encoded.
     if qn == 1 && !(stereo && ctx.i >= ctx.intensity) {
         sctx.itheta = 8192;
         sctx.qalloc = 0;
@@ -731,23 +704,21 @@ fn compute_theta_encode(
             ctx.rc.encode(fl as u32, (fl + fs) as u32, ft as u32);
         }
         itheta = (itheta * 16384 + (qn >> 1)) / qn;
-    } else {
-        if stereo && ctx.i >= ctx.intensity {
-            let mut emid = 1e-15f32;
-            let mut eside = 1e-15f32;
-            for i in 0..n {
-                let m = x[i] + y[i];
-                let s = x[i] - y[i];
-                emid += m * m;
-                eside += s * s;
-            }
-            let inv = eside > emid;
-            ctx.rc.encode_bit_logp(inv, 1);
-            itheta = 0;
-            sctx.inv = inv;
-        } else {
-            itheta = 8192;
+    } else if stereo && ctx.i >= ctx.intensity {
+        let mut emid = 1e-15f32;
+        let mut eside = 1e-15f32;
+        for i in 0..n {
+            let m = x[i] + y[i];
+            let s = x[i] - y[i];
+            emid += m * m;
+            eside += s * s;
         }
+        let inv = eside > emid;
+        ctx.rc.encode_bit_logp(inv, 1);
+        itheta = 0;
+        sctx.inv = inv;
+    } else {
+        itheta = 8192;
     }
 
     sctx.itheta = itheta;
@@ -911,36 +882,32 @@ pub fn compute_theta(
             }
         }
         itheta = (itheta * 16384 + (qn >> 1)) / qn;
-    } else {
-        if stereo && ctx.i >= ctx.intensity {
-            if ctx.encode {
-                let mut emid = 1e-15f32;
-                let mut eside = 1e-15f32;
-                for i in 0..n {
-                    let m = x[i] + y[i];
-                    let s = x[i] - y[i];
-                    emid += m * m;
-                    eside += s * s;
-                }
-                let inv = eside > emid;
-                ctx.rc.encode_bit_logp(inv, 1);
-                itheta = 0;
-                sctx.inv = inv;
-            } else {
-                sctx.inv = ctx.rc.decode_bit_logp(1);
-                itheta = 0;
+    } else if stereo && ctx.i >= ctx.intensity {
+        if ctx.encode {
+            let mut emid = 1e-15f32;
+            let mut eside = 1e-15f32;
+            for i in 0..n {
+                let m = x[i] + y[i];
+                let s = x[i] - y[i];
+                emid += m * m;
+                eside += s * s;
             }
+            let inv = eside > emid;
+            ctx.rc.encode_bit_logp(inv, 1);
+            itheta = 0;
+            sctx.inv = inv;
         } else {
-            itheta = 8192;
+            sctx.inv = ctx.rc.decode_bit_logp(1);
+            itheta = 0;
         }
+    } else {
+        itheta = 8192;
     }
 
     sctx.itheta = itheta;
 
-    // Fast path: when qn == 1 and no stereo intensity, no bits are used
-    // Avoid second tell_frac call which saves ~3-5ns per call
     sctx.qalloc = if qn == 1 && !(stereo && ctx.i >= ctx.intensity) {
-        0 // No encoding happened, qalloc is 0
+        0
     } else {
         tell_frac_inline!(ctx.rc) - tell_start
     };
@@ -965,7 +932,6 @@ pub fn compute_theta(
     }
 }
 
-/// Encode-only fast path for quant_partition with n=2
 #[inline(always)]
 fn quant_partition_n2_encode(
     ctx: &mut BandCtx,
@@ -1001,7 +967,6 @@ fn quant_partition_n2_encode(
     }
 }
 
-/// Fast path for quant_partition with n=2
 #[inline(always)]
 fn quant_partition_n2(
     ctx: &mut BandCtx,
@@ -1013,7 +978,6 @@ fn quant_partition_n2(
     gain: f32,
     fill: u32,
 ) -> u32 {
-    // For n=2, we can skip the split and directly quantize
     let mut q = bits2pulses(ctx.m, ctx.i, lm, b);
     let mut curr_bits = pulses2bits(ctx.m, ctx.i, lm, q);
     ctx.remaining_bits -= curr_bits;
@@ -1072,7 +1036,6 @@ fn quant_partition_n2(
     }
 }
 
-/// Encode-only fast path for quant_partition with n=4
 #[inline(always)]
 fn quant_partition_n4_encode(
     ctx: &mut BandCtx,
@@ -1108,7 +1071,6 @@ fn quant_partition_n4_encode(
     }
 }
 
-/// Encode-only fast path for quant_partition with n=8
 #[inline(always)]
 fn quant_partition_n8_encode(
     ctx: &mut BandCtx,
@@ -1144,7 +1106,6 @@ fn quant_partition_n8_encode(
     }
 }
 
-/// Encode-only direct quantization for n=16
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 fn quant_partition_direct_encode(
@@ -1182,8 +1143,6 @@ fn quant_partition_direct_encode(
     }
 }
 
-/// Encode-only quant_partition - eliminates all decode branches at compile time.
-/// This is the hot path for encoding, called for each band in quant_all_bands.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 fn quant_partition_encode(
@@ -1210,7 +1169,6 @@ fn quant_partition_encode(
         return quant_partition_direct_encode(ctx, x, n, b, b_blocks, lowband, lm, gain, fill);
     }
 
-    // Split decision
     let should_split = if lm >= 0 && n > 2 {
         let cache_idx = (lm + 1) as usize * ctx.m.nb_ebands + ctx.i;
         let cache_base = unsafe { *ctx.m.cache.index.get_unchecked(cache_idx) } as usize;
@@ -1261,8 +1219,6 @@ fn quant_partition_encode(
         let mut rebalance = ctx.remaining_bits;
         let mut cm;
 
-        // In the encode-only path, gain is passed to alg_quant with resynth=false,
-        // so it's never used. Skip the float multiplication to save work.
         if mbits >= sbits {
             cm = quant_partition_encode(
                 ctx,
@@ -1334,17 +1290,14 @@ fn quant_partition_encode(
         if q != 0 {
             let k = get_pulses(q);
             alg_quant(x, n, k, ctx.spread, b_blocks as usize, ctx.rc, gain, false)
+        } else if lowband.is_some() {
+            fill
         } else {
-            if lowband.is_some() {
-                fill
-            } else {
-                (1 << b_blocks) - 1
-            }
+            (1 << b_blocks) - 1
         }
     }
 }
 
-/// Fast path for quant_partition with n=4 and small b
 #[inline(always)]
 fn quant_partition_n4(
     ctx: &mut BandCtx,
@@ -1356,7 +1309,6 @@ fn quant_partition_n4(
     gain: f32,
     fill: u32,
 ) -> u32 {
-    // For n=4 with small b, skip the split and directly quantize
     let mut q = bits2pulses(ctx.m, ctx.i, lm, b);
     let mut curr_bits = pulses2bits(ctx.m, ctx.i, lm, q);
     ctx.remaining_bits -= curr_bits;
@@ -1415,7 +1367,6 @@ fn quant_partition_n4(
     }
 }
 
-/// Fast path for quant_partition with n=8 and small b
 #[inline(always)]
 fn quant_partition_n8(
     ctx: &mut BandCtx,
@@ -1485,7 +1436,6 @@ fn quant_partition_n8(
     }
 }
 
-/// Direct quantization for n=16 (skip split recursion).
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 fn quant_partition_direct(
@@ -1569,8 +1519,6 @@ pub fn quant_partition(
     gain: f32,
     fill: u32,
 ) -> u32 {
-    // Fast paths for small n: skip split recursion entirely.
-    // Direct quantization is correct and avoids compute_theta + recursive calls.
     if n == 2 {
         return quant_partition_n2(ctx, x, b, b_blocks, lowband, lm, gain, fill);
     }
@@ -1583,14 +1531,10 @@ pub fn quant_partition(
         return quant_partition_n8(ctx, x, b, b_blocks, lowband, lm, gain, fill);
     }
 
-    // Fast path for n=16: skip split recursion (common at lm=3)
     if n == 16 {
         return quant_partition_direct(ctx, x, n, b, b_blocks, lowband, lm, gain, fill);
     }
 
-    // Match C opus split condition: only split if the band has more bits
-    // than needed for max quality + 12. Uses the pulse cache table.
-    // C: if (LM != -1 && b > cache[cache[0]]+12 && N>2)
     let should_split = if lm >= 0 && n > 2 {
         let cache_idx = (lm + 1) as usize * ctx.m.nb_ebands + ctx.i;
         let cache_base = unsafe { *ctx.m.cache.index.get_unchecked(cache_idx) } as usize;
@@ -1701,8 +1645,6 @@ pub fn quant_partition(
         let mut curr_bits = pulses2bits(ctx.m, ctx.i, lm, q);
         ctx.remaining_bits -= curr_bits;
 
-        // Match C opus: never exceed the budget.
-        // If selected q would make remaining_bits negative, reduce q until it fits.
         while ctx.remaining_bits < 0 && q > 0 {
             ctx.remaining_bits += curr_bits;
             q -= 1;
@@ -1727,13 +1669,11 @@ pub fn quant_partition(
                 alg_unquant(x, n, k, ctx.spread, b_blocks as usize, ctx.rc, gain)
             }
         } else {
-            // q == 0: no pulses, fill with noise if resynth
             let has_lowband = lowband.is_some();
             if ctx.resynth {
                 let cm_mask = (1u32 << b_blocks) - 1;
                 let fill_masked = fill & cm_mask;
                 if fill_masked == 0 {
-                    // All sub-blocks collapsed — produce silence
                     x[..n].fill(0.0);
                 } else if has_lowband {
                     let lb = lowband.unwrap();
@@ -1743,7 +1683,6 @@ pub fn quant_partition(
                         let n8 = n & !7;
                         let mut i = 0;
                         while i < n8 {
-                            // Generate 8 random values
                             let mut vals = [0.0f32; 8];
                             for j in 0..8 {
                                 ctx.seed = celt_lcg_rand(ctx.seed);
@@ -1803,7 +1742,6 @@ pub fn quant_partition(
     }
 }
 
-/// NEON-optimized deinterleave for non-hadamard case
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 unsafe fn deinterleave_hadamard_neon(x: &mut [f32], n0: usize, stride: usize) {
@@ -1824,9 +1762,9 @@ unsafe fn deinterleave_hadamard_neon(x: &mut [f32], n0: usize, stride: usize) {
 
 pub fn deinterleave_hadamard(x: &mut [f32], n0: usize, stride: usize, hadamard: bool) {
     let n = n0 * stride;
-    // Use MaybeUninit to avoid zero-initializing 1408 bytes when n is typically 2-16
+
     let mut tmp_buf = [std::mem::MaybeUninit::<f32>::uninit(); MAX_PVQ_N];
-    // SAFETY: we write tmp[0..n] fully before any read below
+
     let tmp = unsafe { std::slice::from_raw_parts_mut(tmp_buf.as_mut_ptr() as *mut f32, n) };
     if hadamard {
         let offset = match stride {
@@ -1843,7 +1781,6 @@ pub fn deinterleave_hadamard(x: &mut [f32], n0: usize, stride: usize, hadamard: 
             }
         }
     } else {
-        // Use NEON on aarch64 for better performance
         #[cfg(target_arch = "aarch64")]
         unsafe {
             if n0 >= 4 {
@@ -1860,7 +1797,6 @@ pub fn deinterleave_hadamard(x: &mut [f32], n0: usize, stride: usize, hadamard: 
     x[..n].copy_from_slice(tmp);
 }
 
-/// NEON-optimized interleave for non-hadamard case
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 unsafe fn interleave_hadamard_neon(x: &mut [f32], n0: usize, stride: usize) {
@@ -1898,7 +1834,6 @@ pub fn interleave_hadamard(x: &mut [f32], n0: usize, stride: usize, hadamard: bo
             }
         }
     } else {
-        // Use NEON on aarch64 for better performance
         #[cfg(target_arch = "aarch64")]
         unsafe {
             if n0 >= 4 {
@@ -1992,10 +1927,6 @@ pub fn quant_band(
         recombine = tf_change_local;
     }
 
-    // The lowband data comes from quant_all_bands' lowband_scratch_buf, which is
-    // already a copy from norm. We can modify it in-place since quant_all_bands
-    // copies fresh data for each band. This eliminates a redundant 1408-byte
-    // copy and MaybeUninit stack allocation.
     let mut lowband_buf = lowband;
 
     static BIT_INTERLEAVE_TABLE: [u8; 16] = [0, 1, 1, 1, 2, 3, 3, 3, 2, 3, 3, 3, 2, 3, 3, 3];
@@ -2050,29 +1981,9 @@ pub fn quant_band(
     }
 
     let cm = if ctx.encode {
-        quant_partition_encode(
-            ctx,
-            x,
-            n,
-            b,
-            b_blocks,
-            lowband_buf.as_deref_mut(),
-            lm,
-            gain,
-            fill,
-        )
+        quant_partition_encode(ctx, x, n, b, b_blocks, lowband_buf, lm, gain, fill)
     } else {
-        quant_partition(
-            ctx,
-            x,
-            n,
-            b,
-            b_blocks,
-            lowband_buf.as_deref_mut(),
-            lm,
-            gain,
-            fill,
-        )
+        quant_partition(ctx, x, n, b, b_blocks, lowband_buf, lm, gain, fill)
     };
 
     if ctx.resynth {
@@ -2217,7 +2128,6 @@ fn stereo_merge_neon(x: &mut [f32], y: &mut [f32], mid: f32, side: f32, n: usize
         let vmid = vdupq_n_f32(mid);
         let vside = vdupq_n_f32(side);
 
-        // Process 16 elements at a time (4 vectors)
         let n16 = n & !15;
         for i in (0..n16).step_by(16) {
             let x0 = vld1q_f32(x.as_ptr().add(i));
@@ -2230,7 +2140,6 @@ fn stereo_merge_neon(x: &mut [f32], y: &mut [f32], mid: f32, side: f32, n: usize
             let y2 = vld1q_f32(y.as_ptr().add(i + 8));
             let y3 = vld1q_f32(y.as_ptr().add(i + 12));
 
-            // x_val = x * mid, y_val = y * side
             let xv0 = vmulq_f32(x0, vmid);
             let xv1 = vmulq_f32(x1, vmid);
             let xv2 = vmulq_f32(x2, vmid);
@@ -2241,7 +2150,6 @@ fn stereo_merge_neon(x: &mut [f32], y: &mut [f32], mid: f32, side: f32, n: usize
             let yv2 = vmulq_f32(y2, vside);
             let yv3 = vmulq_f32(y3, vside);
 
-            // x = x_val - y_val, y = x_val + y_val
             vst1q_f32(x.as_mut_ptr().add(i), vsubq_f32(xv0, yv0));
             vst1q_f32(x.as_mut_ptr().add(i + 4), vsubq_f32(xv1, yv1));
             vst1q_f32(x.as_mut_ptr().add(i + 8), vsubq_f32(xv2, yv2));
@@ -2253,7 +2161,6 @@ fn stereo_merge_neon(x: &mut [f32], y: &mut [f32], mid: f32, side: f32, n: usize
             vst1q_f32(y.as_mut_ptr().add(i + 12), vaddq_f32(xv3, yv3));
         }
 
-        // Process remaining 4-element chunks
         let n4 = (n & !3) - n16;
         for i in (n16..n16 + n4).step_by(4) {
             let xv = vld1q_f32(x.as_ptr().add(i));
@@ -2266,7 +2173,6 @@ fn stereo_merge_neon(x: &mut [f32], y: &mut [f32], mid: f32, side: f32, n: usize
             vst1q_f32(y.as_mut_ptr().add(i), vaddq_f32(x_val, y_val));
         }
 
-        // Process remaining elements
         for i in (n16 + n4)..n {
             let x_val = x[i] * mid;
             let y_val = y[i] * side;
@@ -2368,12 +2274,10 @@ pub fn quant_band_stereo(
                     } else {
                         0
                     }
+                } else if (x[0] * y[1] - x[1] * y[0]) < 0.0 {
+                    1
                 } else {
-                    if (x[0] * y[1] - x[1] * y[0]) < 0.0 {
-                        1
-                    } else {
-                        0
-                    }
+                    0
                 };
                 ctx.rc.enc_bits(sign as u32, 1);
             } else {
@@ -2537,21 +2441,14 @@ pub fn quant_all_bands(
 
     let norm_offset = m_val * (m.e_bands[start] as usize);
     let norm_size = m_val * (m.e_bands[m.nb_ebands - 1] as usize) - norm_offset;
-    // max norm_size = m_val(8) * e_bands_last(100) = 800
+
     const MAX_NORM_SIZE: usize = 800;
     debug_assert!(norm_size <= MAX_NORM_SIZE);
-    // Use MaybeUninit to avoid zeroing 3200 bytes per frame.
-    // SAFETY: norm is only read at positions previously written by a prior band's
-    // lowband_out (which writes norm[norm_pos..norm_pos+n]). The first band never
-    // reads from norm (lowband_offset starts at 0, effective_lowband stays -1).
-    // This matches C opus which declares norm[] on the stack without initialization.
+
     let mut norm_buf = [std::mem::MaybeUninit::<f32>::uninit(); MAX_NORM_SIZE];
     let norm =
         unsafe { std::slice::from_raw_parts_mut(norm_buf.as_mut_ptr() as *mut f32, norm_size) };
 
-    // Stack scratch buffer for lowband data (avoids per-band heap allocation).
-    // MAX_PVQ_N = 352 covers the largest possible band size.
-    // Use MaybeUninit since it's always fully overwritten by copy_from_slice before any read.
     let mut lowband_scratch_buf = [std::mem::MaybeUninit::<f32>::uninit(); MAX_PVQ_N];
     let lowband_scratch_ptr = lowband_scratch_buf.as_mut_ptr() as *mut f32;
 
@@ -2559,21 +2456,17 @@ pub fn quant_all_bands(
     let mut update_lowband = true;
     let mut avoid_split_noise = b_blocks > 1;
 
-    // Cache e_bands locally to avoid repeated bound checks and indirection
     let e_bands = &m.e_bands;
 
-    // Local copy of seed that will be modified by BandCtx as bands are processed
     let mut ctx_seed = *seed;
 
     for i in start..end {
-        // Pre-fetch e_bands values to avoid repeated indexing
         let e_band_i = e_bands[i] as usize;
         let e_band_i1 = e_bands[i + 1] as usize;
         let offset = m_val * e_band_i;
         let n = m_val * (e_band_i1 - e_band_i);
         let last = i == end - 1;
 
-        // Use inline macro to avoid function call overhead
         let tell = tell_frac_inline!(rc);
         if i != start {
             balance_val -= tell;
@@ -2676,11 +2569,6 @@ pub fn quant_all_bands(
             None
         };
 
-        // Pass a slice extending to the end of the frequency array, not just this band.
-        // This is needed because alg_unquant/exp_rotation use stride-based access (x[i*stride])
-        // which can go beyond this band's n elements. In the C reference, X is a raw pointer
-        // into the full array so this works naturally. The stray writes into later bands'
-        // memory are harmless because those bands are processed afterward and overwrite them.
         let x_slice = &mut x[offset..];
         if *dual_stereo {
             let y_slice = &mut y.as_mut().unwrap()[offset..];
@@ -2714,42 +2602,40 @@ pub fn quant_all_bands(
                 1.0,
                 y_cm,
             );
-        } else {
-            if let Some(y_all) = y.as_mut() {
-                let y_slice = &mut y_all[offset..offset + n];
-                let lb = lowband_scratch.as_deref_mut();
-                let lb_out = if !last && norm_pos + n <= norm.len() {
-                    Some(&mut norm[norm_pos..norm_pos + n])
-                } else {
-                    None
-                };
-                x_cm = quant_band_stereo(
-                    &mut ctx,
-                    x_slice,
-                    y_slice,
-                    n,
-                    b,
-                    b_blocks,
-                    lb,
-                    lm,
-                    lb_out,
-                    1.0,
-                    x_cm | y_cm,
-                );
-                y_cm = x_cm;
+        } else if let Some(y_all) = y.as_mut() {
+            let y_slice = &mut y_all[offset..offset + n];
+            let lb = lowband_scratch.as_deref_mut();
+            let lb_out = if !last && norm_pos + n <= norm.len() {
+                Some(&mut norm[norm_pos..norm_pos + n])
             } else {
-                let lb = lowband_scratch.as_deref_mut();
-                let lb_out = if !last && norm_pos + n <= norm.len() {
-                    Some(&mut norm[norm_pos..norm_pos + n])
-                } else {
-                    None
-                };
-                x_cm = quant_band(&mut ctx, x_slice, n, b, b_blocks, lb, lm, lb_out, 1.0, x_cm);
-                y_cm = x_cm;
-            }
+                None
+            };
+            x_cm = quant_band_stereo(
+                &mut ctx,
+                x_slice,
+                y_slice,
+                n,
+                b,
+                b_blocks,
+                lb,
+                lm,
+                lb_out,
+                1.0,
+                x_cm | y_cm,
+            );
+            y_cm = x_cm;
+        } else {
+            let lb = lowband_scratch;
+            let lb_out = if !last && norm_pos + n <= norm.len() {
+                Some(&mut norm[norm_pos..norm_pos + n])
+            } else {
+                None
+            };
+            x_cm = quant_band(&mut ctx, x_slice, n, b, b_blocks, lb, lm, lb_out, 1.0, x_cm);
+            y_cm = x_cm;
         }
 
-        collapse_masks[i * c_channels] = (x_cm & 0xFF) as u8 as u32; // Truncate to 8-bit like libopus
+        collapse_masks[i * c_channels] = (x_cm & 0xFF) as u8 as u32;
         if c_channels == 2 {
             collapse_masks[i * c_channels + 1] = (y_cm & 0xFF) as u8 as u32;
         }
@@ -2758,7 +2644,6 @@ pub fn quant_all_bands(
 
         update_lowband = b > ((n as i32) << BITRES);
 
-        // Propagate seed back from ctx (modified by noise fill in quant_partition)
         ctx_seed = ctx.seed;
 
         avoid_split_noise = false;
@@ -2767,7 +2652,6 @@ pub fn quant_all_bands(
     *seed = ctx_seed;
 }
 
-/// Compute band energies with NEON optimization on ARM64
 #[cfg(target_arch = "aarch64")]
 fn compute_band_energy_neon(band: &[f32]) -> f32 {
     use std::arch::aarch64::*;
@@ -2776,7 +2660,6 @@ fn compute_band_energy_neon(band: &[f32]) -> f32 {
     let mut sum = 1e-15f32;
 
     unsafe {
-        // Process 16 elements at a time (4 vectors of 4 floats each)
         let n16 = n & !15;
         if n16 > 0 {
             let mut acc0 = vdupq_n_f32(0.0);
@@ -2796,14 +2679,12 @@ fn compute_band_energy_neon(band: &[f32]) -> f32 {
                 acc3 = vfmaq_f32(acc3, v3, v3);
             }
 
-            // Combine accumulators
             acc0 = vaddq_f32(acc0, acc1);
             acc2 = vaddq_f32(acc2, acc3);
             acc0 = vaddq_f32(acc0, acc2);
             sum += vaddvq_f32(acc0);
         }
 
-        // Process remaining 4-element chunks
         let n4 = (n & !3) - n16;
         if n4 > 0 {
             let mut acc = vdupq_n_f32(0.0);
@@ -2814,7 +2695,6 @@ fn compute_band_energy_neon(band: &[f32]) -> f32 {
             sum += vaddvq_f32(acc);
         }
 
-        // Process remaining elements
         for i in (n16 + n4)..n {
             let v = band[i];
             sum += v * v;
@@ -2831,7 +2711,7 @@ unsafe fn compute_band_energy_avx2(band: &[f32]) -> f32 {
 
     let n = band.len();
     let mut i = 0usize;
-    // Two independent accumulators hide FMA latency (same as NEON 4-vector unroll)
+
     let mut acc0 = _mm256_setzero_ps();
     let mut acc1 = _mm256_setzero_ps();
 
@@ -2926,12 +2806,9 @@ pub fn amp2log2(
     }
 }
 
-/// Convert log2 energy to amplitude (actually just adds eMeans).
-/// This matches Opus reference implementation where log2Amp just adds the mean.
 pub fn log2amp(m: &CeltMode, end: usize, band_e: &mut [f32], band_log_e: &[f32], channels: usize) {
     for c in 0..channels {
         for i in 0..end {
-            // Just add eMeans, don't apply exp2 - denormalise_bands will do that
             band_e[c * m.nb_ebands + i] = band_log_e[c * m.nb_ebands + i] + m.e_means[i];
         }
     }
@@ -2975,7 +2852,7 @@ unsafe fn scale_slice_avx2(src: &[f32], dst: &mut [f32], scale: f32, n: usize) {
     use std::arch::x86_64::*;
     let vscale = _mm256_set1_ps(scale);
     let mut i = 0;
-    // Process 16 floats (2 AVX registers) per iteration for better throughput
+
     while i + 16 <= n {
         let s0 = _mm256_loadu_ps(src.as_ptr().add(i));
         let s1 = _mm256_loadu_ps(src.as_ptr().add(i + 8));
@@ -3014,7 +2891,7 @@ pub fn denormalise_bands(
             let base = c * frame_size + ((m.e_bands[i] as usize) << lm);
             let n = ((m.e_bands[i + 1] - m.e_bands[i]) as usize) << lm;
             let band_log = band_e[c * m.nb_ebands + i];
-            // band_e is log2(amplitude) from log2amp(); convert to linear: amplitude = 2^log2(amplitude)
+
             let g = (2.0f32).powf(band_log);
             let src = &x[base..base + n];
             let dst = &mut freq[base..base + n];
@@ -3034,18 +2911,15 @@ pub fn celt_lcg_rand(seed: u32) -> u32 {
     seed.wrapping_mul(1664525).wrapping_add(1013904223)
 }
 
-/// NEON-optimized vector renormalization
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn renormalise_vector_neon(x: &mut [f32], n: usize, gain: f32) {
     use std::arch::aarch64::*;
 
-    // Compute sum of squares
     let mut sum_vec = vdupq_n_f32(0.0);
     let mut i = 0;
 
-    // Process 16 elements at a time
     while i + 16 <= n {
         let x0 = vld1q_f32(x.as_ptr().add(i));
         let x1 = vld1q_f32(x.as_ptr().add(i + 4));
@@ -3058,7 +2932,6 @@ unsafe fn renormalise_vector_neon(x: &mut [f32], n: usize, gain: f32) {
         i += 16;
     }
 
-    // Process 8 elements
     while i + 8 <= n {
         let x0 = vld1q_f32(x.as_ptr().add(i));
         let x1 = vld1q_f32(x.as_ptr().add(i + 4));
@@ -3067,7 +2940,6 @@ unsafe fn renormalise_vector_neon(x: &mut [f32], n: usize, gain: f32) {
         i += 8;
     }
 
-    // Process 4 elements
     while i + 4 <= n {
         let x0 = vld1q_f32(x.as_ptr().add(i));
         sum_vec = vfmaq_f32(sum_vec, x0, x0);
@@ -3076,7 +2948,6 @@ unsafe fn renormalise_vector_neon(x: &mut [f32], n: usize, gain: f32) {
 
     let mut e = 1e-15f32 + vaddvq_f32(sum_vec);
 
-    // Scalar tail for energy
     for j in i..n {
         e += x[j] * x[j];
     }
@@ -3084,7 +2955,6 @@ unsafe fn renormalise_vector_neon(x: &mut [f32], n: usize, gain: f32) {
     let norm = gain / e.sqrt();
     let vnorm = vdupq_n_f32(norm);
 
-    // Normalize with NEON
     i = 0;
     while i + 16 <= n {
         let x0 = vld1q_f32(x.as_ptr().add(i));
@@ -3112,7 +2982,6 @@ unsafe fn renormalise_vector_neon(x: &mut [f32], n: usize, gain: f32) {
         i += 4;
     }
 
-    // Scalar tail
     for j in i..n {
         x[j] *= norm;
     }
@@ -3124,7 +2993,7 @@ unsafe fn renormalise_vector_avx2(x: &mut [f32], n: usize, gain: f32) {
     use std::arch::x86_64::*;
 
     let mut i = 0usize;
-    // Two independent accumulators to hide FMA latency, matching NEON 4-vector unroll
+
     let mut acc0 = _mm256_setzero_ps();
     let mut acc1 = _mm256_setzero_ps();
 

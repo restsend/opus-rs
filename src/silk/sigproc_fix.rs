@@ -134,7 +134,8 @@ pub fn silk_biquad_alt_stride2(
             s[3] = silk_smlawb(s[3], b_q28[2], input_output[2 * k + 1] as i32);
 
             input_output[2 * k] = silk_sat16(silk_rshift(out32_q14_0 + (1 << 14) - 1, 14)) as i16;
-            input_output[2 * k + 1] = silk_sat16(silk_rshift(out32_q14_1 + (1 << 14) - 1, 14)) as i16;
+            input_output[2 * k + 1] =
+                silk_sat16(silk_rshift(out32_q14_1 + (1 << 14) - 1, 14)) as i16;
         }
     }
 }
@@ -156,8 +157,6 @@ fn xcorr_kernel_c(x: &[i16], y: &[i16], sum: &mut [i32; 4], len: usize) {
     xcorr_kernel_scalar(x, y, sum, len);
 }
 
-/// Scalar C implementation of xcorr_kernel (4 lags simultaneously).
-/// Kept separate so it is always compiled and can be used as reference.
 #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 #[inline]
 fn xcorr_kernel_scalar(x: &[i16], y: &[i16], sum: &mut [i32; 4], len: usize) {
@@ -230,12 +229,6 @@ fn xcorr_kernel_scalar(x: &[i16], y: &[i16], sum: &mut [i32; 4], len: usize) {
     let _ = (y_0, y_1, y_2, y_3);
 }
 
-/// NEON-accelerated xcorr_kernel for i16 SILK data.
-///
-/// Computes sum[k] = Σ_{i=0}^{len-1} x[i] * y[i+k] for k=0..3 simultaneously,
-/// adding onto the existing values in `sum`.
-///
-/// Requires y.len() >= len + 3 (same contract as xcorr_kernel_c).
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -245,42 +238,28 @@ unsafe fn xcorr_kernel_neon_s16(x: &[i16], y: &[i16], sum: &mut [i32; 4], mut le
     debug_assert!(x.len() >= len);
     debug_assert!(y.len() >= len + 3);
 
-    // Each acc lane k accumulates: Σ x[i] * y[i+k] for the vectorised portion.
-    // We use a single int32×4 accumulator where lane 0 = lag-0, lane 1 = lag-1, etc.
-    let mut acc = vld1q_s32(sum.as_ptr()); // [sum[0], sum[1], sum[2], sum[3]]
+    let mut acc = vld1q_s32(sum.as_ptr());
 
     let mut xi = x.as_ptr();
     let mut yi = y.as_ptr();
 
-    // Load initial 8 y-values (need y[0..len+3])
-    let mut yy = vld1q_s16(yi); // [y[0]..y[7]]
+    let mut yy = vld1q_s16(yi);
 
-    // Main loop: 4 x-samples per iteration.
-    // Each iteration multiplies x[j+0..3] against the appropriate y-window
-    // and accumulates into the single acc vector (lane k = lag k).
-    //
-    // For x[j]:  acc[k] += x[j] * y[j+k]  → multiply [x[j]]*4 by [y[j]..y[j+3]]
-    // For x[j+1]: acc[k] += x[j+1] * y[j+1+k] → [x[j+1]]*4 by [y[j+1]..y[j+4]]
-    // etc.
     while len > 4 {
         yi = yi.add(4);
-        let yy1 = vld1q_s16(yi); // [y[j+4]..y[j+11]]
+        let yy1 = vld1q_s16(yi);
 
-        // x[j+0] * y[j+0..j+3]
         let xj0 = vld1_dup_s16(xi);
         acc = vmlal_s16(acc, vget_low_s16(yy), xj0);
 
-        // x[j+1] * y[j+1..j+4]
         let xj1 = vld1_dup_s16(xi.add(1));
         let ye1 = vextq_s16(yy, yy1, 1);
         acc = vmlal_s16(acc, vget_low_s16(ye1), xj1);
 
-        // x[j+2] * y[j+2..j+5]
         let xj2 = vld1_dup_s16(xi.add(2));
         let ye2 = vextq_s16(yy, yy1, 2);
         acc = vmlal_s16(acc, vget_low_s16(ye2), xj2);
 
-        // x[j+3] * y[j+3..j+6]
         let xj3 = vld1_dup_s16(xi.add(3));
         let ye3 = vextq_s16(yy, yy1, 3);
         acc = vmlal_s16(acc, vget_low_s16(ye3), xj3);
@@ -290,14 +269,11 @@ unsafe fn xcorr_kernel_neon_s16(x: &[i16], y: &[i16], sum: &mut [i32; 4], mut le
         len -= 4;
     }
 
-    // Write vectorised results back (each lane = one lag's partial sum)
     vst1q_s32(sum.as_mut_ptr(), acc);
 
-    // Scalar tail (0..3 remaining x-samples).
-    // yi now points at y[j], where j is the next unprocessed index.
     for k in 0..len {
         let xv = *xi.add(k) as i32;
-        // y for this x[j+k] at lag 0..3 = yi[k], yi[k+1], yi[k+2], yi[k+3]
+
         sum[0] = sum[0].wrapping_add(xv * (*yi.add(k) as i32));
         sum[1] = sum[1].wrapping_add(xv * (*yi.add(k + 1) as i32));
         sum[2] = sum[2].wrapping_add(xv * (*yi.add(k + 2) as i32));
@@ -428,7 +404,6 @@ pub fn silk_sum_sqr_shift(energy: &mut i32, shift: &mut i32, x: &[i16], len: usi
 
     shft = 31 - silk_clz32(len as i32);
 
-    // Pass 1: estimate energy scale with initial shft
     nrg = len as i32;
     i = 0;
     while i < len - 1 {
@@ -444,7 +419,6 @@ pub fn silk_sum_sqr_shift(energy: &mut i32, shift: &mut i32, x: &[i16], len: usi
 
     shft = (shft + 3 - silk_clz32(nrg)).max(0);
 
-    // Pass 2: compute energy with final shft
     #[cfg(target_arch = "aarch64")]
     {
         nrg = unsafe { silk_sum_sqr_shift_neon(x, len, shft) };
@@ -486,27 +460,23 @@ pub fn silk_sum_sqr_shift(energy: &mut i32, shift: &mut i32, x: &[i16], len: usi
     *energy = nrg;
 }
 
-/// NEON-accelerated squared-sum with right-shift for aarch64.
-/// Computes Σ (x[i]^2 >> shft) for i=0..len-1.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn silk_sum_sqr_shift_neon(x: &[i16], len: usize, shft: i32) -> i32 {
     use std::arch::aarch64::*;
 
-    // Use i64 accumulator to avoid overflow before the shift reduces values
     let mut acc = vdupq_n_s64(0i64);
     let mut i = 0;
 
-    // Process 8 elements at a time: square to i32 then accumulate into i64
     while i + 8 <= len {
         let v = vld1q_s16(x.as_ptr().add(i));
-        // Widen to i32 and square
+
         let lo = vget_low_s16(v);
         let hi = vget_high_s16(v);
-        let sq_lo = vmull_s16(lo, lo); // i32×4
-        let sq_hi = vmull_s16(hi, hi); // i32×4
-        // Right-shift each i32 by shft (vshlq_s32 with negative value = right shift)
+        let sq_lo = vmull_s16(lo, lo);
+        let sq_hi = vmull_s16(hi, hi);
+
         let shift_vec = vdupq_n_s32(-shft);
         let sq_lo_sh = vshlq_s32(sq_lo, shift_vec);
         let sq_hi_sh = vshlq_s32(sq_hi, shift_vec);
@@ -517,7 +487,6 @@ unsafe fn silk_sum_sqr_shift_neon(x: &[i16], len: usize, shft: i32) -> i32 {
 
     let mut nrg = vaddvq_s64(acc) as i32;
 
-    // Scalar tail
     while i < len {
         let v = x[i] as i32;
         let sq = (v * v) as u32;
@@ -569,8 +538,6 @@ fn silk_inner_prod_aligned_scalar(ptr1: &[i16], ptr2: &[i16], len: usize) -> i32
         .wrapping_add(sum3)
 }
 
-/// NEON-accelerated i16 dot-product for aarch64.
-/// Uses 4 × accumulators for maximum instruction-level parallelism.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -584,7 +551,6 @@ unsafe fn silk_inner_prod_aligned_neon(ptr1: &[i16], ptr2: &[i16], len: usize) -
 
     let mut i = 0;
 
-    // Process 32 elements per iteration for maximum ILP
     while i + 32 <= len {
         let a0 = vld1q_s16(ptr1.as_ptr().add(i));
         let b0 = vld1q_s16(ptr2.as_ptr().add(i));
@@ -607,7 +573,6 @@ unsafe fn silk_inner_prod_aligned_neon(ptr1: &[i16], ptr2: &[i16], len: usize) -
         i += 32;
     }
 
-    // Process 8 elements per iteration
     while i + 8 <= len {
         let a0 = vld1q_s16(ptr1.as_ptr().add(i));
         let b0 = vld1q_s16(ptr2.as_ptr().add(i));
@@ -616,14 +581,12 @@ unsafe fn silk_inner_prod_aligned_neon(ptr1: &[i16], ptr2: &[i16], len: usize) -
         i += 8;
     }
 
-    // Horizontal reduce: sum all four accumulators into one i64
     let sum01 = vpaddq_s32(acc0, acc1);
     let sum23 = vpaddq_s32(acc2, acc3);
     let sum = vpaddq_s32(sum01, sum23);
     let wide = vpaddlq_s32(sum);
     let mut result = vaddvq_s64(wide);
 
-    // Scalar tail
     while i < len {
         result += (ptr1[i] as i64) * (ptr2[i] as i64);
         i += 1;
@@ -774,33 +737,16 @@ pub fn silk_apply_sine_window(px_win: &mut [i16], px: &[i16], win_type: i32, len
     }
 }
 
-/// Compute `max_pitch` cross-correlations between `x[0..len]` and `y[i..i+len]`
-/// for i = 0..max_pitch.
-///
-/// Matches libopus `celt_pitch_xcorr_c`: processes 4 lags at once using
-/// `xcorr_kernel_c` to share y-vector loads across accumulators, then
-/// handles the tail lags one at a time.
-///
-/// Callers must ensure `x.len() >= len` and `y.len() >= max_pitch + len`.
-/// When y is shorter than required, individual lag calculations are bounded
-/// by the available slice.
 #[inline(always)]
 pub fn silk_pitch_xcorr(x: &[i16], y: &[i16], xcorr: &mut [i32], len: usize, max_pitch: usize) {
     debug_assert!(max_pitch > 0);
     debug_assert!(x.len() >= len);
     debug_assert!(xcorr.len() >= max_pitch);
 
-    // xcorr_kernel_c needs y[i..] to be at least len+3 long so it can pre-load
-    // y_0..y_2 and then read y_3 in the loop. Check that there is enough room
-    // for at least one kernel invocation.
     let y_len = y.len();
 
-    // Process 4 lags at a time using xcorr_kernel_c (same as celt_pitch_xcorr_c).
-    // This shares y-vector loads between the 4 accumulators, reducing memory
-    // bandwidth compared to computing each lag independently.
     let mut i = 0;
     while i + 3 < max_pitch {
-        // xcorr_kernel_c requires y[i..].len() >= len + 3
         if y_len >= i + len + 3 {
             let mut sum = [0i32; 4];
             xcorr_kernel_c(x, &y[i..], &mut sum, len);
@@ -810,7 +756,6 @@ pub fn silk_pitch_xcorr(x: &[i16], y: &[i16], xcorr: &mut [i32], len: usize, max
             xcorr[i + 3] = sum[3];
             i += 4;
         } else {
-            // Fall back to scalar for this group
             for k in i..i.saturating_add(4).min(max_pitch) {
                 let avail = len.min(y_len.saturating_sub(k));
                 let mut sum = 0i32;
@@ -822,7 +767,7 @@ pub fn silk_pitch_xcorr(x: &[i16], y: &[i16], xcorr: &mut [i32], len: usize, max
             i = i.saturating_add(4).min(max_pitch);
         }
     }
-    // Scalar tail for remaining lags
+
     while i < max_pitch {
         let avail = len.min(y_len.saturating_sub(i));
         let mut sum = 0i32;
@@ -974,7 +919,6 @@ pub fn silk_lpc_analysis_filter(
     assert!((d & 1) == 0);
     assert!(d <= len);
 
-    // Use AVX2 path for d <= 16 (all practical SILK LPC orders)
     #[cfg(target_arch = "x86_64")]
     if d <= 16 && is_x86_feature_detected!("avx2") {
         unsafe {
@@ -1065,15 +1009,9 @@ pub fn silk_shr32(a: i32, shift: i32) -> i32 {
     a >> shift
 }
 
-// ============================================================================
-// x86_64 AVX2 Optimizations (runtime-dispatched)
-// ============================================================================
-
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 
-/// AVX2-accelerated i16 dot-product for x86_64.
-/// Computes Σ (ptr1[i] * ptr2[i]) for i=0..len-1, wrapping.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[inline]
@@ -1082,13 +1020,12 @@ unsafe fn silk_inner_prod_aligned_avx2(ptr1: &[i16], ptr2: &[i16], len: usize) -
     let mut acc1 = _mm256_setzero_si256();
     let mut i = 0;
 
-    // 32 elements per iteration (two 256-bit loads)
     while i + 32 <= len {
         let a0 = _mm256_loadu_si256(ptr1.as_ptr().add(i) as *const __m256i);
         let b0 = _mm256_loadu_si256(ptr2.as_ptr().add(i) as *const __m256i);
         let a1 = _mm256_loadu_si256(ptr1.as_ptr().add(i + 16) as *const __m256i);
         let b1 = _mm256_loadu_si256(ptr2.as_ptr().add(i + 16) as *const __m256i);
-        // _mm256_madd_epi16: horizontally sum adjacent pairs → 8 × i32
+
         acc0 = _mm256_add_epi32(acc0, _mm256_madd_epi16(a0, b0));
         acc1 = _mm256_add_epi32(acc1, _mm256_madd_epi16(a1, b1));
         i += 32;
@@ -1100,7 +1037,6 @@ unsafe fn silk_inner_prod_aligned_avx2(ptr1: &[i16], ptr2: &[i16], len: usize) -
         i += 16;
     }
 
-    // Combine two accumulators and reduce to scalar
     let acc = _mm256_add_epi32(acc0, acc1);
     let hi = _mm256_extracti128_si256(acc, 1);
     let lo = _mm256_castsi256_si128(acc);
@@ -1109,7 +1045,6 @@ unsafe fn silk_inner_prod_aligned_avx2(ptr1: &[i16], ptr2: &[i16], len: usize) -
     let sum1 = _mm_add_epi32(sum2, _mm_srli_si128(sum2, 4));
     let mut result = _mm_cvtsi128_si32(sum1);
 
-    // Handle 8-element remainder (SSE madd)
     if i + 8 <= len {
         let a = _mm_loadu_si128(ptr1.as_ptr().add(i) as *const __m128i);
         let b = _mm_loadu_si128(ptr2.as_ptr().add(i) as *const __m128i);
@@ -1120,7 +1055,6 @@ unsafe fn silk_inner_prod_aligned_avx2(ptr1: &[i16], ptr2: &[i16], len: usize) -
         i += 8;
     }
 
-    // Scalar tail
     while i < len {
         result = result.wrapping_add((ptr1[i] as i32).wrapping_mul(ptr2[i] as i32));
         i += 1;
@@ -1129,9 +1063,6 @@ unsafe fn silk_inner_prod_aligned_avx2(ptr1: &[i16], ptr2: &[i16], len: usize) -
     result
 }
 
-/// AVX2-accelerated xcorr_kernel for i16 data.
-/// Computes sum[k] += Σ x[i] * y[i+k] for k=0..3 simultaneously.
-/// Contract: x.len() >= len, y.len() >= len + 3.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[inline]
@@ -1139,57 +1070,30 @@ unsafe fn xcorr_kernel_avx2(x: &[i16], y: &[i16], sum: &mut [i32; 4], len: usize
     debug_assert!(x.len() >= len);
     debug_assert!(y.len() >= len + 3);
 
-    // Algorithm: for each 4-element group of x[i..i+4], compute contributions to
-    // all 4 lags simultaneously.
-    //
-    // xdup = [x[i], x[i+1], x[i+2], x[i+3], x[i], x[i+1], x[i+2], x[i+3]]
-    //
-    // y4_01 = [y[i], y[i+1], y[i+2], y[i+3],   <- for lag 0
-    //          y[i+1], y[i+2], y[i+3], y[i+4]]  <- for lag 1
-    //
-    // y4_23 = [y[i+2], y[i+3], y[i+4], y[i+5],  <- for lag 2
-    //          y[i+3], y[i+4], y[i+5], y[i+6]]   <- for lag 3
-    //
-    // p01 = madd(xdup, y4_01):
-    //   lane 0 = x[i]*y[i+0] + x[i+1]*y[i+1]
-    //   lane 1 = x[i+2]*y[i+2] + x[i+3]*y[i+3]
-    //   lane 2 = x[i]*y[i+1] + x[i+1]*y[i+2]
-    //   lane 3 = x[i+2]*y[i+3] + x[i+3]*y[i+4]
-    //
-    // hadd(p01, p23)[0] = p01[0]+p01[1] = sum[0] partial contribution ✓
-    // hadd(p01, p23)[1] = p01[2]+p01[3] = sum[1] partial contribution ✓
-    // hadd(p01, p23)[2] = p23[0]+p23[1] = sum[2] partial contribution ✓
-    // hadd(p01, p23)[3] = p23[2]+p23[3] = sum[3] partial contribution ✓
-
     let mut acc = _mm_setzero_si128();
     let mut i = 0;
 
     while i + 4 <= len {
-        // Load x[i..i+4] into low 64 bits, duplicate to upper 64 bits
         let x4 = _mm_loadl_epi64(x.as_ptr().add(i) as *const __m128i);
         let xdup = _mm_unpacklo_epi64(x4, x4);
 
-        // Load y[i..i+8] once; shift for each lag using byte-shift
         let y8 = _mm_loadu_si128(y.as_ptr().add(i) as *const __m128i);
-        let y1 = _mm_bsrli_si128(y8, 2); // y[i+1..i+7], zeros MSB
+        let y1 = _mm_bsrli_si128(y8, 2);
         let y2 = _mm_bsrli_si128(y8, 4);
         let y3 = _mm_bsrli_si128(y8, 6);
 
-        // y4_01: low half = y[i+0..3], high half = y[i+1..4]
         let y4_01 = _mm_unpacklo_epi64(y8, y1);
-        // y4_23: low half = y[i+2..5], high half = y[i+3..6]
+
         let y4_23 = _mm_unpacklo_epi64(y2, y3);
 
         let p01 = _mm_madd_epi16(xdup, y4_01);
         let p23 = _mm_madd_epi16(xdup, y4_23);
 
-        // hadd gives [sum0_partial, sum1_partial, sum2_partial, sum3_partial]
         acc = _mm_add_epi32(acc, _mm_hadd_epi32(p01, p23));
 
         i += 4;
     }
 
-    // Extract accumulated partial sums
     let mut tmp = [0i32; 4];
     _mm_storeu_si128(tmp.as_mut_ptr() as *mut __m128i, acc);
     sum[0] = sum[0].wrapping_add(tmp[0]);
@@ -1197,7 +1101,6 @@ unsafe fn xcorr_kernel_avx2(x: &[i16], y: &[i16], sum: &mut [i32; 4], len: usize
     sum[2] = sum[2].wrapping_add(tmp[2]);
     sum[3] = sum[3].wrapping_add(tmp[3]);
 
-    // Scalar tail (0..3 remaining elements)
     let mut y_0 = y[i];
     let mut y_1 = y[i + 1];
     let mut y_2 = y[i + 2];
@@ -1214,8 +1117,6 @@ unsafe fn xcorr_kernel_avx2(x: &[i16], y: &[i16], sum: &mut [i32; 4], len: usize
     }
 }
 
-/// AVX2-accelerated squared-sum with right-shift for x86_64.
-/// Computes Σ ((x[i]*x[i]) >> shft) for i=0..len-1 wrapping into i32.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[inline]
@@ -1223,12 +1124,11 @@ unsafe fn silk_sum_sqr_shift_avx2(x: &[i16], len: usize, shft: i32) -> i32 {
     let mut acc = _mm256_setzero_si256();
     let mut i = 0;
 
-    // Process 16 elements per iteration
     while i + 16 <= len {
         let v = _mm256_loadu_si256(x.as_ptr().add(i) as *const __m256i);
-        // madd(v, v) = v[0]*v[0]+v[1]*v[1] per i32 lane → 8 × i32
+
         let sq = _mm256_madd_epi16(v, v);
-        // srlv_epi32 performs per-lane variable shift (same count for all lanes)
+
         let vshift = _mm256_set1_epi32(shft);
         let shifted = if shft > 0 {
             _mm256_srlv_epi32(sq, vshift)
@@ -1239,7 +1139,6 @@ unsafe fn silk_sum_sqr_shift_avx2(x: &[i16], len: usize, shft: i32) -> i32 {
         i += 16;
     }
 
-    // Horizontal reduce
     let hi = _mm256_extracti128_si256(acc, 1);
     let lo = _mm256_castsi256_si128(acc);
     let sum4 = _mm_add_epi32(lo, hi);
@@ -1247,7 +1146,6 @@ unsafe fn silk_sum_sqr_shift_avx2(x: &[i16], len: usize, shft: i32) -> i32 {
     let sum1 = _mm_add_epi32(sum2, _mm_srli_si128(sum2, 4));
     let mut nrg = _mm_cvtsi128_si32(sum1);
 
-    // Scalar tail
     while i < len {
         let v = x[i] as i32;
         let sq = (v * v) as u32;
@@ -1258,11 +1156,6 @@ unsafe fn silk_sum_sqr_shift_avx2(x: &[i16], len: usize, shft: i32) -> i32 {
     nrg
 }
 
-/// AVX2-accelerated LPC analysis filter for i16 data, d <= 16.
-///
-/// Computes out[ix] = clamp16( round((input[ix]<<12 - Σ input[ix-1-k]*b[k]), 12) )
-/// for ix in d..len.  Exactly matches the scalar wrapping arithmetic by widening
-/// inputs to i32 before multiplying (avoids _mm256_madd_epi16 saturation).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[inline]
@@ -1275,21 +1168,15 @@ unsafe fn silk_lpc_analysis_filter_avx2(
 ) {
     debug_assert!(d >= 6 && (d & 1) == 0 && d <= 16);
 
-    // Build b_rev_pad[16]: b_rev_pad[j] = b[15-j] for j >= 16-d, else 0.
-    // Then input[ix-16+j] * b_rev_pad[j] = input[ix-1-(15-j)] * b[15-j]
-    //   (setting k=15-j) = input[ix-1-k] * b[k]  ✓
-    // For j < 16-d, b_rev_pad[j]=0 so those products contribute 0.
     let mut b_rev_pad = [0i16; 16];
     for k in 0..d {
         b_rev_pad[15 - k] = b[k];
     }
 
-    // Zero first d outputs
     for v in out[..d].iter_mut() {
         *v = 0;
     }
 
-    // Scalar for ix in d..16 (insufficient history for 16-element window)
     let avx_start = 16usize.max(d);
     for ix in d..avx_start.min(len) {
         let mut s: i32 = 0;
@@ -1304,21 +1191,17 @@ unsafe fn silk_lpc_analysis_filter_avx2(
         return;
     }
 
-    // Widen b_rev_pad to i32 (in two 8-element halves)
     let b_lo = _mm256_cvtepi16_epi32(_mm_loadu_si128(b_rev_pad.as_ptr() as *const __m128i));
     let b_hi = _mm256_cvtepi16_epi32(_mm_loadu_si128(b_rev_pad.as_ptr().add(8) as *const __m128i));
 
     for ix in avx_start..len {
-        // Load 16 consecutive input samples ending at input[ix-1]
         let base = input.as_ptr().add(ix - 16);
         let inp_lo = _mm256_cvtepi16_epi32(_mm_loadu_si128(base as *const __m128i));
         let inp_hi = _mm256_cvtepi16_epi32(_mm_loadu_si128(base.add(8) as *const __m128i));
 
-        // i16*i16 products fit exactly in i32; _mm256_mullo_epi32 gives wrapping result
         let prod_lo = _mm256_mullo_epi32(inp_lo, b_lo);
         let prod_hi = _mm256_mullo_epi32(inp_hi, b_hi);
 
-        // Wrapping horizontal sum of 16 i32 values
         let sum256 = _mm256_add_epi32(prod_lo, prod_hi);
         let hi128 = _mm256_extracti128_si256(sum256, 1);
         let lo128 = _mm256_castsi256_si128(sum256);
@@ -1332,9 +1215,6 @@ unsafe fn silk_lpc_analysis_filter_avx2(
     }
 }
 
-
-/// NEON-accelerated biquad filter (stride 2) for aarch64.
-/// Based on silk_biquad_alt_stride2_neon from C code.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -1347,11 +1227,9 @@ unsafe fn silk_biquad_alt_stride2_neon(
 ) {
     use std::arch::aarch64::*;
 
-    // Offset for rounding: (1 << 14) - 1
     let offset_s32x2 = vdup_n_s32((1 << 14) - 1);
     let offset_s32x4 = vcombine_s32(offset_s32x2, offset_s32x2);
 
-    // Negate A_Q28 values and split in two parts (matching C implementation)
     let a_q28_s32x2 = vneg_s32(vld1_s32(a_q28.as_ptr()));
     let a_l_s32x2 = vreinterpret_s32_u32(vshr_n_u32(
         vreinterpret_u32_s32(vshl_n_s32(a_q28_s32x2, 18)),
@@ -1363,7 +1241,6 @@ unsafe fn silk_biquad_alt_stride2_neon(
     let b_q28_s32x2 = vld1_s32(b_q28.as_ptr());
     let t_s32x2 = vld1_s32(b_q28.as_ptr().add(1));
 
-    // Zip coefficients for vectorized use
     let t0_s32x2x2 = vzip_s32(a_l_s32x2, a_l_s32x2);
     let t1_s32x2x2 = vzip_s32(a_u_s32x2, a_u_s32x2);
     let t2_s32x2x2 = vzip_s32(t_s32x2, t_s32x2);
@@ -1372,47 +1249,36 @@ unsafe fn silk_biquad_alt_stride2_neon(
     let a_u_s32x4 = vcombine_s32(t1_s32x2x2.0, t1_s32x2x2.1);
     let b_q28_s32x4 = vcombine_s32(t2_s32x2x2.0, t2_s32x2x2.1);
 
-    // Load and transpose state vector
     let mut s_s32x4 = vld1q_s32(s.as_ptr());
     let s_s32x2x2 = vtrn_s32(vget_low_s32(s_s32x4), vget_high_s32(s_s32x4));
     s_s32x4 = vcombine_s32(s_s32x2x2.0, s_s32x2x2.1);
 
     let mut k = 0;
     while k + 1 < len {
-        // Load 4 input samples: in[2*k + 0,1,2,3]
         let in_s16x4 = vld1_s16(input_output.as_ptr().add(2 * k));
         let in_s32x4 = vshll_n_s16(in_s16x4, 15);
 
-        // t = vqdmulhq_lane_s32(in << 15, B_Q28_s32x2, 0) = SMULWB(B[0], in)
         let t_s32x4 = vqdmulhq_lane_s32(in_s32x4, b_q28_s32x2, 0);
 
-        // Process first pair
         let in_low = vcombine_s32(vget_low_s32(in_s32x4), vget_low_s32(in_s32x4));
         let t_low = vget_low_s32(t_s32x4);
 
-        // out32_Q14 = (S[0,1] + SMULWB(B[0], in[0,1])) << 2
         let mut out32_q14_s32x2 = vadd_s32(vget_low_s32(s_s32x4), t_low);
         out32_q14_s32x2 = vshl_n_s32(out32_q14_s32x2, 2);
 
-        // S[0,1] = S[2,3]; S[2,3] = 0
         s_s32x4 = vcombine_s32(vget_high_s32(s_s32x4), vdup_n_s32(0));
 
-        // out32_Q14 broadcast
         let out32_q14_s32x4 = vcombine_s32(out32_q14_s32x2, out32_q14_s32x2);
 
-        // S += vqdmulhq_s32(out32_Q14, A_L) >> 14 (rounded)
         let tmp_s32x4 = vqdmulhq_s32(out32_q14_s32x4, a_l_s32x4);
         s_s32x4 = vrsraq_n_s32(s_s32x4, tmp_s32x4, 14);
 
-        // S += vqdmulhq_s32(out32_Q14, A_U)
         let tmp_s32x4 = vqdmulhq_s32(out32_q14_s32x4, a_u_s32x4);
         s_s32x4 = vaddq_s32(s_s32x4, tmp_s32x4);
 
-        // S += vqdmulhq_s32(in, B_Q28[1,1,2,2])
         let tmp_s32x4 = vqdmulhq_s32(in_low, b_q28_s32x4);
         s_s32x4 = vaddq_s32(s_s32x4, tmp_s32x4);
 
-        // Process second pair
         let in_high = vcombine_s32(vget_high_s32(in_s32x4), vget_high_s32(in_s32x4));
         let t_high = vget_high_s32(t_s32x4);
 
@@ -1432,7 +1298,6 @@ unsafe fn silk_biquad_alt_stride2_neon(
         let tmp_s32x4 = vqdmulhq_s32(in_high, b_q28_s32x4);
         s_s32x4 = vaddq_s32(s_s32x4, tmp_s32x4);
 
-        // Combine outputs and saturate
         let out32_q14_combined = vcombine_s32(out32_q14_s32x2, out32_q14_1_s32x2);
         let out_s32x4 = vaddq_s32(out32_q14_combined, offset_s32x4);
         let out_s16x4 = vqshrn_n_s32(out_s32x4, 14);
@@ -1442,7 +1307,6 @@ unsafe fn silk_biquad_alt_stride2_neon(
         k += 2;
     }
 
-    // Process leftover (if len is odd)
     if k < len {
         let in0 = input_output[2 * k] as i32;
         let in1 = input_output[2 * k + 1] as i32;
@@ -1450,16 +1314,15 @@ unsafe fn silk_biquad_alt_stride2_neon(
         let out32_q14_0 = silk_smlawb(vgetq_lane_s32(s_s32x4, 0), b_q28[0], in0) << 2;
         let out32_q14_1 = silk_smlawb(vgetq_lane_s32(s_s32x4, 2), b_q28[0], in1) << 2;
 
-        // Scalar fallback for last iteration
         let a0_l = (-a_q28[0]) & 0x00003FFF;
         let a0_u = -a_q28[0] >> 14;
         let a1_l = (-a_q28[1]) & 0x00003FFF;
         let a1_u = -a_q28[1] >> 14;
 
-        let s0_new = vgetq_lane_s32(s_s32x4, 1)
-            + silk_rshift_round(silk_smulwb(out32_q14_0, a0_l), 14);
-        let s2_new = vgetq_lane_s32(s_s32x4, 3)
-            + silk_rshift_round(silk_smulwb(out32_q14_1, a0_l), 14);
+        let s0_new =
+            vgetq_lane_s32(s_s32x4, 1) + silk_rshift_round(silk_smulwb(out32_q14_0, a0_l), 14);
+        let s2_new =
+            vgetq_lane_s32(s_s32x4, 3) + silk_rshift_round(silk_smulwb(out32_q14_1, a0_l), 14);
 
         let s0_new = silk_smlawb(s0_new, out32_q14_0, a0_u);
         let s2_new = silk_smlawb(s2_new, out32_q14_1, a0_u);
@@ -1481,7 +1344,6 @@ unsafe fn silk_biquad_alt_stride2_neon(
         s[2] = s2_new;
         s[3] = s3_new;
     } else {
-        // Transpose state back
         vst1q_lane_s32(&mut s[0], s_s32x4, 0);
         vst1q_lane_s32(&mut s[1], s_s32x4, 2);
         vst1q_lane_s32(&mut s[2], s_s32x4, 1);

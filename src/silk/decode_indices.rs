@@ -78,8 +78,8 @@ pub fn silk_decode_indices(
             }
         }
         if decode_absolute_lag_index != 0 {
-            ps_dec.indices.lag_index = ((ps_range_dec.decode_icdf(&SILK_PITCH_LAG_ICDF, 8) as i32)
-                * (ps_dec.fs_khz >> 1)) as i16;
+            ps_dec.indices.lag_index =
+                ((ps_range_dec.decode_icdf(&SILK_PITCH_LAG_ICDF, 8)) * (ps_dec.fs_khz >> 1)) as i16;
             ps_dec.indices.lag_index +=
                 ps_range_dec.decode_icdf(ps_dec.pitch_lag_low_bits_icdf, 8) as i16;
         }

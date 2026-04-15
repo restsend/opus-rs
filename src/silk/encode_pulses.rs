@@ -30,7 +30,7 @@ pub fn silk_encode_pulses(
 
     let mut abs_pulses = [0i32; MAX_FRAME_LENGTH + SHELL_CODEC_FRAME_LENGTH];
 
-    let iter = (frame_length + SHELL_CODEC_FRAME_LENGTH - 1) / SHELL_CODEC_FRAME_LENGTH;
+    let iter = frame_length.div_ceil(SHELL_CODEC_FRAME_LENGTH);
 
     for i in 0..frame_length {
         abs_pulses[i] = pulses[i].abs() as i32;

@@ -94,7 +94,7 @@ pub fn silk_nlsf_del_dec_quant(
                     rate0_q5 = rates_q5_ptr[(ind_tmp + NLSF_QUANT_MAX_AMPLITUDE) as usize] as i32;
                     rate1_q5 = 280;
                 } else {
-                    rate0_q5 = silk_smlabb(280 - 43 * NLSF_QUANT_MAX_AMPLITUDE, 43, ind_tmp as i32);
+                    rate0_q5 = silk_smlabb(280 - 43 * NLSF_QUANT_MAX_AMPLITUDE, 43, ind_tmp);
                     rate1_q5 = rate0_q5 + 43;
                 }
             } else if ind_tmp <= -NLSF_QUANT_MAX_AMPLITUDE {
@@ -103,8 +103,7 @@ pub fn silk_nlsf_del_dec_quant(
                     rate1_q5 =
                         rates_q5_ptr[(ind_tmp + 1 + NLSF_QUANT_MAX_AMPLITUDE) as usize] as i32;
                 } else {
-                    rate0_q5 =
-                        silk_smlabb(280 - 43 * NLSF_QUANT_MAX_AMPLITUDE, -43, ind_tmp as i32);
+                    rate0_q5 = silk_smlabb(280 - 43 * NLSF_QUANT_MAX_AMPLITUDE, -43, ind_tmp);
                     rate1_q5 = rate0_q5 - 43;
                 }
             } else {
@@ -116,13 +115,13 @@ pub fn silk_nlsf_del_dec_quant(
             diff_q10 = in_q10 - out0_q10;
             rd_q25[j] = silk_smlabb(
                 silk_mla(rd_tmp_q25, silk_smulbb(diff_q10, diff_q10), w_q5[i] as i32),
-                mu_q20 as i32,
+                mu_q20,
                 rate0_q5,
             );
             diff_q10 = in_q10 - out1_q10;
             rd_q25[j + n_states] = silk_smlabb(
                 silk_mla(rd_tmp_q25, silk_smulbb(diff_q10, diff_q10), w_q5[i] as i32),
-                mu_q20 as i32,
+                mu_q20,
                 rate1_q5,
             );
         }
@@ -143,9 +142,7 @@ pub fn silk_nlsf_del_dec_quant(
                     rd_q25[j] = rd_min_q25[j];
                     rd_q25[j + NLSF_QUANT_DEL_DEC_STATES] = rd_max_q25[j];
 
-                    let tmp = prev_out_q10[j];
-                    prev_out_q10[j] = prev_out_q10[j + NLSF_QUANT_DEL_DEC_STATES];
-                    prev_out_q10[j + NLSF_QUANT_DEL_DEC_STATES] = tmp;
+                    prev_out_q10.swap(j, j + NLSF_QUANT_DEL_DEC_STATES);
                     ind_sort[j] = j + NLSF_QUANT_DEL_DEC_STATES;
                 } else {
                     rd_min_q25[j] = rd_q25[j];
@@ -195,9 +192,9 @@ pub fn silk_nlsf_del_dec_quant(
             ind_tmp = j as i32;
         }
     }
-    for i in 0..order as usize {
-        indices[i] = ind[(ind_tmp & (NLSF_QUANT_DEL_DEC_STATES as i32 - 1)) as usize][i];
-    }
+    indices[..(order as usize)].copy_from_slice(
+        &ind[(ind_tmp & (NLSF_QUANT_DEL_DEC_STATES as i32 - 1)) as usize][..(order as usize)],
+    );
     indices[0] += (ind_tmp >> NLSF_QUANT_DEL_DEC_STATES_LOG2) as i8;
 
     min_q25

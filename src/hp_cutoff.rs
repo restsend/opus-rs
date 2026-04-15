@@ -39,12 +39,12 @@ pub fn hp_cutoff(
 
     if channels == 1 {
         let s = &mut [hp_mem[0], hp_mem[1]];
-        silk_biquad_alt_stride1(&input_i16, &b_q28, &a_q28, s, output);
+        silk_biquad_alt_stride1(input_i16, &b_q28, &a_q28, s, output);
         hp_mem[0] = s[0];
         hp_mem[1] = s[1];
     } else {
         let s = &mut [hp_mem[0], hp_mem[1], hp_mem[2], hp_mem[3]];
-        silk_biquad_alt_stride2(&input_i16, &b_q28, &a_q28, s, output, len);
+        silk_biquad_alt_stride2(input_i16, &b_q28, &a_q28, s, output, len);
         hp_mem[0] = s[0];
         hp_mem[1] = s[1];
         hp_mem[2] = s[2];

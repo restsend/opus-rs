@@ -10,7 +10,7 @@ pub fn silk_ana_filt_bank_1(
     out_h: &mut [i16],
     n: usize,
 ) {
-    if n < 2 || n > 4096 || n > input.len() {
+    if !(2..=4096).contains(&n) || n > input.len() {
         return;
     }
 

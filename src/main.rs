@@ -23,9 +23,9 @@ fn main() {
     for f in 0..num_frames {
         let mut input = vec![0.0f32; frame_size];
         let freq = 440.0;
-        for i in 0..frame_size {
+        for (i, sample) in input.iter_mut().enumerate().take(frame_size) {
             let t = (f * frame_size + i) as f32 / 48000.0;
-            input[i] = (2.0 * std::f32::consts::PI * freq * t).sin() * 0.5;
+            *sample = (2.0 * std::f32::consts::PI * freq * t).sin() * 0.5;
         }
         total_input.extend_from_slice(&input);
 

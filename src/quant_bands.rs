@@ -89,7 +89,6 @@ pub fn quant_coarse_energy(
     debug_assert!(channels <= 2);
     let mut prev = [0.0f32; 2];
 
-    // Match C: max_decay = min(16, 0.125 * nbAvailableBytes) when end-start > 10
     let max_decay = if end - start > 10 {
         16.0f32.min(0.125 * nb_available_bytes as f32)
     } else {
