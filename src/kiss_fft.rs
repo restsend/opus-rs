@@ -277,6 +277,13 @@ unsafe fn kf_bfly2_m1_neon(fout: &mut [KissCpx], n: usize) {
 #[inline(always)]
 fn kf_bfly2(fout: &mut [KissCpx], m: usize, n: usize) {
     if m == 1 {
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        unsafe {
+            if std::arch::is_x86_feature_detected!("avx") {
+                kf_bfly2_m1_avx(fout, n);
+                return;
+            }
+        }
         #[cfg(target_arch = "aarch64")]
         unsafe {
             kf_bfly2_m1_neon(fout, n);
@@ -336,19 +343,19 @@ unsafe fn kf_bfly4_m1_neon(fout: &mut [KissCpx], n: usize) {
 
         // Butterfly 0: fout[4i..4i+3] = x0,x1,x2,x3
         // Memory: [x0.r,x0.i, x1.r,x1.i, x2.r,x2.i, x3.r,x3.i]
-        let v0 = vld1q_f32(ptr.add(base));       // [x0.r, x0.i, x1.r, x1.i]
-        let v1 = vld1q_f32(ptr.add(base + 4));   // [x2.r, x2.i, x3.r, x3.i]
+        let v0 = vld1q_f32(ptr.add(base)); // [x0.r, x0.i, x1.r, x1.i]
+        let v1 = vld1q_f32(ptr.add(base + 4)); // [x2.r, x2.i, x3.r, x3.i]
 
         // Butterfly 1: fout[4i+4..4i+7] = x4,x5,x6,x7
-        let v2 = vld1q_f32(ptr.add(base + 8));   // [x4.r, x4.i, x5.r, x5.i]
-        let v3 = vld1q_f32(ptr.add(base + 12));  // [x6.r, x6.i, x7.r, x7.i]
+        let v2 = vld1q_f32(ptr.add(base + 8)); // [x4.r, x4.i, x5.r, x5.i]
+        let v3 = vld1q_f32(ptr.add(base + 12)); // [x6.r, x6.i, x7.r, x7.i]
 
         // Butterfly 0 computation:
         // sum02 = x0+x2, diff02 = x0-x2, scratch1 = x1+x3, diff13 = x1-x3
-        let sum02_0 = vadd_f32(vget_low_f32(v0), vget_low_f32(v1));    // x0+x2
-        let diff02_0 = vsub_f32(vget_low_f32(v0), vget_low_f32(v1));   // x0-x2
-        let scr1_0 = vadd_f32(vget_high_f32(v0), vget_high_f32(v1));   // x1+x3
-        let dif13_0 = vsub_f32(vget_high_f32(v0), vget_high_f32(v1));  // x1-x3
+        let sum02_0 = vadd_f32(vget_low_f32(v0), vget_low_f32(v1)); // x0+x2
+        let diff02_0 = vsub_f32(vget_low_f32(v0), vget_low_f32(v1)); // x0-x2
+        let scr1_0 = vadd_f32(vget_high_f32(v0), vget_high_f32(v1)); // x1+x3
+        let dif13_0 = vsub_f32(vget_high_f32(v0), vget_high_f32(v1)); // x1-x3
 
         // F0 = sum02 + scratch1
         let f0_0 = vadd_f32(sum02_0, scr1_0);
@@ -359,8 +366,8 @@ unsafe fn kf_bfly4_m1_neon(fout: &mut [KissCpx], n: usize) {
         // Compute j*diff13: swap+negate → (-diff13.i, diff13.r)
         // Compute -j*diff13: swap+negate → (diff13.i, -diff13.r)
         let neg_d13_0 = vneg_f32(dif13_0);
-        let j_d13_0 = vext_f32(neg_d13_0, dif13_0, 1);   // [-dif13.i, dif13.r]
-        let mj_d13_0 = vext_f32(dif13_0, neg_d13_0, 1);   // [dif13.i, -dif13.r]
+        let j_d13_0 = vext_f32(neg_d13_0, dif13_0, 1); // [-dif13.i, dif13.r]
+        let mj_d13_0 = vext_f32(dif13_0, neg_d13_0, 1); // [dif13.i, -dif13.r]
         let f1_0 = vadd_f32(diff02_0, mj_d13_0);
         let f3_0 = vadd_f32(diff02_0, j_d13_0);
 
@@ -495,6 +502,13 @@ fn kf_bfly4(
     mm: usize,
 ) {
     if m == 1 {
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        unsafe {
+            if std::arch::is_x86_feature_detected!("avx") {
+                kf_bfly4_m1_avx(fout, n);
+                return;
+            }
+        }
         #[cfg(target_arch = "aarch64")]
         unsafe {
             kf_bfly4_m1_neon(fout, n);
@@ -517,6 +531,13 @@ fn kf_bfly4(
         }
     } else {
         // Standard radix-4 butterfly with twiddles.
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        unsafe {
+            if std::arch::is_x86_feature_detected!("avx") {
+                kf_bfly4_avx_inner(fout, twiddles, m, n, mm, fstride);
+                return;
+            }
+        }
         #[cfg(target_arch = "aarch64")]
         unsafe {
             kf_bfly4_neon_inner(fout, twiddles, m, n, mm, fstride);
@@ -526,6 +547,8 @@ fn kf_bfly4(
         {
             let stride2 = fstride * 2;
             let stride3 = fstride * 3;
+            let m2 = 2 * m;
+            let m3 = 3 * m;
             for i in 0..n {
                 let base = i * mm;
                 let mut tw1 = 0usize;
@@ -570,6 +593,13 @@ fn kf_bfly3(
     n: usize,
     mm: usize,
 ) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    unsafe {
+        if std::arch::is_x86_feature_detected!("avx") {
+            kf_bfly3_avx_inner(fout, fstride, twiddles, m, n, mm);
+            return;
+        }
+    }
     #[cfg(target_arch = "aarch64")]
     unsafe {
         kf_bfly3_neon_inner(fout, fstride, twiddles, m, n, mm);
@@ -577,46 +607,47 @@ fn kf_bfly3(
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
-    let m2 = 2 * m;
+        let m2 = 2 * m;
 
-    // epi3 = exp(-2*pi*i/3) = -0.5 - 0.86602540i
-    let epi3_i: f32 = -0.86602540;
-    let stride2 = fstride * 2;
+        // epi3 = exp(-2*pi*i/3) = -0.5 - 0.86602540i
+        let epi3_i: f32 = -0.86602540;
+        let stride2 = fstride * 2;
 
-    for i in 0..n {
-        let base = i * mm;
-        // Reset twiddle indices per outer iteration (matches C: tw1=tw2=st->twiddles each q1)
-        let mut tw1 = 0usize;
-        let mut tw2 = 0usize;
+        for i in 0..n {
+            let base = i * mm;
+            // Reset twiddle indices per outer iteration (matches C: tw1=tw2=st->twiddles each q1)
+            let mut tw1 = 0usize;
+            let mut tw2 = 0usize;
 
-        for j in 0..m {
-            let idx = base + j;
+            for j in 0..m {
+                let idx = base + j;
 
-            let scratch1 = c_mul(&fout[idx + m], &twiddles[tw1]);
-            let scratch2 = c_mul(&fout[idx + m2], &twiddles[tw2]);
+                let scratch1 = c_mul(&fout[idx + m], &twiddles[tw1]);
+                let scratch2 = c_mul(&fout[idx + m2], &twiddles[tw2]);
 
-            let scratch3 = c_add(&scratch1, &scratch2);
-            let scratch0 = c_sub(&scratch1, &scratch2);
+                let scratch3 = c_add(&scratch1, &scratch2);
+                let scratch0 = c_sub(&scratch1, &scratch2);
 
-            // HALF_OF(scratch3)
-            let half_scratch3 = KissCpx::new(scratch3.r * 0.5, scratch3.i * 0.5);
+                // HALF_OF(scratch3)
+                let half_scratch3 = KissCpx::new(scratch3.r * 0.5, scratch3.i * 0.5);
 
-            let fout_m = KissCpx::new(fout[idx].r - half_scratch3.r, fout[idx].i - half_scratch3.i);
+                let fout_m =
+                    KissCpx::new(fout[idx].r - half_scratch3.r, fout[idx].i - half_scratch3.i);
 
-            // C_MULBYSCALAR(scratch0, epi3.i)
-            let scratch0_scaled = KissCpx::new(scratch0.r * epi3_i, scratch0.i * epi3_i);
+                // C_MULBYSCALAR(scratch0, epi3.i)
+                let scratch0_scaled = KissCpx::new(scratch0.r * epi3_i, scratch0.i * epi3_i);
 
-            fout[idx] = c_add(&fout[idx], &scratch3);
+                fout[idx] = c_add(&fout[idx], &scratch3);
 
-            fout[idx + m] =
-                KissCpx::new(fout_m.r - scratch0_scaled.i, fout_m.i + scratch0_scaled.r);
-            fout[idx + m2] =
-                KissCpx::new(fout_m.r + scratch0_scaled.i, fout_m.i - scratch0_scaled.r);
+                fout[idx + m] =
+                    KissCpx::new(fout_m.r - scratch0_scaled.i, fout_m.i + scratch0_scaled.r);
+                fout[idx + m2] =
+                    KissCpx::new(fout_m.r + scratch0_scaled.i, fout_m.i - scratch0_scaled.r);
 
-            tw1 += fstride;
-            tw2 += stride2;
+                tw1 += fstride;
+                tw2 += stride2;
+            }
         }
-    }
     }
 }
 
@@ -630,6 +661,13 @@ fn kf_bfly5(
     n: usize,
     mm: usize,
 ) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    unsafe {
+        if std::arch::is_x86_feature_detected!("avx") {
+            kf_bfly5_avx_inner(fout, fstride, twiddles, m, n, mm);
+            return;
+        }
+    }
     #[cfg(target_arch = "aarch64")]
     unsafe {
         kf_bfly5_neon_inner(fout, fstride, twiddles, m, n, mm);
@@ -637,7 +675,214 @@ fn kf_bfly5(
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
-    // ya = exp(-2*pi*i/5), yb = exp(-4*pi*i/5)
+        // ya = exp(-2*pi*i/5), yb = exp(-4*pi*i/5)
+        let ya = KissCpx::new(0.30901699, -0.95105652);
+        let yb = KissCpx::new(-0.80901699, -0.58778525);
+
+        for i in 0..n {
+            let base = i * mm;
+            let stride2 = fstride * 2;
+            let stride3 = fstride * 3;
+            let stride4 = fstride * 4;
+            // Reset twiddle indices per outer iteration (matches C: tw1=tw2=tw3=tw4=st->twiddles)
+            let mut tw1 = 0usize;
+            let mut tw2 = 0usize;
+            let mut tw3 = 0usize;
+            let mut tw4 = 0usize;
+
+            for u in 0..m {
+                let idx0 = base + u;
+                let idx1 = idx0 + m;
+                let idx2 = idx0 + 2 * m;
+                let idx3 = idx0 + 3 * m;
+                let idx4 = idx0 + 4 * m;
+
+                // Save original value (scratch[0] in C)
+                let scratch0 = fout[idx0];
+
+                let scratch1 = c_mul(&fout[idx1], &twiddles[tw1]);
+                let scratch2 = c_mul(&fout[idx2], &twiddles[tw2]);
+                let scratch3 = c_mul(&fout[idx3], &twiddles[tw3]);
+                let scratch4 = c_mul(&fout[idx4], &twiddles[tw4]);
+
+                let scratch7 = c_add(&scratch1, &scratch4);
+                let scratch10 = c_sub(&scratch1, &scratch4);
+                let scratch8 = c_add(&scratch2, &scratch3);
+                let scratch9 = c_sub(&scratch2, &scratch3);
+
+                // Update fout[idx0] first (this is Fout0 in C)
+                fout[idx0] = KissCpx::new(
+                    scratch0.r + scratch7.r + scratch8.r,
+                    scratch0.i + scratch7.i + scratch8.i,
+                );
+
+                // Use scratch0 (original value) for scratch5 and scratch11 (matches C)
+                let scratch5 = KissCpx::new(
+                    scratch0.r + scratch7.r * ya.r + scratch8.r * yb.r,
+                    scratch0.i + scratch7.i * ya.r + scratch8.i * yb.r,
+                );
+
+                let scratch6 = KissCpx::new(
+                    scratch10.i * ya.i + scratch9.i * yb.i,
+                    -(scratch10.r * ya.i + scratch9.r * yb.i),
+                );
+
+                fout[idx1] = c_sub(&scratch5, &scratch6);
+                fout[idx4] = c_add(&scratch5, &scratch6);
+
+                let scratch11 = KissCpx::new(
+                    scratch0.r + scratch7.r * yb.r + scratch8.r * ya.r,
+                    scratch0.i + scratch7.i * yb.r + scratch8.i * ya.r,
+                );
+
+                let scratch12 = KissCpx::new(
+                    scratch9.i * ya.i - scratch10.i * yb.i,
+                    scratch10.r * yb.i - scratch9.r * ya.i,
+                );
+
+                fout[idx2] = c_add(&scratch11, &scratch12);
+                fout[idx3] = c_sub(&scratch11, &scratch12);
+
+                tw1 += fstride;
+                tw2 += stride2;
+                tw3 += stride3;
+                tw4 += stride4;
+            }
+        }
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx")]
+unsafe fn kf_bfly2_m1_avx(fout: &mut [KissCpx], n: usize) {
+    for i in 0..n {
+        let idx = i * 2;
+        let t = fout[idx + 1];
+        fout[idx + 1] = c_sub(&fout[idx], &t);
+        fout[idx] = c_add(&fout[idx], &t);
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx")]
+unsafe fn kf_bfly4_m1_avx(fout: &mut [KissCpx], n: usize) {
+    let mut i = 0usize;
+    while i < n {
+        let base = i * 4;
+        let scratch0 = c_sub(&fout[base], &fout[base + 2]);
+        let sum02 = c_add(&fout[base], &fout[base + 2]);
+        let scratch1 = c_add(&fout[base + 1], &fout[base + 3]);
+        let diff13 = c_sub(&fout[base + 1], &fout[base + 3]);
+
+        fout[base] = c_add(&sum02, &scratch1);
+        fout[base + 2] = c_sub(&sum02, &scratch1);
+        fout[base + 1] = KissCpx::new(scratch0.r + diff13.i, scratch0.i - diff13.r);
+        fout[base + 3] = KissCpx::new(scratch0.r - diff13.i, scratch0.i + diff13.r);
+        i += 1;
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx")]
+unsafe fn kf_bfly4_avx_inner(
+    fout: &mut [KissCpx],
+    twiddles: &[KissCpx],
+    m: usize,
+    n: usize,
+    mm: usize,
+    fstride: usize,
+) {
+    let m2 = 2 * m;
+    let m3 = 3 * m;
+    let stride2 = fstride * 2;
+    let stride3 = fstride * 3;
+
+    for i in 0..n {
+        let base = i * mm;
+        let mut tw1 = 0usize;
+        let mut tw2 = 0usize;
+        let mut tw3 = 0usize;
+
+        for j in 0..m {
+            let idx = base + j;
+
+            let scratch0 = c_mul(&fout[idx + m], &twiddles[tw1]);
+            let scratch1 = c_mul(&fout[idx + m2], &twiddles[tw2]);
+            let scratch2 = c_mul(&fout[idx + m3], &twiddles[tw3]);
+
+            let scratch5 = c_sub(&fout[idx], &scratch1);
+            fout[idx] = c_add(&fout[idx], &scratch1);
+
+            let scratch3 = c_add(&scratch0, &scratch2);
+            let scratch4 = c_sub(&scratch0, &scratch2);
+
+            fout[idx + m2] = c_sub(&fout[idx], &scratch3);
+            fout[idx] = c_add(&fout[idx], &scratch3);
+
+            fout[idx + m] = KissCpx::new(scratch5.r + scratch4.i, scratch5.i - scratch4.r);
+            fout[idx + m3] = KissCpx::new(scratch5.r - scratch4.i, scratch5.i + scratch4.r);
+
+            tw1 += fstride;
+            tw2 += stride2;
+            tw3 += stride3;
+        }
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx")]
+unsafe fn kf_bfly3_avx_inner(
+    fout: &mut [KissCpx],
+    fstride: usize,
+    twiddles: &[KissCpx],
+    m: usize,
+    n: usize,
+    mm: usize,
+) {
+    let m2 = 2 * m;
+    let epi3_i: f32 = -0.86602540;
+    let stride2 = fstride * 2;
+
+    for i in 0..n {
+        let base = i * mm;
+        let mut tw1 = 0usize;
+        let mut tw2 = 0usize;
+
+        for j in 0..m {
+            let idx = base + j;
+
+            let scratch1 = c_mul(&fout[idx + m], &twiddles[tw1]);
+            let scratch2 = c_mul(&fout[idx + m2], &twiddles[tw2]);
+
+            let scratch3 = c_add(&scratch1, &scratch2);
+            let scratch0 = c_sub(&scratch1, &scratch2);
+
+            let half_scratch3 = KissCpx::new(scratch3.r * 0.5, scratch3.i * 0.5);
+            let fout_m = KissCpx::new(fout[idx].r - half_scratch3.r, fout[idx].i - half_scratch3.i);
+            let scratch0_scaled = KissCpx::new(scratch0.r * epi3_i, scratch0.i * epi3_i);
+
+            fout[idx] = c_add(&fout[idx], &scratch3);
+            fout[idx + m] =
+                KissCpx::new(fout_m.r - scratch0_scaled.i, fout_m.i + scratch0_scaled.r);
+            fout[idx + m2] =
+                KissCpx::new(fout_m.r + scratch0_scaled.i, fout_m.i - scratch0_scaled.r);
+
+            tw1 += fstride;
+            tw2 += stride2;
+        }
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx")]
+unsafe fn kf_bfly5_avx_inner(
+    fout: &mut [KissCpx],
+    fstride: usize,
+    twiddles: &[KissCpx],
+    m: usize,
+    n: usize,
+    mm: usize,
+) {
     let ya = KissCpx::new(0.30901699, -0.95105652);
     let yb = KissCpx::new(-0.80901699, -0.58778525);
 
@@ -646,7 +891,6 @@ fn kf_bfly5(
         let stride2 = fstride * 2;
         let stride3 = fstride * 3;
         let stride4 = fstride * 4;
-        // Reset twiddle indices per outer iteration (matches C: tw1=tw2=tw3=tw4=st->twiddles)
         let mut tw1 = 0usize;
         let mut tw2 = 0usize;
         let mut tw3 = 0usize;
@@ -659,7 +903,6 @@ fn kf_bfly5(
             let idx3 = idx0 + 3 * m;
             let idx4 = idx0 + 4 * m;
 
-            // Save original value (scratch[0] in C)
             let scratch0 = fout[idx0];
 
             let scratch1 = c_mul(&fout[idx1], &twiddles[tw1]);
@@ -672,13 +915,11 @@ fn kf_bfly5(
             let scratch8 = c_add(&scratch2, &scratch3);
             let scratch9 = c_sub(&scratch2, &scratch3);
 
-            // Update fout[idx0] first (this is Fout0 in C)
             fout[idx0] = KissCpx::new(
                 scratch0.r + scratch7.r + scratch8.r,
                 scratch0.i + scratch7.i + scratch8.i,
             );
 
-            // Use scratch0 (original value) for scratch5 and scratch11 (matches C)
             let scratch5 = KissCpx::new(
                 scratch0.r + scratch7.r * ya.r + scratch8.r * yb.r,
                 scratch0.i + scratch7.i * ya.r + scratch8.i * yb.r,
@@ -711,7 +952,6 @@ fn kf_bfly5(
             tw4 += stride4;
         }
     }
-    }
 }
 
 /// NEON: compute 2 complex multiplies in parallel.
@@ -719,10 +959,16 @@ fn kf_bfly5(
 /// returns [r0*c0-i0*d0, r0*d0+i0*c0, r1*c1-i1*d1, r1*d1+i1*c1]
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn neon_cmul_2(a: std::arch::aarch64::float32x4_t, b: std::arch::aarch64::float32x4_t) -> std::arch::aarch64::float32x4_t {
+unsafe fn neon_cmul_2(
+    a: std::arch::aarch64::float32x4_t,
+    b: std::arch::aarch64::float32x4_t,
+) -> std::arch::aarch64::float32x4_t {
     use std::arch::aarch64::*;
     // 1. dup_r = [r0, r0, r1, r1]
-    let dup_r = vcombine_f32(vdup_lane_f32(vget_low_f32(a), 0), vdup_lane_f32(vget_high_f32(a), 0));
+    let dup_r = vcombine_f32(
+        vdup_lane_f32(vget_low_f32(a), 0),
+        vdup_lane_f32(vget_high_f32(a), 0),
+    );
     // 2. t1 = [r0*c0, r0*d0, r1*c1, r1*d1]
     let t1 = vmulq_f32(dup_r, b);
     // 3. neg_a = [-r0, -i0, -r1, -i1]
@@ -842,8 +1088,10 @@ unsafe fn kf_bfly3_neon_inner(
             let fout_m = KissCpx::new(fout[idx].r - half_scratch3.r, fout[idx].i - half_scratch3.i);
             let scratch0_scaled = KissCpx::new(scratch0.r * epi3_i, scratch0.i * epi3_i);
             fout[idx] = c_add(&fout[idx], &scratch3);
-            fout[idx + m] = KissCpx::new(fout_m.r - scratch0_scaled.i, fout_m.i + scratch0_scaled.r);
-            fout[idx + m2] = KissCpx::new(fout_m.r + scratch0_scaled.i, fout_m.i - scratch0_scaled.r);
+            fout[idx + m] =
+                KissCpx::new(fout_m.r - scratch0_scaled.i, fout_m.i + scratch0_scaled.r);
+            fout[idx + m2] =
+                KissCpx::new(fout_m.r + scratch0_scaled.i, fout_m.i - scratch0_scaled.r);
             tw1 += fstride;
             tw2 += stride2;
         }

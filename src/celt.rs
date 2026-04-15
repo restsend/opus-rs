@@ -66,6 +66,12 @@ unsafe fn sum_abs_neon(x: &[f32], n: usize) -> f32 {
 /// Sum of absolute values - dispatches to NEON on aarch64
 #[inline(always)]
 fn sum_abs(x: &[f32]) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        if std::arch::is_x86_feature_detected!("avx") {
+            return sum_abs_avx(x, x.len());
+        }
+    }
     #[cfg(target_arch = "aarch64")]
     unsafe {
         return sum_abs_neon(x, x.len());
@@ -181,6 +187,12 @@ fn transient_analysis(
 }
 
 fn l1_metric(tmp: &[f32], n: usize, lm: i32, bias: f32) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        if n >= 16 && std::arch::is_x86_feature_detected!("avx") {
+            return l1_metric_avx(tmp, n, lm, bias);
+        }
+    }
     #[cfg(target_arch = "aarch64")]
     {
         if n >= 16 {
@@ -192,6 +204,54 @@ fn l1_metric(tmp: &[f32], n: usize, lm: i32, bias: f32) -> f32 {
     for &tv in tmp[..n].iter() {
         l1 += tv.abs();
     }
+    l1 + (lm as f32) * bias * l1
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx")]
+unsafe fn sum_abs_avx(x: &[f32], n: usize) -> f32 {
+    use std::arch::x86_64::*;
+
+    let mut sum0 = _mm256_setzero_ps();
+    let mut sum1 = _mm256_setzero_ps();
+    let mut i = 0usize;
+    let sign_mask = _mm256_set1_ps(-0.0);
+
+    // Dual accumulator unroll to hide latency (matches NEON pattern)
+    while i + 16 <= n {
+        let v0 = _mm256_loadu_ps(x.as_ptr().add(i));
+        let v1 = _mm256_loadu_ps(x.as_ptr().add(i + 8));
+        sum0 = _mm256_add_ps(sum0, _mm256_andnot_ps(sign_mask, v0));
+        sum1 = _mm256_add_ps(sum1, _mm256_andnot_ps(sign_mask, v1));
+        i += 16;
+    }
+
+    while i + 8 <= n {
+        let v = _mm256_loadu_ps(x.as_ptr().add(i));
+        sum0 = _mm256_add_ps(sum0, _mm256_andnot_ps(sign_mask, v));
+        i += 8;
+    }
+
+    let sum = _mm256_add_ps(sum0, sum1);
+    let hi = _mm256_extractf128_ps(sum, 1);
+    let lo = _mm256_castps256_ps128(sum);
+    let s4 = _mm_add_ps(lo, hi);
+    let t1 = _mm_movehl_ps(s4, s4);
+    let s2 = _mm_add_ps(s4, t1);
+    let t2 = _mm_shuffle_ps(s2, s2, 0x55);
+    let mut out = _mm_cvtss_f32(_mm_add_ss(s2, t2));
+
+    for j in i..n {
+        out += x[j].abs();
+    }
+
+    out
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx")]
+unsafe fn l1_metric_avx(tmp: &[f32], n: usize, lm: i32, bias: f32) -> f32 {
+    let l1 = sum_abs_avx(tmp, n);
     l1 + (lm as f32) * bias * l1
 }
 
@@ -534,6 +594,13 @@ fn comb_filter_const(
         comb_filter_const_neon(y, x, y_idx, x_idx, t, n, g10, g11, g12);
         return;
     }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    unsafe {
+        if std::arch::is_x86_feature_detected!("avx") {
+            comb_filter_const_avx(y, x, y_idx, x_idx, t, n, g10, g11, g12);
+            return;
+        }
+    }
     #[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
     unsafe {
         comb_filter_const_sse(y, x, y_idx, x_idx, t, n, g10, g11, g12);
@@ -748,6 +815,183 @@ unsafe fn comb_filter_const_sse(
         i += 1;
     }
 }
+
+/// AVX+FMA 3-tap comb filter. Processes 8 samples per iter using 3 loads + FMA.
+/// Strategy: load x0 (left window, 8 elems at offset -t-2) and x4 (right window, 8 elems
+/// at offset -t+2), then use 256-bit permutevar8x32 (AVX2) to reconstruct x1/x2/x3 from
+/// these two overlapping windows. Falls back to FMA SSE 4-sample inner for n not a multiple of 8.
+///
+/// Actually uses the simpler 5-load approach but with FMA to halve the arithmetic instructions.
+/// The main bottleneck was the mul+add chain; FMA reduces it to 3 FMAs per output vector.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx,fma")]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn comb_filter_const_avx(
+    y: &mut [f32],
+    x: &[f32],
+    y_idx: usize,
+    x_idx: usize,
+    t: usize,
+    n: usize,
+    g10: f32,
+    g11: f32,
+    g12: f32,
+) {
+    use std::arch::x86_64::*;
+
+    let g10v = _mm256_set1_ps(g10);
+    let g11v = _mm256_set1_ps(g11);
+    let g12v = _mm256_set1_ps(g12);
+
+    let xbase = x.as_ptr().add(x_idx);
+    let ybase = y.as_mut_ptr().add(y_idx);
+
+    let mut i = 0;
+
+    // 16-sample unrolled main loop: 2 × 8-sample iterations sharing nothing,
+    // but the compiler can schedule the loads of the second iteration while the
+    // FMAs of the first are in flight, hiding FMA latency.
+    while i + 16 <= n {
+        // Iteration A (i..i+8)
+        let xi_a  = _mm256_loadu_ps(xbase.add(i));
+        let x0_a  = _mm256_loadu_ps(xbase.add(i).sub(t + 2));
+        let x4_a  = _mm256_loadu_ps(xbase.add(i).sub(t - 2));
+        // x1/x2/x3 are adjacent — load them separately (5 loads total per 8 samples,
+        // but with FMA the bottleneck becomes throughput not latency)
+        let x2_a  = _mm256_loadu_ps(xbase.add(i).sub(t));
+        let x1x3_a = _mm256_add_ps(
+            _mm256_loadu_ps(xbase.add(i).sub(t + 1)),
+            _mm256_loadu_ps(xbase.add(i).sub(t - 1)),
+        );
+        let x0x4_a = _mm256_add_ps(x0_a, x4_a);
+
+        let mut yi_a = xi_a;
+        yi_a = _mm256_fmadd_ps(g10v, x2_a,   yi_a);
+        yi_a = _mm256_fmadd_ps(g11v, x1x3_a, yi_a);
+        yi_a = _mm256_fmadd_ps(g12v, x0x4_a, yi_a);
+        _mm256_storeu_ps(ybase.add(i), yi_a);
+
+        // Iteration B (i+8..i+16)
+        let j = i + 8;
+        let xi_b  = _mm256_loadu_ps(xbase.add(j));
+        let x0_b  = _mm256_loadu_ps(xbase.add(j).sub(t + 2));
+        let x4_b  = _mm256_loadu_ps(xbase.add(j).sub(t - 2));
+        let x2_b  = _mm256_loadu_ps(xbase.add(j).sub(t));
+        let x1x3_b = _mm256_add_ps(
+            _mm256_loadu_ps(xbase.add(j).sub(t + 1)),
+            _mm256_loadu_ps(xbase.add(j).sub(t - 1)),
+        );
+        let x0x4_b = _mm256_add_ps(x0_b, x4_b);
+
+        let mut yi_b = xi_b;
+        yi_b = _mm256_fmadd_ps(g10v, x2_b,   yi_b);
+        yi_b = _mm256_fmadd_ps(g11v, x1x3_b, yi_b);
+        yi_b = _mm256_fmadd_ps(g12v, x0x4_b, yi_b);
+        _mm256_storeu_ps(ybase.add(j), yi_b);
+
+        i += 16;
+    }
+
+    // 8-sample tail
+    while i + 8 <= n {
+        let xi  = _mm256_loadu_ps(xbase.add(i));
+        let x0  = _mm256_loadu_ps(xbase.add(i).sub(t + 2));
+        let x4  = _mm256_loadu_ps(xbase.add(i).sub(t - 2));
+        let x2  = _mm256_loadu_ps(xbase.add(i).sub(t));
+        let x1x3 = _mm256_add_ps(
+            _mm256_loadu_ps(xbase.add(i).sub(t + 1)),
+            _mm256_loadu_ps(xbase.add(i).sub(t - 1)),
+        );
+        let x0x4 = _mm256_add_ps(x0, x4);
+
+        let mut yi = xi;
+        yi = _mm256_fmadd_ps(g10v, x2,   yi);
+        yi = _mm256_fmadd_ps(g11v, x1x3, yi);
+        yi = _mm256_fmadd_ps(g12v, x0x4, yi);
+        _mm256_storeu_ps(ybase.add(i), yi);
+
+        i += 8;
+    }
+
+    // SSE FMA tail for remaining 4-7 samples
+    if i + 4 <= n {
+        comb_filter_const_sse_fma(y, x, y_idx + i, x_idx + i, t, n - i, g10, g11, g12);
+        return;
+    }
+
+    // Scalar tail for remaining 0-3 samples
+    let mut sx4 = x[x_idx + i - t - 2];
+    let mut sx3 = x[x_idx + i - t - 1];
+    let mut sx2 = x[x_idx + i - t];
+    let mut sx1 = x[x_idx + i - t + 1];
+    while i < n {
+        let sx0 = x[x_idx + i - t + 2];
+        y[y_idx + i] = x[x_idx + i] + g10 * sx2 + g11 * (sx1 + sx3) + g12 * (sx0 + sx4);
+        sx4 = sx3;
+        sx3 = sx2;
+        sx2 = sx1;
+        sx1 = sx0;
+        i += 1;
+    }
+}
+
+/// SSE+FMA 3-tap comb filter tail (processes ≥4 samples).
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx,fma")]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn comb_filter_const_sse_fma(
+    y: &mut [f32],
+    x: &[f32],
+    y_idx: usize,
+    x_idx: usize,
+    t: usize,
+    n: usize,
+    g10: f32,
+    g11: f32,
+    g12: f32,
+) {
+    use std::arch::x86_64::*;
+
+    let g10v = _mm_set1_ps(g10);
+    let g11v = _mm_set1_ps(g11);
+    let g12v = _mm_set1_ps(g12);
+
+    let xbase = x.as_ptr().add(x_idx);
+    let ybase = y.as_mut_ptr().add(y_idx);
+    let mut x0v = _mm_loadu_ps(xbase.sub(t + 2));
+
+    let mut i = 0;
+    while i + 4 <= n {
+        let x4v = _mm_loadu_ps(xbase.add(i).sub(t - 2));
+        let x2v = _mm_shuffle_ps(x0v, x4v, 0x4e);
+        let x1v = _mm_shuffle_ps(x0v, x2v, 0x99);
+        let x3v = _mm_shuffle_ps(x2v, x4v, 0x99);
+        let xi  = _mm_loadu_ps(xbase.add(i));
+
+        let mut yi = xi;
+        yi = _mm_fmadd_ps(g10v, x2v, yi);
+        yi = _mm_fmadd_ps(g11v, _mm_add_ps(x1v, x3v), yi);
+        yi = _mm_fmadd_ps(g12v, _mm_add_ps(x0v, x4v), yi);
+        _mm_storeu_ps(ybase.add(i), yi);
+
+        x0v = x4v;
+        i += 4;
+    }
+
+    // Scalar tail
+    let x0v_arr: [f32; 4] = std::mem::transmute(x0v);
+    let mut sx4 = x0v_arr[0];
+    let mut sx3 = x0v_arr[1];
+    let mut sx2 = x0v_arr[2];
+    let mut sx1 = x0v_arr[3];
+    while i < n {
+        let sx0 = x[x_idx + i - t + 2];
+        y[y_idx + i] = x[x_idx + i] + g10 * sx2 + g11 * (sx1 + sx3) + g12 * (sx0 + sx4);
+        sx4 = sx3; sx3 = sx2; sx2 = sx1; sx1 = sx0;
+        i += 1;
+    }
+}
+
 
 #[allow(clippy::too_many_arguments)]
 fn comb_filter(
@@ -1427,11 +1671,7 @@ impl CeltEncoder {
         self.w_error[..nb_ebands * channels].fill(0.0);
         let error = &mut self.w_error[..nb_ebands * channels];
 
-        let _celt_dbg = std::env::var("CELT_DBG").is_ok();
-        if _celt_dbg {
-            eprintln!("[ENC] band_e (linear): {:?}", &band_e[..nb_ebands.min(6)]);
-            eprintln!("[ENC] band_log_e: {:?}", &band_log_e[..nb_ebands.min(6)]);
-        }
+        let _celt_dbg = false;
 
         let tell = rc.tell();
         let silence = false;
@@ -2049,7 +2289,7 @@ impl CeltDecoder {
         pcm: &mut [f32],
         start_band: usize,
     ) -> usize {
-        let _celt_dbg = std::env::var("CELT_DBG").is_ok();
+        let _celt_dbg = false;
         let mode = self.mode;
         let channels = self.channels;
         let nb_ebands = mode.nb_ebands;

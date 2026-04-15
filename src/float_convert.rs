@@ -66,6 +66,46 @@ mod simd {
     use super::*;
     use std::arch::x86_64::*;
 
+    #[target_feature(enable = "avx2")]
+    pub unsafe fn convert_f32_to_i16_avx2(src: &[f32], dst: &mut [i16]) {
+        let len = src.len();
+        let mut i = 0;
+        let scale = _mm256_set1_ps(SCALE);
+        let min = _mm256_set1_ps(I16_MIN_F);
+        let max = _mm256_set1_ps(I16_MAX_F);
+
+        while i + 8 <= len {
+            let s = _mm256_mul_ps(_mm256_loadu_ps(src.as_ptr().add(i)), scale);
+            let c = _mm256_max_ps(_mm256_min_ps(s, max), min);
+            let i32v = _mm256_cvtps_epi32(c);
+
+            let lo = _mm256_castsi256_si128(i32v);
+            let hi = _mm256_extracti128_si256(i32v, 1);
+            let i16v = _mm_packs_epi32(lo, hi);
+            _mm_storeu_si128(dst.as_mut_ptr().add(i) as *mut __m128i, i16v);
+            i += 8;
+        }
+
+        while i < len { dst[i] = f32_to_i16(src[i]); i += 1; }
+    }
+
+    #[target_feature(enable = "avx2")]
+    pub unsafe fn convert_i16_to_f32_avx2(src: &[i16], dst: &mut [f32]) {
+        let len = src.len();
+        let mut i = 0;
+        let inv_scale = _mm256_set1_ps(INV_SCALE);
+
+        while i + 8 <= len {
+            let input = _mm_loadu_si128(src.as_ptr().add(i) as *const __m128i);
+            let i32v = _mm256_cvtepi16_epi32(input);
+            let f = _mm256_mul_ps(_mm256_cvtepi32_ps(i32v), inv_scale);
+            _mm256_storeu_ps(dst.as_mut_ptr().add(i), f);
+            i += 8;
+        }
+
+        while i < len { dst[i] = i16_to_f32(src[i]); i += 1; }
+    }
+
     #[target_feature(enable = "sse2")]
     pub unsafe fn convert_f32_to_i16_sse2(src: &[f32], dst: &mut [i16]) {
         let len = src.len();
@@ -107,6 +147,7 @@ pub fn convert_encoder_input(src: &[f32], dst: &mut [i16]) {
     debug_assert_eq!(src.len(), dst.len());
     #[cfg(target_arch = "aarch64")] { simd::convert_f32_to_i16_neon(src, dst); return; }
     #[cfg(target_arch = "x86_64")] {
+        if is_x86_feature_detected!("avx2") { unsafe { simd::convert_f32_to_i16_avx2(src, dst); return; } }
         if is_x86_feature_detected!(sse2) { unsafe { simd::convert_f32_to_i16_sse2(src, dst); return; } }
     }
     for (s, d) in src.iter().zip(dst.iter_mut()) { *d = f32_to_i16(*s); }
@@ -117,6 +158,7 @@ pub fn convert_decoder_output(src: &[i16], dst: &mut [f32]) {
     debug_assert_eq!(src.len(), dst.len());
     #[cfg(target_arch = "aarch64")] { simd::convert_i16_to_f32_neon(src, dst); return; }
     #[cfg(target_arch = "x86_64")] {
+        if is_x86_feature_detected!("avx2") { unsafe { simd::convert_i16_to_f32_avx2(src, dst); return; } }
         if is_x86_feature_detected!(sse2) { unsafe { simd::convert_i16_to_f32_sse2(src, dst); return; } }
     }
     for (s, d) in src.iter().zip(dst.iter_mut()) { *d = i16_to_f32(*s); }

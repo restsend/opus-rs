@@ -1,7 +1,14 @@
+#[cfg(target_arch = "aarch64")]
 use crate::celt_lpc::{autocorr, lpc};
 
 /// Inner product with NEON optimization on aarch64
 pub fn inner_prod(x: &[f32], y: &[f32], n: usize) -> f32 {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    unsafe {
+        if std::arch::is_x86_feature_detected!("avx") {
+            return inner_prod_avx(x, y, n);
+        }
+    }
     #[cfg(target_arch = "aarch64")]
     unsafe {
         return inner_prod_neon(x, y, n);
@@ -25,6 +32,12 @@ pub fn inner_prod(x: &[f32], y: &[f32], n: usize) -> f32 {
 
 /// Dual inner product with NEON optimization on aarch64
 pub fn dual_inner_prod(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    unsafe {
+        if std::arch::is_x86_feature_detected!("avx") {
+            return dual_inner_prod_avx(x, y1, y2, n);
+        }
+    }
     #[cfg(target_arch = "aarch64")]
     unsafe {
         return dual_inner_prod_neon(x, y1, y2, n);
@@ -50,6 +63,12 @@ pub fn dual_inner_prod(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32
 
 /// Pitch cross-correlation with NEON optimization on aarch64
 pub fn pitch_xcorr(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitch: usize) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    unsafe {
+        if std::arch::is_x86_feature_detected!("avx") {
+            return pitch_xcorr_avx(x, y, xcorr, len, max_pitch);
+        }
+    }
     #[cfg(target_arch = "aarch64")]
     {
         // For large max_pitch, use xcorr_kernel_neon which computes 4 correlations
@@ -487,6 +506,221 @@ unsafe fn pitch_xcorr_sse(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, m
     }
 }
 
+// ─── x86_64 AVX implementations ─────────────────────────────────────────────
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx,fma")]
+unsafe fn inner_prod_avx(x: &[f32], y: &[f32], n: usize) -> f32 {
+    use std::arch::x86_64::*;
+
+    let mut acc0 = _mm256_setzero_ps();
+    let mut acc1 = _mm256_setzero_ps();
+    let mut i = 0usize;
+
+    while i + 16 <= n {
+        let x0 = _mm256_loadu_ps(x.as_ptr().add(i));
+        let y0 = _mm256_loadu_ps(y.as_ptr().add(i));
+        acc0 = _mm256_fmadd_ps(x0, y0, acc0);
+
+        let x1 = _mm256_loadu_ps(x.as_ptr().add(i + 8));
+        let y1 = _mm256_loadu_ps(y.as_ptr().add(i + 8));
+        acc1 = _mm256_fmadd_ps(x1, y1, acc1);
+        i += 16;
+    }
+
+    while i + 8 <= n {
+        let x0 = _mm256_loadu_ps(x.as_ptr().add(i));
+        let y0 = _mm256_loadu_ps(y.as_ptr().add(i));
+        acc0 = _mm256_fmadd_ps(x0, y0, acc0);
+        i += 8;
+    }
+
+    let acc = _mm256_add_ps(acc0, acc1);
+    let hi = _mm256_extractf128_ps(acc, 1);
+    let lo = _mm256_castps256_ps128(acc);
+    let sum4 = _mm_add_ps(lo, hi);
+    let tmp = _mm_movehl_ps(sum4, sum4);
+    let sum2 = _mm_add_ps(sum4, tmp);
+    let tmp2 = _mm_shuffle_ps(sum2, sum2, 0x55);
+    let mut result = _mm_cvtss_f32(_mm_add_ss(sum2, tmp2));
+
+    while i < n {
+        result += x[i] * y[i];
+        i += 1;
+    }
+
+    result
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx,fma")]
+unsafe fn dual_inner_prod_avx(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32) {
+    use std::arch::x86_64::*;
+
+    let mut acc1 = _mm256_setzero_ps();
+    let mut acc2 = _mm256_setzero_ps();
+    let mut acc1b = _mm256_setzero_ps();
+    let mut acc2b = _mm256_setzero_ps();
+    let mut i = 0usize;
+
+    // 16-element unroll: two independent acc pairs hide FMA latency
+    while i + 16 <= n {
+        let xv0 = _mm256_loadu_ps(x.as_ptr().add(i));
+        let xv1 = _mm256_loadu_ps(x.as_ptr().add(i + 8));
+        let y1v0 = _mm256_loadu_ps(y1.as_ptr().add(i));
+        let y2v0 = _mm256_loadu_ps(y2.as_ptr().add(i));
+        let y1v1 = _mm256_loadu_ps(y1.as_ptr().add(i + 8));
+        let y2v1 = _mm256_loadu_ps(y2.as_ptr().add(i + 8));
+        acc1  = _mm256_fmadd_ps(xv0, y1v0, acc1);
+        acc2  = _mm256_fmadd_ps(xv0, y2v0, acc2);
+        acc1b = _mm256_fmadd_ps(xv1, y1v1, acc1b);
+        acc2b = _mm256_fmadd_ps(xv1, y2v1, acc2b);
+        i += 16;
+    }
+
+    while i + 8 <= n {
+        let xv = _mm256_loadu_ps(x.as_ptr().add(i));
+        let y1v = _mm256_loadu_ps(y1.as_ptr().add(i));
+        let y2v = _mm256_loadu_ps(y2.as_ptr().add(i));
+        acc1 = _mm256_fmadd_ps(xv, y1v, acc1);
+        acc2 = _mm256_fmadd_ps(xv, y2v, acc2);
+        i += 8;
+    }
+
+    let acc1 = _mm256_add_ps(acc1, acc1b);
+    let acc2 = _mm256_add_ps(acc2, acc2b);
+
+    let hi1 = _mm256_extractf128_ps(acc1, 1);
+    let lo1 = _mm256_castps256_ps128(acc1);
+    let sum41 = _mm_add_ps(lo1, hi1);
+    let t11 = _mm_movehl_ps(sum41, sum41);
+    let s21 = _mm_add_ps(sum41, t11);
+    let t12 = _mm_shuffle_ps(s21, s21, 0x55);
+    let mut s1 = _mm_cvtss_f32(_mm_add_ss(s21, t12));
+
+    let hi2 = _mm256_extractf128_ps(acc2, 1);
+    let lo2 = _mm256_castps256_ps128(acc2);
+    let sum42 = _mm_add_ps(lo2, hi2);
+    let t21 = _mm_movehl_ps(sum42, sum42);
+    let s22 = _mm_add_ps(sum42, t21);
+    let t22 = _mm_shuffle_ps(s22, s22, 0x55);
+    let mut s2 = _mm_cvtss_f32(_mm_add_ss(s22, t22));
+
+    while i < n {
+        s1 += x[i] * y1[i];
+        s2 += x[i] * y2[i];
+        i += 1;
+    }
+
+    (s1, s2)
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx,fma")]
+unsafe fn pitch_xcorr_avx(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitch: usize) {
+    let mut i = 0;
+
+    // Process 4 pitch lags at a time using xcorr_kernel_avx
+    // This mirrors the NEON approach (pitch_xcorr_neon / xcorr_kernel_neon)
+    while i + 4 <= max_pitch {
+        let mut sum = [0.0f32; 4];
+        xcorr_kernel_avx(x, &y[i..], &mut sum, len);
+        xcorr[i]     = sum[0];
+        xcorr[i + 1] = sum[1];
+        xcorr[i + 2] = sum[2];
+        xcorr[i + 3] = sum[3];
+        i += 4;
+    }
+
+    // Scalar tail for remaining lags
+    for j in i..max_pitch {
+        xcorr[j] = inner_prod_avx(x, &y[j..], len);
+    }
+}
+
+/// Compute 4 cross-correlation values using AVX+FMA.
+/// sum[k] += Σ x[j] * y[j+k], k=0..3
+/// Mirrors SSE xcorr_kernel_sse but uses FMA and 8-element main loop.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx,fma")]
+unsafe fn xcorr_kernel_avx(x: &[f32], y: &[f32], sum: &mut [f32; 4], len: usize) {
+    use std::arch::x86_64::*;
+
+    // Use SSE (128-bit) for the 4-accumulator sums — same register width as NEON xcorr_kernel_neon
+    let mut xsum1 = _mm_loadu_ps(sum.as_ptr());
+    let mut xsum2 = _mm_setzero_ps();
+
+    let mut j = 0;
+
+    // Process 8 x-elements per iteration (two groups of 4), sharing y loads
+    // Each group of 4 needs y[j..j+7] — we load y[j], y[j+3], y[j+4], y[j+7]
+    while j + 8 <= len {
+        // First group of 4: x[j..j+3], y[j..j+6]
+        let x0 = _mm_loadu_ps(x.as_ptr().add(j));
+        let yj  = _mm_loadu_ps(y.as_ptr().add(j));
+        let y3  = _mm_loadu_ps(y.as_ptr().add(j + 3));
+
+        xsum1 = _mm_fmadd_ps(_mm_shuffle_ps(x0, x0, 0x00), yj, xsum1);
+        xsum2 = _mm_fmadd_ps(_mm_shuffle_ps(x0, x0, 0x55), _mm_shuffle_ps(yj, y3, 0x49), xsum2);
+        xsum1 = _mm_fmadd_ps(_mm_shuffle_ps(x0, x0, 0xaa), _mm_shuffle_ps(yj, y3, 0x9e), xsum1);
+        xsum2 = _mm_fmadd_ps(_mm_shuffle_ps(x0, x0, 0xff), y3, xsum2);
+
+        // Second group of 4: x[j+4..j+7], y[j+4..j+10]
+        let x1 = _mm_loadu_ps(x.as_ptr().add(j + 4));
+        let yj4 = _mm_loadu_ps(y.as_ptr().add(j + 4));
+        let y7  = _mm_loadu_ps(y.as_ptr().add(j + 7));
+
+        xsum1 = _mm_fmadd_ps(_mm_shuffle_ps(x1, x1, 0x00), yj4, xsum1);
+        xsum2 = _mm_fmadd_ps(_mm_shuffle_ps(x1, x1, 0x55), _mm_shuffle_ps(yj4, y7, 0x49), xsum2);
+        xsum1 = _mm_fmadd_ps(_mm_shuffle_ps(x1, x1, 0xaa), _mm_shuffle_ps(yj4, y7, 0x9e), xsum1);
+        xsum2 = _mm_fmadd_ps(_mm_shuffle_ps(x1, x1, 0xff), y7, xsum2);
+
+        j += 8;
+    }
+
+    // Process remaining 4 x-elements
+    if j + 4 <= len {
+        let x0 = _mm_loadu_ps(x.as_ptr().add(j));
+        let yj  = _mm_loadu_ps(y.as_ptr().add(j));
+        let y3  = _mm_loadu_ps(y.as_ptr().add(j + 3));
+
+        xsum1 = _mm_fmadd_ps(_mm_shuffle_ps(x0, x0, 0x00), yj, xsum1);
+        xsum2 = _mm_fmadd_ps(_mm_shuffle_ps(x0, x0, 0x55), _mm_shuffle_ps(yj, y3, 0x49), xsum2);
+        xsum1 = _mm_fmadd_ps(_mm_shuffle_ps(x0, x0, 0xaa), _mm_shuffle_ps(yj, y3, 0x9e), xsum1);
+        xsum2 = _mm_fmadd_ps(_mm_shuffle_ps(x0, x0, 0xff), y3, xsum2);
+
+        j += 4;
+    }
+
+    // Scalar tail (up to 3 remaining x elements; each broadcasts into all 4 sums)
+    if j < len {
+        xsum1 = _mm_fmadd_ps(
+            _mm_set1_ps(*x.as_ptr().add(j)),
+            _mm_loadu_ps(y.as_ptr().add(j)),
+            xsum1,
+        );
+        j += 1;
+        if j < len {
+            xsum2 = _mm_fmadd_ps(
+                _mm_set1_ps(*x.as_ptr().add(j)),
+                _mm_loadu_ps(y.as_ptr().add(j)),
+                xsum2,
+            );
+            j += 1;
+            if j < len {
+                xsum1 = _mm_fmadd_ps(
+                    _mm_set1_ps(*x.as_ptr().add(j)),
+                    _mm_loadu_ps(y.as_ptr().add(j)),
+                    xsum1,
+                );
+            }
+        }
+    }
+
+    _mm_storeu_ps(sum.as_mut_ptr(), _mm_add_ps(xsum1, xsum2));
+}
+
+#[cfg(target_arch = "aarch64")]
 fn celt_fir5(x: &mut [f32], num: &[f32], n: usize) {
     let mut mem = [0.0f32; 5];
 
@@ -702,7 +936,47 @@ fn find_best_pitch(
         }
         sum
     };
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    let mut syy = unsafe {
+        if std::arch::is_x86_feature_detected!("avx") {
+            use std::arch::x86_64::*;
+            let mut acc0 = _mm256_setzero_ps();
+            let mut acc1 = _mm256_setzero_ps();
+            let mut j = 0;
+            while j + 16 <= len {
+                let y0 = _mm256_loadu_ps(y.as_ptr().add(j));
+                let y1 = _mm256_loadu_ps(y.as_ptr().add(j + 8));
+                acc0 = _mm256_add_ps(acc0, _mm256_mul_ps(y0, y0));
+                acc1 = _mm256_add_ps(acc1, _mm256_mul_ps(y1, y1));
+                j += 16;
+            }
+            while j + 8 <= len {
+                let y0 = _mm256_loadu_ps(y.as_ptr().add(j));
+                acc0 = _mm256_add_ps(acc0, _mm256_mul_ps(y0, y0));
+                j += 8;
+            }
+            let acc = _mm256_add_ps(acc0, acc1);
+            let hi = _mm256_extractf128_ps(acc, 1);
+            let lo = _mm256_castps256_ps128(acc);
+            let sum4 = _mm_add_ps(lo, hi);
+            let tmp = _mm_movehl_ps(sum4, sum4);
+            let sum2 = _mm_add_ps(sum4, tmp);
+            let tmp2 = _mm_shuffle_ps(sum2, sum2, 0x55);
+            let mut sum = 1.0f32 + _mm_cvtss_f32(_mm_add_ss(sum2, tmp2));
+            while j < len {
+                sum += y[j] * y[j];
+                j += 1;
+            }
+            sum
+        } else {
+            let mut sum = 1.0f32;
+            for j in 0..len {
+                sum += y[j] * y[j];
+            }
+            sum
+        }
+    };
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")))]
     let mut syy = {
         let mut sum = 1.0f32;
         for j in 0..len {

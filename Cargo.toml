@@ -2,7 +2,7 @@
 edition = "2024"
 authors = ["jinti<shenjindi@fourz.cn>"]
 name = "opus-rs"
-version = "0.1.13"
+version = "0.1.14"
 description = "pure Rust implementation of Opus codec"
 license = "BSD-3-Clause"
 repository = "https://github.com/restsend/opus-rs"
@@ -35,9 +35,7 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 debug = true
-panic = "abort"
 
-# Profile for fuzz testing with overflow checks enabled
 [profile.fuzz]
 inherits = "dev"
 opt-level = 2

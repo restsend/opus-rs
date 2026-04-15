@@ -175,7 +175,14 @@ unsafe fn celt_fir_neon(x: &[f32], num: &[f32], y: &mut [f32], n: usize, ord: us
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn celt_iir_neon(x: &[f32], den: &[f32], y: &mut [f32], n: usize, ord: usize, mem: &mut [f32]) {
+unsafe fn celt_iir_neon(
+    x: &[f32],
+    den: &[f32],
+    y: &mut [f32],
+    n: usize,
+    ord: usize,
+    mem: &mut [f32],
+) {
     use std::arch::aarch64::*;
 
     // For small orders, use scalar code

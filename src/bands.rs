@@ -209,9 +209,57 @@ pub fn haar1(x: &mut [f32], n0: usize, stride: usize) {
         haar1_neon(x, n0, stride);
         return;
     }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        haar1_scalar(x, n0, stride);
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    unsafe {
+        if stride == 1 && n0 >= 16 && is_x86_feature_detected!("avx") {
+            haar1_avx(x, n0);
+            return;
+        }
+    }
+    haar1_scalar(x, n0, stride);
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx")]
+unsafe fn haar1_avx(x: &mut [f32], n0: usize) {
+    use std::arch::x86_64::*;
+    let n = n0 >> 1;
+    let scale = _mm256_set1_ps(std::f32::consts::FRAC_1_SQRT_2);
+    let mut j = 0;
+    while j + 8 <= n {
+        let ptr = x.as_mut_ptr().add(2 * j);
+        let a = _mm256_loadu_ps(ptr);        // [e0,o0,e1,o1,e4,o4,e5,o5]
+        let b = _mm256_loadu_ps(ptr.add(4)); // [e2,o2,e3,o3,e6,o6,e7,o7]
+
+        let t0 = _mm256_unpacklo_ps(a, b);   // [e0,e2,o0,o2,e4,e6,o4,o6]
+        let t1 = _mm256_unpackhi_ps(a, b);   // [e1,e3,o1,o3,e5,e7,o5,o7]
+
+        let even = _mm256_unpacklo_ps(t0, t1); // [e0,e1,e2,e3,e4,e5,e6,e7]
+        let odd  = _mm256_unpackhi_ps(t0, t1); // [o0,o1,o2,o3,o4,o5,o6,o7]
+
+        let sum  = _mm256_mul_ps(_mm256_add_ps(even, odd), scale);
+        let diff = _mm256_mul_ps(_mm256_sub_ps(even, odd), scale);
+
+        let r0 = _mm256_unpacklo_ps(sum, diff); // [s0,d0,s1,d1,s4,d4,s5,d5]
+        let r1 = _mm256_unpackhi_ps(sum, diff); // [s2,d2,s3,d3,s6,d6,s7,d7]
+
+        let out0 = _mm256_permute2f128_ps(r0, r1, 0x20); // [s0,d0,s1,d1,s2,d2,s3,d3]
+        let out1 = _mm256_permute2f128_ps(r0, r1, 0x31); // [s4,d4,s5,d5,s6,d6,s7,d7]
+
+        _mm256_storeu_ps(ptr, out0);
+        _mm256_storeu_ps(ptr.add(8), out1);
+        j += 8;
+    }
+    // scalar tail
+    let scale = std::f32::consts::FRAC_1_SQRT_2;
+    while j < n {
+        let idx1 = 2 * j;
+        let idx2 = 2 * j + 1;
+        let tmp1 = scale * x[idx1];
+        let tmp2 = scale * x[idx2];
+        x[idx1] = tmp1 + tmp2;
+        x[idx2] = tmp1 - tmp2;
+        j += 1;
     }
 }
 
@@ -2078,13 +2126,79 @@ pub fn stereo_merge(x: &mut [f32], y: &mut [f32], mid: f32, side: f32, n: usize)
         stereo_merge_neon(x, y, mid, side, n);
         return;
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     {
-        stereo_merge_scalar(x, y, mid, side, n);
+        unsafe { stereo_merge_avx2(x, y, mid, side, n) };
+        return;
+    }
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            unsafe { stereo_merge_avx2(x, y, mid, side, n) };
+            return;
+        }
+    }
+    stereo_merge_scalar(x, y, mid, side, n);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn stereo_merge_avx2(x: &mut [f32], y: &mut [f32], mid: f32, side: f32, n: usize) {
+    use std::arch::x86_64::*;
+
+    let mut i = 0;
+
+    let v_mid = _mm256_set1_ps(mid);
+    let v_side = _mm256_set1_ps(side);
+
+    while i + 15 < n {
+        let x0 = _mm256_loadu_ps(x.as_ptr().add(i));
+        let x1 = _mm256_loadu_ps(x.as_ptr().add(i + 8));
+        let y0 = _mm256_loadu_ps(y.as_ptr().add(i));
+        let y1 = _mm256_loadu_ps(y.as_ptr().add(i + 8));
+
+        let x_val0 = _mm256_mul_ps(x0, v_mid);
+        let x_val1 = _mm256_mul_ps(x1, v_mid);
+        let y_val0 = _mm256_mul_ps(y0, v_side);
+        let y_val1 = _mm256_mul_ps(y1, v_side);
+
+        let new_x0 = _mm256_sub_ps(x_val0, y_val0);
+        let new_x1 = _mm256_sub_ps(x_val1, y_val1);
+        let new_y0 = _mm256_add_ps(x_val0, y_val0);
+        let new_y1 = _mm256_add_ps(x_val1, y_val1);
+
+        _mm256_storeu_ps(x.as_mut_ptr().add(i), new_x0);
+        _mm256_storeu_ps(x.as_mut_ptr().add(i + 8), new_x1);
+        _mm256_storeu_ps(y.as_mut_ptr().add(i), new_y0);
+        _mm256_storeu_ps(y.as_mut_ptr().add(i + 8), new_y1);
+
+        i += 16;
+    }
+
+    while i + 7 < n {
+        let x0 = _mm256_loadu_ps(x.as_ptr().add(i));
+        let y0 = _mm256_loadu_ps(y.as_ptr().add(i));
+
+        let x_val = _mm256_mul_ps(x0, v_mid);
+        let y_val = _mm256_mul_ps(y0, v_side);
+
+        let new_x = _mm256_sub_ps(x_val, y_val);
+        let new_y = _mm256_add_ps(x_val, y_val);
+
+        _mm256_storeu_ps(x.as_mut_ptr().add(i), new_x);
+        _mm256_storeu_ps(y.as_mut_ptr().add(i), new_y);
+
+        i += 8;
+    }
+
+    for j in i..n {
+        let x_val = x[j] * mid;
+        let y_val = y[j] * side;
+        x[j] = x_val - y_val;
+        y[j] = x_val + y_val;
     }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
 #[inline]
 fn stereo_merge_scalar(x: &mut [f32], y: &mut [f32], mid: f32, side: f32, n: usize) {
     for i in 0..n {
@@ -2710,6 +2824,47 @@ fn compute_band_energy_neon(band: &[f32]) -> f32 {
     sum.sqrt()
 }
 
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn compute_band_energy_avx2(band: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+
+    let n = band.len();
+    let mut i = 0usize;
+    // Two independent accumulators hide FMA latency (same as NEON 4-vector unroll)
+    let mut acc0 = _mm256_setzero_ps();
+    let mut acc1 = _mm256_setzero_ps();
+
+    while i + 16 <= n {
+        let v0 = _mm256_loadu_ps(band.as_ptr().add(i));
+        let v1 = _mm256_loadu_ps(band.as_ptr().add(i + 8));
+        acc0 = _mm256_fmadd_ps(v0, v0, acc0);
+        acc1 = _mm256_fmadd_ps(v1, v1, acc1);
+        i += 16;
+    }
+
+    if i + 8 <= n {
+        let v0 = _mm256_loadu_ps(band.as_ptr().add(i));
+        acc0 = _mm256_fmadd_ps(v0, v0, acc0);
+        i += 8;
+    }
+
+    let acc = _mm256_add_ps(acc0, acc1);
+    let hi = _mm256_extractf128_ps(acc, 1);
+    let lo = _mm256_castps256_ps128(acc);
+    let s4 = _mm_add_ps(lo, hi);
+    let t1 = _mm_movehl_ps(s4, s4);
+    let s2 = _mm_add_ps(s4, t1);
+    let t2 = _mm_shuffle_ps(s2, s2, 0x55);
+    let mut sum = 1e-15f32 + _mm_cvtss_f32(_mm_add_ss(s2, t2));
+
+    for &v in &band[i..] {
+        sum += v * v;
+    }
+
+    sum.sqrt()
+}
+
 pub fn compute_band_energies(
     m: &CeltMode,
     x: &[f32],
@@ -2720,10 +2875,8 @@ pub fn compute_band_energies(
 ) {
     let frame_size = m.short_mdct_size << lm;
 
-    #[cfg(target_arch = "aarch64")]
-    let _use_neon = true;
-    #[cfg(not(target_arch = "aarch64"))]
-    let _use_neon = false;
+    #[cfg(target_arch = "x86_64")]
+    let use_avx2 = std::arch::is_x86_feature_detected!("avx2");
 
     for c in 0..channels {
         let ch = &x[c * frame_size..(c + 1) * frame_size];
@@ -2736,7 +2889,16 @@ pub fn compute_band_energies(
             {
                 band_e[c * m.nb_ebands + i] = compute_band_energy_neon(band);
             }
-            #[cfg(not(target_arch = "aarch64"))]
+            #[cfg(target_arch = "x86_64")]
+            {
+                if n >= 8 && use_avx2 {
+                    band_e[c * m.nb_ebands + i] = unsafe { compute_band_energy_avx2(band) };
+                } else {
+                    let sum = band.iter().fold(1e-15f32, |acc, &v| acc + v * v);
+                    band_e[c * m.nb_ebands + i] = sum.sqrt();
+                }
+            }
+            #[cfg(all(not(target_arch = "aarch64"), not(target_arch = "x86_64")))]
             {
                 let sum = band.iter().fold(1e-15f32, |acc, &v| acc + v * v);
                 band_e[c * m.nb_ebands + i] = sum.sqrt();
@@ -2786,6 +2948,8 @@ pub fn normalise_bands(
 ) {
     let lm = m_val.trailing_zeros() as usize;
     let frame_size = m.short_mdct_size << lm;
+    #[cfg(target_arch = "x86_64")]
+    let use_avx2 = std::arch::is_x86_feature_detected!("avx2");
     for c in 0..channels {
         for i in 0..end {
             let base = c * frame_size + ((m.e_bands[i] as usize) << lm);
@@ -2793,10 +2957,39 @@ pub fn normalise_bands(
             let norm = 1.0 / (1e-15 + band_e[c * m.nb_ebands + i]);
             let src = &freq[base..base + n];
             let dst = &mut x[base..base + n];
+            #[cfg(target_arch = "x86_64")]
+            if n >= 8 && use_avx2 {
+                unsafe { scale_slice_avx2(src, dst, norm, n) };
+                continue;
+            }
             for (d, &s) in dst.iter_mut().zip(src) {
                 *d = s * norm;
             }
         }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn scale_slice_avx2(src: &[f32], dst: &mut [f32], scale: f32, n: usize) {
+    use std::arch::x86_64::*;
+    let vscale = _mm256_set1_ps(scale);
+    let mut i = 0;
+    // Process 16 floats (2 AVX registers) per iteration for better throughput
+    while i + 16 <= n {
+        let s0 = _mm256_loadu_ps(src.as_ptr().add(i));
+        let s1 = _mm256_loadu_ps(src.as_ptr().add(i + 8));
+        _mm256_storeu_ps(dst.as_mut_ptr().add(i), _mm256_mul_ps(s0, vscale));
+        _mm256_storeu_ps(dst.as_mut_ptr().add(i + 8), _mm256_mul_ps(s1, vscale));
+        i += 16;
+    }
+    while i + 8 <= n {
+        let sv = _mm256_loadu_ps(src.as_ptr().add(i));
+        _mm256_storeu_ps(dst.as_mut_ptr().add(i), _mm256_mul_ps(sv, vscale));
+        i += 8;
+    }
+    for j in i..n {
+        dst[j] = src[j] * scale;
     }
 }
 
@@ -2813,6 +3006,8 @@ pub fn denormalise_bands(
 ) {
     let lm = m_val.trailing_zeros() as usize;
     let frame_size = m.short_mdct_size << lm;
+    #[cfg(target_arch = "x86_64")]
+    let use_avx2 = std::arch::is_x86_feature_detected!("avx2");
 
     for c in 0..channels {
         for i in start..end {
@@ -2823,6 +3018,11 @@ pub fn denormalise_bands(
             let g = (2.0f32).powf(band_log);
             let src = &x[base..base + n];
             let dst = &mut freq[base..base + n];
+            #[cfg(target_arch = "x86_64")]
+            if n >= 8 && use_avx2 {
+                unsafe { scale_slice_avx2(src, dst, g, n) };
+                continue;
+            }
             for (d, &s) in dst.iter_mut().zip(src) {
                 *d = s * g;
             }
@@ -2918,13 +3118,89 @@ unsafe fn renormalise_vector_neon(x: &mut [f32], n: usize, gain: f32) {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn renormalise_vector_avx2(x: &mut [f32], n: usize, gain: f32) {
+    use std::arch::x86_64::*;
+
+    let mut i = 0usize;
+    // Two independent accumulators to hide FMA latency, matching NEON 4-vector unroll
+    let mut acc0 = _mm256_setzero_ps();
+    let mut acc1 = _mm256_setzero_ps();
+
+    while i + 16 <= n {
+        let v0 = _mm256_loadu_ps(x.as_ptr().add(i));
+        let v1 = _mm256_loadu_ps(x.as_ptr().add(i + 8));
+        acc0 = _mm256_fmadd_ps(v0, v0, acc0);
+        acc1 = _mm256_fmadd_ps(v1, v1, acc1);
+        i += 16;
+    }
+
+    if i + 8 <= n {
+        let v0 = _mm256_loadu_ps(x.as_ptr().add(i));
+        acc0 = _mm256_fmadd_ps(v0, v0, acc0);
+        i += 8;
+    }
+
+    let acc = _mm256_add_ps(acc0, acc1);
+    let hi = _mm256_extractf128_ps(acc, 1);
+    let lo = _mm256_castps256_ps128(acc);
+    let s4 = _mm_add_ps(lo, hi);
+    let t1 = _mm_movehl_ps(s4, s4);
+    let s2 = _mm_add_ps(s4, t1);
+    let t2 = _mm_shuffle_ps(s2, s2, 0x55);
+    let mut e = 1e-15f32 + _mm_cvtss_f32(_mm_add_ss(s2, t2));
+
+    for &v in &x[i..n] {
+        e += v * v;
+    }
+
+    let norm = gain / e.sqrt();
+    let vnorm = _mm256_set1_ps(norm);
+
+    i = 0;
+    while i + 16 <= n {
+        let v0 = _mm256_loadu_ps(x.as_ptr().add(i));
+        let v1 = _mm256_loadu_ps(x.as_ptr().add(i + 8));
+        _mm256_storeu_ps(x.as_mut_ptr().add(i), _mm256_mul_ps(v0, vnorm));
+        _mm256_storeu_ps(x.as_mut_ptr().add(i + 8), _mm256_mul_ps(v1, vnorm));
+        i += 16;
+    }
+    while i + 8 <= n {
+        let v = _mm256_loadu_ps(x.as_ptr().add(i));
+        _mm256_storeu_ps(x.as_mut_ptr().add(i), _mm256_mul_ps(v, vnorm));
+        i += 8;
+    }
+    for v in &mut x[i..n] {
+        *v *= norm;
+    }
+}
+
 pub fn renormalise_vector(x: &mut [f32], n: usize, gain: f32) {
     #[cfg(target_arch = "aarch64")]
     unsafe {
         renormalise_vector_neon(x, n, gain);
         return;
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        if n >= 16 && std::arch::is_x86_feature_detected!("avx2") {
+            renormalise_vector_avx2(x, n, gain);
+            return;
+        }
+    }
+    #[cfg(all(not(target_arch = "aarch64"), not(target_arch = "x86_64")))]
+    {
+        let mut e = 1e-15f32;
+        for &xv in x[..n].iter() {
+            e += xv * xv;
+        }
+        let norm = gain / e.sqrt();
+        for xv in x[..n].iter_mut() {
+            *xv *= norm;
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
     {
         let mut e = 1e-15f32;
         for &xv in x[..n].iter() {

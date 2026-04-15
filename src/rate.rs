@@ -4,6 +4,55 @@ use std::cmp::{max, min};
 
 const MAX_EBANDS: usize = 21;
 
+#[rustfmt::skip]
+static DIV_MAGIC_LUT: [u32; 354] = [
+    0, 0, 2147483648, 1431655766, 1073741824, 858993460, 715827883, 0,
+    536870912, 477218589, 0, 0, 357913942, 330382100, 0, 0,
+    268435456, 252645136, 238609295, 0, 0, 0, 195225787, 0,
+    178956971, 171798692, 0, 0, 0, 0, 0, 0,
+    134217728, 130150525, 0, 0, 119304648, 116080198, 0, 0,
+    0, 0, 0, 0, 97612894, 95443718, 0, 0,
+    89478486, 87652394, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    67108864, 66076420, 0, 0, 0, 0, 0, 0,
+    59652324, 58835169, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    48806447, 48258060, 0, 0, 0, 0, 0, 0,
+    44739243, 44278014, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    33554432, 33294321, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    29826162, 29620465, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    24403224, 24265352, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    22369622, 22253717, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    14913081, 14861479, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    12201612, 12167047,
+];
+
 pub const BITRES: i32 = 3;
 pub const FINE_OFFSET: i32 = 21;
 pub const QTHETA_OFFSET: i32 = 4;
@@ -44,8 +93,6 @@ pub fn bits2pulses(m: &CeltMode, band: usize, mut lm: i32, bits: i32) -> i32 {
     let mut hi = unsafe { *cache_ptr } as usize;
     let bits_minus_one = bits - 1;
 
-    // Binary search: 4-5 iterations typically. Use get_unchecked to avoid
-    // bounds checks since lo < hi <= cache[0] is an invariant.
     unsafe {
         while lo + 1 < hi {
             let mid = (lo + hi) >> 1;
@@ -57,7 +104,11 @@ pub fn bits2pulses(m: &CeltMode, band: usize, mut lm: i32, bits: i32) -> i32 {
             }
         }
 
-        let lo_val = if lo == 0 { -1i32 } else { *cache_ptr.add(lo) as i32 };
+        let lo_val = if lo == 0 {
+            -1i32
+        } else {
+            *cache_ptr.add(lo) as i32
+        };
         let hi_val = *cache_ptr.add(hi) as i32;
         if bits_minus_one - lo_val <= hi_val - bits_minus_one {
             lo as i32
@@ -466,7 +517,21 @@ fn interp_bits2pulses(
             }
 
             ebits[j] = max(0, bits[j] + offset + (den << (BITRES - 1)));
-            ebits[j] = (ebits[j] / den) >> BITRES;
+            // Replace integer division by runtime `den` (idiv, ~20-90 cycle latency) with
+            // multiply-by-magic-number via static LUT. den ∈ [1, 353] for all Opus configs.
+            // magic = ceil(2^32/den); floor(n/den) = (n as u64 * magic as u64) >> 32.
+            // black_box on the LUT load prevents LLVM from recognizing the pattern as
+            // division and re-folding it back into idiv.
+            let num = ebits[j]; // >= 0 after max(0, ...)
+            // Safety: den = c*n + bonus, where c∈{1,2}, n∈[1,176], bonus∈{0,1} → den∈[1,353].
+            // DIV_MAGIC_LUT has 354 entries (indices 0..353).
+            let magic =
+                std::hint::black_box(unsafe { *DIV_MAGIC_LUT.get_unchecked(den as usize) } as u64);
+            ebits[j] = if den == 1 {
+                num
+            } else {
+                ((num as u64 * magic) >> 32) as i32
+            } >> BITRES;
 
             if c * ebits[j] > (bits[j] >> BITRES) {
                 ebits[j] = bits[j] >> stereo >> BITRES;
@@ -495,12 +560,6 @@ fn interp_bits2pulses(
             balance -= extra_bits;
         }
         pulses[j] = bits[j];
-    }
-    if std::env::var("RATE_DBG").is_ok() {
-        eprintln!("[RATE] percoeff={} left_after_percoeff={} pulses[0..8]=[{}, {}, {}, {}, {}, {}, {}, {}]",
-            percoeff, left, pulses[0], pulses[1], pulses[2], pulses[3], pulses[4], pulses[5], pulses[6], pulses[7]);
-        eprintln!("[RATE] ebits[0..8]=[{}, {}, {}, {}, {}, {}, {}, {}]",
-            ebits[0], ebits[1], ebits[2], ebits[3], ebits[4], ebits[5], ebits[6], ebits[7]);
     }
     *balance_out = balance;
 
