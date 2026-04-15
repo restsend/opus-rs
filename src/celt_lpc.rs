@@ -76,7 +76,6 @@ pub fn celt_fir(x: &[f32], num: &[f32], y: &mut [f32], n: usize, ord: usize) {
     #[cfg(target_arch = "aarch64")]
     unsafe {
         celt_fir_neon(x, num, y, n, ord);
-        return;
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
@@ -96,7 +95,6 @@ pub fn celt_iir(x: &[f32], den: &[f32], y: &mut [f32], n: usize, ord: usize, mem
     #[cfg(target_arch = "aarch64")]
     unsafe {
         celt_iir_neon(x, den, y, n, ord, mem);
-        return;
     }
     #[cfg(not(target_arch = "aarch64"))]
     {

@@ -10,7 +10,7 @@ pub fn inner_prod(x: &[f32], y: &[f32], n: usize) -> f32 {
     }
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        return inner_prod_neon(x, y, n);
+        inner_prod_neon(x, y, n)
     }
     #[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
     unsafe {
@@ -38,7 +38,7 @@ pub fn dual_inner_prod(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32
     }
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        return dual_inner_prod_neon(x, y1, y2, n);
+        dual_inner_prod_neon(x, y1, y2, n)
     }
     #[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
     unsafe {
@@ -76,7 +76,6 @@ pub fn pitch_xcorr(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitc
         for i in 0..max_pitch {
             xcorr[i] = unsafe { inner_prod_neon(x, &y[i..], len) };
         }
-        return;
     }
     #[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
     unsafe {

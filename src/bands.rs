@@ -202,7 +202,6 @@ pub fn haar1(x: &mut [f32], n0: usize, stride: usize) {
     #[cfg(target_arch = "aarch64")]
     {
         haar1_neon(x, n0, stride);
-        return;
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     unsafe {
@@ -211,6 +210,7 @@ pub fn haar1(x: &mut [f32], n0: usize, stride: usize) {
             return;
         }
     }
+    #[cfg(not(target_arch = "aarch64"))]
     haar1_scalar(x, n0, stride);
 }
 
@@ -258,7 +258,7 @@ unsafe fn haar1_avx(x: &mut [f32], n0: usize) {
     }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 #[inline]
 fn haar1_scalar(x: &mut [f32], n0: usize, stride: usize) {
     let n = n0 >> 1;
@@ -530,9 +530,7 @@ unsafe fn stereo_itheta_neon(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i3
 #[inline(always)]
 #[cfg(target_arch = "aarch64")]
 pub fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i32 {
-    unsafe {
-        return stereo_itheta_neon(x, y, stereo, n);
-    }
+    unsafe { stereo_itheta_neon(x, y, stereo, n) }
 }
 
 #[inline(always)]
@@ -2035,7 +2033,6 @@ pub fn stereo_merge(x: &mut [f32], y: &mut [f32], mid: f32, side: f32, n: usize)
     #[cfg(target_arch = "aarch64")]
     {
         stereo_merge_neon(x, y, mid, side, n);
-        return;
     }
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     {
@@ -2049,6 +2046,7 @@ pub fn stereo_merge(x: &mut [f32], y: &mut [f32], mid: f32, side: f32, n: usize)
             return;
         }
     }
+    #[cfg(not(target_arch = "aarch64"))]
     stereo_merge_scalar(x, y, mid, side, n);
 }
 
@@ -2110,6 +2108,7 @@ unsafe fn stereo_merge_avx2(x: &mut [f32], y: &mut [f32], mid: f32, side: f32, n
     }
 }
 
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 #[inline]
 fn stereo_merge_scalar(x: &mut [f32], y: &mut [f32], mid: f32, side: f32, n: usize) {
     for i in 0..n {
@@ -3049,7 +3048,6 @@ pub fn renormalise_vector(x: &mut [f32], n: usize, gain: f32) {
     #[cfg(target_arch = "aarch64")]
     unsafe {
         renormalise_vector_neon(x, n, gain);
-        return;
     }
     #[cfg(target_arch = "x86_64")]
     unsafe {

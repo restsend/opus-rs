@@ -280,7 +280,6 @@ fn kf_bfly2(fout: &mut [KissCpx], m: usize, n: usize) {
         #[cfg(target_arch = "aarch64")]
         unsafe {
             kf_bfly2_m1_neon(fout, n);
-            return;
         }
         #[cfg(not(target_arch = "aarch64"))]
         for i in 0..n {
@@ -483,7 +482,6 @@ fn kf_bfly4(
         #[cfg(target_arch = "aarch64")]
         unsafe {
             kf_bfly4_m1_neon(fout, n);
-            return;
         }
         #[cfg(not(target_arch = "aarch64"))]
         for i in 0..n {
@@ -510,7 +508,6 @@ fn kf_bfly4(
         #[cfg(target_arch = "aarch64")]
         unsafe {
             kf_bfly4_neon_inner(fout, twiddles, m, n, mm, fstride);
-            return;
         }
         #[cfg(not(target_arch = "aarch64"))]
         {
@@ -571,7 +568,6 @@ fn kf_bfly3(
     #[cfg(target_arch = "aarch64")]
     unsafe {
         kf_bfly3_neon_inner(fout, fstride, twiddles, m, n, mm);
-        return;
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
@@ -635,7 +631,6 @@ fn kf_bfly5(
     #[cfg(target_arch = "aarch64")]
     unsafe {
         kf_bfly5_neon_inner(fout, fstride, twiddles, m, n, mm);
-        return;
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
@@ -1053,9 +1048,9 @@ unsafe fn kf_bfly5_neon_inner(
     let stride3 = fstride * 3;
     let stride4 = fstride * 4;
 
-    let ya_r: f32 = 0.30901699;
+    let ya_r: f32 = 0.309_017;
     let ya_i: f32 = -0.95105652;
-    let yb_r: f32 = -0.80901699;
+    let yb_r: f32 = -0.809_017;
     let yb_i: f32 = -0.58778525;
 
     let fout_ptr = fout.as_mut_ptr() as *mut f32;

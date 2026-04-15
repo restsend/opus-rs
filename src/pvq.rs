@@ -1763,7 +1763,6 @@ fn exp_rotation1(x: &mut [f32], len: usize, stride: usize, c: f32, s: f32) {
     #[cfg(target_arch = "aarch64")]
     {
         exp_rotation1_neon(x, len, stride, c, s);
-        return;
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
@@ -1890,7 +1889,7 @@ pub fn extract_collapse_mask(iy: &[i32], n: usize, b: usize) -> u32 {
 
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        return extract_collapse_mask_neon(iy, n, b);
+        extract_collapse_mask_neon(iy, n, b)
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
@@ -2129,7 +2128,6 @@ pub fn renormalise_vector(x: &mut [f32], n: usize, gain: f32) {
     #[cfg(target_arch = "aarch64")]
     unsafe {
         renormalise_vector_neon(x, n, gain);
-        return;
     }
     #[cfg(target_arch = "x86_64")]
     unsafe {
@@ -2138,6 +2136,7 @@ pub fn renormalise_vector(x: &mut [f32], n: usize, gain: f32) {
             return;
         }
     }
+    #[cfg(not(target_arch = "aarch64"))]
     {
         let mut e = 1e-15f32;
         for i in 0..n {
@@ -2202,7 +2201,6 @@ unsafe fn alg_quant_resynth_neon(y: &[i32], x: &mut [f32], n: usize, gain: f32) 
     }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
 #[inline(always)]
 fn alg_quant_resynth_scalar(y: &[i32], x: &mut [f32], n: usize, gain: f32) {
     #[cfg(target_arch = "x86_64")]

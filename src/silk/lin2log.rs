@@ -13,10 +13,10 @@ pub fn silk_lin2log(in_lin: i32) -> i32 {
         x & 0x7f
     } else if rot < 0 {
         let m = (-rot) as u32;
-        ((x << m) | (x >> (32 - m))) & 0x7f
+        x.rotate_left(m) & 0x7f
     } else {
         let r = rot as u32;
-        ((x << (32 - r)) | (x >> r)) & 0x7f
+        x.rotate_right(r) & 0x7f
     } as i32;
 
     let res = silk_smlawb(frac_q7, silk_mul(frac_q7, 128 - frac_q7), 179);

@@ -2,12 +2,12 @@
 
 A pure-Rust implementation of the [Opus audio codec](https://opus-codec.org/) (RFC 6716), ported from the reference C implementation (libopus 1.6).
 
-> **Status: Production-ready** — SILK-only, CELT-only, and Hybrid modes are functional. Stereo encoding (SILK and CELT) is supported.
+> **Production-ready**
 
 ## Features
 
-- **Pure Rust** — no C dependencies, no unsafe code in the codec core
-- **High Performance:** At or faster than C libopus across all configurations on both architectures. 
+- **Pure Rust** — no C dependencies
+- **High Performance:** At or faster than C libopus across all configurations on X64/AARCH64 
 
 ## Quick Start
 
@@ -58,11 +58,11 @@ Measured on Apple Silicon M-series (aarch64), compiled with `--release` (opt-lev
 
 | Config | Pure Rust | C Opus | Ratio |
 |--------|-----------|--------|-------|
-| 8 kHz / 20 ms VoIP | **34.77 ms** | 36.31 ms | 0.96× (**Rust 4% faster**) |
-| 16 kHz / 20 ms VoIP | **58.23 ms** | 59.37 ms | 0.98× (**Rust 2% faster**) |
-| 16 kHz / 10 ms VoIP | 63.44 ms | **62.50 ms** | 1.02× (C 2% faster) |
-| 48 kHz / 20 ms Audio | **29.61 ms** | 32.42 ms | 0.91× (**Rust 9% faster**) |
-| 48 kHz / 10 ms Audio | 34.58 ms | **33.47 ms** | 1.03× (C 3% faster) |
+| 8 kHz / 20 ms VoIP | **33.06 ms** | 34.26 ms | 0.96× (**Rust 4% faster**) |
+| 16 kHz / 20 ms VoIP | **55.62 ms** | 56.11 ms | 0.99× (**Rust 1% faster**) |
+| 16 kHz / 10 ms VoIP | 63.28 ms | **62.50 ms** | 1.01× (C 1% faster) |
+| 48 kHz / 20 ms Audio | **22.40 ms** | 30.46 ms | 0.74× (**Rust 26% faster**) |
+| 48 kHz / 10 ms Audio | **25.25 ms** | 31.57 ms | 0.80× (**Rust 20% faster**) |
 
 
 ## License

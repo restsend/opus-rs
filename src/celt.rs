@@ -67,7 +67,7 @@ fn sum_abs(x: &[f32]) -> f32 {
     }
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        return sum_abs_neon(x, x.len());
+        sum_abs_neon(x, x.len())
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
@@ -577,7 +577,6 @@ fn comb_filter_const(
     #[cfg(target_arch = "aarch64")]
     {
         comb_filter_const_neon(y, x, y_idx, x_idx, t, n, g10, g11, g12);
-        return;
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     unsafe {

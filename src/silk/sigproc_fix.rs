@@ -106,7 +106,6 @@ pub fn silk_biquad_alt_stride2(
     #[cfg(target_arch = "aarch64")]
     unsafe {
         silk_biquad_alt_stride2_neon(input_output, b_q28, a_q28, s, len);
-        return;
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
@@ -147,13 +146,13 @@ fn xcorr_kernel_c(x: &[i16], y: &[i16], sum: &mut [i32; 4], len: usize) {
         unsafe {
             xcorr_kernel_neon_s16(x, y, sum, len);
         }
-        return;
     }
     #[cfg(target_arch = "x86_64")]
     if std::arch::is_x86_feature_detected!("avx2") {
         unsafe { xcorr_kernel_avx2(x, y, sum, len) };
         return;
     }
+    #[cfg(not(target_arch = "aarch64"))]
     xcorr_kernel_scalar(x, y, sum, len);
 }
 
@@ -500,15 +499,17 @@ unsafe fn silk_sum_sqr_shift_neon(x: &[i16], len: usize, shft: i32) -> i32 {
 pub fn silk_inner_prod_aligned(ptr1: &[i16], ptr2: &[i16], len: usize) -> i32 {
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        return silk_inner_prod_aligned_neon(ptr1, ptr2, len);
+        silk_inner_prod_aligned_neon(ptr1, ptr2, len)
     }
     #[cfg(target_arch = "x86_64")]
     if std::arch::is_x86_feature_detected!("avx2") {
         return unsafe { silk_inner_prod_aligned_avx2(ptr1, ptr2, len) };
     }
+    #[cfg(not(target_arch = "aarch64"))]
     silk_inner_prod_aligned_scalar(ptr1, ptr2, len)
 }
 
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 #[inline(always)]
 fn silk_inner_prod_aligned_scalar(ptr1: &[i16], ptr2: &[i16], len: usize) -> i32 {
     let ptr1 = &ptr1[..len];
