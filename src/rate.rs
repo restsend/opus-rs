@@ -3,56 +3,6 @@ use crate::range_coder::RangeCoder;
 use std::cmp::{max, min};
 
 const MAX_EBANDS: usize = 21;
-
-#[rustfmt::skip]
-static DIV_MAGIC_LUT: [u32; 354] = [
-    0, 0, 2147483648, 1431655766, 1073741824, 858993460, 715827883, 0,
-    536870912, 477218589, 0, 0, 357913942, 330382100, 0, 0,
-    268435456, 252645136, 238609295, 0, 0, 0, 195225787, 0,
-    178956971, 171798692, 0, 0, 0, 0, 0, 0,
-    134217728, 130150525, 0, 0, 119304648, 116080198, 0, 0,
-    0, 0, 0, 0, 97612894, 95443718, 0, 0,
-    89478486, 87652394, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    67108864, 66076420, 0, 0, 0, 0, 0, 0,
-    59652324, 58835169, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    48806447, 48258060, 0, 0, 0, 0, 0, 0,
-    44739243, 44278014, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    33554432, 33294321, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    29826162, 29620465, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    24403224, 24265352, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    22369622, 22253717, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    14913081, 14861479, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    12201612, 12167047,
-];
-
 pub const BITRES: i32 = 3;
 pub const FINE_OFFSET: i32 = 21;
 pub const QTHETA_OFFSET: i32 = 4;
@@ -87,14 +37,15 @@ pub fn bits2pulses(m: &CeltMode, band: usize, mut lm: i32, bits: i32) -> i32 {
     let cache = &m.cache.bits[cache_index as usize..];
     let cache_ptr = cache.as_ptr();
 
-    let mut lo = 0usize;
-    let mut hi = unsafe { *cache_ptr } as usize;
-    let bits_minus_one = bits - 1;
+    let mut lo = 0i32;
+    let mut hi = unsafe { *cache_ptr } as i32;
+    let bits = bits - 1; // bits--
 
     unsafe {
-        while lo + 1 < hi {
-            let mid = (lo + hi) >> 1;
-            if *cache_ptr.add(mid) as i32 >= bits_minus_one {
+        for _ in 0..6 {
+            // LOG_MAX_PSEUDO = 6
+            let mid = (lo + hi + 1) >> 1; // round up, matches C
+            if *cache_ptr.add(mid as usize) as i32 >= bits {
                 hi = mid;
             } else {
                 lo = mid;
@@ -104,13 +55,13 @@ pub fn bits2pulses(m: &CeltMode, band: usize, mut lm: i32, bits: i32) -> i32 {
         let lo_val = if lo == 0 {
             -1i32
         } else {
-            *cache_ptr.add(lo) as i32
+            *cache_ptr.add(lo as usize) as i32
         };
-        let hi_val = *cache_ptr.add(hi) as i32;
-        if bits_minus_one - lo_val <= hi_val - bits_minus_one {
-            lo as i32
+        let hi_val = *cache_ptr.add(hi as usize) as i32;
+        if bits - lo_val <= hi_val - bits {
+            lo
         } else {
-            hi as i32
+            hi
         }
     }
 }
@@ -153,8 +104,6 @@ pub fn clt_compute_allocation(
     prev: i32,
     signal_bandwidth: i32,
 ) -> i32 {
-    let tell = rc.tell() << BITRES;
-    total -= tell;
     total = max(total, 0);
     let nb_ebands = m.nb_ebands;
     let mut skip_start = start;
@@ -212,8 +161,8 @@ pub fn clt_compute_allocation(
         let mid = (lo + hi) >> 1;
         for j in (start..end).rev() {
             let n = (m.e_bands[j + 1] - m.e_bands[j]) as i32;
-            let mut bitsj =
-                (c * n * m.alloc_vectors[mid as usize * m.alloc_stride + j] as i32) << lm >> 2;
+            let raw = m.alloc_vectors[mid as usize * m.alloc_stride + j] as i32;
+            let mut bitsj = (c * n * raw) << lm >> 2;
             if bitsj > 0 {
                 bitsj = max(0, bitsj + trim_offset[j]);
             }
@@ -225,6 +174,7 @@ pub fn clt_compute_allocation(
                 psum += c << BITRES;
             }
         }
+        if mid == 9 {}
         if psum > total {
             hi = mid - 1;
         } else {
@@ -309,7 +259,7 @@ fn interp_bits2pulses(
     balance_out: &mut i32,
     skip_rsv: i32,
     intensity: &mut i32,
-    intensity_rsv: i32,
+    mut intensity_rsv: i32,
     dual_stereo: &mut i32,
     dual_stereo_rsv: i32,
     pulses: &mut [i32],
@@ -404,18 +354,20 @@ fn interp_bits2pulses(
                     break;
                 }
                 rc.encode_bit_logp(false, 1);
-            } else if rc.decode_bit_logp(1) {
-                break;
+            } else {
+                let bit = rc.decode_bit_logp(1);
+                if bit {
+                    break;
+                }
             }
             psum += 1 << BITRES;
             band_bits -= 1 << BITRES;
         }
         psum -= bits[j] + intensity_rsv;
-        let mut new_intensity_rsv = intensity_rsv;
         if intensity_rsv > 0 {
-            new_intensity_rsv = LOG2_FRAC_TABLE[j - start] as i32;
+            intensity_rsv = LOG2_FRAC_TABLE[j - start] as i32;
         }
-        psum += new_intensity_rsv;
+        psum += intensity_rsv;
         if band_bits >= alloc_floor {
             psum += alloc_floor;
             bits[j] = alloc_floor;
@@ -484,8 +436,9 @@ fn interp_bits2pulses(
         let n = n0 << lm;
         let bit = bits[j] + balance;
 
+        let mut excess;
         if n > 1 {
-            let excess = max(bit - cap[j], 0);
+            excess = max(bit - cap[j], 0);
             bits[j] = bit - excess;
 
             let den = c * n
@@ -510,14 +463,11 @@ fn interp_bits2pulses(
             ebits[j] = max(0, bits[j] + offset + (den << (BITRES - 1)));
 
             let num = ebits[j];
-
-            let magic =
-                std::hint::black_box(unsafe { *DIV_MAGIC_LUT.get_unchecked(den as usize) } as u64);
-            ebits[j] = if den == 1 {
-                num
+            if den > 0 {
+                ebits[j] = ((num as u32 / den as u32) >> BITRES) as i32;
             } else {
-                ((num as u64 * magic) >> 32) as i32
-            } >> BITRES;
+                ebits[j] = 0;
+            }
 
             if c * ebits[j] > (bits[j] >> BITRES) {
                 ebits[j] = bits[j] >> stereo >> BITRES;
@@ -529,22 +479,21 @@ fn interp_bits2pulses(
                 0
             };
             bits[j] -= (c * ebits[j]) << BITRES;
-            balance = excess;
         } else {
-            let excess = max(0, bit - (c << BITRES));
+            excess = max(0, bit - (c << BITRES));
             bits[j] = bit - excess;
             ebits[j] = 0;
             fine_priority[j] = 1;
-            balance = excess;
         }
 
-        if balance > 0 {
-            let extra_fine = min(balance >> (stereo + BITRES), MAX_FINE_BITS - ebits[j]);
+        if excess > 0 {
+            let extra_fine = min(excess >> (stereo + BITRES), MAX_FINE_BITS - ebits[j]);
             ebits[j] += extra_fine;
             let extra_bits = (extra_fine * c) << BITRES;
-            fine_priority[j] = if extra_bits >= balance { 1 } else { 0 };
-            balance -= extra_bits;
+            fine_priority[j] = if extra_bits >= excess - balance { 1 } else { 0 };
+            excess -= extra_bits;
         }
+        balance = excess;
         pulses[j] = bits[j];
     }
     *balance_out = balance;

@@ -264,7 +264,7 @@ const WINDOW_120: [f32; 120] = [
 
 pub const SPREAD_ICDF: [u8; 4] = [25, 23, 2, 0];
 pub const TRIM_ICDF: [u8; 11] = [126, 124, 119, 109, 87, 41, 19, 9, 4, 2, 0];
-pub const TAPSET_ICDF: [u8; 2] = [2, 0];
+pub const TAPSET_ICDF: [u8; 3] = [2, 1, 0];
 
 pub const TF_SELECT_TABLE: [[i8; 8]; 4] = [
     [0, -1, 0, -1, 0, -1, 0, -1],

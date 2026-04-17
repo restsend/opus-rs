@@ -295,21 +295,29 @@ impl RangeCoder {
         nbits - (l << 3) - b as i32
     }
 
+    /// Integer bit count matching C's `ec_tell()`: `nbits_total - EC_ILOG(rng)`.
     #[inline(always)]
     pub fn tell(&self) -> i32 {
-        const CORRECTION: [u32; 8] = [35733, 38967, 42495, 46340, 50535, 55109, 60097, 65535];
-        let nbits = self.nbits_total << BITRES;
-        let l = 32 - self.rng.leading_zeros() as i32;
-        let r = self.rng >> (l - 16);
-        let b = (r >> 12).wrapping_sub(8);
-        let b = b + (r > CORRECTION[b as usize]) as u32;
-        let tell_frac = nbits - (l << 3) - b as i32;
-        (tell_frac + 7) >> 3
+        self.nbits_total - (32 - self.rng.leading_zeros() as i32)
     }
 
     #[inline(always)]
     pub fn tell_fast(&self) -> i32 {
         self.nbits_total
+    }
+
+    /// Shrink the range coder buffer, moving end-coded bytes to the new end.
+    /// Equivalent to C's `ec_enc_shrink`.
+    pub fn shrink(&mut self, new_size: u32) {
+        debug_assert!(self.offs + self.end_offs <= new_size);
+        if self.end_offs > 0 {
+            let old_end_start = (self.storage - self.end_offs) as usize;
+            let old_end_end = self.storage as usize;
+            let new_end_start = (new_size - self.end_offs) as usize;
+            self.buf
+                .copy_within(old_end_start..old_end_end, new_end_start);
+        }
+        self.storage = new_size;
     }
 
     #[inline(always)]
@@ -645,10 +653,14 @@ impl RangeCoder {
                 if self.end_offs >= self.storage {
                     self.error = -1;
                 } else {
+                    // If we've busted, don't add too many extra bits to the
+                    // last byte; it would corrupt the range coder data.
+                    if self.offs + self.end_offs >= self.storage && (-l as i32) < used {
+                        window &= (1u32 << (-l as u32)) - 1;
+                        self.error = -1;
+                    }
                     let idx = (self.storage - self.end_offs - 1) as usize;
                     self.buf[idx] |= window as u8;
-
-                    self.end_offs += 1;
                 }
             }
         }

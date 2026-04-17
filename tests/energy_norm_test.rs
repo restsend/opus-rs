@@ -22,7 +22,7 @@ fn test_energy_norm_denorm() {
     let mut band_log_e = vec![0.0f32; nb_ebands * channels];
     opus_rs::bands::amp2log2(
         mode,
-        nb_ebands,
+        0, // start_band=0: compute all bands (CeltOnly mode)
         nb_ebands,
         &band_e,
         &mut band_log_e,

@@ -963,8 +963,14 @@ fn comb_filter(
         return;
     }
 
-    let t0 = t0.max(COMBFILTER_MINPERIOD);
-    let t1 = t1.max(COMBFILTER_MINPERIOD);
+    let t0 = t0.clamp(
+        COMBFILTER_MINPERIOD,
+        x_idx.saturating_sub(2).max(COMBFILTER_MINPERIOD),
+    );
+    let t1 = t1.clamp(
+        COMBFILTER_MINPERIOD,
+        x_idx.saturating_sub(2).max(COMBFILTER_MINPERIOD),
+    );
 
     let g00 = g0 * PREFILTER_GAINS[tapset0 as usize][0];
     let g01 = g0 * PREFILTER_GAINS[tapset0 as usize][1];
@@ -1008,6 +1014,78 @@ fn comb_filter(
         } else {
             comb_filter_const(y, x, y_idx + i, x_idx + i, t1, n - i, g10, g11, g12);
         }
+    }
+}
+
+/// In-place comb filter: buf[y_idx..y_idx+n] is both input and output.
+/// Reference samples at buf[y_idx + i - T + offset] may already be filtered
+/// if T < i, matching C libopus's in-place comb_filter(out, out, ...) behavior.
+fn comb_filter_inplace(
+    buf: &mut [f32],
+    y_idx: usize,
+    t0: usize,
+    t1: usize,
+    n: usize,
+    g0: f32,
+    g1: f32,
+    tapset0: i32,
+    tapset1: i32,
+    window: &[f32],
+    overlap: usize,
+) {
+    if g0 == 0.0 && g1 == 0.0 {
+        // nothing to do; buf[y_idx..] already holds the input
+        return;
+    }
+
+    let t0 = t0.clamp(COMBFILTER_MINPERIOD, y_idx - 2);
+    let t1 = t1.clamp(COMBFILTER_MINPERIOD, y_idx - 2);
+
+    let g00 = g0 * PREFILTER_GAINS[tapset0 as usize][0];
+    let g01 = g0 * PREFILTER_GAINS[tapset0 as usize][1];
+    let g02 = g0 * PREFILTER_GAINS[tapset0 as usize][2];
+
+    let g10 = g1 * PREFILTER_GAINS[tapset1 as usize][0];
+    let g11 = g1 * PREFILTER_GAINS[tapset1 as usize][1];
+    let g12 = g1 * PREFILTER_GAINS[tapset1 as usize][2];
+
+    let mut inner_overlap = overlap;
+    if g0 == g1 && t0 == t1 && tapset0 == tapset1 {
+        inner_overlap = 0;
+    }
+
+    let mut i = 0;
+    while i < inner_overlap && i < n {
+        let idx = y_idx + i;
+        let f = window[i] * window[i];
+        let s = buf[idx]; // original input (not yet overwritten at idx)
+        let r0 = buf[idx - t0];
+        let r0p1 = buf[idx - t0 + 1];
+        let r0m1 = buf[idx - t0 - 1];
+        let r0p2 = buf[idx - t0 + 2];
+        let r0m2 = buf[idx - t0 - 2];
+        let r1 = buf[idx - t1];
+        let r1p1 = buf[idx - t1 + 1];
+        let r1m1 = buf[idx - t1 - 1];
+        let r1p2 = buf[idx - t1 + 2];
+        let r1m2 = buf[idx - t1 - 2];
+        buf[idx] = s
+            + (1.0 - f) * (g00 * r0 + g01 * (r0p1 + r0m1) + g02 * (r0p2 + r0m2))
+            + f * (g10 * r1 + g11 * (r1p1 + r1m1) + g12 * (r1p2 + r1m2));
+        i += 1;
+    }
+
+    // Constant region: only new filter (t1, g1)
+    while i < n {
+        let idx = y_idx + i;
+        let s = buf[idx];
+        let r1 = buf[idx - t1];
+        let r1p1 = buf[idx - t1 + 1];
+        let r1m1 = buf[idx - t1 - 1];
+        let r1p2 = buf[idx - t1 + 2];
+        let r1m2 = buf[idx - t1 - 2];
+        buf[idx] = s + g10 * r1 + g11 * (r1p1 + r1m1) + g12 * (r1p2 + r1m2);
+        i += 1;
     }
 }
 
@@ -1101,7 +1179,7 @@ fn run_prefilter(
     }
 
     let offset = 0usize;
-    let prev_period = prefilter_period.max(COMBFILTER_MINPERIOD);
+    let prev_period = prefilter_period.clamp(COMBFILTER_MINPERIOD, max_period - 2);
 
     for c in 0..channels {
         if offset > 0 {
@@ -1358,7 +1436,7 @@ impl CeltEncoder {
             complexity: 9,
             syn_mem: vec![0.0; syn_mem_size],
             enc_decode_mem: vec![0.0; syn_mem_size],
-            old_band_e: vec![-28.0; nb_x_ch],
+            old_band_e: vec![0.0; nb_x_ch],
             preemph_mem: vec![0.0; channels],
             tonal_average: 256,
             hf_average: 0,
@@ -1370,12 +1448,12 @@ impl CeltEncoder {
             prefilter_period: COMBFILTER_MINPERIOD,
             prefilter_gain: 0.0,
             prefilter_tapset: 0,
-            old_band_e2: vec![-28.0; nb_x_ch],
-            old_band_e3: vec![-28.0; nb_x_ch],
-            last_band_log_e: vec![-28.0; nb_x_ch],
+            old_band_e2: vec![0.0; nb_x_ch],
+            old_band_e3: vec![0.0; nb_x_ch],
+            last_band_log_e: vec![0.0; nb_x_ch],
 
             w_in_buf: vec![0.0; bufstride_x_ch],
-            w_freq: vec![0.0; frame_x_ch],
+            w_freq: vec![0.0; frame_x_ch + 4],
             w_band_e: vec![0.0; nb_x_ch],
 
             w_x: vec![0.0; frame_x_ch + STRIDE_ACCESS_PAD],
@@ -1389,7 +1467,7 @@ impl CeltEncoder {
             w_fine_priority: vec![0; nb_x_ch],
             w_collapse_masks: vec![0; nb_x_ch],
             w_band_amp_synth: vec![0.0; nb_x_ch],
-            w_freq_synth: vec![0.0; frame_x_ch],
+            w_freq_synth: vec![0.0; frame_x_ch + 4],
 
             w_prefilter_pre: vec![0.0; channels * (COMBFILTER_MAXPERIOD + MAX_FRAME_SIZE)],
             w_prefilter_pitch_buf: vec![0.0; (COMBFILTER_MAXPERIOD + MAX_FRAME_SIZE) >> 1],
@@ -1462,7 +1540,7 @@ impl CeltEncoder {
             let mut m = self.preemph_mem[c];
             let coef = mode.preemph[0];
             for i in 0..frame_size {
-                let x = pcm[c * frame_size + i];
+                let x = pcm[c * frame_size + i] * 32768.0;
                 let val = x - m;
                 self.syn_mem[channel_offset + syn_mem_size - frame_size + i] = val;
                 m = x * coef;
@@ -1577,33 +1655,20 @@ impl CeltEncoder {
         }
 
         let band_log_e = &mut self.w_band_log_e[..nb_ebands * channels];
-        crate::bands::amp2log2(mode, nb_ebands, nb_ebands, band_e, band_log_e, channels);
+        crate::bands::amp2log2(mode, start_band, nb_ebands, band_e, band_log_e, channels);
 
         let total_bits = explicit_total_bits.unwrap_or_else(|| (rc.buf.len() * 8) as i32);
         self.w_error[..nb_ebands * channels].fill(0.0);
         let error = &mut self.w_error[..nb_ebands * channels];
-
-        let _celt_dbg = false;
 
         let tell = rc.tell();
         let silence = false;
         if tell == 1 {
             rc.encode_bit_logp(silence, 15);
         }
-        if _celt_dbg {
-            eprintln!(
-                "[ENC] start_band={} total_bits={} after_silence tell={}",
-                start_band,
-                total_bits,
-                rc.tell()
-            );
-        }
 
         if start_band == 0 && !silence && rc.tell() + 16 <= total_bits {
             rc.encode_bit_logp(pf_on, 1);
-            if _celt_dbg {
-                eprintln!("[ENC] pf_on={} after_prefilter tell={}", pf_on, rc.tell());
-            }
             if pf_on {
                 let qg = (gain1 / 0.09375 - 1.0 + 0.5).floor() as i32;
                 let qg = qg.clamp(0, 7);
@@ -1623,14 +1688,6 @@ impl CeltEncoder {
             if is_transient {
                 short_blocks = true;
             }
-        }
-        if _celt_dbg {
-            eprintln!(
-                "[ENC] is_transient={} short_blocks={} after_transient tell={}",
-                is_transient,
-                short_blocks,
-                rc.tell()
-            );
         }
 
         if short_blocks {
@@ -1683,13 +1740,6 @@ impl CeltEncoder {
             is_transient || intra_ener,
             (total_bits / 8) as usize,
         );
-        if _celt_dbg {
-            eprintln!(
-                "[ENC] old_band_e after coarse: {:?}",
-                &self.old_band_e[..nb_ebands.min(6)]
-            );
-        }
-
         self.w_tf_res[..nb_ebands].fill(0);
         let tf_res = &mut self.w_tf_res[..nb_ebands];
         let effective_bytes = ((total_bits / 8) as usize).max(1);
@@ -1720,9 +1770,6 @@ impl CeltEncoder {
             tf_select,
             rc,
         );
-        if _celt_dbg {
-            eprintln!("[ENC] after_coarse+tf tell={}", rc.tell());
-        }
 
         let mut dual_stereo_val = if channels == 2 {
             stereo_analysis(mode, x, lm as i32, frame_size) as i32
@@ -1771,20 +1818,15 @@ impl CeltEncoder {
         } else {
             self.spread_decision = SPREAD_NORMAL;
         }
-        if _celt_dbg {
-            eprintln!(
-                "[ENC] spread={} after_spread tell={}",
-                self.spread_decision,
-                rc.tell()
-            );
-        }
 
         self.w_cap[..nb_ebands].fill(0);
         let cap = &mut self.w_cap[..nb_ebands];
         for (i, cap_i) in cap.iter_mut().enumerate() {
-            *cap_i = (mode.cache.caps[nb_ebands * (2 * lm + channels - 1) + i] as i32 + 64)
+            let n = (mode.e_bands[i + 1] - mode.e_bands[i]) << lm;
+            *cap_i = ((mode.cache.caps[nb_ebands * (2 * lm + channels - 1) + i] as i32 + 64)
                 * channels as i32
-                * 2;
+                * n as i32)
+                >> 2;
         }
 
         self.w_offsets[..nb_ebands].fill(0);
@@ -1793,16 +1835,13 @@ impl CeltEncoder {
         let total_bits_bitres = total_bits << BITRES;
         let total_boost = 0i32;
 
-        for i in 0..nb_ebands {
+        for i in start_band..nb_ebands {
             let tell_frac = rc.tell() << BITRES;
             if tell_frac + (dynalloc_logp << BITRES) >= total_bits_bitres - total_boost {
                 break;
             }
             rc.encode_bit_logp(false, dynalloc_logp as u32);
             offsets[i] = 0;
-        }
-        if _celt_dbg {
-            eprintln!("[ENC] after_dynalloc tell={}", rc.tell());
         }
 
         let alloc_trim = alloc_trim_analysis(
@@ -1821,13 +1860,6 @@ impl CeltEncoder {
         );
         if (rc.tell() << BITRES) + (6 << BITRES) <= total_bits_bitres - total_boost {
             rc.encode_icdf(alloc_trim, &TRIM_ICDF, 7);
-        }
-        if _celt_dbg {
-            eprintln!(
-                "[ENC] alloc_trim={} after_trim tell={}",
-                alloc_trim,
-                rc.tell()
-            );
         }
 
         let mut intensity = self.intensity;
@@ -1855,7 +1887,7 @@ impl CeltEncoder {
             alloc_trim,
             &mut intensity,
             &mut dual_stereo_val,
-            total_bits << 3,
+            (total_bits << BITRES) - rc.tell_frac() - 1,
             &mut balance,
             pulses,
             ebits,
@@ -1867,15 +1899,6 @@ impl CeltEncoder {
             0,
             nb_ebands as i32 - 1,
         );
-        if _celt_dbg {
-            eprintln!(
-                "[ENC] coded_bands={} after_alloc tell={}",
-                self.last_coded_bands,
-                rc.tell()
-            );
-            eprintln!("[ENC] pulses={:?}", &pulses[..nb_ebands]);
-            eprintln!("[ENC] ebits={:?}", &ebits[..nb_ebands]);
-        }
 
         quant_fine_energy(
             mode,
@@ -1894,7 +1917,7 @@ impl CeltEncoder {
         let y_opt = if channels == 2 { Some(y_split) } else { None };
 
         let anti_collapse_rsv = if is_transient && lm >= 2 {
-            let remaining = (total_bits << BITRES) - (rc.tell() << BITRES) - 1;
+            let remaining = (total_bits << BITRES) - rc.tell_frac() - 1;
             if remaining >= ((lm as i32 + 2) << BITRES) {
                 1i32 << BITRES
             } else {
@@ -1924,7 +1947,7 @@ impl CeltEncoder {
             &mut dual_stereo,
             intensity as usize,
             tf_res,
-            (total_bits << 3) - anti_collapse_rsv,
+            (total_bits << BITRES) - anti_collapse_rsv,
             &mut balance,
             rc,
             lm as i32,
@@ -1932,13 +1955,6 @@ impl CeltEncoder {
             resynth,
             &mut 0u32,
         );
-        if _celt_dbg {
-            eprintln!("[ENC] after_quant_all_bands tell={}", rc.tell());
-        }
-        if _celt_dbg {
-            eprintln!("[ENC] freq[0..10] after quant: {:?}", &freq[..10]);
-            eprintln!("[ENC] x[0..10] after quant: {:?}", &x[..10]);
-        }
 
         if anti_collapse_rsv > 0 {
             let anti_collapse_on = if self.consec_transient < 2 {
@@ -1957,23 +1973,11 @@ impl CeltEncoder {
             error,
             ebits,
             fine_priority,
-            (total_bits - rc.tell()) << 3,
+            total_bits - rc.tell(),
             rc,
             channels,
         );
-        if _celt_dbg {
-            eprintln!(
-                "[ENC] after_energy_finalise tell={}/{}",
-                rc.tell(),
-                total_bits
-            );
-        }
-        if _celt_dbg {
-            eprintln!(
-                "[ENC] old_band_e after ALL energy quant: {:?}",
-                &self.old_band_e[..nb_ebands.min(6)]
-            );
-        }
+
         if resynth {
             let band_amp_synth = &mut self.w_band_amp_synth[..nb_ebands * channels];
             log2amp(mode, nb_ebands, band_amp_synth, &self.old_band_e, channels);
@@ -2007,9 +2011,14 @@ impl CeltEncoder {
                 let co = c * syn_mem_size;
                 let out_syn_idx = decode_buf_size - frame_size;
                 for bi in 0..syn_b {
+                    let syn_stride = if is_transient {
+                        mode.short_mdct_size
+                    } else {
+                        syn_n
+                    };
                     mode.mdct.backward(
                         &freq_synth[c * frame_size + bi..],
-                        &mut self.enc_decode_mem[co + out_syn_idx + bi * syn_n..],
+                        &mut self.enc_decode_mem[co + out_syn_idx + bi * syn_stride..],
                         mode.window,
                         overlap,
                         syn_shift,
@@ -2100,7 +2109,6 @@ pub struct CeltDecoder {
     w_freq: Vec<f32>,
     w_band_amp: Vec<f32>,
     w_pcm_frame: Vec<f32>,
-    w_filtered: Vec<f32>,
     w_post: Vec<f32>,
 }
 
@@ -2114,7 +2122,7 @@ impl CeltDecoder {
             mode,
             channels,
             decode_mem: vec![0.0; channels * (DECODE_BUFFER_SIZE + overlap)],
-            old_band_e: vec![-28.0; nb_x_ch],
+            old_band_e: vec![0.0; nb_x_ch],
             preemph_mem: vec![0.0; channels],
             prefilter_mem: vec![0.0; channels * COMBFILTER_MAXPERIOD],
             prefilter_period: COMBFILTER_MINPERIOD,
@@ -2123,8 +2131,8 @@ impl CeltDecoder {
             prefilter_gain_old: 0.0,
             prefilter_tapset: 0,
             prefilter_tapset_old: 0,
-            old_band_e2: vec![-28.0; nb_x_ch],
-            old_band_e3: vec![-28.0; nb_x_ch],
+            old_band_e2: vec![0.0; nb_x_ch],
+            old_band_e3: vec![0.0; nb_x_ch],
             rng: 0,
 
             w_tf_res: vec![0; nb_ebands],
@@ -2136,10 +2144,9 @@ impl CeltDecoder {
 
             w_x: vec![0.0; dec_frame_x_ch + STRIDE_ACCESS_PAD],
             w_collapse_masks: vec![0; nb_x_ch],
-            w_freq: vec![0.0; dec_frame_x_ch],
+            w_freq: vec![0.0; dec_frame_x_ch + 4], // +4: NEON backward pre-rotation reads up to 3 elements past n2
             w_band_amp: vec![0.0; nb_x_ch],
             w_pcm_frame: vec![0.0; DECODE_BUFFER_SIZE],
-            w_filtered: vec![0.0; DECODE_BUFFER_SIZE],
             w_post: vec![0.0; DECODE_BUFFER_SIZE + COMBFILTER_MAXPERIOD],
         }
     }
@@ -2189,7 +2196,6 @@ impl CeltDecoder {
         pcm: &mut [f32],
         start_band: usize,
     ) -> usize {
-        let _celt_dbg = false;
         let mode = self.mode;
         let channels = self.channels;
         let nb_ebands = mode.nb_ebands;
@@ -2212,14 +2218,6 @@ impl CeltDecoder {
             silence = true;
         } else if tell == 1 {
             silence = rc.decode_bit_logp(15);
-        }
-        if _celt_dbg {
-            eprintln!(
-                "[DEC] start_band={} total_bits={} after_silence tell={}",
-                start_band,
-                total_bits,
-                rc.tell()
-            );
         }
 
         if silence {
@@ -2244,10 +2242,6 @@ impl CeltDecoder {
                 gain1 = 0.09375 * (qg as f32 + 1.0);
             }
         }
-        if _celt_dbg {
-            eprintln!("[DEC] pf_on={} after_prefilter tell={}", pf_on, rc.tell());
-        }
-
         if start_band != 0 {
             self.prefilter_gain = 0.0;
         }
@@ -2257,14 +2251,6 @@ impl CeltDecoder {
             is_transient = rc.decode_bit_logp(3);
         }
         let short_blocks = is_transient;
-        if _celt_dbg {
-            eprintln!(
-                "[DEC] is_transient={} after_transient tell={}",
-                is_transient,
-                rc.tell()
-            );
-        }
-        let intra_ener = false;
 
         unquant_coarse_energy(
             mode,
@@ -2275,49 +2261,33 @@ impl CeltDecoder {
             rc,
             channels,
             lm,
-            is_transient || intra_ener,
         );
-        if _celt_dbg {
-            eprintln!(
-                "[DEC] old_band_e after coarse: {:?}",
-                &self.old_band_e[..nb_ebands.min(6)]
-            );
-        }
-
         self.w_tf_res[..nb_ebands].fill(0);
         let tf_res = &mut self.w_tf_res[..nb_ebands];
         tf_decode(start_band, nb_ebands, is_transient, tf_res, lm as i32, rc);
-        if _celt_dbg {
-            eprintln!("[DEC] after_coarse+tf tell={}", rc.tell());
-        }
 
         let spread_decision = if rc.tell() + 4 <= total_bits {
             rc.decode_icdf(&SPREAD_ICDF, 5)
         } else {
             SPREAD_NORMAL
         };
-        if _celt_dbg {
-            eprintln!(
-                "[DEC] spread={} after_spread tell={}",
-                spread_decision,
-                rc.tell()
-            );
-        }
 
         self.w_cap[..nb_ebands].fill(0);
         let cap = &mut self.w_cap[..nb_ebands];
         for (i, cap_i) in cap.iter_mut().enumerate() {
-            *cap_i = (mode.cache.caps[nb_ebands * (2 * lm + channels - 1) + i] as i32 + 64)
+            let n = (mode.e_bands[i + 1] - mode.e_bands[i]) << lm;
+            *cap_i = ((mode.cache.caps[nb_ebands * (2 * lm + channels - 1) + i] as i32 + 64)
                 * channels as i32
-                * 2;
+                * n as i32)
+                >> 2;
         }
 
         self.w_offsets[..nb_ebands].fill(0);
         let offsets = &mut self.w_offsets[..nb_ebands];
         let mut dynalloc_logp = 6i32;
         let mut total_bits_bitres = total_bits << BITRES;
-        let mut tell_frac = rc.tell() << BITRES;
-        for i in 0..nb_ebands {
+        let mut tell_frac = rc.tell_frac();
+        for i in start_band..nb_ebands {
             let width =
                 channels as i32 * (mode.e_bands[i + 1] - mode.e_bands[i]) as i32 * (1 << lm);
             let quanta = (width << BITRES).min((6i32 << BITRES).max(width));
@@ -2325,7 +2295,7 @@ impl CeltDecoder {
             let mut boost = 0i32;
             while tell_frac + (dynalloc_loop_logp << BITRES) < total_bits_bitres && boost < cap[i] {
                 let flag = rc.decode_bit_logp(dynalloc_loop_logp as u32);
-                tell_frac = rc.tell() << BITRES;
+                tell_frac = rc.tell_frac();
                 if !flag {
                     break;
                 }
@@ -2339,24 +2309,14 @@ impl CeltDecoder {
                 dynalloc_logp = dynalloc_logp.max(2);
             }
         }
-        if _celt_dbg {
-            eprintln!("[DEC] after_dynalloc tell={}", rc.tell());
-        }
 
         let alloc_trim = if (rc.tell() << BITRES) + (6 << BITRES) <= total_bits_bitres {
             rc.decode_icdf(&TRIM_ICDF, 7)
         } else {
             5
         };
-        if _celt_dbg {
-            eprintln!(
-                "[DEC] alloc_trim={} after_trim tell={}",
-                alloc_trim,
-                rc.tell()
-            );
-        }
         let anti_collapse_rsv = if is_transient && lm >= 2 {
-            let remaining = (total_bits << BITRES) - (rc.tell() << BITRES) - 1;
+            let remaining = (total_bits << BITRES) - rc.tell_frac() - 1;
             if remaining >= ((lm as i32 + 2) << BITRES) {
                 1i32 << BITRES
             } else {
@@ -2382,6 +2342,7 @@ impl CeltDecoder {
         self.w_ebits[..ebands_stereo].fill(0);
         let ebits = &mut self.w_ebits[..ebands_stereo];
 
+        let alloc_bits = (total_bits << BITRES) - rc.tell_frac() - 1 - anti_collapse_rsv;
         let coded_bands = clt_compute_allocation(
             mode,
             start_band,
@@ -2391,7 +2352,7 @@ impl CeltDecoder {
             alloc_trim,
             &mut intensity,
             &mut dual_stereo_val,
-            (total_bits << 3) - anti_collapse_rsv,
+            alloc_bits,
             &mut balance,
             pulses,
             ebits,
@@ -2403,15 +2364,6 @@ impl CeltDecoder {
             0,
             nb_ebands as i32 - 1,
         );
-        if _celt_dbg {
-            eprintln!(
-                "[DEC] coded_bands={} after_alloc tell={}",
-                coded_bands,
-                rc.tell()
-            );
-            eprintln!("[DEC] pulses={:?}", &pulses[..nb_ebands]);
-            eprintln!("[DEC] ebits={:?}", &ebits[..nb_ebands]);
-        }
 
         unquant_fine_energy(
             mode,
@@ -2441,10 +2393,6 @@ impl CeltDecoder {
         self.w_band_amp[..nb_ebands * channels].fill(0.0);
         let band_amp = &mut self.w_band_amp[..nb_ebands * channels];
         log2amp(mode, nb_ebands, band_amp, &self.old_band_e, channels);
-        if _celt_dbg {
-            eprintln!("[DEC] band_amp (log2): {:?}", &band_amp[..nb_ebands.min(6)]);
-        }
-
         quant_all_bands(
             false,
             mode,
@@ -2460,7 +2408,7 @@ impl CeltDecoder {
             &mut dual_stereo,
             intensity as usize,
             tf_res,
-            (total_bits << 3) - anti_collapse_rsv,
+            (total_bits << BITRES) - anti_collapse_rsv,
             &mut balance,
             rc,
             lm as i32,
@@ -2468,13 +2416,7 @@ impl CeltDecoder {
             true,
             &mut self.rng,
         );
-        if _celt_dbg {
-            eprintln!("[DEC] after_quant_all_bands tell={}", rc.tell());
-        }
-        if _celt_dbg {
-            eprintln!("[DEC] x[0..10] after quant_all_bands: {:?}", &x[..10]);
-        }
-
+        // Trace X values for comparison with C decoder
         let mut anti_collapse_on = false;
         if anti_collapse_rsv > 0 {
             anti_collapse_on = rc.dec_bits(1) != 0;
@@ -2487,24 +2429,10 @@ impl CeltDecoder {
             &mut self.old_band_e,
             ebits,
             fine_priority,
-            (total_bits - rc.tell()) << 3,
+            total_bits - rc.tell(),
             rc,
             channels,
         );
-        if _celt_dbg {
-            eprintln!(
-                "[DEC] after_energy_finalise tell={}/{}",
-                rc.tell(),
-                total_bits
-            );
-        }
-        if _celt_dbg {
-            eprintln!(
-                "[DEC] old_band_e after ALL energy dequant: {:?}",
-                &self.old_band_e[..nb_ebands.min(6)]
-            );
-        }
-
         if anti_collapse_on {
             self.rng = crate::bands::anti_collapse(
                 mode,
@@ -2523,6 +2451,9 @@ impl CeltDecoder {
             );
         }
 
+        // Recompute band_amp after unquant_energy_finalise, which adjusts old_band_e.
+        // (Mirrors the encoder's resynth path: log2amp is called after quant_energy_finalise.)
+        log2amp(mode, nb_ebands, band_amp, &self.old_band_e, channels);
         self.w_freq[..frame_size * channels].fill(0.0);
         let freq = &mut self.w_freq[..frame_size * channels];
         denormalise_bands(
@@ -2535,9 +2466,7 @@ impl CeltDecoder {
             channels,
             (1 << lm) as usize,
         );
-        if _celt_dbg {
-            eprintln!("[DEC] freq[0..10] after denorm: {:?}", &freq[..10]);
-        }
+        // Always trace freq and band_amp for comparison
 
         let (shift, b) = if short_blocks {
             (mode.max_lm, 1 << lm)
@@ -2559,7 +2488,15 @@ impl CeltDecoder {
 
             for i in 0..b {
                 let block_freq_idx = c * frame_size + i;
-                let block_out_idx = channel_mem_offset + out_syn_idx + i * n;
+                // Stride between short-block MDCT outputs is short_mdct_size (not n).
+                // In libopus: out_syn[c] + NB*b, where NB = mode->shortMdctSize.
+                // For non-transient b=1, i*n == 0 either way.
+                let block_stride = if short_blocks {
+                    mode.short_mdct_size
+                } else {
+                    n
+                };
+                let block_out_idx = channel_mem_offset + out_syn_idx + i * block_stride;
                 let available_len = self.decode_mem.len() - block_out_idx;
                 if available_len < n + overlap {
                     panic!(
@@ -2588,30 +2525,41 @@ impl CeltDecoder {
                 &self.decode_mem[channel_mem_offset + out_syn_idx
                     ..channel_mem_offset + out_syn_idx + frame_size],
             );
+            if pf_on || self.prefilter_gain > 0.0 || self.prefilter_gain_old > 0.0 {
+                // Set up w_post = [prefilter_mem | pcm_frame] for history access.
+                // We apply combfilter in-place on w_post[COMBFILTER_MAXPERIOD..] so that
+                // later samples can reference already-filtered earlier samples, matching C's
+                // in-place comb_filter behavior.
+                self.w_post[..COMBFILTER_MAXPERIOD].copy_from_slice(
+                    &self.prefilter_mem[c * COMBFILTER_MAXPERIOD..(c + 1) * COMBFILTER_MAXPERIOD],
+                );
+                self.w_post[COMBFILTER_MAXPERIOD..COMBFILTER_MAXPERIOD + frame_size]
+                    .copy_from_slice(pcm_frame);
 
-            if pf_on || self.prefilter_gain > 0.0 {
-                self.w_post[..frame_size + COMBFILTER_MAXPERIOD].fill(0.0);
-                {
-                    let post = &mut self.w_post[..frame_size + COMBFILTER_MAXPERIOD];
-                    post[..COMBFILTER_MAXPERIOD].copy_from_slice(
-                        &self.prefilter_mem
-                            [c * COMBFILTER_MAXPERIOD..(c + 1) * COMBFILTER_MAXPERIOD],
-                    );
-                    post[COMBFILTER_MAXPERIOD..].copy_from_slice(pcm_frame);
-                }
-
-                self.w_filtered[..frame_size].fill(0.0);
-                {
-                    let post = &self.w_post[..frame_size + COMBFILTER_MAXPERIOD];
-                    let filtered = &mut self.w_filtered[..frame_size];
-                    comb_filter(
-                        filtered,
-                        post,
-                        0,
-                        COMBFILTER_MAXPERIOD,
+                let short_n = mode.short_mdct_size;
+                // Call 1: first short_n samples, transition old→current params
+                // Apply in-place on w_post[COMBFILTER_MAXPERIOD..], output overwrites input
+                comb_filter_inplace(
+                    &mut self.w_post,
+                    COMBFILTER_MAXPERIOD,
+                    self.prefilter_period_old,
+                    self.prefilter_period,
+                    short_n,
+                    self.prefilter_gain_old,
+                    self.prefilter_gain,
+                    self.prefilter_tapset_old,
+                    self.prefilter_tapset,
+                    mode.window,
+                    overlap,
+                );
+                if lm != 0 {
+                    // Call 2: remaining N-short_n samples, transition current→new params
+                    comb_filter_inplace(
+                        &mut self.w_post,
+                        COMBFILTER_MAXPERIOD + short_n,
                         self.prefilter_period,
                         pitch_index,
-                        frame_size,
+                        frame_size - short_n,
                         self.prefilter_gain,
                         gain1,
                         self.prefilter_tapset,
@@ -2621,13 +2569,14 @@ impl CeltDecoder {
                     );
                 }
 
-                pcm_frame.copy_from_slice(&self.w_filtered[..frame_size]);
+                pcm_frame.copy_from_slice(
+                    &self.w_post[COMBFILTER_MAXPERIOD..COMBFILTER_MAXPERIOD + frame_size],
+                );
 
                 self.decode_mem[channel_mem_offset + out_syn_idx
                     ..channel_mem_offset + out_syn_idx + frame_size]
                     .copy_from_slice(pcm_frame);
             }
-
             let mut new_mem = [0.0f32; COMBFILTER_MAXPERIOD];
             if frame_size >= COMBFILTER_MAXPERIOD {
                 new_mem.copy_from_slice(&pcm_frame[frame_size - COMBFILTER_MAXPERIOD..frame_size]);
@@ -2646,7 +2595,7 @@ impl CeltDecoder {
             for i in 0..frame_size {
                 let x = pcm_frame[i];
                 let val = x + m;
-                pcm[c * frame_size + i] = val;
+                pcm[c * frame_size + i] = val * (1.0 / 32768.0);
                 m = val * coef;
             }
             self.preemph_mem[c] = m;

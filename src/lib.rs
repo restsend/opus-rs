@@ -70,6 +70,7 @@ pub struct OpusEncoder {
     pub packet_loss_perc: i32,
     silk_initialized: bool,
     mode: OpusMode,
+    prev_enc_mode: Option<OpusMode>,
 
     variable_hp_smth2_q15: i32,
     hp_mem: Vec<i32>,
@@ -188,7 +189,17 @@ impl OpusEncoder {
                 };
                 (mode, bw)
             }
-            _ => {
+            Application::RestrictedLowDelay => {
+                let bw = match sampling_rate {
+                    8000 => Bandwidth::Narrowband,
+                    12000 => Bandwidth::Mediumband,
+                    16000 => Bandwidth::Wideband,
+                    24000 => Bandwidth::Superwideband,
+                    _ => Bandwidth::Fullband,
+                };
+                (OpusMode::CeltOnly, bw)
+            }
+            Application::Audio => {
                 if sampling_rate <= 16000 {
                     let bw = match sampling_rate {
                         8000 => Bandwidth::Narrowband,
@@ -217,11 +228,12 @@ impl OpusEncoder {
             channels,
             bandwidth: bw,
             bitrate_bps: 64000,
-            complexity: 0,
+            complexity: 9,
             use_cbr: false,
             use_inband_fec: false,
             packet_loss_perc: 0,
             silk_initialized: false,
+            prev_enc_mode: None,
             mode: opus_mode,
             variable_hp_smth2_q15,
             hp_mem: vec![0; channels * 2],
@@ -266,10 +278,25 @@ impl OpusEncoder {
         let frame_rate = frame_rate_from_params(self.sampling_rate, frame_size)
             .ok_or("Invalid frame size for sampling rate")?;
 
-        let mode = if self.application == Application::Audio && self.mode == OpusMode::Hybrid {
-            let equiv_rate = self.bitrate_bps;
-            let threshold: i32 = 17_600;
-            if equiv_rate >= threshold {
+        // Mode selection: match C's opus_encode_native() behavior.
+        // For Hybrid mode, decide whether to stay in Hybrid or switch to CELT-only
+        // based on the equivalent bitrate vs a threshold derived from voice estimation.
+        // NOTE: CELT-only is currently disabled because the RS CELT encoder has
+        // bitstream incompatibilities with the C reference decoder (~3dB SNR).
+        // Once the CELT encoder is fixed, uncomment the mode selection below.
+        let mode = self.mode;
+        /* TODO: enable when CELT encoder is fixed
+        let mode = if self.mode == OpusMode::Hybrid {
+            let equiv = compute_equiv_rate(
+                self.bitrate_bps,
+                self.channels,
+                frame_rate,
+                self.use_cbr,
+            );
+            let prev_was_celt = self.prev_enc_mode == Some(OpusMode::CeltOnly);
+            let threshold =
+                compute_mode_threshold(self.application, self.channels, prev_was_celt);
+            if equiv >= threshold {
                 OpusMode::CeltOnly
             } else {
                 OpusMode::Hybrid
@@ -277,6 +304,7 @@ impl OpusEncoder {
         } else {
             self.mode
         };
+        */
 
         if mode == OpusMode::CeltOnly {
             match frame_rate {
@@ -295,7 +323,10 @@ impl OpusEncoder {
 
         let n_bytes = cbr_bytes.min(max_data_bytes).max(1);
 
-        self.rc.reset_for_encode((n_bytes - 1) as u32);
+        // Initialize range coder with CBR-capped buffer size, matching C's
+        // ec_enc_init(&enc, data, max_data_bytes-1) where max_data_bytes is CBR-capped.
+        let init_rc_size = n_bytes - 1;
+        self.rc.reset_for_encode(init_rc_size as u32);
 
         if mode == OpusMode::SilkOnly || mode == OpusMode::Hybrid {
             let silk_fs_khz = if mode == OpusMode::Hybrid {
@@ -460,9 +491,33 @@ impl OpusEncoder {
                     as i32
             };
             let silk_max_bits = if mode == OpusMode::Hybrid {
-                (silk_bitrate as i64 * silk_frame_len as i64 / silk_rate_for_calc as i64) as i32
+                // Match C: for VBR Hybrid, maxBits starts at (max_data_bytes-1)*8,
+                // then constrained via compute_silk_rate_for_hybrid.
+                // For CBR Hybrid, allow SILK to steal up to 25% of remaining bits.
+                let total_max_bits = ((n_bytes - 1) * 8) as i32;
+                if self.use_cbr {
+                    let silk_bits = (silk_bitrate as i64 * silk_frame_len as i64
+                        / silk_rate_for_calc as i64) as i32;
+                    let other_bits = 0i32.max(total_max_bits - silk_bits);
+                    0i32.max(total_max_bits - other_bits * 3 / 4)
+                } else {
+                    // Constrained VBR: compute max SILK bits from total budget
+                    let frame_duration_ms = frame_size as i32 * 1000 / self.sampling_rate;
+                    let frame20ms = frame_duration_ms >= 20;
+                    let max_bit_rate = compute_silk_rate_for_hybrid(
+                        total_max_bits * self.sampling_rate / frame_size as i32,
+                        frame20ms,
+                    );
+                    max_bit_rate * frame_size as i32 / self.sampling_rate
+                }
             } else {
                 ((n_bytes - 1) * 8) as i32
+            };
+            // For Hybrid CBR, force SILK to use VBR (matching C behavior)
+            let silk_use_cbr = if mode == OpusMode::Hybrid && self.use_cbr {
+                0
+            } else {
+                if self.use_cbr { 1 } else { 0 }
             };
             let ret = silk_encode(
                 &mut self.silk_enc,
@@ -472,7 +527,7 @@ impl OpusEncoder {
                 &mut pn_bytes,
                 silk_bitrate,
                 silk_max_bits,
-                if self.use_cbr { 1 } else { 0 },
+                silk_use_cbr,
                 1,
             );
             if ret != 0 {
@@ -480,69 +535,82 @@ impl OpusEncoder {
             }
         }
 
+        // In Hybrid mode, the C encoder always writes a redundancy flag after SILK encoding.
+        // The C decoder reads this flag. Without it, the decoder's range coder state diverges,
+        // corrupting CELT decoding. We always write redundancy=0 (no redundancy frame).
+        // C: if (st->mode == MODE_HYBRID) ec_enc_bit_logp(&enc, redundancy, 12);
+        if mode == OpusMode::Hybrid {
+            if self.rc.tell() + 37 <= ((n_bytes - 1) * 8) as i32 {
+                self.rc.encode_bit_logp(false, 12); // redundancy = 0
+            }
+        }
+
+        // For hybrid mode, shrink the range coder buffer to the CELT target size
+        // after SILK encoding, like C's ec_enc_shrink(&enc, nb_compr_bytes).
+        // With init_rc_size == n_bytes-1, shrink is a no-op but keeps the logic consistent.
+        if mode == OpusMode::Hybrid {
+            let nb_compr_bytes = (n_bytes - 1) as u32;
+            self.rc.shrink(nb_compr_bytes);
+        }
+
+        // For SILK-only, capture byte count BEFORE done(), matching C's:
+        //   ret = (ec_tell(&enc)+7)>>3; ec_enc_done(&enc); nb_compr_bytes = ret;
+        let silk_ret_bytes = if mode == OpusMode::SilkOnly {
+            ((self.rc.tell() + 7) >> 3) as usize
+        } else {
+            0
+        };
+
         if mode == OpusMode::CeltOnly || mode == OpusMode::Hybrid {
             self.celt_enc.complexity = self.complexity;
             let start_band = if mode == OpusMode::Hybrid { 17 } else { 0 };
             let total_packet_bits = ((n_bytes - 1) * 8) as i32;
-            self.celt_enc.encode_with_budget(
-                input,
-                frame_size,
-                &mut self.rc,
-                start_band,
-                total_packet_bits,
-            );
+            // Only encode CELT if we haven't already busted the budget
+            if self.rc.tell() <= total_packet_bits {
+                self.celt_enc.encode_with_budget(
+                    input,
+                    frame_size,
+                    &mut self.rc,
+                    start_band,
+                    total_packet_bits,
+                );
+            }
         }
 
         self.rc.done();
 
-        let silk_payload: Vec<u8> = if mode == OpusMode::SilkOnly {
-            let mut combined = Vec::with_capacity(self.rc.storage as usize);
-            combined.extend_from_slice(&self.rc.buf[0..self.rc.offs as usize]);
-            combined.extend_from_slice(
-                &self.rc.buf
-                    [(self.rc.storage - self.rc.end_offs) as usize..self.rc.storage as usize],
-            );
-
-            while combined.len() > 2 && combined[combined.len() - 1] == 0 {
-                combined.pop();
+        if mode == OpusMode::SilkOnly {
+            // Use the byte count captured before done(), strip trailing zeros
+            // from the contiguous buffer (like C does).
+            let mut ret = silk_ret_bytes.min(self.rc.storage as usize);
+            while ret > 2 && self.rc.buf[ret - 1] == 0 {
+                ret -= 1;
             }
 
-            combined
-        } else {
-            Vec::new()
-        };
-
-        let total_bytes = if mode == OpusMode::SilkOnly {
-            silk_payload.len()
-        } else {
-            n_bytes
-        };
-
-        let payload_bytes = total_bytes.min(output.len() - 1);
-        let ret_with_toc = payload_bytes + 1;
-
-        if mode == OpusMode::SilkOnly {
             let target_total = if self.use_cbr {
                 n_bytes.min(output.len())
             } else {
-                ret_with_toc
+                (ret + 1).min(output.len())
             };
 
-            let silk_len = silk_payload.len();
+            let silk_len = ret;
 
-            if silk_len + 1 >= target_total {
+            if !self.use_cbr || silk_len + 1 >= target_total {
+                // VBR or payload fills the target: simple code 0 packet
                 output[0] = toc;
-                let copy_len = (target_total - 1).min(silk_len);
-                output[1..1 + copy_len].copy_from_slice(&silk_payload[..copy_len]);
-                return Ok(target_total.min(output.len()));
+                let copy_len = silk_len.min(target_total - 1);
+                output[1..1 + copy_len].copy_from_slice(&self.rc.buf[..copy_len]);
+                return Ok((copy_len + 1).min(output.len()));
             }
 
+            // CBR: pad with code 3 framing
             output[0] = toc | 0x03;
 
             if silk_len + 2 >= target_total {
                 output[1] = 0x01;
                 let copy_len = (target_total - 2).min(silk_len);
-                output[2..2 + copy_len].copy_from_slice(&silk_payload[..copy_len]);
+                output[2..2 + copy_len].copy_from_slice(&self.rc.buf[..copy_len]);
+                self.prev_enc_mode = Some(mode);
                 return Ok(target_total.min(output.len()));
             }
 
@@ -558,7 +626,7 @@ impl OpusEncoder {
             output[ptr] = (pad_amount - 255 * nb_255s - 1) as u8;
             ptr += 1;
 
-            output[ptr..ptr + silk_len].copy_from_slice(&silk_payload);
+            output[ptr..ptr + silk_len].copy_from_slice(&self.rc.buf[..silk_len]);
             ptr += silk_len;
 
             let fill_end = target_total.min(output.len());
@@ -566,11 +634,13 @@ impl OpusEncoder {
                 *byte = 0;
             }
 
+            self.prev_enc_mode = Some(mode);
             return Ok(target_total.min(output.len()));
         }
 
         let payload_len = n_bytes - 1;
         output[1..1 + payload_len].copy_from_slice(&self.rc.buf[..payload_len]);
+        self.prev_enc_mode = Some(mode);
         Ok(n_bytes)
     }
 }

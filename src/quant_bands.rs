@@ -87,7 +87,7 @@ pub fn quant_coarse_energy(
     let coef = if intra { 0.0 } else { PRED_COEF[lm] };
     let beta = if intra { BETA_INTRA } else { BETA_COEF[lm] };
     debug_assert!(channels <= 2);
-    let mut prev = [0.0f32; 2];
+    let mut prev = [0.0f64; 2];
 
     let max_decay = if end - start > 10 {
         16.0f32.min(0.125 * nb_available_bytes as f32)
@@ -102,7 +102,7 @@ pub fn quant_coarse_energy(
             let x = e_bands[c * m.nb_ebands + i];
             let old_e_val = old_e_bands[c * m.nb_ebands + i];
             let old_e = old_e_val.max(-9.0);
-            let f = x - coef * old_e - prev[c];
+            let f = x as f64 - coef as f64 * old_e as f64 - prev[c];
 
             let mut qi = (f + 0.5).floor() as i32;
 
@@ -144,13 +144,11 @@ pub fn quant_coarse_energy(
                 qi = -1;
             }
 
-            let q = qi as f32;
-            error[c * m.nb_ebands + i] = f - q;
-            let tmp = coef * old_e + prev[c] + q;
-            old_e_bands[c * m.nb_ebands + i] = tmp;
-            prev[c] = prev[c] + q - beta * q;
-
-            if i < 3 {}
+            let q = qi as f64;
+            error[c * m.nb_ebands + i] = (f - q) as f32;
+            let tmp = coef as f64 * old_e as f64 + prev[c] + q;
+            old_e_bands[c * m.nb_ebands + i] = tmp as f32;
+            prev[c] = prev[c] + q - beta as f64 * q;
         }
     }
 }
@@ -165,21 +163,25 @@ pub fn unquant_coarse_energy(
     dec: &mut RangeCoder,
     channels: usize,
     lm: usize,
-    mut intra: bool,
 ) {
+    let intra: bool;
     let tell = dec.tell();
     if tell + 3 <= budget as i32 {
         intra = dec.decode_bit_logp(3);
+    } else {
+        intra = false;
     }
     let prob_model = &E_PROB_MODEL[lm][if intra { 1 } else { 0 }];
     let coef = if intra { 0.0 } else { PRED_COEF[lm] };
     let beta = if intra { BETA_INTRA } else { BETA_COEF[lm] };
     debug_assert!(channels <= 2);
-    let mut prev = [0.0f32; 2];
+    let mut prev = [0.0f64; 2];
 
     for i in start..end {
         for c in 0..channels {
-            let old_e = old_e_bands[c * m.nb_ebands + i].max(-9.0);
+            // Clamp in-place, matching C: oldEBands[i] = MAXG(-GCONST(9.f), oldEBands[i])
+            old_e_bands[c * m.nb_ebands + i] = old_e_bands[c * m.nb_ebands + i].max(-9.0);
+            let old_e = old_e_bands[c * m.nb_ebands + i];
 
             let qi;
             let tell = dec.tell();
@@ -197,12 +199,10 @@ pub fn unquant_coarse_energy(
                 qi = -1;
             }
 
-            let q = qi as f32;
-            let tmp = coef * old_e + prev[c] + q;
-            old_e_bands[c * m.nb_ebands + i] = tmp;
-            prev[c] = prev[c] + q - beta * q;
-
-            if i < 3 {}
+            let q = qi as f64;
+            let tmp = coef as f64 * old_e as f64 + prev[c] + q;
+            old_e_bands[c * m.nb_ebands + i] = tmp as f32;
+            prev[c] = prev[c] + q - beta as f64 * q;
         }
     }
 }
@@ -271,24 +271,28 @@ pub fn quant_energy_finalise(
 ) {
     let mut bits_left = bits_left;
     for priority in 0..2 {
-        for i in start..end {
-            for c in 0..channels {
-                if bits_left >= 8
-                    && fine_priority[c * m.nb_ebands + i] == priority
-                    && fine_quant[c * m.nb_ebands + i] < 7
-                {
-                    let q = if error[c * m.nb_ebands + i] >= 0.0 {
-                        1
-                    } else {
-                        0
-                    };
-                    enc.enc_bits(q as u32, 1);
-                    let offset = if q == 1 { 0.25 } else { -0.25 };
-                    old_e_bands[c * m.nb_ebands + i] += offset;
-                    error[c * m.nb_ebands + i] -= offset;
-                    bits_left -= 8;
-                }
+        let mut i = start;
+        while i < end && bits_left >= channels as i32 {
+            if fine_quant[i] >= 8 || fine_priority[i] != priority {
+                i += 1;
+                continue;
             }
+            let mut c = 0;
+            while c < channels {
+                let q2 = if error[i + c * m.nb_ebands] < 0.0 {
+                    0
+                } else {
+                    1
+                };
+                enc.enc_bits(q2 as u32, 1);
+                let offset =
+                    (q2 as f32 - 0.5) * (1i32 << (14 - fine_quant[i] - 1)) as f32 * (1.0 / 16384.0);
+                old_e_bands[i + c * m.nb_ebands] += offset;
+                error[i + c * m.nb_ebands] -= offset;
+                bits_left -= 1;
+                c += 1;
+            }
+            i += 1;
         }
     }
 }
@@ -307,18 +311,22 @@ pub fn unquant_energy_finalise(
 ) {
     let mut bits_left = bits_left;
     for priority in 0..2 {
-        for i in start..end {
-            for c in 0..channels {
-                if bits_left >= 8
-                    && fine_priority[c * m.nb_ebands + i] == priority
-                    && fine_quant[c * m.nb_ebands + i] < 7
-                {
-                    let q = dec.dec_bits(1);
-                    let offset = if q == 1 { 0.25 } else { -0.25 };
-                    old_e_bands[c * m.nb_ebands + i] += offset;
-                    bits_left -= 8;
-                }
+        let mut i = start;
+        while i < end && bits_left >= channels as i32 {
+            if fine_quant[i] >= 8 || fine_priority[i] != priority {
+                i += 1;
+                continue;
             }
+            let mut c = 0;
+            while c < channels {
+                let q2 = dec.dec_bits(1);
+                let offset =
+                    (q2 as f32 - 0.5) * (1i32 << (14 - fine_quant[i] - 1)) as f32 * (1.0 / 16384.0);
+                old_e_bands[i + c * m.nb_ebands] += offset;
+                bits_left -= 1;
+                c += 1;
+            }
+            i += 1;
         }
     }
 }
@@ -404,7 +412,6 @@ mod tests {
             &mut dec,
             1,
             3,
-            false,
         );
 
         unquant_fine_energy(
