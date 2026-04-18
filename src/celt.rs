@@ -2518,6 +2518,12 @@ impl CeltDecoder {
                 );
             }
 
+            const SIG_SAT: f32 = 536870911.0;
+            for i in 0..frame_size {
+                let v = &mut self.decode_mem[channel_mem_offset + out_syn_idx + i];
+                *v = v.clamp(-SIG_SAT, SIG_SAT);
+            }
+
             self.w_pcm_frame[..frame_size].fill(0.0);
             let pcm_frame = &mut self.w_pcm_frame[..frame_size];
 

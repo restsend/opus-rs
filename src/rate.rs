@@ -381,6 +381,7 @@ fn interp_bits2pulses(
     if intensity_rsv_final > 0 {
         if encode {
             *intensity = min(*intensity, coded_bands as i32);
+            *intensity = max(*intensity, start as i32);
             rc.enc_uint(
                 (*intensity - start as i32) as u32,
                 (coded_bands + 1 - start) as u32,

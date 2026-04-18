@@ -669,8 +669,16 @@ impl RangeCoder {
     pub fn finish(&mut self) -> Vec<u8> {
         self.done();
 
-        let mut result = Vec::with_capacity((self.offs + self.end_offs) as usize);
+        let extra_end = if self.nend_bits > 0 && self.end_offs == 0 {
+            1
+        } else {
+            0
+        };
+        let mut result = Vec::with_capacity((self.offs + self.end_offs + extra_end) as usize);
         result.extend_from_slice(&self.buf[0..self.offs as usize]);
+        if extra_end > 0 {
+            result.push(self.buf[(self.storage - 1) as usize]);
+        }
         result.extend_from_slice(
             &self.buf[(self.storage - self.end_offs) as usize..self.storage as usize],
         );
