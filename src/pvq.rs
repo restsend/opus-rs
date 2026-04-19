@@ -1761,7 +1761,7 @@ unsafe fn pvq_search_avx2(x: &[f32], y: &mut [i32], k: i32, n: usize) {
 #[inline]
 fn exp_rotation1(x: &mut [f32], len: usize, stride: usize, c: f32, s: f32) {
     #[cfg(target_arch = "aarch64")]
-    {
+    unsafe {
         exp_rotation1_neon(x, len, stride, c, s);
     }
     #[cfg(not(target_arch = "aarch64"))]
@@ -1791,8 +1791,49 @@ fn exp_rotation1_scalar(x: &mut [f32], len: usize, stride: usize, c: f32, s: f32
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-fn exp_rotation1_neon(x: &mut [f32], len: usize, stride: usize, c: f32, s: f32) {
-    exp_rotation1_scalar(x, len, stride, c, s);
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn exp_rotation1_neon(x: &mut [f32], len: usize, stride: usize, c: f32, s: f32) {
+    if stride == 1 {
+        exp_rotation1_scalar(x, len, stride, c, s);
+        return;
+    }
+
+    use std::arch::aarch64::*;
+
+    let vc = vdupq_n_f32(c);
+    let vs = vdupq_n_f32(s);
+
+    // Forward pass: SIMD when we can load 4 contiguous elements
+    let mut i = 0;
+    while i + 4 <= len - stride {
+        let vx1 = vld1q_f32(x.as_ptr().add(i));
+        let vx2 = vld1q_f32(x.as_ptr().add(i + stride));
+
+        // y1 = c*x1 - s*x2
+        let vy1 = vfmsq_f32(vmulq_f32(vx1, vc), vs, vx2);
+        // y2 = c*x2 + s*x1
+        let vy2 = vfmaq_f32(vmulq_f32(vx2, vc), vs, vx1);
+
+        vst1q_f32(x.as_mut_ptr().add(i), vy1);
+        vst1q_f32(x.as_mut_ptr().add(i + stride), vy2);
+
+        i += 4;
+    }
+    for j in i..(len - stride) {
+        let x1 = x[j];
+        let x2 = x[j + stride];
+        x[j + stride] = c * x2 + s * x1;
+        x[j] = c * x1 - s * x2;
+    }
+
+    if len >= 2 * stride {
+        for j in (0..(len - 2 * stride)).rev() {
+            let x1 = x[j];
+            let x2 = x[j + stride];
+            x[j + stride] = c * x2 + s * x1;
+            x[j] = c * x1 - s * x2;
+        }
+    }
 }
 
 #[inline(always)]
@@ -2201,6 +2242,7 @@ unsafe fn alg_quant_resynth_neon(y: &[i32], x: &mut [f32], n: usize, gain: f32) 
     }
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 #[inline(always)]
 fn alg_quant_resynth_scalar(y: &[i32], x: &mut [f32], n: usize, gain: f32) {
     #[cfg(target_arch = "x86_64")]
@@ -2277,6 +2319,11 @@ pub fn alg_quant(
         encode_pulses(&y[..n], n as u32, k as u32, rc);
 
         if resynth {
+            #[cfg(target_arch = "aarch64")]
+            unsafe {
+                alg_quant_resynth_neon(y, x, n, gain);
+            }
+            #[cfg(not(target_arch = "aarch64"))]
             alg_quant_resynth_scalar(y, x, n, gain);
             exp_rotation(x, n, -1, stride, k, spread);
         }
@@ -2418,15 +2465,13 @@ pub fn alg_unquant(
 
     let mask = extract_collapse_mask(&y[..n], n, stride);
 
-    let mut ryy = 0.0f32;
-    for i in 0..n {
-        let v = y[i] as f32;
-        x[i] = v;
-        ryy += v * v;
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        alg_quant_resynth_neon(&y[..n], x, n, gain);
     }
-    let g = gain / (1e-15 + ryy).sqrt();
-    for i in 0..n {
-        x[i] *= g;
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        alg_quant_resynth_scalar(&y[..n], x, n, gain);
     }
 
     exp_rotation(x, n, -1, stride, k, spread);

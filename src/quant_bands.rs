@@ -1,5 +1,5 @@
 use crate::modes::CeltMode;
-use crate::range_coder::RangeCoder;
+use crate::range_coder::{BITRES, RangeCoder};
 
 pub const PRED_COEF: [f32; 4] = [
     29440.0 / 32768.0,
@@ -68,47 +68,65 @@ pub const E_PROB_MODEL: [[[u8; 42]; 2]; 4] = [
 
 pub const SMALL_ENERGY_ICDF: [u8; 3] = [2, 1, 0];
 
+fn loss_distortion(
+    e_bands: &[f32],
+    old_e_bands: &[f32],
+    start: usize,
+    end: usize,
+    len: usize,
+    channels: usize,
+) -> f32 {
+    let mut dist = 0.0f32;
+    for c in 0..channels {
+        let off = c * len;
+        for i in start..end.min(len) {
+            let d = e_bands[off + i] - old_e_bands[off + i];
+            dist += d * d;
+        }
+    }
+    dist.min(200.0)
+}
+
 #[allow(clippy::too_many_arguments)]
-pub fn quant_coarse_energy(
+fn quant_coarse_energy_impl(
     m: &CeltMode,
     start: usize,
     end: usize,
     e_bands: &[f32],
     old_e_bands: &mut [f32],
     budget: u32,
+    tell_start: i32,
+    prob_model: &[u8; 42],
     error: &mut [f32],
     enc: &mut RangeCoder,
     channels: usize,
     lm: usize,
     intra: bool,
-    nb_available_bytes: usize,
-) {
-    let prob_model = &E_PROB_MODEL[lm][if intra { 1 } else { 0 }];
+    max_decay: f32,
+    lfe: bool,
+) -> i32 {
     let coef = if intra { 0.0 } else { PRED_COEF[lm] };
     let beta = if intra { BETA_INTRA } else { BETA_COEF[lm] };
-    debug_assert!(channels <= 2);
-    let mut prev = [0.0f64; 2];
+    let mut prev = [0.0f32; 2];
+    let mut badness = 0i32;
 
-    let max_decay = if end - start > 10 {
-        16.0f32.min(0.125 * nb_available_bytes as f32)
-    } else {
-        16.0f32
-    };
-
-    enc.encode_bit_logp(intra, 3);
+    if tell_start + 3 <= budget as i32 {
+        enc.encode_bit_logp(intra, 3);
+    }
 
     for i in start..end {
         for c in 0..channels {
             let x = e_bands[c * m.nb_ebands + i];
             let old_e_val = old_e_bands[c * m.nb_ebands + i];
             let old_e = old_e_val.max(-9.0);
-            let f = x as f64 - coef as f64 * old_e as f64 - prev[c];
+            let f = x - coef * old_e - prev[c];
 
             let mut qi = (f + 0.5).floor() as i32;
+            let qi0 = qi;
 
             let decay_bound = old_e_val.max(-28.0) - max_decay;
             if qi < 0 && x < decay_bound {
-                qi += (decay_bound - x).floor() as i32;
+                qi += ((decay_bound - x) as i32).max(0);
                 if qi > 0 {
                     qi = 0;
                 }
@@ -123,6 +141,9 @@ pub fn quant_coarse_energy(
                 if bits_left < 16 {
                     qi = qi.max(-1);
                 }
+            }
+            if lfe && i >= 2 {
+                qi = qi.min(0);
             }
 
             if tell + 15 <= budget as i32 {
@@ -144,13 +165,173 @@ pub fn quant_coarse_energy(
                 qi = -1;
             }
 
-            let q = qi as f64;
-            error[c * m.nb_ebands + i] = (f - q) as f32;
-            let tmp = coef as f64 * old_e as f64 + prev[c] + q;
-            old_e_bands[c * m.nb_ebands + i] = tmp as f32;
-            prev[c] = prev[c] + q - beta as f64 * q;
+            badness += (qi0 - qi).abs();
+
+            let q = qi as f32;
+            error[c * m.nb_ebands + i] = f - q;
+            let tmp = coef * old_e + prev[c] + q;
+            old_e_bands[c * m.nb_ebands + i] = tmp;
+            prev[c] = prev[c] + q - beta * q;
         }
     }
+
+    if lfe { 0 } else { badness }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn quant_coarse_energy_advanced(
+    m: &CeltMode,
+    start: usize,
+    end: usize,
+    eff_end: usize,
+    e_bands: &[f32],
+    old_e_bands: &mut [f32],
+    budget: u32,
+    error: &mut [f32],
+    enc: &mut RangeCoder,
+    channels: usize,
+    lm: usize,
+    nb_available_bytes: usize,
+    force_intra: bool,
+    delayed_intra: &mut f32,
+    mut two_pass: bool,
+    loss_rate: i32,
+    lfe: bool,
+) {
+    let mut intra = force_intra
+        || (!two_pass
+            && *delayed_intra > 2.0 * channels as f32 * (end.saturating_sub(start)) as f32
+            && nb_available_bytes > (end.saturating_sub(start)) * channels);
+
+    let intra_bias = ((budget as f32) * (*delayed_intra) * (loss_rate as f32)
+        / ((channels as f32) * 512.0)) as i32;
+    let new_distortion =
+        loss_distortion(e_bands, old_e_bands, start, eff_end, m.nb_ebands, channels);
+
+    let tell = enc.tell();
+    if tell + 3 > budget as i32 {
+        two_pass = false;
+        intra = false;
+    }
+
+    let mut max_decay = if end - start > 10 {
+        16.0f32.min(0.125 * nb_available_bytes as f32)
+    } else {
+        16.0f32
+    };
+    if lfe {
+        max_decay = 3.0;
+    }
+
+    let enc_start_state = enc.clone();
+    let mut old_e_bands_intra = old_e_bands.to_vec();
+    let mut error_intra = error.to_vec();
+    let mut badness1 = 0i32;
+    let mut tell_intra = 0i32;
+    let intra_prob = &E_PROB_MODEL[lm][1];
+
+    if two_pass || intra {
+        badness1 = quant_coarse_energy_impl(
+            m,
+            start,
+            end,
+            e_bands,
+            &mut old_e_bands_intra,
+            budget,
+            tell,
+            intra_prob,
+            &mut error_intra,
+            enc,
+            channels,
+            lm,
+            true,
+            max_decay,
+            lfe,
+        );
+        tell_intra = crate::tell_frac_inline!(enc);
+    }
+
+    if !intra {
+        let enc_intra_state = enc.clone();
+
+        *enc = enc_start_state.clone();
+        let inter_prob = &E_PROB_MODEL[lm][0];
+        let badness2 = quant_coarse_energy_impl(
+            m,
+            start,
+            end,
+            e_bands,
+            old_e_bands,
+            budget,
+            tell,
+            inter_prob,
+            error,
+            enc,
+            channels,
+            lm,
+            false,
+            max_decay,
+            lfe,
+        );
+
+        if two_pass
+            && (badness1 < badness2
+                || (badness1 == badness2
+                    && crate::tell_frac_inline!(enc) + intra_bias > tell_intra))
+        {
+            *enc = enc_intra_state;
+            old_e_bands.copy_from_slice(&old_e_bands_intra);
+            error.copy_from_slice(&error_intra);
+            intra = true;
+        }
+    } else {
+        old_e_bands.copy_from_slice(&old_e_bands_intra);
+        error.copy_from_slice(&error_intra);
+    }
+
+    if intra {
+        *delayed_intra = new_distortion;
+    } else {
+        let pred2 = PRED_COEF[lm] * PRED_COEF[lm];
+        *delayed_intra = pred2 * *delayed_intra + new_distortion;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn quant_coarse_energy(
+    m: &CeltMode,
+    start: usize,
+    end: usize,
+    e_bands: &[f32],
+    old_e_bands: &mut [f32],
+    budget: u32,
+    error: &mut [f32],
+    enc: &mut RangeCoder,
+    channels: usize,
+    lm: usize,
+    force_intra: bool,
+    nb_available_bytes: usize,
+) {
+    let mut delayed_intra = 0.0f32;
+    quant_coarse_energy_advanced(
+        m,
+        start,
+        end,
+        end,
+        e_bands,
+        old_e_bands,
+        budget,
+        error,
+        enc,
+        channels,
+        lm,
+        nb_available_bytes,
+        force_intra,
+        &mut delayed_intra,
+        false,
+        0,
+        false,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -175,7 +356,7 @@ pub fn unquant_coarse_energy(
     let coef = if intra { 0.0 } else { PRED_COEF[lm] };
     let beta = if intra { BETA_INTRA } else { BETA_COEF[lm] };
     debug_assert!(channels <= 2);
-    let mut prev = [0.0f64; 2];
+    let mut prev = [0.0f32; 2];
 
     for i in start..end {
         for c in 0..channels {
@@ -199,10 +380,10 @@ pub fn unquant_coarse_energy(
                 qi = -1;
             }
 
-            let q = qi as f64;
-            let tmp = coef as f64 * old_e as f64 + prev[c] + q;
-            old_e_bands[c * m.nb_ebands + i] = tmp as f32;
-            prev[c] = prev[c] + q - beta as f64 * q;
+            let q = qi as f32;
+            let tmp = coef * old_e + prev[c] + q;
+            old_e_bands[c * m.nb_ebands + i] = tmp;
+            prev[c] = prev[c] + q - beta * q;
         }
     }
 }

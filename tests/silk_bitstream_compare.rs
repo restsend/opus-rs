@@ -1,9 +1,9 @@
 /// Test to compare Rust SILK encoder output with C reference
 ///
 /// Note: `test_silk_bitstream_vs_c_reference` was removed because it compared our
-/// fixed-point Rust encoder against `opusic-sys` (floating-point C libopus), which
-/// can never produce byte-identical output. Byte-exact testing against the correct
-/// fixed-point C libopus is covered by `tests/silk_fixed_point_compare.rs`.
+/// fixed-point Rust encoder against a mismatched floating-point reference, which
+/// can never produce byte-identical output. Fixed-point compatibility coverage
+/// remains in `tests/silk_fixed_point_compare.rs`.
 use opus_rs::{Application, OpusEncoder};
 use std::f32::consts::PI;
 

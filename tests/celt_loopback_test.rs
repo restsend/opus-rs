@@ -22,17 +22,10 @@ fn test_celt_loopback() {
             pcm_in[i] = ((f * frame_size + i) as f32 * 0.1).sin();
         }
         all_in.extend_from_slice(&pcm_in);
-
-        // Use a buffer large enough for high bitrate.
-        // IMPORTANT: The range coder uses a two-stream layout: forward stream
-        // from the start, backward stream (raw bits) from the end. We must
-        // preserve this [front | zeros | back] layout when passing data to the
-        // decoder. Using rc.finish() concatenates [front|back] and breaks the
-        // decoder's backward stream. Instead, pass the full rc.buf directly
-        // (matching how OpusEncoder handles CeltOnly mode).
         let rc_size: u32 = 2048;
         let mut rc = RangeCoder::new_encoder(rc_size);
         encoder.encode(&pcm_in, frame_size, &mut rc);
+        rc.done();
 
         let mut compressed = vec![0u8; rc_size as usize];
         compressed.copy_from_slice(&rc.buf[..rc_size as usize]);

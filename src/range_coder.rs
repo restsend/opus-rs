@@ -161,34 +161,38 @@ impl RangeCoder {
 
     #[inline(always)]
     pub fn enc_uint(&mut self, fl: u32, ft: u32) {
-        if ft > (1 << 8) {
-            let mut ft = ft - 1;
-            let s = 32 - ft.leading_zeros() as i32 - 8;
-            self.enc_bits(fl & ((1 << s) - 1), s as u32);
-            let fl = fl >> s;
-            ft >>= s;
-            ft += 1;
-            self.encode(fl, fl.wrapping_add(1), ft);
-        } else if ft > 1 {
-            self.encode(fl, fl.wrapping_add(1), ft);
+        if ft > 1 {
+            let ft_minus_1 = ft - 1;
+            let ftb = 32 - ft_minus_1.leading_zeros() as i32;
+            if ftb > 8 {
+                let s = ftb - 8;
+                self.enc_bits(fl & ((1 << s) - 1), s as u32);
+                let fl = fl >> s;
+                let ft = (ft_minus_1 >> s) + 1;
+                self.encode(fl, fl.wrapping_add(1), ft);
+            } else {
+                self.encode(fl, fl.wrapping_add(1), ft);
+            }
         }
     }
 
     #[inline(always)]
     pub fn dec_uint(&mut self, ft: u32) -> u32 {
-        if ft > (1 << 8) {
-            let mut ft = ft - 1;
-            let s = 32 - ft.leading_zeros() as i32 - 8;
-            let r = self.dec_bits(s as u32);
-            ft >>= s;
-            ft += 1;
-            let fs = self.decode(ft);
-            self.update(fs, fs.wrapping_add(1), ft);
-            (fs << s) | r
-        } else if ft > 1 {
-            let fs = self.decode(ft);
-            self.update(fs, fs.wrapping_add(1), ft);
-            fs
+        if ft > 1 {
+            let ft_minus_1 = ft - 1;
+            let ftb = 32 - ft_minus_1.leading_zeros() as i32;
+            if ftb > 8 {
+                let s = ftb - 8;
+                let r = self.dec_bits(s as u32);
+                let ft = (ft_minus_1 >> s) + 1;
+                let fs = self.decode(ft);
+                self.update(fs, fs.wrapping_add(1), ft);
+                (fs << s) | r
+            } else {
+                let fs = self.decode(ft);
+                self.update(fs, fs.wrapping_add(1), ft);
+                fs
+            }
         } else {
             0
         }

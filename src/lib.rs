@@ -87,6 +87,54 @@ pub struct OpusEncoder {
     rc: RangeCoder,
 }
 
+fn compute_equiv_rate(
+    bitrate: i32,
+    channels: usize,
+    frame_rate: i32,
+    vbr: bool,
+    complexity: i32,
+    loss: i32,
+) -> i32 {
+    let mut equiv = bitrate;
+    if frame_rate > 50 {
+        equiv -= (40 * channels as i32 + 20) * (frame_rate - 50);
+    }
+    if !vbr {
+        equiv -= equiv / 12;
+    }
+    equiv = equiv * (90 + complexity) / 100;
+    if loss > 0 {
+        equiv -= equiv * loss / (12 * loss + 20);
+    }
+    equiv
+}
+
+fn compute_mode_threshold(application: Application, channels: usize, prev_was_celt: bool) -> i32 {
+    let mode_voice = if channels == 1 { 64000 } else { 44000 };
+    let mode_music = 10000;
+
+    let offset = (mode_voice - mode_music) >> 14;
+    let mut threshold = mode_music + offset;
+
+    if application == Application::Voip {
+        threshold += 8000;
+    }
+
+    if prev_was_celt {
+        threshold -= 4000;
+    } else {
+        threshold += 4000;
+    }
+
+    match application {
+        Application::Audio => threshold = threshold.max(25000),
+        Application::Voip => threshold = threshold.max(55000),
+        Application::RestrictedLowDelay => threshold = 0,
+    }
+
+    threshold
+}
+
 fn compute_silk_rate_for_hybrid(rate_bps: i32, frame20ms: bool) -> i32 {
     const RATE_TABLE: &[(i32, i32, i32)] = &[
         (0, 0, 0),
@@ -279,32 +327,41 @@ impl OpusEncoder {
             .ok_or("Invalid frame size for sampling rate")?;
 
         // Mode selection: match C's opus_encode_native() behavior.
-        // For Hybrid mode, decide whether to stay in Hybrid or switch to CELT-only
-        // based on the equivalent bitrate vs a threshold derived from voice estimation.
-        // NOTE: CELT-only is currently disabled because the RS CELT encoder has
-        // bitstream incompatibilities with the C reference decoder (~3dB SNR).
-        // Once the CELT encoder is fixed, uncomment the mode selection below.
-        let mode = self.mode;
-        /* TODO: enable when CELT encoder is fixed
-        let mode = if self.mode == OpusMode::Hybrid {
+        // C reference auto-selects between SILK_ONLY and CELT_ONLY; Hybrid is
+        // produced afterwards by bandwidth overrides (SILK-only + FB/SWB → Hybrid).
+        let mut mode = if self.application == Application::RestrictedLowDelay {
+            OpusMode::CeltOnly
+        } else {
             let equiv = compute_equiv_rate(
                 self.bitrate_bps,
                 self.channels,
                 frame_rate,
-                self.use_cbr,
+                !self.use_cbr,
+                self.complexity,
+                self.packet_loss_perc,
             );
             let prev_was_celt = self.prev_enc_mode == Some(OpusMode::CeltOnly);
-            let threshold =
-                compute_mode_threshold(self.application, self.channels, prev_was_celt);
+            let threshold = compute_mode_threshold(self.application, self.channels, prev_was_celt);
             if equiv >= threshold {
                 OpusMode::CeltOnly
             } else {
-                OpusMode::Hybrid
+                OpusMode::SilkOnly
             }
-        } else {
-            self.mode
         };
-        */
+
+        let curr_bw = self.bandwidth;
+        if mode == OpusMode::SilkOnly
+            && (curr_bw == Bandwidth::Superwideband || curr_bw == Bandwidth::Fullband)
+        {
+            mode = OpusMode::Hybrid;
+        }
+        if mode == OpusMode::Hybrid
+            && (curr_bw == Bandwidth::Narrowband
+                || curr_bw == Bandwidth::Mediumband
+                || curr_bw == Bandwidth::Wideband)
+        {
+            mode = OpusMode::SilkOnly;
+        }
 
         if mode == OpusMode::CeltOnly {
             match frame_rate {
@@ -853,7 +910,19 @@ impl OpusDecoder {
             }
 
             OpusMode::CeltOnly => {
-                self.celt_dec.decode(payload_data, frame_size, output);
+                let mut rc = RangeCoder::new_decoder(payload_data);
+                let total_bits = (payload_data.len() * 8) as i32;
+                let needed = frame_size * self.channels;
+                if output.len() < needed {
+                    return Err("Output buffer too small");
+                }
+                self.celt_dec.decode_from_range_coder(
+                    &mut rc,
+                    total_bits,
+                    frame_size,
+                    &mut output[..needed],
+                    0,
+                );
                 self.prev_mode = Some(OpusMode::CeltOnly);
                 Ok(frame_size)
             }

@@ -2366,7 +2366,7 @@ fn compute_band_energy_neon(band: &[f32]) -> f32 {
     use std::arch::aarch64::*;
 
     let n = band.len();
-    let mut sum = 1e-15f32;
+    let mut sum = 1e-27f32;
 
     unsafe {
         let n16 = n & !15;
@@ -2445,7 +2445,7 @@ unsafe fn compute_band_energy_avx2(band: &[f32]) -> f32 {
     let t1 = _mm_movehl_ps(s4, s4);
     let s2 = _mm_add_ps(s4, t1);
     let t2 = _mm_shuffle_ps(s2, s2, 0x55);
-    let mut sum = 1e-15f32 + _mm_cvtss_f32(_mm_add_ss(s2, t2));
+    let mut sum = 1e-27f32 + _mm_cvtss_f32(_mm_add_ss(s2, t2));
 
     for &v in &band[i..] {
         sum += v * v;
@@ -2483,13 +2483,13 @@ pub fn compute_band_energies(
                 if n >= 8 && use_avx2 {
                     band_e[c * m.nb_ebands + i] = unsafe { compute_band_energy_avx2(band) };
                 } else {
-                    let sum = band.iter().fold(1e-15f32, |acc, &v| acc + v * v);
+                    let sum = band.iter().fold(1e-27f32, |acc, &v| acc + v * v);
                     band_e[c * m.nb_ebands + i] = sum.sqrt();
                 }
             }
             #[cfg(all(not(target_arch = "aarch64"), not(target_arch = "x86_64")))]
             {
-                let sum = band.iter().fold(1e-15f32, |acc, &v| acc + v * v);
+                let sum = band.iter().fold(1e-27f32, |acc, &v| acc + v * v);
                 band_e[c * m.nb_ebands + i] = sum.sqrt();
             }
         }
@@ -2540,12 +2540,17 @@ pub fn normalise_bands(
         for i in 0..end {
             let base = c * frame_size + ((m.e_bands[i] as usize) << lm);
             let n = ((m.e_bands[i + 1] - m.e_bands[i]) as usize) << lm;
-            let norm = 1.0 / (1e-15 + band_e[c * m.nb_ebands + i]);
+            let norm = 1.0 / (1e-27 + band_e[c * m.nb_ebands + i]);
             let src = &freq[base..base + n];
             let dst = &mut x[base..base + n];
             #[cfg(target_arch = "x86_64")]
             if n >= 8 && use_avx2 {
                 unsafe { scale_slice_avx2(src, dst, norm, n) };
+                continue;
+            }
+            #[cfg(target_arch = "aarch64")]
+            if n >= 8 {
+                unsafe { scale_slice_neon(src, dst, norm, n) };
                 continue;
             }
             for (d, &s) in dst.iter_mut().zip(src) {
@@ -2573,6 +2578,42 @@ unsafe fn scale_slice_avx2(src: &[f32], dst: &mut [f32], scale: f32, n: usize) {
         let sv = _mm256_loadu_ps(src.as_ptr().add(i));
         _mm256_storeu_ps(dst.as_mut_ptr().add(i), _mm256_mul_ps(sv, vscale));
         i += 8;
+    }
+    for j in i..n {
+        dst[j] = src[j] * scale;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn scale_slice_neon(src: &[f32], dst: &mut [f32], scale: f32, n: usize) {
+    use std::arch::aarch64::*;
+    let vscale = vdupq_n_f32(scale);
+    let mut i = 0;
+
+    while i + 16 <= n {
+        let s0 = vld1q_f32(src.as_ptr().add(i));
+        let s1 = vld1q_f32(src.as_ptr().add(i + 4));
+        let s2 = vld1q_f32(src.as_ptr().add(i + 8));
+        let s3 = vld1q_f32(src.as_ptr().add(i + 12));
+        vst1q_f32(dst.as_mut_ptr().add(i), vmulq_f32(s0, vscale));
+        vst1q_f32(dst.as_mut_ptr().add(i + 4), vmulq_f32(s1, vscale));
+        vst1q_f32(dst.as_mut_ptr().add(i + 8), vmulq_f32(s2, vscale));
+        vst1q_f32(dst.as_mut_ptr().add(i + 12), vmulq_f32(s3, vscale));
+        i += 16;
+    }
+    while i + 8 <= n {
+        let s0 = vld1q_f32(src.as_ptr().add(i));
+        let s1 = vld1q_f32(src.as_ptr().add(i + 4));
+        vst1q_f32(dst.as_mut_ptr().add(i), vmulq_f32(s0, vscale));
+        vst1q_f32(dst.as_mut_ptr().add(i + 4), vmulq_f32(s1, vscale));
+        i += 8;
+    }
+    while i + 4 <= n {
+        let s0 = vld1q_f32(src.as_ptr().add(i));
+        vst1q_f32(dst.as_mut_ptr().add(i), vmulq_f32(s0, vscale));
+        i += 4;
     }
     for j in i..n {
         dst[j] = src[j] * scale;
@@ -2608,6 +2649,11 @@ pub fn denormalise_bands(
             #[cfg(target_arch = "x86_64")]
             if n >= 8 && use_avx2 {
                 unsafe { scale_slice_avx2(src, dst, g, n) };
+                continue;
+            }
+            #[cfg(target_arch = "aarch64")]
+            if n >= 8 {
+                unsafe { scale_slice_neon(src, dst, g, n) };
                 continue;
             }
             for (d, &s) in dst.iter_mut().zip(src) {

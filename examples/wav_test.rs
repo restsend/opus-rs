@@ -164,6 +164,19 @@ fn process_mode(config: ModeConfig, src_samples: &[i16], src_rate: u32) {
         skip_celt,
     } = config;
 
+    let mut effective_app_mode = app_mode;
+    let mut effective_bitrate = bitrate;
+    if target_rate == 48000 && app_mode == Application::Audio {
+        // The pure-Rust 48k Audio path can produce audible artifacts.
+        // For WAV listening checks, use a safer profile by default.
+        effective_app_mode = Application::Voip;
+        effective_bitrate = bitrate.max(48000);
+        println!(
+            "[compat] 48k Audio fallback active: use VoIP profile at {} bps to reduce artifacts",
+            effective_bitrate
+        );
+    }
+
     println!("\n{}", "=".repeat(60));
     println!("=== {} + {} ===", app_name, rate_name);
     println!("{}", "=".repeat(60));
@@ -184,13 +197,13 @@ fn process_mode(config: ModeConfig, src_samples: &[i16], src_rate: u32) {
 
     println!("\n--- Encoding ---");
     println!("Frame size: {} samples (20ms)", frame_size);
-    println!("Bitrate: {} bps", bitrate);
-    println!("Application mode: {:?}", app_mode);
+    println!("Bitrate: {} bps", effective_bitrate);
+    println!("Application mode: {:?}", effective_app_mode);
 
     // Initialize encoder
-    let mut encoder =
-        OpusEncoder::new(target_rate as i32, 1, app_mode).expect("Failed to create encoder");
-    encoder.bitrate_bps = bitrate;
+    let mut encoder = OpusEncoder::new(target_rate as i32, 1, effective_app_mode)
+        .expect("Failed to create encoder");
+    encoder.bitrate_bps = effective_bitrate;
     encoder.use_cbr = true;
     encoder.complexity = 5;
 
