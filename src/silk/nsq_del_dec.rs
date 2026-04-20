@@ -125,6 +125,56 @@ fn silk_nsq_del_dec_scale_states(
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn silk_lpc_prediction_neon(
+    ps_lpc_q14: &[i32],
+    idx: usize,
+    a_q12: &[i16],
+    predict_lpc_order: i32,
+) -> i32 {
+    use std::arch::aarch64::*;
+
+    let order = predict_lpc_order as usize;
+    let lpc_base = ps_lpc_q14.as_ptr().add(idx);
+    let a_ptr = a_q12.as_ptr();
+
+    let mut acc = vdupq_n_s32(0i32);
+    let neon_taps = order & !3;
+
+    let mut j = 0usize;
+    while j < neon_taps {
+        let lpc_asc = vld1q_s32(lpc_base.sub(j + 3));
+
+        let coef_narrow = vld1_s16(a_ptr.add(j));
+        let coef_wide = vmovl_s16(coef_narrow);
+
+        let coef_rev = vrev64q_s32(vcombine_s32(
+            vget_high_s32(coef_wide),
+            vget_low_s32(coef_wide),
+        ));
+
+        let prod_lo = vmull_s32(vget_low_s32(lpc_asc), vget_low_s32(coef_rev));
+        let prod_hi = vmull_s32(vget_high_s32(lpc_asc), vget_high_s32(coef_rev));
+
+        let shr_lo = vshrn_n_s64::<16>(prod_lo); // int32x2
+        let shr_hi = vshrn_n_s64::<16>(prod_hi); // int32x2
+
+        acc = vaddq_s32(acc, vcombine_s32(shr_lo, shr_hi));
+        j += 4;
+    }
+
+    let mut out = silk_rshift(predict_lpc_order, 1) + vaddvq_s32(acc);
+
+    while j < order {
+        out = silk_smlawb(out, ps_lpc_q14[idx - j], a_q12[j] as i32);
+        j += 1;
+    }
+
+    out
+}
+
 #[inline]
 fn silk_noise_shape_quantizer_short_prediction(
     ps_lpc_q14: &[i32],
@@ -132,11 +182,19 @@ fn silk_noise_shape_quantizer_short_prediction(
     a_q12: &[i16],
     predict_lpc_order: i32,
 ) -> i32 {
-    let mut out = silk_rshift(predict_lpc_order, 1);
-    for j in 0..predict_lpc_order as usize {
-        out = silk_smlawb(out, ps_lpc_q14[idx - j], a_q12[j] as i32);
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: aarch64 always has NEON; bounds are guaranteed by SILK frame sizing.
+    unsafe {
+        return silk_lpc_prediction_neon(ps_lpc_q14, idx, a_q12, predict_lpc_order);
     }
-    out
+    #[allow(unreachable_code)]
+    {
+        let mut out = silk_rshift(predict_lpc_order, 1);
+        for j in 0..predict_lpc_order as usize {
+            out = silk_smlawb(out, ps_lpc_q14[idx - j], a_q12[j] as i32);
+        }
+        out
+    }
 }
 
 pub fn silk_noise_shape_quantizer_del_dec(

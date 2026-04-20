@@ -2281,9 +2281,9 @@ pub fn quant_all_bands(
             None
         };
 
-        let x_slice = &mut x[offset..];
+        let x_slice = &mut x[offset..offset + n];
         if *dual_stereo {
-            let y_slice = &mut y.as_mut().unwrap()[offset..];
+            let y_slice = &mut y.as_mut().unwrap()[offset..offset + n];
             let lb_x = lowband_scratch.as_deref_mut();
             let lb_out_x = if !last && norm_pos + n <= norm.len() {
                 Some(&mut norm[norm_pos..norm_pos + n])
