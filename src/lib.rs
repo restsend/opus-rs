@@ -128,7 +128,7 @@ fn compute_mode_threshold(application: Application, channels: usize, prev_was_ce
     }
 
     match application {
-        Application::Audio => threshold = threshold.max(25000),
+        Application::Audio => threshold = threshold.max(55000),
         Application::Voip => threshold = threshold.max(55000),
         Application::RestrictedLowDelay => threshold = 0,
     }
