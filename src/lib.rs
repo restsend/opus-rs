@@ -881,20 +881,20 @@ impl OpusDecoder {
                         let mut payloads = Vec::with_capacity(frame_count);
                         for _f in 0..frame_count - 1 {
                             if payload_ptr >= input.len() {
-                                return Err(
-                                    "Code 3: unexpected end in self-delimiting header",
-                                );
+                                return Err("Code 3: unexpected end in self-delimiting header");
                             }
-                            let (frame_len, header_bytes) =
-                                if input[payload_ptr] & 0x80 != 0 {
-                                    if payload_ptr + 2 > input.len() {
-                                        return Err("Code 3: short frame length");
-                                    }
-                                    (((input[payload_ptr] & 0x7F) as usize) << 8
-                                        | input[payload_ptr + 1] as usize, 2)
-                                } else {
-                                    (input[payload_ptr] as usize, 1)
-                                };
+                            let (frame_len, header_bytes) = if input[payload_ptr] & 0x80 != 0 {
+                                if payload_ptr + 2 > input.len() {
+                                    return Err("Code 3: short frame length");
+                                }
+                                (
+                                    ((input[payload_ptr] & 0x7F) as usize) << 8
+                                        | input[payload_ptr + 1] as usize,
+                                    2,
+                                )
+                            } else {
+                                (input[payload_ptr] as usize, 1)
+                            };
                             payload_ptr += header_bytes;
                             if payload_ptr + frame_len > input.len() {
                                 return Err("Code 3: frame length exceeds packet");
@@ -964,11 +964,18 @@ impl OpusDecoder {
                     let decoded_samples = ret as usize;
                     let out_start = fi * sub_output_len;
 
+                    // SILK only decodes channel 0 (mono). For multi-channel output,
+                    // replicate the mono samples to every channel.
                     if self.sampling_rate == internal_sample_rate {
                         let frames = decoded_samples.min(sub_frame_size);
-                        let total = (frames * self.channels).min(output.len() - out_start);
-                        for i in 0..total {
-                            output[out_start + i] = self.w_pcm_i16[i] as f32 / 32768.0;
+                        for i in 0..frames {
+                            let v = self.w_pcm_i16[i] as f32 / 32768.0;
+                            for ch in 0..self.channels {
+                                let idx = out_start + i * self.channels + ch;
+                                if idx < output.len() {
+                                    output[idx] = v;
+                                }
+                            }
                         }
                     } else {
                         let ratio = self.sampling_rate as f64 / internal_sample_rate as f64;
@@ -988,9 +995,14 @@ impl OpusDecoder {
                             );
                         }
                         let frames = out_len.min(sub_frame_size);
-                        let total = (frames * self.channels).min(output.len() - out_start);
-                        for i in 0..total {
-                            output[out_start + i] = self.w_pcm_resampled[i] as f32 / 32768.0;
+                        for i in 0..frames {
+                            let v = self.w_pcm_resampled[i] as f32 / 32768.0;
+                            for ch in 0..self.channels {
+                                let idx = out_start + i * self.channels + ch;
+                                if idx < output.len() {
+                                    output[idx] = v;
+                                }
+                            }
                         }
                     }
                 }
@@ -1085,17 +1097,23 @@ impl OpusDecoder {
                     self.w_silk_out[..silk_out_len].fill(0.0);
                     if ret > 0 {
                         let decoded_samples = ret as usize;
+                        // SILK only decodes channel 0 (mono). For multi-channel output,
+                        // replicate the mono samples to every channel in w_silk_out.
                         if self.sampling_rate == internal_sample_rate {
                             let frames = decoded_samples.min(sub_frame_size);
-                            let total = frames * self.channels;
-                            for i in 0..total.min(silk_out_len) {
-                                self.w_silk_out[i] = self.w_pcm_i16[i] as f32 / 32768.0;
+                            for i in 0..frames {
+                                let v = self.w_pcm_i16[i] as f32 / 32768.0;
+                                for ch in 0..self.channels {
+                                    let idx = i * self.channels + ch;
+                                    if idx < silk_out_len {
+                                        self.w_silk_out[idx] = v;
+                                    }
+                                }
                             }
                         } else {
-                            let ratio =
-                                self.sampling_rate as f64 / internal_sample_rate as f64;
-                            let out_len = ((decoded_samples as f64 * ratio) as usize)
-                                .min(sub_frame_size);
+                            let ratio = self.sampling_rate as f64 / internal_sample_rate as f64;
+                            let out_len =
+                                ((decoded_samples as f64 * ratio) as usize).min(sub_frame_size);
                             debug_assert!(out_len <= self.w_pcm_resampled.len());
                             {
                                 let (silk_res, pcm_i16, pcm_resampled) = (
@@ -1110,9 +1128,14 @@ impl OpusDecoder {
                                 );
                             }
                             let frames = out_len.min(sub_frame_size);
-                            let total = frames * self.channels;
-                            for i in 0..total {
-                                self.w_silk_out[i] = self.w_pcm_resampled[i] as f32 / 32768.0;
+                            for i in 0..frames {
+                                let v = self.w_pcm_resampled[i] as f32 / 32768.0;
+                                for ch in 0..self.channels {
+                                    let idx = i * self.channels + ch;
+                                    if idx < silk_out_len {
+                                        self.w_silk_out[idx] = v;
+                                    }
+                                }
                             }
                         }
                     }
@@ -1129,8 +1152,7 @@ impl OpusDecoder {
                     if skip_celt {
                         self.w_celt_out[..silk_out_len].fill(0.0);
                     } else {
-                        let (celt_dec, celt_planar) =
-                            (&mut self.celt_dec, &mut self.w_celt_planar);
+                        let (celt_dec, celt_planar) = (&mut self.celt_dec, &mut self.w_celt_planar);
                         celt_dec.decode_from_range_coder_with_band_range(
                             &mut rc,
                             total_bits,

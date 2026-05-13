@@ -1,6 +1,8 @@
 use crate::range_coder::RangeCoder;
 use crate::silk::decode_frame::{FLAG_DECODE_NORMAL, FLAG_PACKET_LOST, silk_decode_frame};
-use crate::silk::decode_indices::{silk_decode_indices, silk_decode_stereo};
+use crate::silk::decode_indices::{
+    silk_decode_indices, silk_stereo_decode_mid_only, silk_stereo_decode_pred,
+};
 use crate::silk::decode_pulses::silk_decode_pulses;
 use crate::silk::decoder_structs::SilkDecoderState;
 use crate::silk::define::*;
@@ -108,75 +110,88 @@ impl SilkDecoder {
 
         if lost_flag != FLAG_PACKET_LOST && self.channel_state[0].n_frames_decoded == 0 {
             let n_frames_per_packet = self.channel_state[0].n_frames_per_packet.max(1);
+            let n_channels = self.n_channels_internal as usize;
 
-            for i in 0..n_frames_per_packet as usize {
-                let vad = range_dec.decode_bit_logp(1);
-                self.channel_state[0].vad_flags[i] = if vad { 1 } else { 0 };
+            for n in 0..n_channels {
+                for i in 0..n_frames_per_packet as usize {
+                    let vad = range_dec.decode_bit_logp(1);
+                    self.channel_state[n].vad_flags[i] = if vad { 1 } else { 0 };
+                }
+                let lbrr = range_dec.decode_bit_logp(1);
+                self.channel_state[n].lbrr_flag = if lbrr { 1 } else { 0 };
             }
 
-            let lbrr = range_dec.decode_bit_logp(1);
-            self.channel_state[0].lbrr_flag = if lbrr { 1 } else { 0 };
-
-            self.channel_state[0].lbrr_flags.fill(0);
-            if self.channel_state[0].lbrr_flag != 0 {
-                if n_frames_per_packet == 1 {
-                    self.channel_state[0].lbrr_flags[0] = 1;
-                } else {
-                    let lbrr_icdf = match n_frames_per_packet {
-                        2 => &SILK_LBRR_FLAGS_2_ICDF[..],
-                        3 => &SILK_LBRR_FLAGS_3_ICDF[..],
-                        _ => &SILK_LBRR_FLAGS_2_ICDF[..],
-                    };
-                    let lbrr_symbol = range_dec.decode_icdf(lbrr_icdf, 8) + 1;
-                    for i in 0..n_frames_per_packet as usize {
-                        self.channel_state[0].lbrr_flags[i] = (lbrr_symbol >> i) & 1;
+            for n in 0..n_channels {
+                self.channel_state[n].lbrr_flags.fill(0);
+                if self.channel_state[n].lbrr_flag != 0 {
+                    if n_frames_per_packet == 1 {
+                        self.channel_state[n].lbrr_flags[0] = 1;
+                    } else {
+                        let lbrr_icdf = match n_frames_per_packet {
+                            2 => &SILK_LBRR_FLAGS_2_ICDF[..],
+                            3 => &SILK_LBRR_FLAGS_3_ICDF[..],
+                            _ => &SILK_LBRR_FLAGS_2_ICDF[..],
+                        };
+                        let lbrr_symbol = range_dec.decode_icdf(lbrr_icdf, 8) + 1;
+                        for i in 0..n_frames_per_packet as usize {
+                            self.channel_state[n].lbrr_flags[i] = (lbrr_symbol >> i) & 1;
+                        }
                     }
                 }
             }
 
+            // Skip LBRR data for all frames/channels
             if lost_flag == FLAG_DECODE_NORMAL {
                 for i in 0..n_frames_per_packet as usize {
-                    if self.channel_state[0].lbrr_flags[i] != 0 {
-                        let cond_coding = if i > 0 && self.channel_state[0].lbrr_flags[i - 1] != 0 {
-                            CODE_CONDITIONALLY
-                        } else {
-                            CODE_INDEPENDENTLY
-                        };
-
-                        silk_decode_indices(
-                            &mut self.channel_state[0],
-                            range_dec,
-                            i as i32,
-                            1,
-                            cond_coding,
-                        );
-
-                        let mut pulses = [0i16; MAX_FRAME_LENGTH];
-                        silk_decode_pulses(
-                            range_dec,
-                            &mut pulses,
-                            self.channel_state[0].indices.signal_type as i32,
-                            self.channel_state[0].indices.quant_offset_type as i32,
-                            self.channel_state[0].frame_length,
-                        );
+                    for n in 0..n_channels {
+                        if self.channel_state[n].lbrr_flags[i] != 0 {
+                            if n_channels == 2 && n == 0 {
+                                silk_stereo_decode_pred(range_dec);
+                                if self.channel_state[1].lbrr_flags[i] == 0 {
+                                    silk_stereo_decode_mid_only(range_dec);
+                                }
+                            }
+                            let cond_coding =
+                                if i > 0 && self.channel_state[n].lbrr_flags[i - 1] != 0 {
+                                    CODE_CONDITIONALLY
+                                } else {
+                                    CODE_INDEPENDENTLY
+                                };
+                            silk_decode_indices(
+                                &mut self.channel_state[n],
+                                range_dec,
+                                i as i32,
+                                1,
+                                cond_coding,
+                            );
+                            let mut pulses = [0i16; MAX_FRAME_LENGTH];
+                            silk_decode_pulses(
+                                range_dec,
+                                &mut pulses,
+                                self.channel_state[n].indices.signal_type as i32,
+                                self.channel_state[n].indices.quant_offset_type as i32,
+                                self.channel_state[n].frame_length,
+                            );
+                        }
                     }
                 }
-            }
-
-            if self.n_channels_internal == 2 {
-                let (_side_idx, _pred_idx, only_middle) = silk_decode_stereo(range_dec);
-                self.prev_decode_only_middle = only_middle as i32;
             }
         }
 
-        let mut n_samples_out: i32 = 0;
-        let frame_index = self.channel_state[0].n_frames_decoded;
+        let frame_index = self.channel_state[0].n_frames_decoded as usize;
+        if self.n_channels_internal == 2 && lost_flag == FLAG_DECODE_NORMAL {
+            silk_stereo_decode_pred(range_dec);
+            if self.channel_state[1].vad_flags[frame_index] == 0 {
+                silk_stereo_decode_mid_only(range_dec);
+            }
+        }
         let cond_coding = if frame_index == 0 {
             CODE_INDEPENDENTLY
         } else {
             CODE_CONDITIONALLY
         };
 
+        let mut n_samples_out: i32 = 0;
         let channel = &mut self.channel_state[0];
         let ret = silk_decode_frame(
             channel,

@@ -427,6 +427,124 @@ fn main() {
         process_mode(config, &samples, src_rate);
     }
 
+    println!("\n{}", "=".repeat(60));
+    println!("=== RS-only 24kbps VoIP loopback (no opusic) ===");
+    println!("{}", "=".repeat(60));
+    {
+        let rate = 16000i32;
+        let frame_size = rate as usize * 20 / 1000; // 320
+        let mut enc = OpusEncoder::new(rate, 1, Application::Voip).expect("encoder");
+        enc.bitrate_bps = 24000;
+        enc.use_cbr = true;
+        let mut dec16 = OpusDecoder::new(rate, 1).expect("dec 16k");
+        let mut dec48 = OpusDecoder::new(48000, 1).expect("dec 48k");
+
+        let n_frames = (samples.len() / frame_size).min(200);
+        let mut fail16 = 0usize;
+        let mut fail48 = 0usize;
+        let mut decoded16: Vec<i16> = Vec::new();
+        let mut decoded48: Vec<i16> = Vec::new();
+
+        for i in 0..n_frames {
+            let raw = &samples[i * frame_size..(i + 1) * frame_size];
+            let frame: Vec<f32> = raw.iter().map(|&s| s as f32 / 32768.0).collect();
+            let in_rms =
+                (frame.iter().map(|&x| (x as f64).powi(2)).sum::<f64>() / frame_size as f64).sqrt();
+
+            let mut pkt = vec![0u8; 512];
+            let n = enc.encode(&frame, frame_size, &mut pkt).unwrap();
+            pkt.truncate(n);
+
+            if i == 0 {
+                let toc = pkt[0];
+                let is_silk = toc & 0x80 == 0 && toc & 0x60 != 0x60;
+                let bw = match (toc >> 3) & 0x3 {
+                    0 => "NB",
+                    1 => "MB",
+                    2 => "WB",
+                    _ => "SWB",
+                };
+                println!(
+                    "TOC=0x{:02x} SILK={} {}BW {} bytes/pkt",
+                    toc, is_silk, bw, n
+                );
+            }
+
+            // 16kHz decode
+            let mut out16 = vec![0.0f32; frame_size];
+            let n16 = dec16.decode(&pkt, frame_size, &mut out16).unwrap();
+            let out_rms16 = (out16[..n16]
+                .iter()
+                .map(|&x| (x as f64).powi(2))
+                .sum::<f64>()
+                / n16 as f64)
+                .sqrt();
+            let ratio16 = if in_rms > 1e-4 {
+                out_rms16 / in_rms
+            } else {
+                1.0
+            };
+            if ratio16 < 0.1 || ratio16 > 10.0 {
+                println!(
+                    "  [16k] frame {}: in={:.4} out={:.4} ratio={:.3} <- FAIL",
+                    i, in_rms, out_rms16, ratio16
+                );
+                fail16 += 1;
+            }
+            for &s in &out16[..n16] {
+                decoded16.push((s * 32768.0).clamp(-32768.0, 32767.0) as i16);
+            }
+
+            // 48kHz decode
+            let out48_size = 48000 * 20 / 1000;
+            let mut out48 = vec![0.0f32; out48_size];
+            let n48 = dec48.decode(&pkt, out48_size, &mut out48).unwrap();
+            let out_rms48 = (out48[..n48]
+                .iter()
+                .map(|&x| (x as f64).powi(2))
+                .sum::<f64>()
+                / n48 as f64)
+                .sqrt();
+            let ratio48 = if in_rms > 1e-4 {
+                out_rms48 / in_rms
+            } else {
+                1.0
+            };
+            if ratio48 < 0.1 || ratio48 > 10.0 {
+                println!(
+                    "  [48k] frame {}: in={:.4} out={:.4} ratio={:.3} <- FAIL",
+                    i, in_rms, out_rms48, ratio48
+                );
+                fail48 += 1;
+            }
+            for &s in &out48[..n48] {
+                decoded48.push((s * 32768.0).clamp(-32768.0, 32767.0) as i16);
+            }
+        }
+
+        write_wav(
+            Path::new("fixtures/decoded_24kbps_rs_16k.wav"),
+            16000,
+            1,
+            &decoded16,
+        );
+        write_wav(
+            Path::new("fixtures/decoded_24kbps_rs_48k.wav"),
+            48000,
+            1,
+            &decoded48,
+        );
+
+        if fail16 == 0 && fail48 == 0 {
+            println!(
+                "OK 24kbps RS-only loopback: {} frames passed (16k + 48k)",
+                n_frames
+            );
+        } else {
+            println!("FAIL 16k={} 48k={} / {} frames", fail16, fail48, n_frames);
+        }
+    }
+
     println!("\n=== Done ===");
     println!("Output files:");
     println!("  - fixtures/decoded_voip_16k.wav");
@@ -436,4 +554,6 @@ fn main() {
     println!(
         "  - fixtures/decoded_voip_48k_silk_only.wav  (diagnostic: hybrid decode without CELT)"
     );
+    println!("  - fixtures/decoded_24kbps_rs_16k.wav  (RS-only 24kbps -> 16k)");
+    println!("  - fixtures/decoded_24kbps_rs_48k.wav  (RS-only 24kbps -> 48k)");
 }

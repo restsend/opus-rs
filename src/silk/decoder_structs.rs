@@ -79,7 +79,7 @@ pub struct SilkDecoderState {
 impl Default for SilkDecoderState {
     fn default() -> Self {
         Self {
-            prev_gain_q16: 0,
+            prev_gain_q16: 65536,
             exc_q14: [0; MAX_FRAME_LENGTH],
             s_lpc_q14_buf: [0; MAX_LPC_ORDER],
             out_buf: [0; MAX_FRAME_LENGTH + 2 * MAX_SUB_FRAME_LENGTH],

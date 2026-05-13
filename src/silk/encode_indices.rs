@@ -164,17 +164,17 @@ pub fn silk_encode_indices(
 
 pub fn silk_encode_stereo(
     ps_range_enc: &mut RangeCoder,
-    side_idx: i8,
-    pred_idx: i8,
+    _side_idx: i8,
+    _pred_idx: i8,
     only_middle: i8,
 ) {
+    // C-compatible order: stereo_pred (5 ICDFs) first, then mid_only flag
+    // Use zero/neutral values for prediction (decoder discards these anyway)
+    ps_range_enc.encode_icdf(0, &SILK_STEREO_PRED_JOINT_ICDF, 8);
+    ps_range_enc.encode_icdf(0, &SILK_UNIFORM3_ICDF, 8);
+    ps_range_enc.encode_icdf(0, &SILK_UNIFORM5_ICDF, 8);
+    ps_range_enc.encode_icdf(0, &SILK_UNIFORM3_ICDF, 8);
+    ps_range_enc.encode_icdf(0, &SILK_UNIFORM5_ICDF, 8);
+    // Write mid-only flag (since ch1_VAD == 0 for our mid-only stereo, decoder always reads this)
     ps_range_enc.encode_icdf(only_middle as i32, &SILK_STEREO_ONLY_CODE_MID_ICDF, 8);
-
-    if only_middle == 0 {
-        let i = (side_idx as i32).min(4);
-        let j = (pred_idx as i32) >> 2;
-        let joint_idx = i * 5 + j;
-
-        ps_range_enc.encode_icdf(joint_idx, &SILK_STEREO_PRED_JOINT_ICDF, 8);
-    }
 }

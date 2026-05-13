@@ -107,17 +107,14 @@ pub fn silk_decode_indices(
     ps_dec.indices.seed = ps_range_dec.decode_icdf(&SILK_UNIFORM4_ICDF, 8) as i8;
 }
 
-pub fn silk_decode_stereo(ps_range_dec: &mut RangeCoder) -> (i8, i8, i8) {
-    let only_middle = ps_range_dec.decode_icdf(&SILK_STEREO_ONLY_CODE_MID_ICDF, 8) as i8;
-
-    if only_middle == 0 {
-        let joint_idx = ps_range_dec.decode_icdf(&SILK_STEREO_PRED_JOINT_ICDF, 8) as i8;
-
-        let side_idx = joint_idx / 5;
-        let pred_idx = (joint_idx % 5) * 4;
-
-        (side_idx, pred_idx, only_middle)
-    } else {
-        (0, 0, only_middle)
+pub fn silk_stereo_decode_pred(ps_range_dec: &mut RangeCoder) {
+    ps_range_dec.decode_icdf(&SILK_STEREO_PRED_JOINT_ICDF, 8);
+    for _ in 0..2 {
+        ps_range_dec.decode_icdf(&SILK_UNIFORM3_ICDF, 8);
+        ps_range_dec.decode_icdf(&SILK_UNIFORM5_ICDF, 8);
     }
+}
+
+pub fn silk_stereo_decode_mid_only(ps_range_dec: &mut RangeCoder) -> bool {
+    ps_range_dec.decode_icdf(&SILK_STEREO_ONLY_CODE_MID_ICDF, 8) != 0
 }

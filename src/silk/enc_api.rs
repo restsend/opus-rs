@@ -547,7 +547,8 @@ pub fn silk_encode(
         ps_enc.stereo.s_mid[1] = input_buf[frame_length + 1];
 
         if frame_idx == 0 {
-            let n_flag_bits = (n_frames_per_packet + 1) as u32;
+            let n_channels = ps_enc.s_cmn.n_channels;
+            let n_flag_bits = ((n_frames_per_packet + 1) * n_channels) as u32;
             let icdf_val = (256i32 - (256i32 >> n_flag_bits)) as u8;
             let icdf = [icdf_val, 0u8];
             rc.encode_icdf(0, &icdf, 8);
@@ -646,7 +647,8 @@ pub fn silk_encode(
         sample_offset += frame_length;
     }
 
-    let n_flag_bits = (n_frames_per_packet + 1) as u32;
+    let n_channels = ps_enc.s_cmn.n_channels;
+    let n_flag_bits = ((n_frames_per_packet + 1) * n_channels) as u32;
     let mut flags = 0u32;
     for i in 0..n_frames_per_packet as usize {
         flags <<= 1;
@@ -654,6 +656,9 @@ pub fn silk_encode(
     }
     flags <<= 1;
     flags |= ps_enc.s_cmn.lbrr_flag as u32;
+    if n_channels == 2 {
+        flags <<= (n_frames_per_packet + 1) as u32;
+    }
 
     rc.patch_initial_bits(flags, n_flag_bits);
 
