@@ -90,6 +90,12 @@ impl MdctLookup {
 
         assert!(input.len() >= n2 + overlap2);
         assert!(window.len() >= overlap);
+        assert!(
+            output.len() >= n2,
+            "MDCT forward: output buffer too small (need {}, have {})",
+            n2,
+            output.len()
+        );
 
         {
             let mut yp = 0usize;

@@ -391,6 +391,20 @@ impl OpusEncoder {
             }
         }
 
+        if mode == OpusMode::Hybrid {
+            match frame_rate {
+                100 | 50 => {}
+                _ => return Err("Unsupported frame size for Hybrid mode"),
+            }
+        }
+
+        if mode == OpusMode::SilkOnly {
+            match frame_rate {
+                400 | 200 | 100 | 50 | 25 => {}
+                _ => return Err("Unsupported frame size for SILK-only mode"),
+            }
+        }
+
         let toc = gen_toc(mode, frame_rate, self.bandwidth, self.channels);
         output[0] = toc;
 
@@ -1454,5 +1468,44 @@ mod tests {
 
             let _ = decoder.decode(&[0x80, 0, 0, 0], frame_size, &mut output);
         }
+    }
+
+    // Regression test for: "index out of bounds: the len is 48 but the index is 119"
+    // Root cause: frame_size=48 at 48kHz gives frame_rate=1000, which is not a valid
+    // Hybrid-mode frame rate but was not validated.  CELT's lm-search then silently
+    // fell back to lm=0, computed n2=120, and wrote output[119] into a 48-element
+    // slice.  Triggered via G.729-decoded PCM (8kHz) passed to a 48kHz Opus encoder
+    // without proper resampling, so the encoder received 48 samples instead of 480.
+    #[test]
+    fn test_invalid_small_frame_size_returns_error_not_panic() {
+        let mut enc = OpusEncoder::new(48000, 2, Application::Voip).unwrap();
+        enc.bitrate_bps = 64000;
+        enc.complexity = 5;
+        enc.use_cbr = true;
+
+        // 48 samples at 48kHz = 1ms → frame_rate=1000, invalid for Hybrid mode.
+        let input = vec![0.0f32; 48 * 2]; // stereo interleaved
+        let mut output = vec![0u8; 256];
+
+        let result = enc.encode(&input, 48, &mut output);
+        assert!(
+            result.is_err(),
+            "encode with invalid frame_size=48 should return Err, not panic"
+        );
+    }
+
+    // Also verify that the Audio application path (always Hybrid at 48 kHz) rejects
+    // the same bad frame size.
+    #[test]
+    fn test_invalid_small_frame_size_audio_application_returns_error() {
+        let mut enc = OpusEncoder::new(48000, 1, Application::Audio).unwrap();
+        let input = vec![0.0f32; 48];
+        let mut output = vec![0u8; 256];
+
+        let result = enc.encode(&input, 48, &mut output);
+        assert!(
+            result.is_err(),
+            "Audio/48kHz encoder with frame_size=48 should return Err"
+        );
     }
 }

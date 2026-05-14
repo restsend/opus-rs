@@ -2918,3 +2918,39 @@ impl CeltDecoder {
         frame_size
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{modes, range_coder::RangeCoder};
+
+    // Regression test: directly drive CeltEncoder with an invalid frame_size=48,
+    // bypassing the OpusEncoder::encode() validation layer.
+    //
+    // This reproduces the crash that was reported against opus-rs 0.1.19 when
+    // G.729-decoded PCM (8 kHz) reached the 48 kHz Opus encoder without correct
+    // resampling, producing a 48-sample frame instead of 480.
+    //
+    // Root cause: the lm-search in encode_impl finds no valid match for frame_size=48
+    // (valid sizes are 120, 240, 480, 960) and silently falls back to lm=0.
+    // With lm=0 and shift=max_lm=3: n=1920>>3=240, n2=120, overlap2=60.
+    // The in_buf slice has only frame_size+overlap=168 elements, but forward()
+    // requires input.len() >= n2+overlap2 = 180, so it panics immediately.
+    // In opus-rs 0.1.19 this assertion was absent and the crash reached the MDCT
+    // output write: "index out of bounds: the len is 48 but the index is 119".
+    //
+    // Either way: the call panics, confirming the crash path is real.
+    // The fix in OpusEncoder::encode() returns Err before reaching CeltEncoder.
+    #[test]
+    #[should_panic]
+    fn test_celt_frame_size_48_panics_confirms_crash_path() {
+        let mode = modes::default_mode();
+        let mut enc = CeltEncoder::new(mode, 1);
+        // frame_size=48: lm-search fails, falls back to lm=0.
+        // forward() will panic — either on the input-size assertion (0.1.21+) or
+        // on the output write (0.1.19): "len is 48 but the index is 119".
+        let pcm = vec![0.0f32; 48 + mode.overlap]; // supply ≥ frame_size samples
+        let mut rc = RangeCoder::new_encoder(100);
+        enc.encode_with_budget(&pcm, 48, &mut rc, 0, 800);
+    }
+}
