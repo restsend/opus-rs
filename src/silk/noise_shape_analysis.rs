@@ -53,7 +53,7 @@ pub fn limit_warped_coefs(
     for iter in 0..10 {
         maxabs_q24 = -1;
         for (i, &v) in coefs_q24[..order].iter().enumerate() {
-            tmp = v.abs();
+            tmp = v.wrapping_abs();
             if tmp > maxabs_q24 {
                 maxabs_q24 = tmp;
                 ind = i;

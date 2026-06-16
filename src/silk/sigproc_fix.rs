@@ -35,7 +35,7 @@ pub fn silk_schur64(rc_q16: &mut [i32], c: &[i32], order: usize) -> i32 {
 
     let mut k = 0;
     while k < order {
-        if c_matrix[k + 1][0].abs() >= c_matrix[0][1] {
+        if c_matrix[k + 1][0].wrapping_abs() >= c_matrix[0][1] {
             if c_matrix[k + 1][0] > 0 {
                 rc_q16[k] = -64880;
             } else {

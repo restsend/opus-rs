@@ -121,12 +121,12 @@ fn quant_coarse_energy_impl(
             let old_e = old_e_val.max(-9.0);
             let f = x - coef * old_e - prev[c];
 
-            let mut qi = (f + 0.5).floor() as i32;
+            let mut qi = ((f + 0.5).floor() as i32).clamp(-32767, 32767);
             let qi0 = qi;
 
             let decay_bound = old_e_val.max(-28.0) - max_decay;
             if qi < 0 && x < decay_bound {
-                qi += ((decay_bound - x) as i32).max(0);
+                qi = qi.saturating_add(((decay_bound - x) as i32).max(0));
                 if qi > 0 {
                     qi = 0;
                 }
@@ -165,7 +165,7 @@ fn quant_coarse_energy_impl(
                 qi = -1;
             }
 
-            badness += (qi0 - qi).abs();
+            badness = badness.saturating_add(qi0.saturating_sub(qi).saturating_abs());
 
             let q = qi as f32;
             error[c * m.nb_ebands + i] = f - q;
@@ -623,6 +623,59 @@ mod tests {
                 );
             }
             assert!((decoded_old_e_bands[i] - old_e_bands[i]).abs() < 1e-5);
+        }
+    }
+
+    /// Regression test: extreme/corrupt energy values must not cause an
+    /// "attempt to add with overflow" panic in `quant_coarse_energy_impl`.
+    /// Previously `(qi0 - qi).abs()` overflowed i32 when the float->int cast
+    /// of `qi` saturated near i32::MAX/MIN.
+    #[test]
+    fn test_coarse_energy_extreme_no_overflow() {
+        let mode = crate::modes::default_mode();
+        let n = mode.nb_ebands;
+
+        for &extreme in &[f32::INFINITY, f32::NEG_INFINITY, f32::NAN, 1.0e30, -1.0e30] {
+            let e_bands = vec![extreme; n];
+            let mut old_e_bands = vec![0.0; n];
+            let mut error = vec![0.0; n];
+            let mut enc = RangeCoder::new_encoder(1000);
+
+            // tiny budget forces the `else { qi = -1 }` path, which combined
+            // with a saturated qi0 triggered the overflow at the badness line.
+            quant_coarse_energy(
+                mode,
+                0,
+                n,
+                &e_bands,
+                &mut old_e_bands,
+                0,
+                &mut error,
+                &mut enc,
+                1,
+                3,
+                false,
+                80,
+            );
+
+            // large budget exercises the laplace-encode path with extreme qi.
+            let mut old_e_bands2 = vec![0.0; n];
+            let mut error2 = vec![0.0; n];
+            let mut enc2 = RangeCoder::new_encoder(1000);
+            quant_coarse_energy(
+                mode,
+                0,
+                n,
+                &e_bands,
+                &mut old_e_bands2,
+                10000,
+                &mut error2,
+                &mut enc2,
+                1,
+                3,
+                false,
+                80,
+            );
         }
     }
 }

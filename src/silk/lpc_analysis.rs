@@ -278,10 +278,10 @@ pub fn silk_burg_modified_fix(
         if rshifts > -2 {
             for s in 0..nb_subfr {
                 let x_ptr = s * subfr_length;
-                let x1 = -((x[x_ptr + n] as i32) << (16 - rshifts));
-                let x2 = -((x[x_ptr + subfr_length - n - 1] as i32) << (16 - rshifts));
-                let mut tmp1 = (x[x_ptr + n] as i32) << (QA - 16);
-                let mut tmp2 = (x[x_ptr + subfr_length - n - 1] as i32) << (QA - 16);
+                let x1 = (x[x_ptr + n] as i32).wrapping_shl((16 - rshifts) as u32).wrapping_neg();
+                let x2 = (x[x_ptr + subfr_length - n - 1] as i32).wrapping_shl((16 - rshifts) as u32).wrapping_neg();
+                let mut tmp1 = (x[x_ptr + n] as i32).wrapping_shl((QA - 16) as u32);
+                let mut tmp2 = (x[x_ptr + subfr_length - n - 1] as i32).wrapping_shl((QA - 16) as u32);
                 for k in 0..n {
                     c_first_row[k] = silk_smlawb(c_first_row[k], x1, x[x_ptr + n - k - 1] as i32);
                     c_last_row[k] =
@@ -290,8 +290,8 @@ pub fn silk_burg_modified_fix(
                     tmp1 = silk_smlawb(tmp1, atmp_qa, x[x_ptr + n - k - 1] as i32);
                     tmp2 = silk_smlawb(tmp2, atmp_qa, x[x_ptr + subfr_length - n + k] as i32);
                 }
-                tmp1 = (-tmp1) << (32 - QA - rshifts);
-                tmp2 = (-tmp2) << (32 - QA - rshifts);
+                tmp1 = tmp1.wrapping_neg().wrapping_shl((32 - QA - rshifts) as u32);
+                tmp2 = tmp2.wrapping_neg().wrapping_shl((32 - QA - rshifts) as u32);
                 for k in 0..=n {
                     ca_f[k] = silk_smlawb(ca_f[k], tmp1, x[x_ptr + n - k] as i32);
                     ca_b[k] =
@@ -301,10 +301,10 @@ pub fn silk_burg_modified_fix(
         } else {
             for s in 0..nb_subfr {
                 let x_ptr = s * subfr_length;
-                let x1 = -((x[x_ptr + n] as i32) << (-rshifts));
-                let x2 = -((x[x_ptr + subfr_length - n - 1] as i32) << (-rshifts));
-                let mut tmp1 = (x[x_ptr + n] as i32) << 17;
-                let mut tmp2 = (x[x_ptr + subfr_length - n - 1] as i32) << 17;
+                let x1 = (x[x_ptr + n] as i32).wrapping_shl((-rshifts) as u32).wrapping_neg();
+                let x2 = (x[x_ptr + subfr_length - n - 1] as i32).wrapping_shl((-rshifts) as u32).wrapping_neg();
+                let mut tmp1 = (x[x_ptr + n] as i32).wrapping_shl(17);
+                let mut tmp2 = (x[x_ptr + subfr_length - n - 1] as i32).wrapping_shl(17);
                 for k in 0..n {
                     c_first_row[k] = silk_mla(c_first_row[k], x1, x[x_ptr + n - k - 1] as i32);
                     c_last_row[k] =
@@ -318,15 +318,15 @@ pub fn silk_burg_modified_fix(
                         (x[x_ptr + subfr_length - n + k] as i32 as u32).wrapping_mul(atmp1 as u32),
                     ) as i32;
                 }
-                tmp1 = -tmp1;
-                tmp2 = -tmp2;
+                tmp1 = tmp1.wrapping_neg();
+                tmp2 = tmp2.wrapping_neg();
                 for k in 0..=n {
                     ca_f[k] =
-                        silk_smlaww(ca_f[k], tmp1, (x[x_ptr + n - k] as i32) << (-rshifts - 1));
+                        silk_smlaww(ca_f[k], tmp1, (x[x_ptr + n - k] as i32).wrapping_shl((-rshifts - 1) as u32));
                     ca_b[k] = silk_smlaww(
                         ca_b[k],
                         tmp2,
-                        (x[x_ptr + subfr_length - n + k - 1] as i32) << (-rshifts - 1),
+                        (x[x_ptr + subfr_length - n + k - 1] as i32).wrapping_shl((-rshifts - 1) as u32),
                     );
                 }
             }
@@ -338,7 +338,7 @@ pub fn silk_burg_modified_fix(
         let mut nrg: i32 = ca_b[0].wrapping_add(ca_f[0]);
         for k in 0..n {
             let atmp_qa = af_qa[k];
-            let lz = (silk_clz32(atmp_qa.abs()) - 1).min(32 - QA);
+            let lz = (silk_clz32(atmp_qa.wrapping_abs()) - 1).min(32 - QA);
             let atmp1 = atmp_qa << lz;
             let shift = 32 - QA - lz;
 
@@ -356,10 +356,10 @@ pub fn silk_burg_modified_fix(
         ca_f[n + 1] = tmp1;
         ca_b[n + 1] = tmp2;
         num = num.wrapping_add(tmp2);
-        num = (-num) << 1;
+        num = num.wrapping_neg().wrapping_shl(1);
 
         let mut rc_q31: i32;
-        if num.abs() < nrg {
+        if num.wrapping_abs() < nrg {
             rc_q31 = silk_div32_varq(num, nrg, 31);
         } else {
             rc_q31 = if num > 0 { i32::MAX } else { i32::MIN };
