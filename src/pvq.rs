@@ -558,7 +558,43 @@ fn pvq_search_n4(x: &[f32], y: &mut [i32], k: i32) {
 
         let vone_i = _mm_set1_epi32(1);
 
-        for _ in 0..k {
+        let mut pulses_left = k;
+
+        // Pre-search by projecting on the pyramid (C vq_sse2.c: K > N>>1 branch).
+        if k > 2 {
+            // sum of |x|
+            let mut t = _mm_add_ps(vabs, _mm_shuffle_ps(vabs, vabs, 0b01001110));
+            t = _mm_add_ps(t, _mm_shuffle_ps(t, t, 0b10110001));
+            let sum = _mm_cvtss_f32(t);
+            // C: if X too small, just replace it with a pulse at 0
+            let sum = if !(sum > 1e-15 && sum < 64.0) {
+                1.0
+            } else {
+                sum
+            };
+            // C uses the _mm_rcp_ps approximation (not exact division)
+            let vrcp = _mm_mul_ps(_mm_set1_ps(k as f32 + 0.8), _mm_rcp_ps(_mm_set1_ps(sum)));
+            let vyi = _mm_cvttps_epi32(_mm_mul_ps(vabs_x, vrcp));
+            vy = vyi;
+            let vyi_f = _mm_cvtepi32_ps(vyi);
+            let vy2 = _mm_add_ps(vyi_f, vyi_f);
+            vy2f = vy2;
+            // xy = dot(x, iy), yy = dot(iy, iy)
+            let vxy4 = _mm_mul_ps(vabs_x, vyi_f);
+            let vyy4 = _mm_mul_ps(vyi_f, vyi_f);
+            let mut t = _mm_add_ps(vxy4, _mm_shuffle_ps(vxy4, vxy4, 0b01001110));
+            t = _mm_add_ps(t, _mm_shuffle_ps(t, t, 0b10110001));
+            xy = _mm_cvtss_f32(t);
+            let mut t = _mm_add_ps(vyy4, _mm_shuffle_ps(vyy4, vyy4, 0b01001110));
+            t = _mm_add_ps(t, _mm_shuffle_ps(t, t, 0b10110001));
+            yy = _mm_cvtss_f32(t);
+            // pulses_left -= sum(iy)
+            let mut ps = _mm_add_epi32(vyi, _mm_shuffle_epi32(vyi, 0b01001110));
+            ps = _mm_add_epi32(ps, _mm_shuffle_epi32(ps, 0b10110001));
+            pulses_left -= _mm_cvtsi128_si32(ps);
+        }
+
+        for _ in 0..pulses_left {
             let vxy = _mm_set1_ps(xy);
             let vrxy = _mm_add_ps(vabs_x, vxy);
             let vyy1 = _mm_add_ps(vy2f, _mm_set1_ps(yy + 1.0));
@@ -571,15 +607,16 @@ fn pvq_search_n4(x: &[f32], y: &mut [i32], k: i32) {
             let s3 = _mm_cvtss_f32(_mm_shuffle_ps(vscore, vscore, 0b11_11_11_11));
             let mut best_score = s0;
             let mut best_i: u32 = 0;
-            if s1 > best_score {
+            // C SSE2 keeps the HIGHEST index on ties (pos = max of matching lanes).
+            if s1 >= best_score {
                 best_score = s1;
                 best_i = 1;
             }
-            if s2 > best_score {
+            if s2 >= best_score {
                 best_score = s2;
                 best_i = 2;
             }
-            if s3 > best_score {
+            if s3 >= best_score {
                 best_i = 3;
             }
             let _ = best_score;
@@ -650,17 +687,17 @@ fn pvq_search_n4(x: &[f32], y: &mut [i32], k: i32) {
             let mut bsq = sq0;
             let mut bden = ryy0;
             let mut best_i: u32 = 0;
-            if bden * sq1 > ryy1 * bsq {
+            if bden * sq1 >= ryy1 * bsq {
                 bsq = sq1;
                 bden = ryy1;
                 best_i = 1;
             }
-            if bden * sq2 > ryy2 * bsq {
+            if bden * sq2 >= ryy2 * bsq {
                 bsq = sq2;
                 bden = ryy2;
                 best_i = 2;
             }
-            if bden * sq3 > ryy3 * bsq {
+            if bden * sq3 >= ryy3 * bsq {
                 best_i = 3;
             }
             let _ = bsq;
@@ -1765,8 +1802,8 @@ unsafe fn pvq_search_avx2(x: &[f32], y: &mut [i32], k: i32, n: usize) {
             let vs = _mm256_loadu_ps(scores.as_ptr().add(j));
             let mask = _mm256_movemask_ps(_mm256_cmp_ps(vs, vgmax, _CMP_EQ_OQ)) as u32;
             if mask != 0 {
-                best_id = j + mask.trailing_zeros() as usize;
-                break;
+                // C SSE2 keeps the HIGHEST index on ties (pos = max of lanes).
+                best_id = j + (31 - mask.leading_zeros()) as usize;
             }
             j += 8;
         }

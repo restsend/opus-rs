@@ -145,7 +145,11 @@ impl MdctLookup {
                 xp2 -= 2;
             }
 
-            let loop3_iters = if mid > limit { n4 - mid } else { 0 };
+            // Loop 3 runs from `mid` to `n4` (C: for(;i<N4;i++)). When the
+            // frame is short enough that loop 2 is empty (mid == limit, i.e.
+            // n4 == 2*limit, e.g. 2.5 ms sub-frames at 48 kHz with shift=3),
+            // this still needs n4 - mid pairs.
+            let loop3_iters = n4.saturating_sub(mid);
             let mut wp1_l3 = 0usize;
             let mut wp2_l3 = overlap.saturating_sub(1);
             for _ in 0..loop3_iters {
@@ -979,9 +983,6 @@ mod mdct_tests {
 
         let max0 = output0.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let max1 = output1.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        eprintln!("sub0 max={} sub1 max={}", max0, max1);
-        eprintln!("sub0[60..70]={:?}", &output0[60..70]);
-        eprintln!("sub1[60..70]={:?}", &output1[60..70]);
 
         assert!(max0.abs() < 500.0, "sub0 blowup: {}", max0);
         assert!(max1.abs() < 500.0, "sub1 blowup: {}", max1);

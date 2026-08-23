@@ -39,7 +39,7 @@ libm = { version = "0.2", optional = true, default-features = false }
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
 proptest = "1"
-
+opus = { version = "0.3", default-features = false }
 [[bench]]
 name = "opus_bench"
 harness = false

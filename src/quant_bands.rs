@@ -406,7 +406,9 @@ pub fn quant_fine_energy(
             let mut q = ((error[c * m.nb_ebands + i] + 0.5) * (1 << bits) as f32).floor() as i32;
             q = q.max(0).min((1 << bits) - 1);
             enc.enc_bits(q as u32, bits as u32);
-            let offset = (q as f32 + 0.5) / (1 << bits) as f32 - 0.5;
+            // C (quant_bands.c): offset = (q+.5)*(1<<(14-bits))*(1/16384) - .5;
+            // (multiply-then-scale, not /2^bits; matters for byte-exactness)
+            let offset = (q as f32 + 0.5) * (1i32 << (14 - bits)) as f32 * (1.0 / 16384.0) - 0.5;
             old_e_bands[c * m.nb_ebands + i] += offset;
             error[c * m.nb_ebands + i] -= offset;
         }
@@ -429,7 +431,9 @@ pub fn unquant_fine_energy(
                 continue;
             }
             let q = dec.dec_bits(bits as u32);
-            let offset = (q as f32 + 0.5) / (1 << bits) as f32 - 0.5;
+            // C (quant_bands.c): offset = (q+.5)*(1<<(14-bits))*(1/16384) - .5;
+            // (multiply-then-scale, not /2^bits; matters for byte-exactness)
+            let offset = (q as f32 + 0.5) * (1i32 << (14 - bits)) as f32 * (1.0 / 16384.0) - 0.5;
             old_e_bands[c * m.nb_ebands + i] += offset;
         }
     }

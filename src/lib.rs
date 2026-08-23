@@ -23,7 +23,7 @@ pub mod silk;
 pub use silk::{SilkResampler, SilkResamplerDown1_3, SilkResamplerDown1_6};
 
 pub use celt::{CeltDecoder, CeltEncoder};
-use hp_cutoff::hp_cutoff;
+use hp_cutoff::{dc_reject_float, hp_cutoff, hp_cutoff_float};
 use range_coder::RangeCoder;
 use silk::control_codec::silk_control_encoder;
 use silk::enc_api::silk_encode;
@@ -57,6 +57,12 @@ const OPUS_PCM_TAIL: usize = 240 * OPUS_MAX_CHANNELS;
 const OPUS_MAX_PACKET_FRAMES: usize = 48;
 /// RFC 6716 §3.1: a single Opus packet carries at most 1276 bytes of data.
 const OPUS_MAX_PACKET_BYTES: usize = 1276;
+/// C `OpusEncoder.delay_buffer[MAX_ENCODER_BUFFER*2]` (480 samples * 2 ch).
+/// Holds the delay-compensation ring feeding the CELT encoder.
+const OPUS_DELAY_BUF: usize = 480 * OPUS_MAX_CHANNELS;
+/// CELT/hybrid input staging cap: `(delay_compensation + frame)*channels`.
+/// Worst case 60 ms stereo @ 48 kHz: (192 + 2880) * 2 = 6144.
+const OPUS_PCM_BUF: usize = (192 + OPUS_MAX_SUBFRAME) * OPUS_MAX_CHANNELS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Application {
@@ -129,6 +135,27 @@ pub struct OpusEncoder {
     buf_celt_input: FixedVec<f32, OPUS_MAX_FRAME>,
     #[cfg(feature = "heap")]
     buf_celt_input: Box<FixedVec<f32, OPUS_MAX_FRAME>>,
+    /// C `delay_buffer[MAX_ENCODER_BUFFER*2]`: delay-compensation ring feeding
+    /// the CELT encoder (see `encoder_buffer` / `delay_compensation`).
+    #[cfg(not(feature = "heap"))]
+    delay_buffer: FixedVec<f32, OPUS_DELAY_BUF>,
+    #[cfg(feature = "heap")]
+    delay_buffer: Box<FixedVec<f32, OPUS_DELAY_BUF>>,
+    /// Interleaved `pcm_buf` staging: `delay prefix + filtered frame` exactly
+    /// like C `opus_encode_frame_native()` builds it before CELT encoding.
+    #[cfg(not(feature = "heap"))]
+    buf_celt_pcm: FixedVec<f32, OPUS_PCM_BUF>,
+    #[cfg(feature = "heap")]
+    buf_celt_pcm: Box<FixedVec<f32, OPUS_PCM_BUF>>,
+    /// C `encoder_buffer` (= Fs/100): samples of ring history kept between
+    /// frames (0 for restricted-latency applications).
+    encoder_buffer: usize,
+    /// C `delay_compensation` (= Fs/250): 4 ms lookahead prefix prepended to
+    /// each CELT frame (0 for restricted-latency applications).
+    delay_compensation: usize,
+    /// Float filter state for `dc_reject_float` / `hp_cutoff_float`
+    /// (C `st->hp_mem[4]`, opus_val32 in the float build).
+    hp_mem_float: [f32; 4],
     down2_state_first: [i32; 2],
     down2_state_second: [i32; 2],
     down2_3_state: [i32; 6],
@@ -399,6 +426,25 @@ impl OpusEncoder {
             buf_celt_input: FixedVec::new(),
             #[cfg(feature = "heap")]
             buf_celt_input: Box::new(FixedVec::new()),
+            #[cfg(not(feature = "heap"))]
+            delay_buffer: FixedVec::from_value(0.0, OPUS_DELAY_BUF),
+            #[cfg(feature = "heap")]
+            delay_buffer: Box::new(FixedVec::from_value(0.0, OPUS_DELAY_BUF)),
+            #[cfg(not(feature = "heap"))]
+            buf_celt_pcm: FixedVec::new(),
+            #[cfg(feature = "heap")]
+            buf_celt_pcm: Box::new(FixedVec::new()),
+            encoder_buffer: if matches!(application, Application::RestrictedLowDelay) {
+                0
+            } else {
+                (sampling_rate / 100) as usize
+            },
+            delay_compensation: if matches!(application, Application::RestrictedLowDelay) {
+                0
+            } else {
+                (sampling_rate / 250) as usize
+            },
+            hp_mem_float: [0.0; 4],
             down2_state_first: [0; 2],
             down2_state_second: [0; 2],
             down2_3_state: [0; 6],
@@ -522,6 +568,25 @@ impl OpusEncoder {
         let init_rc_size = n_bytes - 1;
         self.rc.reset_for_encode(init_rc_size as u32);
 
+        // C opus_encode_frame_native: high-pass cutoff state is updated for ALL
+        // modes (celt_encoder.c:1969-1977); the filtered signal is what feeds
+        // both SILK (hybrid) and CELT. Compute it here so CELT-only frames also
+        // keep `variable_hp_smth2_q15` in sync with libopus.
+        let hp_freq_smth1 = if mode == OpusMode::CeltOnly {
+            silk_lin2log(60) << 8
+        } else {
+            self.silk_enc.s_cmn.variable_hp_smth1_q15
+        };
+
+        const VARIABLE_HP_SMTH_COEF2_Q16: i32 = 984;
+        self.variable_hp_smth2_q15 = silk_smlawb(
+            self.variable_hp_smth2_q15,
+            hp_freq_smth1 - self.variable_hp_smth2_q15,
+            VARIABLE_HP_SMTH_COEF2_Q16,
+        );
+
+        let cutoff_hz = silk_log2lin(silk_rshift(self.variable_hp_smth2_q15, 8));
+
         if mode == OpusMode::SilkOnly || mode == OpusMode::Hybrid {
             let silk_fs_khz = if mode == OpusMode::Hybrid {
                 16
@@ -558,21 +623,6 @@ impl OpusEncoder {
             if self.silk_enc.s_cmn.lbrr_gain_increases == 0 {
                 self.silk_enc.s_cmn.lbrr_gain_increases = 2;
             }
-
-            let hp_freq_smth1 = if mode == OpusMode::CeltOnly {
-                silk_lin2log(60) << 8
-            } else {
-                self.silk_enc.s_cmn.variable_hp_smth1_q15
-            };
-
-            const VARIABLE_HP_SMTH_COEF2_Q16: i32 = 984;
-            self.variable_hp_smth2_q15 = silk_smlawb(
-                self.variable_hp_smth2_q15,
-                hp_freq_smth1 - self.variable_hp_smth2_q15,
-                VARIABLE_HP_SMTH_COEF2_Q16,
-            );
-
-            let cutoff_hz = silk_log2lin(silk_rshift(self.variable_hp_smth2_q15, 8));
 
             let required_size = frame_size * self.channels;
             self.buf_filtered.resize(required_size, 0);
@@ -741,9 +791,12 @@ impl OpusEncoder {
             0
         };
 
-        // libopus parity: adjust nbCompressedBytes for CELT/Hybrid based on tell (opus_encoder.c:1913-1921)
+        // libopus parity: adjust nbCompressedBytes for CELT/Hybrid based on tell (celt_encoder.c:1913-1921)
         // tmp = bitrate*frame_size + tell*Fs; nbCompressed = (tmp+4*Fs)/(8*Fs)
-        if mode != OpusMode::SilkOnly {
+        // This is the CBR branch (vbr==0) in celt_encoder.c; for VBR the encoder
+        // does *not* do this adjustment - it uses the vbr_bound logic instead.
+        // Doing it for VBR would double-shrink and corrupt the budget.
+        if mode != OpusMode::SilkOnly && self.use_cbr {
             let tell = self.rc.tell();
             if tell > 1 {
                 let tmp = self.bitrate_bps as i64 * frame_size as i64 + tell as i64 * self.sampling_rate as i64;
@@ -757,7 +810,6 @@ impl OpusEncoder {
                 }
             }
         }
-
         if mode == OpusMode::CeltOnly || mode == OpusMode::Hybrid {
             self.celt_enc.complexity = self.complexity;
             let start_band = if mode == OpusMode::Hybrid { 17 } else { 0 };
@@ -776,7 +828,81 @@ impl OpusEncoder {
             // libopus: Hybrid VBR is unconstrained (can steal from SILK), CELT-only constrained
             self.celt_enc.set_constrained_vbr(mode == OpusMode::CeltOnly);
 
-            let celt_input: &[f32] = if self.channels == 1 {
+            // Build the CELT input exactly like C `opus_encode_frame_native`:
+            //   pcm_buf = [delay-compensation prefix from ring]
+            //             [dc_reject / hp_cutoff'd current frame]
+            // CELT then reads pcm_buf[0..frame_size*channels] (opus_encoder.c:
+            // 1966-2010, 2493). This delay + filter step is what libopus feeds
+            // its CELT encoder; passing the raw input diverges from 1.6.
+            let celt_input: &[f32] = if self.delay_compensation > 0 {
+                let delay = self.delay_compensation;
+                let ebuf = self.encoder_buffer;
+                let ch = self.channels;
+                let total = (delay + frame_size) * ch;
+                self.buf_celt_pcm.resize(total, 0.0);
+                // 1. delay prefix from the ring (C: OPUS_COPY at 1967)
+                let prefix = delay * ch;
+                let src_start = (ebuf - delay) * ch;
+                self.buf_celt_pcm[..prefix]
+                    .copy_from_slice(&self.delay_buffer[src_start..src_start + prefix]);
+                // 2. filter current frame into pcm_buf[delay..] (C: 2002-2010)
+                let out = &mut self.buf_celt_pcm[prefix..];
+                if self.application == Application::Voip {
+                    hp_cutoff_float(
+                        input,
+                        cutoff_hz,
+                        out,
+                        &mut self.hp_mem_float,
+                        frame_size,
+                        ch,
+                        self.sampling_rate,
+                    );
+                } else {
+                    dc_reject_float(
+                        input,
+                        3,
+                        out,
+                        &mut self.hp_mem_float,
+                        frame_size,
+                        ch,
+                        self.sampling_rate,
+                    );
+                }
+                // 3. float NaN guard (C: 2016-2028)
+                let mut sum = 0.0f32;
+                for &v in &self.buf_celt_pcm[prefix..] {
+                    sum += v * v;
+                }
+                if !(sum < 1e9) || sum.is_nan() {
+                    self.buf_celt_pcm[prefix..].fill(0.0);
+                    self.hp_mem_float = [0.0; 4];
+                }
+                // 4. delay ring update (C: 2300-2312)
+                let keep = ebuf as i64 - (frame_size as i64 + delay as i64);
+                if keep > 0 {
+                    let keep = keep as usize;
+                    self.delay_buffer
+                        .copy_within(ch * frame_size..ch * (frame_size + keep), 0);
+                    let dst = ch * keep;
+                    let n = (frame_size + delay) * ch;
+                    self.delay_buffer[dst..dst + n].copy_from_slice(&self.buf_celt_pcm[..n]);
+                } else {
+                    let n = ebuf * ch;
+                    let src = (frame_size + delay - ebuf) * ch;
+                    self.delay_buffer[..n]
+                        .copy_from_slice(&self.buf_celt_pcm[src..src + n]);
+                }
+                // 5. deinterleave pcm_buf[0..frame_size*ch] (interleaved) to
+                //    channel-major for the Rust CELT encoder.
+                let n = frame_size * ch;
+                self.buf_celt_input.resize(n, 0.0);
+                for i in 0..frame_size {
+                    for c in 0..ch {
+                        self.buf_celt_input[c * frame_size + i] = self.buf_celt_pcm[i * ch + c];
+                    }
+                }
+                state_ref(&self.buf_celt_input)
+            } else if self.channels == 1 {
                 input
             } else {
                 let n = frame_size * self.channels;

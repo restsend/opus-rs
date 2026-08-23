@@ -47,7 +47,9 @@ fn make_complex_stereo(n_frames: usize) -> Vec<f32> {
 
 fn snr_db(input: &[f32], output: &[f32], delay_lo: i32, delay_hi: i32) -> f64 {
     // Measure over a late window (past the encoder+decoder algorithmic delay)
-    // and search the delay band around the known 240-sample (5 ms) delay.
+    // and search the delay band around the C-faithful 624-sample (13 ms) delay:
+    // the CELT lookahead (240) plus the dc_reject/hp delay ring (192) and the
+    // remaining opus-layer delay_compensation (~192).
     let n_active = input.len().min(24000);
     let active = (input.len() - n_active)..input.len();
     let mut best = f64::NEG_INFINITY;
@@ -225,14 +227,14 @@ fn high_bitrate_interop() {
             let packets = encode_frames(&mut enc, pcm);
 
             let crate_out = decode_with_crate(&packets);
-            let crate_snr = snr_db(pcm, &crate_out, 0, 500);
+            let crate_snr = snr_db(pcm, &crate_out, 0, 700);
 
             let mut libopus_snr = f64::NEG_INFINITY;
             let ffmpeg_available;
             match decode_with_ffmpeg(&packets) {
                 Some(ff_out) => {
                     ffmpeg_available = true;
-                    libopus_snr = snr_db(pcm, &ff_out, 0, 500);
+                    libopus_snr = snr_db(pcm, &ff_out, 0, 700);
                 }
                 None => {
                     ffmpeg_available = false;

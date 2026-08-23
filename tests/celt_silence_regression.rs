@@ -241,7 +241,9 @@ fn audio_to_silence_to_audio_transition() {
     };
     let zero_frame = vec![0.0f32; FRAME_SIZE * 2];
     let n_sine = 3;
-    let n_zero = 4;
+    let n_zero = 35; // CELT-only silence shrinks only after the dc_reject ring residue
+                    // (from the previous frame's signal) decays below lsb_depth —
+                    // ~31 zero frames at 48 kHz, matching libopus 1.6.
     let n_sine2 = 3;
     let total = n_sine + n_zero + n_sine2;
     let mut pcm = Vec::new();
@@ -264,9 +266,21 @@ fn audio_to_silence_to_audio_transition() {
         let n = enc.encode(chunk, FRAME_SIZE, &mut out).unwrap();
         packets.push(out[..n].to_vec());
     }
-    // Check packet sequence: first sine large, first zero after sine should be large (not silence due to overlap), subsequent zeros should be small
+    // Check packet sequence: the first zero after sine stays large (the delay-ring
+    // prefix still carries the previous frame's dc_reject residue, so the CELT
+    // encoder does not see silence yet — matching libopus 1.6). Only after ~31
+    // zero frames does the residue fall below the lsb_depth threshold and the
+    // packet shrink to a DTX-sized payload.
     assert!(packets[n_sine].len() > 100, "first zero after sine should not be immediate silence due to overlap, got {}", packets[n_sine].len());
-    assert!(packets[n_sine+1].len() <= 10, "second zero should be silence shrunk, got {}", packets[n_sine+1].len());
+    assert!(packets[n_sine + 1].len() > 100, "second zero should also be large (dc_reject ring residue), got {}", packets[n_sine + 1].len());
+    let shrunk = packets
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.len() <= 10)
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>();
+    assert!(!shrunk.is_empty(), "long silence never shrunk; sizes {:?}", packets.iter().map(|p| p.len()).collect::<Vec<_>>());
+    assert!(shrunk[0] > n_sine, "silence shrunk too early at frame {}", shrunk[0]);
     // Decode self
     let mut dec = OpusDecoder::new(SAMPLING_RATE, 2).unwrap();
     let mut decoded_all = Vec::new();
