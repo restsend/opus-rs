@@ -9,7 +9,7 @@
 //! Every `(n, k)` in the supported domain is checked against an exact u128
 //! recurrence; out-of-domain results must saturate to `u32::MAX`.
 
-use opus_rs::pvq::{celt_pvq_u, celt_pvq_v, ncwrs, MAX_PVQ_K};
+use opus_rs::pvq::{MAX_PVQ_K, celt_pvq_u, celt_pvq_v, ncwrs};
 
 /// Exact U(N,K) via the recurrence, computed in u128.
 fn build_u_table(n_max: usize, k_max: usize) -> Vec<Vec<u128>> {

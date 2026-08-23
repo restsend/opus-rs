@@ -25,9 +25,13 @@ fn test_48k_hybrid_quality_audio() {
         let s = frame * frame_size;
         let e = s + frame_size;
         let mut encoded = vec![0u8; 512];
-        let len = encoder.encode(&input[s..e], frame_size, &mut encoded).unwrap();
+        let len = encoder
+            .encode(&input[s..e], frame_size, &mut encoded)
+            .unwrap();
         encoded.truncate(len);
-        decoder.decode(&encoded, frame_size, &mut output[s..e]).unwrap();
+        decoder
+            .decode(&encoded, frame_size, &mut output[s..e])
+            .unwrap();
     }
 
     let skip = frame_size * 2;
@@ -35,18 +39,26 @@ fn test_48k_hybrid_quality_audio() {
     let best_delay = (0..max_search)
         .map(|d| {
             let corr: f64 = input[skip..total_samples - d]
-                .iter().zip(output[skip + d..].iter())
-                .map(|(a, b)| *a as f64 * *b as f64).sum();
+                .iter()
+                .zip(output[skip + d..].iter())
+                .map(|(a, b)| *a as f64 * *b as f64)
+                .sum();
             (d, corr)
         })
         .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-        .map(|(d, _)| d).unwrap_or(0);
+        .map(|(d, _)| d)
+        .unwrap_or(0);
 
     let n = total_samples - skip - best_delay;
-    let input_energy: f64 = input[skip..skip + n].iter().map(|x| (*x as f64).powi(2)).sum();
+    let input_energy: f64 = input[skip..skip + n]
+        .iter()
+        .map(|x| (*x as f64).powi(2))
+        .sum();
     let error_energy: f64 = input[skip..skip + n]
-        .iter().zip(output[skip + best_delay..skip + best_delay + n].iter())
-        .map(|(a, b)| ((*a - *b) as f64).powi(2)).sum();
+        .iter()
+        .zip(output[skip + best_delay..skip + best_delay + n].iter())
+        .map(|(a, b)| ((*a - *b) as f64).powi(2))
+        .sum();
 
     let snr = 10.0 * (input_energy / error_energy).log10();
     println!("Audio mode SNR: {:.2} dB", snr);

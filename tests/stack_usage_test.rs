@@ -95,4 +95,3 @@ fn construction_and_roundtrip_fit_in_768kb_stack() {
         "constructing + encoding + decoding overflowed a 768 KiB stack"
     );
 }
-

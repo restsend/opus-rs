@@ -96,7 +96,8 @@ impl MdctLookup {
         let mut f2_buf = [MaybeUninit::<KissCpx>::uninit(); MAX_N4];
 
         let f = unsafe { core::slice::from_raw_parts_mut(f_buf.as_mut_ptr() as *mut f32, n2) };
-        let f2 = unsafe { core::slice::from_raw_parts_mut(f2_buf.as_mut_ptr() as *mut KissCpx, n4) };
+        let f2 =
+            unsafe { core::slice::from_raw_parts_mut(f2_buf.as_mut_ptr() as *mut KissCpx, n4) };
 
         assert!(input.len() >= n2 + overlap2);
         assert!(window.len() >= overlap);
@@ -276,7 +277,8 @@ impl MdctLookup {
 
         let mut f2_buf = [MaybeUninit::<KissCpx>::uninit(); MAX_N4];
 
-        let f2 = unsafe { core::slice::from_raw_parts_mut(f2_buf.as_mut_ptr() as *mut KissCpx, n4) };
+        let f2 =
+            unsafe { core::slice::from_raw_parts_mut(f2_buf.as_mut_ptr() as *mut KissCpx, n4) };
 
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {

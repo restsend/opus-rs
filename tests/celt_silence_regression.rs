@@ -97,10 +97,23 @@ fn decode_with_ffmpeg(packets: &[Vec<u8>]) -> Option<Vec<f32>> {
     let ogg = mux_ogg(packets);
     let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let tid = format!("{:?}", std::thread::current().id());
-    let tid_clean: String = tid.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
+    let tid_clean: String = tid
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect();
     let dir = std::env::temp_dir();
-    let ogg_path = dir.join(format!("opusrs_{}_{}_{}.ogg", std::process::id(), tid_clean, id));
-    let raw_path = dir.join(format!("opusrs_{}_{}_{}.raw", std::process::id(), tid_clean, id));
+    let ogg_path = dir.join(format!(
+        "opusrs_{}_{}_{}.ogg",
+        std::process::id(),
+        tid_clean,
+        id
+    ));
+    let raw_path = dir.join(format!(
+        "opusrs_{}_{}_{}.raw",
+        std::process::id(),
+        tid_clean,
+        id
+    ));
     std::fs::write(&ogg_path, &ogg).ok()?;
     let out = Command::new("ffmpeg")
         .args(["-v", "error", "-y", "-i"])
@@ -172,11 +185,7 @@ fn assert_near_silence(decoded: &[f32], start_frame: usize, n_frames: usize, cha
     );
     // energy check
     let energy: f32 = slice.iter().map(|x| x * x).sum::<f32>() / slice.len().max(1) as f32;
-    assert!(
-        energy < 1e-4,
-        "silence region energy {} too high",
-        energy
-    );
+    assert!(energy < 1e-4, "silence region energy {} too high", energy);
 }
 
 #[test]
@@ -190,7 +199,9 @@ fn celt_only_zero_pcm_cross_decode() {
     let mut packets = Vec::new();
     for f in 0..5 {
         let chunk = &zero[f * FRAME_SIZE * 2..(f + 1) * FRAME_SIZE * 2];
-        let n = enc.encode(chunk, FRAME_SIZE, &mut out).expect("encode zero");
+        let n = enc
+            .encode(chunk, FRAME_SIZE, &mut out)
+            .expect("encode zero");
         assert!(n >= 3, "packet too small");
         assert!(n <= 1500);
         // first byte is TOC, should be 0xfc for CELT-only stereo 20ms
@@ -201,9 +212,14 @@ fn celt_only_zero_pcm_cross_decode() {
     let mut dec = OpusDecoder::new(SAMPLING_RATE, 2).unwrap();
     for p in &packets {
         let mut out_pcm = vec![0.0f32; FRAME_SIZE * 2];
-        dec.decode(p, FRAME_SIZE, &mut out_pcm).expect("self decode");
+        dec.decode(p, FRAME_SIZE, &mut out_pcm)
+            .expect("self decode");
         assert!(is_finite_all(&out_pcm));
-        assert!(max_abs(&out_pcm) < 0.05, "self decode not silent {}", max_abs(&out_pcm));
+        assert!(
+            max_abs(&out_pcm) < 0.05,
+            "self decode not silent {}",
+            max_abs(&out_pcm)
+        );
     }
     // Cross-decode via ffmpeg/libopus if available
     if ffmpeg_available() {
@@ -216,7 +232,11 @@ fn celt_only_zero_pcm_cross_decode() {
             // Packet size check: VBR silence should be minimal (3 bytes) after first frame? First frame after silence may be 3 bytes too (since no overlap)
             // At least one packet should be minimal for true silence
             let has_small = packets.iter().any(|p| p.len() <= 10);
-            assert!(has_small, "VBR silence did not shrink, packets {:?}", packets.iter().map(|p| p.len()).collect::<Vec<_>>());
+            assert!(
+                has_small,
+                "VBR silence did not shrink, packets {:?}",
+                packets.iter().map(|p| p.len()).collect::<Vec<_>>()
+            );
         } else {
             eprintln!("ffmpeg decode failed, skipping cross asserts");
         }
@@ -242,8 +262,8 @@ fn audio_to_silence_to_audio_transition() {
     let zero_frame = vec![0.0f32; FRAME_SIZE * 2];
     let n_sine = 3;
     let n_zero = 35; // CELT-only silence shrinks only after the dc_reject ring residue
-                    // (from the previous frame's signal) decays below lsb_depth —
-                    // ~31 zero frames at 48 kHz, matching libopus 1.6.
+    // (from the previous frame's signal) decays below lsb_depth —
+    // ~31 zero frames at 48 kHz, matching libopus 1.6.
     let n_sine2 = 3;
     let total = n_sine + n_zero + n_sine2;
     let mut pcm = Vec::new();
@@ -271,16 +291,32 @@ fn audio_to_silence_to_audio_transition() {
     // encoder does not see silence yet — matching libopus 1.6). Only after ~31
     // zero frames does the residue fall below the lsb_depth threshold and the
     // packet shrink to a DTX-sized payload.
-    assert!(packets[n_sine].len() > 100, "first zero after sine should not be immediate silence due to overlap, got {}", packets[n_sine].len());
-    assert!(packets[n_sine + 1].len() > 100, "second zero should also be large (dc_reject ring residue), got {}", packets[n_sine + 1].len());
+    assert!(
+        packets[n_sine].len() > 100,
+        "first zero after sine should not be immediate silence due to overlap, got {}",
+        packets[n_sine].len()
+    );
+    assert!(
+        packets[n_sine + 1].len() > 100,
+        "second zero should also be large (dc_reject ring residue), got {}",
+        packets[n_sine + 1].len()
+    );
     let shrunk = packets
         .iter()
         .enumerate()
         .filter(|(_, p)| p.len() <= 10)
         .map(|(i, _)| i)
         .collect::<Vec<_>>();
-    assert!(!shrunk.is_empty(), "long silence never shrunk; sizes {:?}", packets.iter().map(|p| p.len()).collect::<Vec<_>>());
-    assert!(shrunk[0] > n_sine, "silence shrunk too early at frame {}", shrunk[0]);
+    assert!(
+        !shrunk.is_empty(),
+        "long silence never shrunk; sizes {:?}",
+        packets.iter().map(|p| p.len()).collect::<Vec<_>>()
+    );
+    assert!(
+        shrunk[0] > n_sine,
+        "silence shrunk too early at frame {}",
+        shrunk[0]
+    );
     // Decode self
     let mut dec = OpusDecoder::new(SAMPLING_RATE, 2).unwrap();
     let mut decoded_all = Vec::new();
@@ -290,7 +326,11 @@ fn audio_to_silence_to_audio_transition() {
         decoded_all.extend(out_pcm);
     }
     assert!(is_finite_all(&decoded_all));
-    assert!(max_abs(&decoded_all) < 2.0, "burst {}", max_abs(&decoded_all));
+    assert!(
+        max_abs(&decoded_all) < 2.0,
+        "burst {}",
+        max_abs(&decoded_all)
+    );
     if ffmpeg_available() {
         if let Some(ff) = decode_with_ffmpeg(&packets) {
             assert!(is_finite_all(&ff));
@@ -325,19 +365,33 @@ fn repeated_silence_no_burst() {
         // self decode
         let mut dec = OpusDecoder::new(SAMPLING_RATE, 2).unwrap();
         for p in &packets {
-            let mut o = vec![0.0f32; FRAME_SIZE*2];
+            let mut o = vec![0.0f32; FRAME_SIZE * 2];
             dec.decode(p, FRAME_SIZE, &mut o).unwrap();
             assert!(is_finite_all(&o));
-            assert!(max_abs(&o) < 0.05, "repeated silence self decode burst {}", max_abs(&o));
+            assert!(
+                max_abs(&o) < 0.05,
+                "repeated silence self decode burst {}",
+                max_abs(&o)
+            );
         }
         if ffmpeg_available() {
-            if let Some(ff)=decode_with_ffmpeg(&packets) {
+            if let Some(ff) = decode_with_ffmpeg(&packets) {
                 assert!(is_finite_all(&ff));
                 let m = max_abs(&ff);
-                assert!(m < 0.1, "ffmpeg repeated silence burst {} for {} frames", m, n_frames);
+                assert!(
+                    m < 0.1,
+                    "ffmpeg repeated silence burst {} for {} frames",
+                    m,
+                    n_frames
+                );
                 // Also check packets are all small for VBR (except maybe first if overlap? But all zero from start => all small)
-                for (i,p) in packets.iter().enumerate(){
-                    assert!(p.len()<=10, "packet {} not shrunk for repeated silence, len {}", i, p.len());
+                for (i, p) in packets.iter().enumerate() {
+                    assert!(
+                        p.len() <= 10,
+                        "packet {} not shrunk for repeated silence, len {}",
+                        i,
+                        p.len()
+                    );
                 }
             }
         }
@@ -352,35 +406,48 @@ fn near_silence_threshold() {
     enc.bitrate_bps = 192000;
     let mut out = vec![0u8; 1500];
     // prime with silence to get overlap_max=0
-    let zero = vec![0.0f32; FRAME_SIZE*2];
+    let zero = vec![0.0f32; FRAME_SIZE * 2];
     for _ in 0..3 {
         enc.encode(&zero, FRAME_SIZE, &mut out).unwrap();
     }
     // Values below threshold should be silence (small packet)
-    let below = vec![threshold * 0.5; FRAME_SIZE*2];
+    let below = vec![threshold * 0.5; FRAME_SIZE * 2];
     let n_below = enc.encode(&below, FRAME_SIZE, &mut out).unwrap();
     // payload0 should be silence true => first byte after TOC has silence bit set (0xff)
     // For CELT-only, payload byte 0 should be 0xff for silence, 0x7f/0x6f etc for not
     // Check that below-threshold is considered silence (small packet)
-    assert!(n_below <= 10, "below threshold should be silence shrunk, got {}", n_below);
+    assert!(
+        n_below <= 10,
+        "below threshold should be silence shrunk, got {}",
+        n_below
+    );
     // Value above threshold should not be silence
-    let above = vec![threshold * 2.0; FRAME_SIZE*2];
+    let above = vec![threshold * 2.0; FRAME_SIZE * 2];
     // Need fresh encoder primed with silence again? Continue with same encoder but overlap_max now maybe from below packet (still small)
     // The above packet's overlap includes previous below frame's tail (tiny), so still should be non-silence due to above amplitude
     let n_above = enc.encode(&above, FRAME_SIZE, &mut out).unwrap();
     // This should NOT be shrunk (large)
-    assert!(n_above > 100, "above threshold should not be silence, got {}", n_above);
+    assert!(
+        n_above > 100,
+        "above threshold should not be silence, got {}",
+        n_above
+    );
     // Also test exact zero vs tiny: pure zero is silence, tiny below also silence, above not
     // Cross-decode both
     let mut enc2 = OpusEncoder::new(SAMPLING_RATE, 2, Application::Audio).unwrap();
     enc2.bitrate_bps = 192000;
     // encode below and decode
     let mut pkts = Vec::new();
-    for _ in 0..3 { let n=enc2.encode(&zero, FRAME_SIZE, &mut out).unwrap(); pkts.push(out[..n].to_vec()); }
-    let n=enc2.encode(&below, FRAME_SIZE, &mut out).unwrap(); pkts.push(out[..n].to_vec());
-    let n=enc2.encode(&above, FRAME_SIZE, &mut out).unwrap(); pkts.push(out[..n].to_vec());
-    if ffmpeg_available(){
-        if let Some(dec)=decode_with_ffmpeg(&pkts){
+    for _ in 0..3 {
+        let n = enc2.encode(&zero, FRAME_SIZE, &mut out).unwrap();
+        pkts.push(out[..n].to_vec());
+    }
+    let n = enc2.encode(&below, FRAME_SIZE, &mut out).unwrap();
+    pkts.push(out[..n].to_vec());
+    let n = enc2.encode(&above, FRAME_SIZE, &mut out).unwrap();
+    pkts.push(out[..n].to_vec());
+    if ffmpeg_available() {
+        if let Some(dec) = decode_with_ffmpeg(&pkts) {
             assert!(is_finite_all(&dec));
             let m = max_abs(&dec);
             assert!(m < 1.0, "near silence ffmpeg burst {}", m);
@@ -390,29 +457,42 @@ fn near_silence_threshold() {
 
 #[test]
 fn vbr_shrink_and_cbr_no_shrink() {
-    let zero = vec![0.0f32; FRAME_SIZE*2];
-    let mut out = vec![0u8;1500];
+    let zero = vec![0.0f32; FRAME_SIZE * 2];
+    let mut out = vec![0u8; 1500];
     // VBR (default)
-    let mut enc_vbr = OpusEncoder::new(SAMPLING_RATE,2,Application::Audio).unwrap();
+    let mut enc_vbr = OpusEncoder::new(SAMPLING_RATE, 2, Application::Audio).unwrap();
     enc_vbr.bitrate_bps = 192000;
     enc_vbr.use_cbr = false;
     let n_vbr = enc_vbr.encode(&zero, FRAME_SIZE, &mut out).unwrap();
-    assert!(n_vbr <= 10, "VBR silence should shrink to <=10, got {}", n_vbr);
+    assert!(
+        n_vbr <= 10,
+        "VBR silence should shrink to <=10, got {}",
+        n_vbr
+    );
     // CBR
-    let mut enc_cbr = OpusEncoder::new(SAMPLING_RATE,2,Application::Audio).unwrap();
+    let mut enc_cbr = OpusEncoder::new(SAMPLING_RATE, 2, Application::Audio).unwrap();
     enc_cbr.bitrate_bps = 192000;
     enc_cbr.use_cbr = true;
     let n_cbr = enc_cbr.encode(&zero, FRAME_SIZE, &mut out).unwrap();
-    assert!(n_cbr >= 400, "CBR silence should stay large (no VBR shrink), got {}", n_cbr);
+    assert!(
+        n_cbr >= 400,
+        "CBR silence should stay large (no VBR shrink), got {}",
+        n_cbr
+    );
     // Both should have silence bit true (payload0 == 0xff) regardless of size
-    assert_eq!(out[1], 0xff, "CBR silence bit not true, payload0 {:02x}", out[1]);
+    assert_eq!(
+        out[1], 0xff,
+        "CBR silence bit not true, payload0 {:02x}",
+        out[1]
+    );
     // For VBR, also check payload0 ff
-    let mut enc_vbr2 = OpusEncoder::new(SAMPLING_RATE,2,Application::Audio).unwrap();
+    let mut enc_vbr2 = OpusEncoder::new(SAMPLING_RATE, 2, Application::Audio).unwrap();
     enc_vbr2.bitrate_bps = 192000;
     enc_vbr2.use_cbr = false;
     let n = enc_vbr2.encode(&zero, FRAME_SIZE, &mut out).unwrap();
     assert_eq!(out[1], 0xff, "VBR silence bit not true {:02x}", out[1]);
-    let _=n_vbr; let _=n;
+    let _ = n_vbr;
+    let _ = n;
 }
 
 #[test]
@@ -422,19 +502,23 @@ fn hybrid_zero_sanity() {
     let mut enc = OpusEncoder::new(SAMPLING_RATE, 2, Application::Audio).unwrap();
     enc.bitrate_bps = 32000; // low enough to force Hybrid? Check encoder logic
     // Ensure mode is Hybrid by checking TOC? TOC for Hybrid has different config.
-    let zero = vec![0.0f32; FRAME_SIZE*2];
-    let mut out = vec![0u8;1500];
+    let zero = vec![0.0f32; FRAME_SIZE * 2];
+    let mut out = vec![0u8; 1500];
     let n = enc.encode(&zero, FRAME_SIZE, &mut out).unwrap();
     // Hybrid packets have start_band 17, silence not signaled, packet should be not minimal 3 bytes but larger
     // But should still decode to near silence without burst
     let mut dec = OpusDecoder::new(SAMPLING_RATE, 2).unwrap();
-    let mut o = vec![0.0f32; FRAME_SIZE*2];
+    let mut o = vec![0.0f32; FRAME_SIZE * 2];
     dec.decode(&out[..n], FRAME_SIZE, &mut o).unwrap();
     assert!(is_finite_all(&o));
     // For hybrid silence, decoded may be near silent but not necessarily zero; allow <0.1
-    assert!(max_abs(&o) < 0.2, "hybrid zero decode not silent {}", max_abs(&o));
-    if ffmpeg_available(){
-        if let Some(ff)=decode_with_ffmpeg(&vec![out[..n].to_vec()]){
+    assert!(
+        max_abs(&o) < 0.2,
+        "hybrid zero decode not silent {}",
+        max_abs(&o)
+    );
+    if ffmpeg_available() {
+        if let Some(ff) = decode_with_ffmpeg(&vec![out[..n].to_vec()]) {
             assert!(is_finite_all(&ff));
             assert!(max_abs(&ff) < 0.5, "hybrid ffmpeg burst {}", max_abs(&ff));
         }
@@ -449,25 +533,33 @@ fn known_bad_pattern_not_emitted_for_true_silence() {
     let mut enc = OpusEncoder::new(SAMPLING_RATE, 2, Application::Audio).unwrap();
     enc.bitrate_bps = 192000;
     enc.use_cbr = false;
-    let zero = vec![0.0f32; FRAME_SIZE*2];
-    let mut out = vec![0u8;1500];
+    let zero = vec![0.0f32; FRAME_SIZE * 2];
+    let mut out = vec![0u8; 1500];
     // Encode enough frames to get into stable silence (account for overlap)
-    for _ in 0..5{
+    for _ in 0..5 {
         enc.encode(&zero, FRAME_SIZE, &mut out).unwrap();
     }
     let n = enc.encode(&zero, FRAME_SIZE, &mut out).unwrap();
     assert!(n <= 10, "stable silence should be small");
     // Check not matching bad pattern
-    let is_bad = out[0]==0xfc && n>=3 && out[1]==0x7f && out[2]==0xfe;
-    assert!(!is_bad, "emitted known bad pattern fc 7f fe for true silence, packet {:02x?}", &out[..n.min(5)]);
+    let is_bad = out[0] == 0xfc && n >= 3 && out[1] == 0x7f && out[2] == 0xfe;
+    assert!(
+        !is_bad,
+        "emitted known bad pattern fc 7f fe for true silence, packet {:02x?}",
+        &out[..n.min(5)]
+    );
     // More generally, for true silence, silence bit must be true => payload0 high bit set
     // For CELT-only, payload0's high bit is silence? With logp 15, the bit's encoding influences first byte's top bits?
     // Simpler: for stable silence, payload[1] should be 0xff (since silence true and minimal packet)
-    assert_eq!(out[1], 0xff, "true silence should have payload 0xff, got {:02x}", out[1]);
+    assert_eq!(
+        out[1], 0xff,
+        "true silence should have payload 0xff, got {:02x}",
+        out[1]
+    );
     // Cross-decode to ensure silence
-    if ffmpeg_available(){
+    if ffmpeg_available() {
         let pkt = vec![out[..n].to_vec()];
-        if let Some(dec)=decode_with_ffmpeg(&pkt){
+        if let Some(dec) = decode_with_ffmpeg(&pkt) {
             let m = max_abs(&dec);
             assert!(m < 0.05, "bad silence decoded to burst {}", m);
         }

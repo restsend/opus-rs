@@ -281,10 +281,15 @@ pub fn silk_burg_modified_fix(
         if rshifts > -2 {
             for s in 0..nb_subfr {
                 let x_ptr = s * subfr_length;
-                let x1 = (x[x_ptr + n] as i32).wrapping_shl((16 - rshifts) as u32).wrapping_neg();
-                let x2 = (x[x_ptr + subfr_length - n - 1] as i32).wrapping_shl((16 - rshifts) as u32).wrapping_neg();
+                let x1 = (x[x_ptr + n] as i32)
+                    .wrapping_shl((16 - rshifts) as u32)
+                    .wrapping_neg();
+                let x2 = (x[x_ptr + subfr_length - n - 1] as i32)
+                    .wrapping_shl((16 - rshifts) as u32)
+                    .wrapping_neg();
                 let mut tmp1 = (x[x_ptr + n] as i32).wrapping_shl((QA - 16) as u32);
-                let mut tmp2 = (x[x_ptr + subfr_length - n - 1] as i32).wrapping_shl((QA - 16) as u32);
+                let mut tmp2 =
+                    (x[x_ptr + subfr_length - n - 1] as i32).wrapping_shl((QA - 16) as u32);
                 for k in 0..n {
                     c_first_row[k] = silk_smlawb(c_first_row[k], x1, x[x_ptr + n - k - 1] as i32);
                     c_last_row[k] =
@@ -304,8 +309,12 @@ pub fn silk_burg_modified_fix(
         } else {
             for s in 0..nb_subfr {
                 let x_ptr = s * subfr_length;
-                let x1 = (x[x_ptr + n] as i32).wrapping_shl((-rshifts) as u32).wrapping_neg();
-                let x2 = (x[x_ptr + subfr_length - n - 1] as i32).wrapping_shl((-rshifts) as u32).wrapping_neg();
+                let x1 = (x[x_ptr + n] as i32)
+                    .wrapping_shl((-rshifts) as u32)
+                    .wrapping_neg();
+                let x2 = (x[x_ptr + subfr_length - n - 1] as i32)
+                    .wrapping_shl((-rshifts) as u32)
+                    .wrapping_neg();
                 let mut tmp1 = (x[x_ptr + n] as i32).wrapping_shl(17);
                 let mut tmp2 = (x[x_ptr + subfr_length - n - 1] as i32).wrapping_shl(17);
                 for k in 0..n {
@@ -324,12 +333,16 @@ pub fn silk_burg_modified_fix(
                 tmp1 = tmp1.wrapping_neg();
                 tmp2 = tmp2.wrapping_neg();
                 for k in 0..=n {
-                    ca_f[k] =
-                        silk_smlaww(ca_f[k], tmp1, (x[x_ptr + n - k] as i32).wrapping_shl((-rshifts - 1) as u32));
+                    ca_f[k] = silk_smlaww(
+                        ca_f[k],
+                        tmp1,
+                        (x[x_ptr + n - k] as i32).wrapping_shl((-rshifts - 1) as u32),
+                    );
                     ca_b[k] = silk_smlaww(
                         ca_b[k],
                         tmp2,
-                        (x[x_ptr + subfr_length - n + k - 1] as i32).wrapping_shl((-rshifts - 1) as u32),
+                        (x[x_ptr + subfr_length - n + k - 1] as i32)
+                            .wrapping_shl((-rshifts - 1) as u32),
                     );
                 }
             }

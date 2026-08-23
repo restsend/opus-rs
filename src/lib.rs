@@ -22,6 +22,7 @@ pub mod silk;
 
 pub use silk::{SilkResampler, SilkResamplerDown1_3, SilkResamplerDown1_6};
 
+use crate::fixedvec::FixedVec;
 pub use celt::{CeltDecoder, CeltEncoder};
 use hp_cutoff::{dc_reject_float, hp_cutoff, hp_cutoff_float};
 use range_coder::RangeCoder;
@@ -33,7 +34,6 @@ use silk::log2lin::silk_log2lin;
 use silk::macros::*;
 use silk::resampler::{silk_resampler_down2, silk_resampler_down2_3};
 use silk::structs::SilkEncoderState;
-use crate::fixedvec::FixedVec;
 
 // --- Heap-free buffer capacity constants (worst case: 2 channels). ---
 const OPUS_MAX_CHANNELS: usize = 2;
@@ -799,9 +799,14 @@ impl OpusEncoder {
         if mode != OpusMode::SilkOnly && self.use_cbr {
             let tell = self.rc.tell();
             if tell > 1 {
-                let tmp = self.bitrate_bps as i64 * frame_size as i64 + tell as i64 * self.sampling_rate as i64;
-                let adjusted = ((tmp + 4 * self.sampling_rate as i64) / (8 * self.sampling_rate as i64)) as usize;
-                let new_n = adjusted.min(max_data_bytes).max(1).min(OPUS_MAX_PACKET_BYTES);
+                let tmp = self.bitrate_bps as i64 * frame_size as i64
+                    + tell as i64 * self.sampling_rate as i64;
+                let adjusted = ((tmp + 4 * self.sampling_rate as i64)
+                    / (8 * self.sampling_rate as i64)) as usize;
+                let new_n = adjusted
+                    .min(max_data_bytes)
+                    .max(1)
+                    .min(OPUS_MAX_PACKET_BYTES);
                 if new_n < n_bytes {
                     n_bytes = new_n;
                     // shrink range coder to new size (keep SILK bytes, trim tail)
@@ -826,7 +831,8 @@ impl OpusEncoder {
             self.celt_enc.set_bitrate(celt_bitrate);
             self.celt_enc.set_vbr(!self.use_cbr);
             // libopus: Hybrid VBR is unconstrained (can steal from SILK), CELT-only constrained
-            self.celt_enc.set_constrained_vbr(mode == OpusMode::CeltOnly);
+            self.celt_enc
+                .set_constrained_vbr(mode == OpusMode::CeltOnly);
 
             // Build the CELT input exactly like C `opus_encode_frame_native`:
             //   pcm_buf = [delay-compensation prefix from ring]
@@ -889,8 +895,7 @@ impl OpusEncoder {
                 } else {
                     let n = ebuf * ch;
                     let src = (frame_size + delay - ebuf) * ch;
-                    self.delay_buffer[..n]
-                        .copy_from_slice(&self.buf_celt_pcm[src..src + n]);
+                    self.delay_buffer[..n].copy_from_slice(&self.buf_celt_pcm[src..src + n]);
                 }
                 // 5. deinterleave pcm_buf[0..frame_size*ch] (interleaved) to
                 //    channel-major for the Rust CELT encoder.
@@ -1241,8 +1246,7 @@ impl OpusDecoder {
                             if cursor >= payload.len() {
                                 return Err("Code 3: unexpected end in VBR header");
                             }
-                            let (frame_len, header_bytes) =
-                                parse_frame_size(&payload[cursor..])?;
+                            let (frame_len, header_bytes) = parse_frame_size(&payload[cursor..])?;
                             cursor += header_bytes;
                             if cursor + frame_len > payload.len() {
                                 return Err("Code 3: frame length exceeds packet");
@@ -1360,12 +1364,10 @@ impl OpusDecoder {
                     let ratio = self.sampling_rate as f64 / internal_rate as f64;
                     let out_len = ((n as f64 * ratio) as usize).min(f5_bridge);
                     let n_us = n as usize;
-                    let mut resampled: FixedVec<i16, OPUS_MAX_FRAME> = FixedVec::from_value(0i16, out_len);
-                    self.silk_resampler.process(
-                        &mut resampled,
-                        &plc_i16[..n_us],
-                        n,
-                    );
+                    let mut resampled: FixedVec<i16, OPUS_MAX_FRAME> =
+                        FixedVec::from_value(0i16, out_len);
+                    self.silk_resampler
+                        .process(&mut resampled, &plc_i16[..n_us], n);
                     for i in 0..out_len {
                         if i < bridge_len / self.channels {
                             for ch in 0..self.channels {
@@ -1411,8 +1413,10 @@ impl OpusDecoder {
                     debug_assert!(pcm_i16_len <= self.w_pcm_i16.len());
 
                     let ret = {
-                        let (silk_dec, pcm_i16) =
-                            (state_mut(&mut self.silk_dec), state_mut(&mut self.w_pcm_i16));
+                        let (silk_dec, pcm_i16) = (
+                            state_mut(&mut self.silk_dec),
+                            state_mut(&mut self.w_pcm_i16),
+                        );
                         let lost_flag = if lost_frame {
                             silk::decode_frame::FLAG_PACKET_LOST
                         } else {
@@ -1563,8 +1567,10 @@ impl OpusDecoder {
                     debug_assert!(pcm_silk_i16_len <= self.w_pcm_i16.len());
 
                     let ret = {
-                        let (silk_dec, pcm_i16) =
-                            (state_mut(&mut self.silk_dec), state_mut(&mut self.w_pcm_i16));
+                        let (silk_dec, pcm_i16) = (
+                            state_mut(&mut self.silk_dec),
+                            state_mut(&mut self.w_pcm_i16),
+                        );
                         let lost_flag = if lost_frame {
                             silk::decode_frame::FLAG_PACKET_LOST
                         } else {
@@ -1628,7 +1634,8 @@ impl OpusDecoder {
                                 );
                                 res.process(
                                     &mut out[out_len..2 * out_len],
-                                    &inp[internal_frame_size..internal_frame_size + decoded_samples],
+                                    &inp[internal_frame_size
+                                        ..internal_frame_size + decoded_samples],
                                     decoded_samples as i32,
                                 );
                             }
@@ -1663,8 +1670,10 @@ impl OpusDecoder {
                     if skip_celt {
                         self.w_celt_out[..silk_out_len].fill(0.0);
                     } else {
-                        let (celt_dec, celt_planar) =
-                            (state_mut(&mut self.celt_dec), state_mut(&mut self.w_celt_planar));
+                        let (celt_dec, celt_planar) = (
+                            state_mut(&mut self.celt_dec),
+                            state_mut(&mut self.w_celt_planar),
+                        );
                         celt_dec.decode_from_range_coder_with_band_range(
                             &mut rc,
                             total_bits,
@@ -1713,7 +1722,8 @@ impl OpusDecoder {
             // First F2_5: pure bridging audio from previous frame's tail.
             output[..f2_5_ch].copy_from_slice(&self.prev_pcm_tail[..f2_5_ch]);
             // Next F2_5: crossfade bridge → new CELT output.
-            let new_mid: FixedVec<f32, OPUS_PCM_TAIL> = FixedVec::from_slice(&output[f2_5_ch..f5_ch]);
+            let new_mid: FixedVec<f32, OPUS_PCM_TAIL> =
+                FixedVec::from_slice(&output[f2_5_ch..f5_ch]);
             smooth_fade(
                 &self.prev_pcm_tail[f2_5_ch..f5_ch],
                 &new_mid,

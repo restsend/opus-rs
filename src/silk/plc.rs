@@ -66,10 +66,8 @@ fn silk_plc_update(ps_dec: &mut SilkDecoderState, ps_dec_ctrl: &SilkDecoderContr
                     ps_dec.s_plc.ltp_coef_q14[i] = ps_dec_ctrl.ltp_coef_q14
                         [(ps_dec.nb_subfr - 1 - j) as usize * LTP_ORDER + i];
                 }
-                ps_dec.s_plc.pitch_l_q8 = silk_lshift(
-                    ps_dec_ctrl.pitch_l[(ps_dec.nb_subfr - 1 - j) as usize],
-                    8,
-                );
+                ps_dec.s_plc.pitch_l_q8 =
+                    silk_lshift(ps_dec_ctrl.pitch_l[(ps_dec.nb_subfr - 1 - j) as usize], 8);
             }
             j += 1;
         }
@@ -82,17 +80,19 @@ fn silk_plc_update(ps_dec: &mut SilkDecoderState, ps_dec_ctrl: &SilkDecoderContr
             let tmp = silk_lshift(V_PITCH_GAIN_START_MIN_Q14, 10);
             let scale_q10 = silk_div32(tmp, ltp_gain_q14.max(1));
             for i in 0..LTP_ORDER {
-                ps_dec.s_plc.ltp_coef_q14[i] =
-                    silk_rshift(silk_smulbb(ps_dec.s_plc.ltp_coef_q14[i] as i32, scale_q10), 10)
-                        as i16;
+                ps_dec.s_plc.ltp_coef_q14[i] = silk_rshift(
+                    silk_smulbb(ps_dec.s_plc.ltp_coef_q14[i] as i32, scale_q10),
+                    10,
+                ) as i16;
             }
         } else if ltp_gain_q14 > V_PITCH_GAIN_START_MAX_Q14 {
             let tmp = silk_lshift(V_PITCH_GAIN_START_MAX_Q14, 14);
             let scale_q14 = silk_div32(tmp, ltp_gain_q14.max(1));
             for i in 0..LTP_ORDER {
-                ps_dec.s_plc.ltp_coef_q14[i] =
-                    silk_rshift(silk_smulbb(ps_dec.s_plc.ltp_coef_q14[i] as i32, scale_q14), 14)
-                        as i16;
+                ps_dec.s_plc.ltp_coef_q14[i] = silk_rshift(
+                    silk_smulbb(ps_dec.s_plc.ltp_coef_q14[i] as i32, scale_q14),
+                    14,
+                ) as i16;
             }
         }
     } else {
@@ -108,8 +108,7 @@ fn silk_plc_update(ps_dec: &mut SilkDecoderState, ps_dec_ctrl: &SilkDecoderContr
 
     // Save last two gains
     for i in 0..2 {
-        ps_dec.s_plc.prev_gain_q16[i] =
-            ps_dec_ctrl.gains_q16[(ps_dec.nb_subfr - 2) as usize + i];
+        ps_dec.s_plc.prev_gain_q16[i] = ps_dec_ctrl.gains_q16[(ps_dec.nb_subfr - 2) as usize + i];
     }
 
     ps_dec.s_plc.subfr_length = ps_dec.subfr_length;
@@ -199,8 +198,13 @@ fn silk_plc_conceal(
     };
 
     // LPC concealment: apply BWE to previous LPC.
-    silk_bwexpander(&mut ps_plc.prev_lpc_q12, ps_dec.lpc_order as usize, BWE_COEF_Q16);
-    a_q12[..ps_dec.lpc_order as usize].copy_from_slice(&ps_plc.prev_lpc_q12[..ps_dec.lpc_order as usize]);
+    silk_bwexpander(
+        &mut ps_plc.prev_lpc_q12,
+        ps_dec.lpc_order as usize,
+        BWE_COEF_Q16,
+    );
+    a_q12[..ps_dec.lpc_order as usize]
+        .copy_from_slice(&ps_plc.prev_lpc_q12[..ps_dec.lpc_order as usize]);
 
     // First lost frame.
     if ps_dec.loss_cnt == 0 {
@@ -217,8 +221,8 @@ fn silk_plc_conceal(
         } else {
             // Reduce random noise for unvoiced frames with high LPC gain.
             let inv_gain_q30 = silk_lpc_inverse_pred_gain(&a_q12, ps_dec.lpc_order as usize);
-            let mut down_scale_q30 = silk_rshift(1 << 30, LOG2_INV_LPC_GAIN_HIGH_THRES)
-                .min(inv_gain_q30);
+            let mut down_scale_q30 =
+                silk_rshift(1 << 30, LOG2_INV_LPC_GAIN_HIGH_THRES).min(inv_gain_q30);
             down_scale_q30 = silk_rshift(1 << 30, LOG2_INV_LPC_GAIN_LOW_THRES).max(down_scale_q30);
             down_scale_q30 = silk_lshift(down_scale_q30, LOG2_INV_LPC_GAIN_HIGH_THRES);
             rand_gain_q15 = silk_rshift(silk_smulwb(down_scale_q30, rand_gain_q15), 14);
@@ -284,8 +288,7 @@ fn silk_plc_conceal(
 
     // LPC synthesis filtering.
     let lpc_mem_start = ltp_mem_length - MAX_LPC_ORDER;
-    s_ltp_q14[lpc_mem_start..lpc_mem_start + MAX_LPC_ORDER]
-        .copy_from_slice(&ps_dec.s_lpc_q14_buf);
+    s_ltp_q14[lpc_mem_start..lpc_mem_start + MAX_LPC_ORDER].copy_from_slice(&ps_dec.s_lpc_q14_buf);
 
     let order = ps_dec.lpc_order as usize;
     for i in 0..frame_length {
@@ -304,7 +307,10 @@ fn silk_plc_conceal(
         );
         // Scale with gain.
         frame[i] = silk_sat16(silk_sat16(silk_rshift_round(
-            silk_smulww(s_ltp_q14[lpc_mem_start + MAX_LPC_ORDER + i], prev_gain_q10[1]),
+            silk_smulww(
+                s_ltp_q14[lpc_mem_start + MAX_LPC_ORDER + i],
+                prev_gain_q10[1],
+            ),
             8,
         ))) as i16;
     }

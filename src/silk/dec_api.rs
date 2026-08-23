@@ -110,7 +110,8 @@ impl SilkDecoder {
             }
             let api_sample_rate = self.channel_state[0].fs_api_hz;
             for n in 0..n_channels {
-                let ret = silk_decoder_set_fs(&mut self.channel_state[n], fs_khz_dec, api_sample_rate);
+                let ret =
+                    silk_decoder_set_fs(&mut self.channel_state[n], fs_khz_dec, api_sample_rate);
                 if ret < 0 {
                     return ret;
                 }
@@ -122,7 +123,10 @@ impl SilkDecoder {
         }
 
         // Initialise second channel and stereo state on mono→stereo transition.
-        if self.n_channels_internal == 2 && self.prev_decode_only_middle == 0 && self.s_stereo.pred_prev_q13 == [0, 0] {
+        if self.n_channels_internal == 2
+            && self.prev_decode_only_middle == 0
+            && self.s_stereo.pred_prev_q13 == [0, 0]
+        {
             // Fresh stereo init: clear stereo state.
             self.s_stereo = StereoDecState::default();
         }
@@ -205,7 +209,11 @@ impl SilkDecoder {
             if lost_flag == FLAG_DECODE_NORMAL {
                 ms_pred_q13 = silk_stereo_decode_pred(range_dec);
                 if self.channel_state[1].vad_flags[frame_index] == 0 {
-                    decode_only_middle = if silk_stereo_decode_mid_only(range_dec) { 1 } else { 0 };
+                    decode_only_middle = if silk_stereo_decode_mid_only(range_dec) {
+                        1
+                    } else {
+                        0
+                    };
                 }
             } else {
                 ms_pred_q13 = self.s_stereo.pred_prev_q13;

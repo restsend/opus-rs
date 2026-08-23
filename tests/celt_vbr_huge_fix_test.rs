@@ -30,9 +30,16 @@ fn vbr_near_silence_192k_not_huge() {
     let mut dec = OpusDecoder::new(48000, channels).unwrap();
     let mut pcm_out = vec![0.0f32; frame_size * channels];
     let decoded = dec.decode(&out[..n], frame_size, &mut pcm_out).unwrap();
-    assert!(pcm_out.iter().all(|x| x.is_finite()), "non-finite after decode");
+    assert!(
+        pcm_out.iter().all(|x| x.is_finite()),
+        "non-finite after decode"
+    );
     let ma = max_abs(&pcm_out);
-    assert!(ma < 10.0, "max_abs {} too large for near-silence (expected <10)", ma);
+    assert!(
+        ma < 10.0,
+        "max_abs {} too large for near-silence (expected <10)",
+        ma
+    );
     assert!(decoded > 0, "decode returned 0");
 }
 
@@ -58,7 +65,11 @@ fn high_bitrate_matrix_48k_stereo() {
         let mut pcm_out = vec![0.0f32; frame_size * channels];
         let res = dec.decode(&out[..n], frame_size, &mut pcm_out);
         assert!(res.is_ok(), "decode failed at {} kbps: {:?}", kbps, res);
-        assert!(pcm_out.iter().all(|x| x.is_finite()), "non-finite at {} kbps", kbps);
+        assert!(
+            pcm_out.iter().all(|x| x.is_finite()),
+            "non-finite at {} kbps",
+            kbps
+        );
         let ma = max_abs(&pcm_out);
         assert!(ma < 10.0, "max_abs {} too large at {} kbps", ma, kbps);
         assert!(ma < 1e5, "huge amplitude at {} kbps", kbps);

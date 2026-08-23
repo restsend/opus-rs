@@ -106,7 +106,7 @@ fn issue_5_silk_60ms_no_panic_wb_mono() {
 fn issue_5_silk_40ms_stereo_no_panic() {
     // TOC 0x3B = SILK WB 40ms stereo code 3... use a simpler code-0 stereo.
     // TOC bits: silk=0, stereo bit 0x04. WB 40ms config: (toc>>3)&0x3 == 2.
-    // 0b0001_0100 = 0x14: silk, WB(2<<5=0x40)... let's just craft: WB=0x40, 40ms config=2 -> (2<<3)=0x10, stereo=0x04 => 0x74? 
+    // 0b0001_0100 = 0x14: silk, WB(2<<5=0x40)... let's just craft: WB=0x40, 40ms config=2 -> (2<<3)=0x10, stereo=0x04 => 0x74?
     // Actually SILK TOC: bits[7:6]=00 silk, bits[5:4]=bw, bits[3:2]=config, bit[1:0]=code.
     // For WB: bits[5:4] with wb mapping; here we rely on frame_duration_ms_from_toc for SILK using bits[4:3].
     // frame_duration uses (toc>>3)&0x3: 40ms -> 2. stereo bit = 0x04.
@@ -130,7 +130,10 @@ fn code1_odd_length_rejected() {
     let mut dec = OpusDecoder::new(48000, 1).unwrap();
     let mut pcm = vec![0.0f32; 1920];
     let res = dec.decode(&pkt, 1920, &mut pcm);
-    assert!(res.is_err(), "odd-length code 1 should be rejected, got {res:?}");
+    assert!(
+        res.is_err(),
+        "odd-length code 1 should be rejected, got {res:?}"
+    );
 }
 
 #[test]
@@ -172,9 +175,15 @@ fn issue_7_decode_returns_actual_sample_count() {
     let mut dec = OpusDecoder::new(48000, 1).unwrap();
     let mut pcm = vec![0.0f32; 1920]; // pass double the needed size
     let n = dec.decode(&pkt, 1920, &mut pcm).unwrap();
-    assert_eq!(n, 960, "should return actual decoded samples (960), got {n}");
+    assert_eq!(
+        n, 960,
+        "should return actual decoded samples (960), got {n}"
+    );
     // tail should be zero-filled
-    assert!(pcm[960..].iter().all(|&x| x == 0.0), "tail should be zero-filled");
+    assert!(
+        pcm[960..].iter().all(|&x| x == 0.0),
+        "tail should be zero-filled"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -194,8 +203,8 @@ fn issue_7_stereo_silk_channels_differ() {
     for i in 0..fs {
         let t = i as f64 / sr as f64;
         let val = (440.0 * t * 2.0 * std::f64::consts::PI).sin() as f32 * 0.3;
-        pcm[i * 2] = val;      // L
-        pcm[i * 2 + 1] = 0.0;  // R (silence)
+        pcm[i * 2] = val; // L
+        pcm[i * 2 + 1] = 0.0; // R (silence)
     }
 
     let mut packet = vec![0u8; 400];
@@ -214,7 +223,10 @@ fn issue_7_stereo_silk_channels_differ() {
         r_max = r_max.max(out[i * 2 + 1].abs());
     }
     // Left should have significant energy.
-    assert!(l_max > 0.01, "Left channel should have energy, got max={l_max}");
+    assert!(
+        l_max > 0.01,
+        "Left channel should have energy, got max={l_max}"
+    );
     // Right should differ significantly from Left (not a mono copy).
     // With M/S stereo and different L/R, R will not be zero but should be
     // substantially different from L.
@@ -232,7 +244,12 @@ fn issue_7_stereo_silk_channels_differ() {
 // helper used by the println-based debug tests
 #[allow(dead_code)]
 fn _dbg() {
-    try_decode("dbg", &[0xbb, 0x03, 0xff, 0xfe, 0xff, 0xfe, 0xff, 0xfe], 2880, 1);
+    try_decode(
+        "dbg",
+        &[0xbb, 0x03, 0xff, 0xfe, 0xff, 0xfe, 0xff, 0xfe],
+        2880,
+        1,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -271,8 +288,7 @@ fn silk_plc_produces_concealment_audio() {
     let lost_pkt = vec![packets[0][0] & 0xFC];
     let mut buf = vec![0.0f32; 640];
     let n = dec.decode(&lost_pkt, fs, &mut buf).unwrap();
-    let rms =
-        (buf[..n].iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / n as f64).sqrt();
+    let rms = (buf[..n].iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / n as f64).sqrt();
     assert!(
         rms > 0.01,
         "SILK PLC should produce concealment audio, got rms={rms}"

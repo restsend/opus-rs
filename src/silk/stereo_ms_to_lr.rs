@@ -56,10 +56,14 @@ pub fn silk_stereo_ms_to_lr(
     let mut pred0_q13 = state.pred_prev_q13[0];
     let mut pred1_q13 = state.pred_prev_q13[1];
     let denom_q16 = silk_div32_16(1 << 16, STEREO_INTERP_LEN_MS * fs_khz);
-    let delta0_q13 =
-        silk_rshift_round(silk_smulbb(pred_q13[0] - state.pred_prev_q13[0], denom_q16), 16);
-    let delta1_q13 =
-        silk_rshift_round(silk_smulbb(pred_q13[1] - state.pred_prev_q13[1], denom_q16), 16);
+    let delta0_q13 = silk_rshift_round(
+        silk_smulbb(pred_q13[0] - state.pred_prev_q13[0], denom_q16),
+        16,
+    );
+    let delta1_q13 = silk_rshift_round(
+        silk_smulbb(pred_q13[1] - state.pred_prev_q13[1], denom_q16),
+        16,
+    );
 
     let interp_len = (STEREO_INTERP_LEN_MS * fs_khz) as usize;
 

@@ -73,7 +73,10 @@ fn run_diff(label: &str, data: &RefData) {
         match dec.decode(pkt, data.frame_size, &mut buf) {
             Ok(n) => rust_pcm.extend_from_slice(&buf[..n * data.channels]),
             Err(e) => {
-                panic!("{}: decode error on packet (toc={:02x}): {}", label, pkt[0], e);
+                panic!(
+                    "{}: decode error on packet (toc={:02x}): {}",
+                    label, pkt[0], e
+                );
             }
         }
     }
@@ -101,23 +104,38 @@ fn run_diff(label: &str, data: &RefData) {
             let lag = lag as isize;
             let (rs, fs): (&[f32], &[f32]) = if lag >= 0 {
                 let l = lag as usize;
-                if l >= fs_ch { continue; }
+                if l >= fs_ch {
+                    continue;
+                }
                 (&r_frame[l..], &f_frame[..fs_ch - l])
             } else {
                 let l = (-lag) as usize;
-                if l >= fs_ch { continue; }
+                if l >= fs_ch {
+                    continue;
+                }
                 (&r_frame[..fs_ch - l], &f_frame[l..])
             };
             let m = rs.len().min(fs.len());
-            if m < 10 { continue; }
-            let mut ef = 0.0f64; let mut err = 0.0f64;
+            if m < 10 {
+                continue;
+            }
+            let mut ef = 0.0f64;
+            let mut err = 0.0f64;
             for i in 0..m {
-                let r = rs[i] as f64; let f = fs[i] as f64;
-                ef += f * f; err += (r - f) * (r - f);
+                let r = rs[i] as f64;
+                let f = fs[i] as f64;
+                ef += f * f;
+                err += (r - f) * (r - f);
             }
             if ef > 0.0 {
-                let snr = if err > 1e-30 { 10.0 * (ef / err).log10() } else { 999.0 };
-                if snr > best_snr { best_snr = snr; }
+                let snr = if err > 1e-30 {
+                    10.0 * (ef / err).log10()
+                } else {
+                    999.0
+                };
+                if snr > best_snr {
+                    best_snr = snr;
+                }
             }
         }
 
@@ -162,8 +180,14 @@ fn diff_silk_stereo() {
                 for i in 0..n {
                     max_diff = max_diff.max((buf[i * 2] - buf[i * 2 + 1]).abs());
                 }
-                println!("SILK stereo max |L-R| = {:.6} (should be > 0 for M/S)", max_diff);
-                assert!(max_diff > 0.001, "L and R must differ for stereo M/S decode");
+                println!(
+                    "SILK stereo max |L-R| = {:.6} (should be > 0 for M/S)",
+                    max_diff
+                );
+                assert!(
+                    max_diff > 0.001,
+                    "L and R must differ for stereo M/S decode"
+                );
             }
         }
     } else {

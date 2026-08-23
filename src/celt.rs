@@ -45,7 +45,11 @@ fn compute_vbr(
     temporal_vbr: f32,
 ) -> i32 {
     let nb_ebands = mode.nb_ebands as i32;
-    let mut coded_bands = if last_coded_bands != 0 { last_coded_bands } else { nb_ebands };
+    let mut coded_bands = if last_coded_bands != 0 {
+        last_coded_bands
+    } else {
+        nb_ebands
+    };
     coded_bands = coded_bands.clamp(0, nb_ebands);
     let mut coded_bins = mode.e_bands[coded_bands as usize] as i32 * (1 << lm);
     if c == 2 {
@@ -58,7 +62,8 @@ fn compute_vbr(
     }
     if c == 2 {
         let coded_stereo_bands = intensity.min(coded_bands);
-        let coded_stereo_dof = mode.e_bands[coded_stereo_bands as usize] as i32 * (1 << lm) - coded_stereo_bands;
+        let coded_stereo_dof =
+            mode.e_bands[coded_stereo_bands as usize] as i32 * (1 << lm) - coded_stereo_bands;
         let max_frac = (0.8 * coded_stereo_dof as f32) / coded_bins as f32;
         let ss = stereo_saving.min(1.0);
         let adjust = ((ss - 0.1).max(0.0) * coded_stereo_dof as f32 * (1 << BITRES) as f32) as i32;
@@ -77,7 +82,8 @@ fn compute_vbr(
         target = tonal_target;
     }
     if has_surround_mask && !lfe {
-        let surround_target = target + (surround_masking * coded_bins as f32 * (1 << BITRES) as f32) as i32;
+        let surround_target =
+            target + (surround_masking * coded_bins as f32 * (1 << BITRES) as f32) as i32;
         target = (target / 4).max(surround_target);
     }
     // floor depth: only clamp when max_depth is meaningful (>0); stub call passes 0 to avoid spurious 0.665*base
@@ -98,16 +104,24 @@ fn compute_vbr(
     target.min(2 * base_target)
 }
 const EMEANS_F: [f32; 25] = [
-    6.4375, 6.25, 5.75, 5.3125, 5.0625, 4.8125, 4.5, 4.375, 4.875, 4.6875, 4.5625, 4.4375, 4.875, 4.625,
-    4.3125, 4.5, 4.375, 4.625, 4.75, 4.4375, 3.75, 3.75, 3.75, 3.75, 3.75,
+    6.4375, 6.25, 5.75, 5.3125, 5.0625, 4.8125, 4.5, 4.375, 4.875, 4.6875, 4.5625, 4.4375, 4.875,
+    4.625, 4.3125, 4.5, 4.375, 4.625, 4.75, 4.4375, 3.75, 3.75, 3.75, 3.75, 3.75,
 ];
-fn compute_max_depth(mode: &CeltMode, band_log_e: &[f32], nb_ebands: usize, c: usize, end: usize, lsb_depth: i32) -> f32 {
+fn compute_max_depth(
+    mode: &CeltMode,
+    band_log_e: &[f32],
+    nb_ebands: usize,
+    c: usize,
+    end: usize,
+    lsb_depth: i32,
+) -> f32 {
     let mut max_depth: f32 = -31.9;
     for ch in 0..c {
         for i in 0..end {
             let log_n = mode.log_n[i] as f32;
             let e_mean = if i < EMEANS_F.len() { EMEANS_F[i] } else { 0.0 };
-            let noise_floor = 0.0625 * log_n + 0.5 + (9 - lsb_depth) as f32 - e_mean + 0.0062 * ((i + 5) * (i + 5)) as f32;
+            let noise_floor = 0.0625 * log_n + 0.5 + (9 - lsb_depth) as f32 - e_mean
+                + 0.0062 * ((i + 5) * (i + 5)) as f32;
             let v = band_log_e[ch * nb_ebands + i] - noise_floor;
             if v > max_depth {
                 max_depth = v;
@@ -116,10 +130,6 @@ fn compute_max_depth(mode: &CeltMode, band_log_e: &[f32], nb_ebands: usize, c: u
     }
     max_depth
 }
-
-
-
-
 
 // --- Heap-free buffer capacity constants (all sized for the worst case:
 //     2 channels, 48 kHz, max frame). Runtime construction uses smaller logical
@@ -581,8 +591,7 @@ fn tf_analysis(
             cost0 = curr0
                 + importance[i]
                     * (metric[i]
-                        - 2 * TF_SELECT_TABLE[lm as usize]
-                            [4 * (is_transient as usize) + 2 * sel]
+                        - 2 * TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + 2 * sel]
                             as i32)
                         .abs();
             cost1 = curr1
@@ -605,7 +614,8 @@ fn tf_analysis(
     // reconstruct the optimal tf_res (C celt_encoder.c:789-822).
     let sel = tf_select as usize;
     let mut cost0 = importance[0]
-        * (metric[0] - 2 * TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + 2 * sel] as i32)
+        * (metric[0]
+            - 2 * TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + 2 * sel] as i32)
             .abs();
     let mut cost1 = importance[0]
         * (metric[0]
@@ -638,7 +648,9 @@ fn tf_analysis(
 
         cost0 = curr0
             + importance[i]
-                * (metric[i] - 2 * TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + 2 * sel] as i32)
+                * (metric[i]
+                    - 2 * TF_SELECT_TABLE[lm as usize][4 * (is_transient as usize) + 2 * sel]
+                        as i32)
                     .abs();
         cost1 = curr1
             + importance[i]
@@ -649,7 +661,11 @@ fn tf_analysis(
     }
     tf_res[len - 1] = if cost0 < cost1 { 0 } else { 1 };
     for i in (0..len - 1).rev() {
-        tf_res[i] = if tf_res[i + 1] == 1 { path1[i + 1] } else { path0[i + 1] };
+        tf_res[i] = if tf_res[i + 1] == 1 {
+            path1[i + 1]
+        } else {
+            path0[i + 1]
+        };
     }
 
     tf_select
@@ -1315,6 +1331,8 @@ fn comb_filter_inplace(
     }
 }
 
+// 3.1416/3.141593 literals mirror celt_encoder.c; keep them verbatim.
+#[allow(clippy::approx_constant)]
 fn run_prefilter(
     in_buf: &mut [f32],
     prefilter_mem: &mut [f32],
@@ -1779,7 +1797,14 @@ fn tone_lpc(x: &[f32], len: usize, delay: usize, lpc: &mut [f32; 2]) -> bool {
     }
     r12 = r01 + edges;
     // Reverse and sum to get backward contribution (float: simple sums)
-    let (rr00, rr01, rr11, rr02, rr12, rr22) = (r00 + r22, r01 + r12, 2.0 * r11, 2.0 * r02, r12 + r01, r00 + r22);
+    let (rr00, rr01, rr11, rr02, rr12, rr22) = (
+        r00 + r22,
+        r01 + r12,
+        2.0 * r11,
+        2.0 * r02,
+        r12 + r01,
+        r00 + r22,
+    );
     r00 = rr00;
     r01 = rr01;
     r11 = rr11;
@@ -1835,7 +1860,6 @@ fn tone_detect(in_buf: &[f32], cc: usize, n: usize, fs: i32) -> (f32, f32) {
     }
 }
 
-
 #[allow(clippy::too_many_arguments)]
 fn dynalloc_analysis_simple(
     mode: &CeltMode,
@@ -1871,7 +1895,11 @@ fn dynalloc_analysis_simple(
     let mut follower: FixedVec<f32, CELT_NB_X_CH> = FixedVec::from_value(0.0f32, nb * channels);
     for c in 0..channels {
         let base = c * nb;
-        let src = if let Some(b2) = band_log_e2 { b2 } else { band_log_e };
+        let src = if let Some(b2) = band_log_e2 {
+            b2
+        } else {
+            band_log_e
+        };
         let mut band_log_e3: FixedVec<f32, CELT_NB_EBANDS> = FixedVec::from_value(0.0f32, end);
         for i in 0..end {
             let mut e = src[base + i];
@@ -1916,9 +1944,18 @@ fn dynalloc_analysis_simple(
         }
         // Clamp to noise floor (float C: GCONST etc are no-ops)
         for i in 0..end {
-            let log_n = if i < mode.log_n.len() { mode.log_n[i] as f32 } else { 0.0 };
-            let e_mean = if i < mode.e_means.len() { mode.e_means[i] } else { 0.0 };
-            let noise_floor = 0.0625 * log_n + 0.5 + (9 - lsb_depth) as f32 - e_mean + 0.0062 * ((i + 5) * (i + 5)) as f32;
+            let log_n = if i < mode.log_n.len() {
+                mode.log_n[i] as f32
+            } else {
+                0.0
+            };
+            let e_mean = if i < mode.e_means.len() {
+                mode.e_means[i]
+            } else {
+                0.0
+            };
+            let noise_floor = 0.0625 * log_n + 0.5 + (9 - lsb_depth) as f32 - e_mean
+                + 0.0062 * ((i + 5) * (i + 5)) as f32;
             follower[base + i] = follower[base + i].max(noise_floor);
         }
     }
@@ -2001,7 +2038,6 @@ fn dynalloc_analysis_simple(
             follower[start] += add;
         }
     }
-
 
     let mut tot_boost = 0i32;
     for i in start..end {
@@ -2102,8 +2138,14 @@ impl CeltEncoder {
             w_collapse_masks: FixedVec::from_value(0, nb_x_ch),
             w_band_amp_synth: FixedVec::from_value(0.0, nb_x_ch),
 
-            w_prefilter_pre: FixedVec::from_value(0.0, channels * (COMBFILTER_MAXPERIOD + MAX_FRAME_SIZE)),
-            w_prefilter_pitch_buf: FixedVec::from_value(0.0, (COMBFILTER_MAXPERIOD + MAX_FRAME_SIZE) >> 1),
+            w_prefilter_pre: FixedVec::from_value(
+                0.0,
+                channels * (COMBFILTER_MAXPERIOD + MAX_FRAME_SIZE),
+            ),
+            w_prefilter_pitch_buf: FixedVec::from_value(
+                0.0,
+                (COMBFILTER_MAXPERIOD + MAX_FRAME_SIZE) >> 1,
+            ),
             w_prefilter_before: FixedVec::from_value(0.0, channels),
             w_prefilter_after: FixedVec::from_value(0.0, channels),
             w_transient_tmp: FixedVec::from_value(0.0, MAX_TRANSIENT_LEN),
@@ -2149,14 +2191,7 @@ impl CeltEncoder {
         total_bits: i32,
         is_vbr: bool,
     ) {
-        self.encode_impl(
-            pcm,
-            frame_size,
-            rc,
-            start_band,
-            Some(total_bits),
-            is_vbr,
-        )
+        self.encode_impl(pcm, frame_size, rc, start_band, Some(total_bits), is_vbr)
     }
 
     pub fn set_lsb_depth(&mut self, depth: i32) {
@@ -2233,49 +2268,49 @@ impl CeltEncoder {
             );
         }
 
- // Tone detection (C 2022): use channel-contiguous in_buf with N+overlap, float path
- let mut tone_freq = -1.0f32;
- let mut toneishness = 0.0f32;
- {
- let (f, t) = tone_detect(&*in_buf, channels, buf_stride, mode.fs);
- tone_freq = f;
- toneishness = t;
- }
- let mut tf_estimate = 0.0f32;
- let mut tf_chan = 0;
- let mut weak_transient = false;
+        // Tone detection (C 2022): use channel-contiguous in_buf with N+overlap, float path
+        let mut tone_freq = -1.0f32;
+        let mut toneishness = 0.0f32;
+        {
+            let (f, t) = tone_detect(&*in_buf, channels, buf_stride, mode.fs);
+            tone_freq = f;
+            toneishness = t;
+        }
+        let mut tf_estimate = 0.0f32;
+        let mut tf_chan = 0;
+        let mut weak_transient = false;
 
- let is_transient = if self.complexity >= 1 {
- transient_analysis(
- in_buf,
- buf_stride,
- channels,
- &mut tf_estimate,
- &mut tf_chan,
- false,
- &mut weak_transient,
- tone_freq,
- toneishness,
- &mut self.w_transient_tmp,
- &mut self.w_transient_tmp2,
- )
- } else {
- false
- };
- // Clamp toneishness as in C 2034: toneishness = min(toneishness, 1 - tf_estimate)
- // For float, tf_estimate is log-domain; clamp to [0,1]
- toneishness = toneishness.min((1.0 - tf_estimate).clamp(0.0, 1.0));
+        let is_transient = if self.complexity >= 1 {
+            transient_analysis(
+                in_buf,
+                buf_stride,
+                channels,
+                &mut tf_estimate,
+                &mut tf_chan,
+                false,
+                &mut weak_transient,
+                tone_freq,
+                toneishness,
+                &mut self.w_transient_tmp,
+                &mut self.w_transient_tmp2,
+            )
+        } else {
+            false
+        };
+        // Clamp toneishness as in C 2034: toneishness = min(toneishness, 1 - tf_estimate)
+        // For float, tf_estimate is log-domain; clamp to [0,1]
+        toneishness = toneishness.min((1.0 - tf_estimate).clamp(0.0, 1.0));
 
- // Check for pure tone: if tonality is very high, bypass pitch search
- // Keep original analysis.tonality check for prefilter gating, but dynalloc uses tone_detect result
- let analysis_toneishness = if self.analysis.valid {
- self.analysis.tonality
- } else {
- 0.0
- };
- // analysis_toneishness kept for prefilter gating; tone_freq/toneishness from tone_detect used for dynalloc
- let pf_enabled =
- start_band == 0 && self.complexity >= 5 && analysis_toneishness < 0.99 && channels == 1;
+        // Check for pure tone: if tonality is very high, bypass pitch search
+        // Keep original analysis.tonality check for prefilter gating, but dynalloc uses tone_detect result
+        let analysis_toneishness = if self.analysis.valid {
+            self.analysis.tonality
+        } else {
+            0.0
+        };
+        // analysis_toneishness kept for prefilter gating; tone_freq/toneishness from tone_detect used for dynalloc
+        let pf_enabled =
+            start_band == 0 && self.complexity >= 5 && analysis_toneishness < 0.99 && channels == 1;
         let (pf_on, gain1, pitch_index) = if pf_enabled {
             let tell = rc.tell();
             let nb_filled = ((tell + 4) >> 3).max(0) as usize;
@@ -2357,8 +2392,6 @@ impl CeltEncoder {
         }
         let threshold = 1.0 / ((1 << self.lsb_depth) as f32);
         let mut silence = sample_max <= threshold;
-        if frame_size == 960 && channels == 2 {
-        }
         let tell_initial = rc.tell();
         let tell_initial_frac = rc.tell_frac();
         let nb_filled_bytes_initial = ((tell_initial + 4) >> 3).max(0) as usize;
@@ -2388,7 +2421,10 @@ impl CeltEncoder {
             if self.constrained_vbr {
                 let vbr_bound = vbr_rate;
                 let max_allowed = core::cmp::min(
-                    core::cmp::max(if tell_initial == 1 { 2 } else { 0 }, (vbr_rate + vbr_bound - self.vbr_reservoir) >> (BITRES + 3)),
+                    core::cmp::max(
+                        if tell_initial == 1 { 2 } else { 0 },
+                        (vbr_rate + vbr_bound - self.vbr_reservoir) >> (BITRES + 3),
+                    ),
                     nb_available as i32,
                 );
                 if (max_allowed as usize) < nb_available {
@@ -2501,14 +2537,8 @@ impl CeltEncoder {
             crate::bands::amp2log2(mode, start_band, nb_ebands, band_e, band_log_e, channels);
         }
 
-        let intra_ener = if self.complexity >= 4 {
-            false
-        } else {
-            self.old_band_e[..nb_ebands * channels]
-                .iter()
-                .all(|&e| e <= -27.0)
-        };
-        let _ = intra_ener; // C st->force_intra is used instead (CTL flag, 0 by default)
+        // C uses st->force_intra (CTL flag, 0 by default) instead of the old
+        // intra_ener heuristic, so no intra forcing happens here.
         quant_coarse_energy_advanced(
             mode,
             start_band,
@@ -2726,14 +2756,24 @@ impl CeltEncoder {
             let min_allowed = {
                 let a = ((cur_tell_frac + tot_boost + (1 << (BITRES + 3)) - 1) >> (BITRES + 3)) + 2;
                 if hybrid {
-                    let b = ((tell_initial_frac + (37 << BITRES) + tot_boost + (1 << (BITRES + 3)) - 1) >> (BITRES + 3));
+                    let b =
+                        ((tell_initial_frac + (37 << BITRES) + tot_boost + (1 << (BITRES + 3))
+                            - 1)
+                            >> (BITRES + 3));
                     a.max(b)
                 } else {
                     a
                 }
             };
             // nbCompressedBytes is current max (after first VBR bound), effectiveBytes ~ vbr_rate>>(3+BITRES) for lambda already
-            let max_depth = compute_max_depth(mode, band_log_e, nb_ebands, channels, nb_ebands, self.lsb_depth);
+            let max_depth = compute_max_depth(
+                mode,
+                band_log_e,
+                nb_ebands,
+                channels,
+                nb_ebands,
+                self.lsb_depth,
+            );
             let mut target = if !hybrid {
                 compute_vbr(
                     mode,

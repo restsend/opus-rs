@@ -2374,7 +2374,8 @@ pub fn alg_quant(
         mask
     } else {
         let mut y_mu = [MaybeUninit::<i32>::uninit(); MAX_PVQ_N];
-        let y = unsafe { core::slice::from_raw_parts_mut(y_mu.as_mut_ptr() as *mut i32, MAX_PVQ_N) };
+        let y =
+            unsafe { core::slice::from_raw_parts_mut(y_mu.as_mut_ptr() as *mut i32, MAX_PVQ_N) };
 
         exp_rotation(x, n, 1, stride, k, spread);
         pvq_search(x, &mut y[..n], k, n);
@@ -2488,7 +2489,8 @@ pub fn alg_quant_qext(
         mask
     } else {
         let mut y_mu = [MaybeUninit::<i32>::uninit(); MAX_PVQ_N];
-        let y = unsafe { core::slice::from_raw_parts_mut(y_mu.as_mut_ptr() as *mut i32, MAX_PVQ_N) };
+        let y =
+            unsafe { core::slice::from_raw_parts_mut(y_mu.as_mut_ptr() as *mut i32, MAX_PVQ_N) };
 
         exp_rotation(x, n, 1, stride, k, spread);
         pvq_search(x, &mut y[..n], k, n);

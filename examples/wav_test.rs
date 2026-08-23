@@ -373,15 +373,15 @@ fn process_mode(config: ModeConfig, src_samples: &[i16], src_rate: u32) {
 }
 
 fn main() {
-        let build_desc = if cfg!(feature = "std") {
-            "opus-rs built with std"
-        } else {
-            "opus-rs built #![no_std] + libm (heap-free; this binary provides I/O)"
-        };
-        println!("############################################################");
-        println!("#  opus-rs WAV round-trip — BUILD_TAG = {}", BUILD_TAG);
-        println!("#  ({})", build_desc);
-        println!("############################################################");
+    let build_desc = if cfg!(feature = "std") {
+        "opus-rs built with std"
+    } else {
+        "opus-rs built #![no_std] + libm (heap-free; this binary provides I/O)"
+    };
+    println!("############################################################");
+    println!("#  opus-rs WAV round-trip — BUILD_TAG = {}", BUILD_TAG);
+    println!("#  ({})", build_desc);
+    println!("############################################################");
 
     let args: Vec<String> = std::env::args().collect();
     let input_arg = args
