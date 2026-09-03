@@ -540,7 +540,10 @@ unsafe fn mdct_backward_post_rotation_avx(
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx")]
 unsafe fn mdct_tdac_avx(output: &mut [f32], window: &[f32], overlap: usize) {
+    #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::*;
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86::*;
 
     let overlap2 = overlap / 2;
     let mut i = 0usize;

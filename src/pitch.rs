@@ -304,7 +304,10 @@ unsafe fn pitch_xcorr_neon(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, 
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn inner_prod_sse(x: &[f32], y: &[f32], n: usize) -> f32 {
+    #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::*;
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86::*;
 
     let mut sum0 = _mm_setzero_ps();
     let mut sum1 = _mm_setzero_ps();
@@ -346,7 +349,10 @@ unsafe fn inner_prod_sse(x: &[f32], y: &[f32], n: usize) -> f32 {
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn dual_inner_prod_sse(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32) {
+    #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::*;
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86::*;
 
     let mut xy1 = _mm_setzero_ps();
     let mut xy2 = _mm_setzero_ps();
@@ -386,7 +392,10 @@ unsafe fn dual_inner_prod_sse(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn xcorr_kernel_sse(x: &[f32], y: &[f32], sum: &mut [f32; 4], len: usize) {
+    #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::*;
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86::*;
 
     let mut xsum1 = _mm_loadu_ps(sum.as_ptr());
     let mut xsum2 = _mm_setzero_ps();
@@ -472,7 +481,10 @@ unsafe fn pitch_xcorr_sse(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, m
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx,fma")]
 unsafe fn inner_prod_avx(x: &[f32], y: &[f32], n: usize) -> f32 {
+    #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::*;
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86::*;
 
     let mut acc0 = _mm256_setzero_ps();
     let mut acc1 = _mm256_setzero_ps();
@@ -516,7 +528,10 @@ unsafe fn inner_prod_avx(x: &[f32], y: &[f32], n: usize) -> f32 {
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx,fma")]
 unsafe fn dual_inner_prod_avx(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32) {
+    #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::*;
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86::*;
 
     let mut acc1 = _mm256_setzero_ps();
     let mut acc2 = _mm256_setzero_ps();
@@ -598,7 +613,10 @@ unsafe fn pitch_xcorr_avx(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, m
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx,fma")]
 unsafe fn xcorr_kernel_avx(x: &[f32], y: &[f32], sum: &mut [f32; 4], len: usize) {
+    #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::*;
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86::*;
 
     let mut xsum1 = _mm_loadu_ps(sum.as_ptr());
     let mut xsum2 = _mm_setzero_ps();
@@ -903,7 +921,10 @@ fn find_best_pitch(
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     let mut syy = unsafe {
         if crate::compat::x86_has_avx() {
+            #[cfg(target_arch = "x86_64")]
             use core::arch::x86_64::*;
+            #[cfg(target_arch = "x86")]
+            use core::arch::x86::*;
             let mut acc0 = _mm256_setzero_ps();
             let mut acc1 = _mm256_setzero_ps();
             let mut j = 0;

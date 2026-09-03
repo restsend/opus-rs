@@ -418,7 +418,10 @@ fn l1_metric(tmp: &[f32], n: usize, lm: i32, bias: f32) -> f32 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx")]
 unsafe fn sum_abs_avx(x: &[f32], n: usize) -> f32 {
+    #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::*;
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86::*;
 
     let mut sum0 = _mm256_setzero_ps();
     let mut sum1 = _mm256_setzero_ps();
@@ -969,7 +972,10 @@ unsafe fn comb_filter_const_sse(
     g11: f32,
     g12: f32,
 ) {
+    #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::*;
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86::*;
 
     let g10v = _mm_set1_ps(g10);
     let g11v = _mm_set1_ps(g11);
@@ -1035,7 +1041,10 @@ unsafe fn comb_filter_const_avx(
     g11: f32,
     g12: f32,
 ) {
+    #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::*;
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86::*;
 
     let g10v = _mm256_set1_ps(g10);
     let g11v = _mm256_set1_ps(g11);
@@ -1138,7 +1147,10 @@ unsafe fn comb_filter_const_sse_fma(
     g11: f32,
     g12: f32,
 ) {
+    #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::*;
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86::*;
 
     let g10v = _mm_set1_ps(g10);
     let g11v = _mm_set1_ps(g11);
