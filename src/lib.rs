@@ -559,12 +559,18 @@ impl OpusEncoder {
         let cbr_bytes = ((target_bits + 4) / 8) as usize;
         let max_data_bytes = output.len();
 
-        // Cap at the Opus per-packet maximum (RFC 6716); the range coder's buffer
-        // is heap-free and sized to this constant.
-        let mut n_bytes = cbr_bytes
-            .min(max_data_bytes)
-            .max(1)
-            .min(OPUS_MAX_PACKET_BYTES);
+        // C parity (opus_encoder.c): the nominal-size cap applies in CBR mode
+        // only. In VBR mode the CELT-internal bound (vbr_rate/reservoir) decides
+        // the per-frame size, allowing overshoot (borrowing) and undershoot.
+        // Capping VBR at nominal defeats the reservoir and starves complex frames.
+        let mut n_bytes = if self.use_cbr {
+            cbr_bytes
+                .min(max_data_bytes)
+                .max(1)
+                .min(OPUS_MAX_PACKET_BYTES)
+        } else {
+            max_data_bytes.max(1).min(OPUS_MAX_PACKET_BYTES)
+        };
         let init_rc_size = n_bytes - 1;
         self.rc.reset_for_encode(init_rc_size as u32);
 

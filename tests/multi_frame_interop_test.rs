@@ -77,6 +77,9 @@ fn test_celt_multi_frame_code_0_and_1() {
 
     let mut enc = OpusEncoder::new(sr, ch, Application::RestrictedLowDelay).unwrap();
     enc.bitrate_bps = 64000;
+    // Code 1 requires equal-sized frames (RFC 6716 §3.2.1); VBR sizes vary
+    // legitimately, so pin CBR for deterministic equal payloads.
+    enc.use_cbr = true;
 
     let pcm0 = make_sine(440.0, sr, fs, ch, 0);
     let pcm1 = make_sine(440.0, sr, fs, ch, 1);
@@ -173,7 +176,9 @@ fn test_celt_multi_frame_code_3_with_padding() {
 
     let mut enc = OpusEncoder::new(sr, ch, Application::RestrictedLowDelay).unwrap();
     enc.bitrate_bps = 64000;
-
+    // Zero-padding payloads is only neutral when both already share a size;
+    // VBR sizes vary legitimately, so pin CBR to keep the resize a no-op.
+    enc.use_cbr = true;
     let pcm0 = make_sine(440.0, sr, fs, ch, 0);
     let pcm1 = make_sine(660.0, sr, fs, ch, 1);
     let pkt0 = encode_full(&mut enc, &pcm0, fs, 400);
@@ -301,9 +306,11 @@ fn test_hybrid_multi_frame_roundtrip() {
     let sr = 48000;
     let ch = 1;
     let fs = 960;
-
     let mut enc = OpusEncoder::new(sr, ch, Application::Audio).unwrap();
     enc.bitrate_bps = 64000;
+    // Code 1 requires equal-sized frames (RFC 6716 §3.2.1); VBR sizes vary
+    // legitimately, so pin CBR for deterministic equal payloads.
+    enc.use_cbr = true;
 
     let pcm0 = make_sine(440.0, sr, fs, ch, 0);
     let pcm1 = make_sine(660.0, sr, fs, ch, 1);
@@ -398,6 +405,9 @@ fn test_multi_frame_all_codes_stereo() {
 
     let mut enc = OpusEncoder::new(sr, ch, Application::Audio).unwrap();
     enc.bitrate_bps = 96000;
+    // Code 1 requires equal-sized frames (RFC 6716 §3.2.1); VBR sizes vary
+    // legitimately, so pin CBR for deterministic equal payloads.
+    enc.use_cbr = true;
 
     let pcm0 = make_sine(440.0, sr, fs, ch, 0);
     let pcm1 = make_sine(660.0, sr, fs, ch, 1);
