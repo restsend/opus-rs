@@ -209,8 +209,13 @@ pub fn haar1(x: &mut [f32], n0: usize, stride: usize) {
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     unsafe {
-        if stride == 1 && n0 >= 16 && crate::compat::x86_has_avx() {
-            haar1_avx(x, n0);
+        // NOTE: the previous AVX1 kernel loaded its second vector at +4
+        // (overlapping the first) and deinterleaved into quartet-swapped
+        // order, corrupting every other 8-sample block. The corrected kernel
+        // needs a 64-bit lane permute, which is AVX2-only; pre-AVX2 CPUs use
+        // the scalar path.
+        if stride == 1 && n0 >= 16 && crate::compat::x86_has_avx2() {
+            haar1_avx2(x, n0);
             return;
         }
     }
@@ -219,25 +224,28 @@ pub fn haar1(x: &mut [f32], n0: usize, stride: usize) {
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[target_feature(enable = "avx")]
-unsafe fn haar1_avx(x: &mut [f32], n0: usize) {
+#[target_feature(enable = "avx2")]
+unsafe fn haar1_avx2(x: &mut [f32], n0: usize) {
     #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::*;
     #[cfg(target_arch = "x86")]
     use core::arch::x86::*;
     let n = n0 >> 1;
     let scale = _mm256_set1_ps(core::f32::consts::FRAC_1_SQRT_2);
+    let fixup = _mm256_set_epi32(7, 6, 3, 2, 5, 4, 1, 0);
     let mut j = 0;
     while j + 8 <= n {
         let ptr = x.as_mut_ptr().add(2 * j);
         let a = _mm256_loadu_ps(ptr);
-        let b = _mm256_loadu_ps(ptr.add(4));
+        let b = _mm256_loadu_ps(ptr.add(8));
 
         let t0 = _mm256_unpacklo_ps(a, b);
         let t1 = _mm256_unpackhi_ps(a, b);
 
-        let even = _mm256_unpacklo_ps(t0, t1);
-        let odd = _mm256_unpackhi_ps(t0, t1);
+        // unpacklo/hi leave the two middle quartets swapped; fix the 32-bit
+        // lane order so even/odd hold pairs 0-7 in order.
+        let even = _mm256_permutevar8x32_ps(_mm256_unpacklo_ps(t0, t1), fixup);
+        let odd = _mm256_permutevar8x32_ps(_mm256_unpackhi_ps(t0, t1), fixup);
 
         let sum = _mm256_mul_ps(_mm256_add_ps(even, odd), scale);
         let diff = _mm256_mul_ps(_mm256_sub_ps(even, odd), scale);

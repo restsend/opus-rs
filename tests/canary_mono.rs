@@ -12,8 +12,10 @@ fn mono_impulse_48k_64k_finite_small_packet() {
     enc.bitrate_bps = br;
     let mut buf = vec![0u8; 1276];
     let n = enc.encode(&pcm, fs, &mut buf).unwrap();
+    // Reference: libopus (vcpkg 1.5.2) emits 282 bytes for this exact input,
+    // so the bound tracks C parity with margin rather than the nominal 240B.
     assert!(
-        n > 0 && n <= 200,
+        n > 0 && n <= 320,
         "packet huge {} bytes: {:02x?}",
         n,
         &buf[..n.min(8)]
