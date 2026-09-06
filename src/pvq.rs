@@ -536,7 +536,10 @@ fn pvq_search_n4(x: &[f32], y: &mut [i32], k: i32) {
 
     #[cfg(target_arch = "x86_64")]
     unsafe {
+        #[cfg(target_arch = "x86_64")]
         use core::arch::x86_64::*;
+        #[cfg(target_arch = "x86")]
+        use core::arch::x86::*;
 
         let sign_mask = _mm_castsi128_ps(_mm_set1_epi32(0x7FFF_FFFFu32 as i32));
         let vx = _mm_loadu_ps(x.as_ptr());
@@ -1646,7 +1649,10 @@ fn pvq_search_neon(x: &[f32], y: &mut [i32], k: i32, n: usize) {
 #[target_feature(enable = "avx2,fma")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn pvq_search_avx2(x: &[f32], y: &mut [i32], k: i32, n: usize) {
+    #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::*;
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86::*;
 
     debug_assert!(n <= 31);
     debug_assert!(k > 4);
@@ -2017,7 +2023,10 @@ pub fn extract_collapse_mask(iy: &[i32], n: usize, b: usize) -> u32 {
 #[target_feature(enable = "avx2,fma")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn renormalise_vector_avx2(x: &mut [f32], n: usize, gain: f32) {
+    #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::*;
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86::*;
 
     let mut acc0 = _mm256_setzero_ps();
     let mut acc1 = _mm256_setzero_ps();
@@ -2071,7 +2080,10 @@ unsafe fn renormalise_vector_avx2(x: &mut [f32], n: usize, gain: f32) {
 #[target_feature(enable = "avx2,fma")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn alg_quant_resynth_avx2(y: &[i32], x: &mut [f32], n: usize, gain: f32) {
+    #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::*;
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86::*;
 
     let mut acc0 = _mm256_setzero_ps();
     let mut i = 0;
@@ -2120,7 +2132,10 @@ unsafe fn pvq_search_scalar_init_avx2(
     abs_x: &mut [f32; 32],
     sign_x: &mut [i32; 32],
 ) -> f32 {
+    #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::*;
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86::*;
     let sign_mask = _mm256_set1_ps(-0.0f32);
     let mut acc = _mm256_setzero_ps();
     let mut i = 0;
