@@ -103,7 +103,10 @@ impl Default for SilkDecoderState {
             vad_flags: [0; MAX_FRAMES_PER_PACKET],
             lbrr_flag: 0,
             lbrr_flags: [0; MAX_FRAMES_PER_PACKET],
-            ps_nlsf_cb: None,
+            // Default to the WB codebook so that decoding before an explicit
+            // `silk_decoder_set_fs` cannot panic on `unwrap` (issue #27
+            // deep-scan). `set_fs` always overrides this on the normal path.
+            ps_nlsf_cb: Some(&crate::silk::tables_nlsf::SILK_NLSF_CB_WB),
             indices: SideInfoIndices::default(),
             s_cng: SilkCNGState::default(),
             loss_cnt: 0,

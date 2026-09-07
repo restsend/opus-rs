@@ -219,7 +219,8 @@ impl SilkResampler {
         let in_id = rate_id(fs_hz_in);
         let out_id = rate_id(fs_hz_out);
 
-        if in_id > 2 || out_id > 5 {
+        if in_id > 2 || out_id > 5 || fs_hz_out <= 0 {
+            // fs_hz_out <= 0 would divide by zero below (issue #27 deep scan).
             return -1;
         }
 
@@ -262,25 +263,42 @@ impl SilkResampler {
 
         match self.mode {
             ResamplerMode::Copy => {
-                out[..self.fs_in_khz as usize]
-                    .copy_from_slice(&self.delay_buf[..self.fs_in_khz as usize]);
+                // Clamp writes to the caller-provided output capacity. Well-formed
+                // callers always pass an output of at least `in_len * fs_out/fs_in`
+                // samples; the clamps only prevent a panic on mis-sized buffers
+                // (issue #15 hardening).
+                let head = (self.fs_in_khz as usize).min(out.len());
+                out[..head].copy_from_slice(&self.delay_buf[..head]);
                 let remaining = (in_len - self.fs_in_khz) as usize;
-                out[self.fs_out_khz as usize..self.fs_out_khz as usize + remaining]
-                    .copy_from_slice(&input[n_samples as usize..n_samples as usize + remaining]);
+                let dst_start = self.fs_out_khz as usize;
+                if dst_start <= out.len() {
+                    let copy_len = remaining.min(out.len() - dst_start);
+                    out[dst_start..dst_start + copy_len]
+                        .copy_from_slice(&input[n_samples as usize..n_samples as usize + copy_len]);
+                }
             }
             ResamplerMode::Up2HQ => {
+                // 2x upsampling writes 2*n samples for n inputs; clamp `n` to what
+                // the output slice can hold (issue #15 hardening).
+                let first_len = (self.fs_in_khz as usize).min(out.len() / 2);
                 silk_resampler_private_up2_hq(
                     &mut self.s_iir,
                     &mut out[..],
-                    &self.delay_buf[..self.fs_in_khz as usize],
-                    self.fs_in_khz,
+                    &self.delay_buf[..first_len],
+                    first_len as i32,
                 );
-                silk_resampler_private_up2_hq(
-                    &mut self.s_iir,
-                    &mut out[self.fs_out_khz as usize..],
-                    &input[n_samples as usize..],
-                    in_len - self.fs_in_khz,
-                );
+                let dst_start = self.fs_out_khz as usize;
+                if out.len() > dst_start {
+                    let out_rest = &mut out[dst_start..];
+                    let rest_len =
+                        ((in_len - self.fs_in_khz).max(0) as usize).min(out_rest.len() / 2);
+                    silk_resampler_private_up2_hq(
+                        &mut self.s_iir,
+                        out_rest,
+                        &input[n_samples as usize..n_samples as usize + rest_len],
+                        rest_len as i32,
+                    );
+                }
             }
             ResamplerMode::IirFir => {
                 self.iir_fir_resample(

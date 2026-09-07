@@ -86,12 +86,22 @@ pub fn silk_decode_core(
 
         let mut lag = 0;
         if eff_signal_type == TYPE_VOICED {
-            lag = eff_pitch_l;
+            // Clamp the lag to the geometry of the CURRENT frame rate. The
+            // loss-recovery path above can surface `lag_prev` from a previous
+            // higher-bandwidth frame (e.g. 288 at 16 kHz); without this clamp
+            // the LTP rewihiten loop and the pred_lag pointer below index out
+            // of bounds after a WB -> NB switch under packet loss
+            // (issue #27 deep scan). libopus keeps this invariant via the
+            // lagPrev reset in silk_decoder_set_fs.
+            lag = eff_pitch_l.clamp(2 * ps_dec.fs_khz, 18 * ps_dec.fs_khz);
 
             if k == 0 || (k == 2 && nlsf_interpolation_flag != 0) {
+                // Guard against a negative start index from corrupted lag state
+                // (debug builds asserted this; release must not index OOB,
+                // issue #27 deep-scan).
                 let start_idx =
-                    ps_dec.ltp_mem_length - lag - ps_dec.lpc_order - (LTP_ORDER / 2) as i32;
-                debug_assert!(start_idx > 0);
+                    (ps_dec.ltp_mem_length - lag - ps_dec.lpc_order - (LTP_ORDER / 2) as i32)
+                        .max(0);
 
                 if k == 2 {
                     let copy_start = ps_dec.ltp_mem_length as usize;

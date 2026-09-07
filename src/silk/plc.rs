@@ -236,7 +236,11 @@ fn silk_plc_conceal(
     let mut s_ltp_buf_idx = ltp_mem_length;
 
     // Rewhiten LTP state.
-    let idx = (ltp_mem_length as i32 - lag - ps_dec.lpc_order - LTP_ORDER as i32 / 2) as usize;
+    // Clamp to a valid range: for well-formed state `lag` is bounded by the
+    // decoder geometry so the expression is positive, but a corrupted PLC
+    // state must not produce a negative index (issue #27 deep-scan).
+    let idx =
+        (ltp_mem_length as i32 - lag - ps_dec.lpc_order - LTP_ORDER as i32 / 2).max(0) as usize;
     // silk_LPC_analysis_filter(&sLTP[idx], &psDec->outBuf[idx], A_Q12, ltp_mem_length - idx, LPC_order)
     silk_lpc_analysis_filter(
         &mut s_ltp[idx..],

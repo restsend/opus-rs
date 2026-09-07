@@ -57,6 +57,13 @@ pub struct KissFftState {
 }
 
 fn kf_factor(n_orig: usize, factors: &mut [i16; 2 * MAXFACTORS]) -> bool {
+    // The twiddle table (KissCpx, KISS_MAX_N entries) and the bit-reversal
+    // table are sized for KISS_MAX_N; anything larger would overflow them on
+    // push (fail-fast assert) — reject up front so `KissFftState::new`
+    // returns None gracefully (issue #27 deep scan).
+    if n_orig > KISS_MAX_N {
+        return false;
+    }
     let mut n = n_orig;
     let mut p: i32 = 4;
     let mut stages = 0;
@@ -1207,6 +1214,16 @@ unsafe fn kf_bfly5_neon_inner(
 }
 
 pub fn opus_fft_impl(st: &KissFftState, fout: &mut [KissCpx]) {
+    // The butterfly kernels index up to nfft elements; the SIMD paths read
+    // through raw pointers, so an undersized slice would be out-of-bounds
+    // memory access rather than a panic — check up front (issue #27 deep
+    // scan).
+    assert!(
+        fout.len() >= st.nfft,
+        "opus_fft_impl: fout.len() ({}) < nfft ({})",
+        fout.len(),
+        st.nfft
+    );
     let factors = &st.factors;
     let twiddles = &st.twiddles;
 

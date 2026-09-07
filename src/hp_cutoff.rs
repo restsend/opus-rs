@@ -16,6 +16,12 @@ pub fn hp_cutoff(
     channels: usize,
     fs: i32,
 ) {
+    // fs < 1000 makes `fs / 1000` zero and faults in silk_div32_16; callers
+    // inside the encoder always pass a valid Opus rate, but guard direct
+    // calls too (issue #27 deep scan).
+    if fs < 1000 {
+        return;
+    }
     let mut b_q28 = [0i32; 3];
     let mut a_q28 = [0i32; 2];
 
@@ -98,6 +104,11 @@ pub fn hp_cutoff_float(
     channels: usize,
     fs: i32,
 ) {
+    // fs < 1000 makes `fs / 1000` zero and faults in silk_div32_16
+    // (issue #27 deep scan).
+    if fs < 1000 {
+        return;
+    }
     let fc_q19 = silk_div32_16(silk_smulbb(SILK_FIX_CONST_19, cutoff_hz), fs / 1000);
 
     let r_q28 = (1i32 << 28) - silk_mul(471, fc_q19);

@@ -68,6 +68,17 @@ pub fn dual_inner_prod(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32
 }
 
 pub fn pitch_xcorr(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitch: usize) {
+    // Every lag window reads y[i..i+len]; the SIMD kernels peek up to 3
+    // elements past the window. The combined contract is
+    // y.len() >= len + max_pitch - 1; clamp so that direct callers with a
+    // short `y` degrade gracefully instead of reading past the slice
+    // (issue #27 deep scan). In-repo callers always satisfy the contract and
+    // are unaffected.
+    let max_pitch = if len > 0 {
+        max_pitch.min(y.len() + 1 - len)
+    } else {
+        0
+    };
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     unsafe {
         if crate::compat::x86_has_avx() {
@@ -304,10 +315,10 @@ unsafe fn pitch_xcorr_neon(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, 
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn inner_prod_sse(x: &[f32], y: &[f32], n: usize) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
     #[cfg(target_arch = "x86")]
     use core::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::*;
 
     let mut sum0 = _mm_setzero_ps();
     let mut sum1 = _mm_setzero_ps();
@@ -349,10 +360,10 @@ unsafe fn inner_prod_sse(x: &[f32], y: &[f32], n: usize) -> f32 {
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn dual_inner_prod_sse(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32) {
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
     #[cfg(target_arch = "x86")]
     use core::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::*;
 
     let mut xy1 = _mm_setzero_ps();
     let mut xy2 = _mm_setzero_ps();
@@ -392,10 +403,10 @@ unsafe fn dual_inner_prod_sse(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f
 #[inline(always)]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn xcorr_kernel_sse(x: &[f32], y: &[f32], sum: &mut [f32; 4], len: usize) {
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
     #[cfg(target_arch = "x86")]
     use core::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::*;
 
     let mut xsum1 = _mm_loadu_ps(sum.as_ptr());
     let mut xsum2 = _mm_setzero_ps();
@@ -481,10 +492,10 @@ unsafe fn pitch_xcorr_sse(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, m
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx,fma")]
 unsafe fn inner_prod_avx(x: &[f32], y: &[f32], n: usize) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
     #[cfg(target_arch = "x86")]
     use core::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::*;
 
     let mut acc0 = _mm256_setzero_ps();
     let mut acc1 = _mm256_setzero_ps();
@@ -528,10 +539,10 @@ unsafe fn inner_prod_avx(x: &[f32], y: &[f32], n: usize) -> f32 {
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx,fma")]
 unsafe fn dual_inner_prod_avx(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32) {
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
     #[cfg(target_arch = "x86")]
     use core::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::*;
 
     let mut acc1 = _mm256_setzero_ps();
     let mut acc2 = _mm256_setzero_ps();
@@ -613,10 +624,10 @@ unsafe fn pitch_xcorr_avx(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, m
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx,fma")]
 unsafe fn xcorr_kernel_avx(x: &[f32], y: &[f32], sum: &mut [f32; 4], len: usize) {
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
     #[cfg(target_arch = "x86")]
     use core::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::*;
 
     let mut xsum1 = _mm_loadu_ps(sum.as_ptr());
     let mut xsum2 = _mm_setzero_ps();
@@ -744,8 +755,12 @@ pub fn pitch_downsample(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, fa
         return;
     }
 
+    // The NEON path reads through raw pointers up to factor*len+offset source
+    // samples per channel; only take it when every channel actually provides
+    // them (the scalar loop below bounds-checks per sample instead)
+    // (issue #27 deep scan).
     #[cfg(target_arch = "aarch64")]
-    if factor == 2 && c <= 2 {
+    if factor == 2 && c <= 2 && x.iter().take(c).all(|s| s.len() >= factor * len + offset) {
         pitch_downsample_neon(x, x_lp, len, c, offset);
         return;
     }
@@ -921,10 +936,10 @@ fn find_best_pitch(
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     let mut syy = unsafe {
         if crate::compat::x86_has_avx() {
-            #[cfg(target_arch = "x86_64")]
-            use core::arch::x86_64::*;
             #[cfg(target_arch = "x86")]
             use core::arch::x86::*;
+            #[cfg(target_arch = "x86_64")]
+            use core::arch::x86_64::*;
             let mut acc0 = _mm256_setzero_ps();
             let mut acc1 = _mm256_setzero_ps();
             let mut j = 0;

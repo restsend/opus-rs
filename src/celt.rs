@@ -418,10 +418,10 @@ fn l1_metric(tmp: &[f32], n: usize, lm: i32, bias: f32) -> f32 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx")]
 unsafe fn sum_abs_avx(x: &[f32], n: usize) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
     #[cfg(target_arch = "x86")]
     use core::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::*;
 
     let mut sum0 = _mm256_setzero_ps();
     let mut sum1 = _mm256_setzero_ps();
@@ -972,10 +972,10 @@ unsafe fn comb_filter_const_sse(
     g11: f32,
     g12: f32,
 ) {
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
     #[cfg(target_arch = "x86")]
     use core::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::*;
 
     let g10v = _mm_set1_ps(g10);
     let g11v = _mm_set1_ps(g11);
@@ -1041,10 +1041,10 @@ unsafe fn comb_filter_const_avx(
     g11: f32,
     g12: f32,
 ) {
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
     #[cfg(target_arch = "x86")]
     use core::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::*;
 
     let g10v = _mm256_set1_ps(g10);
     let g11v = _mm256_set1_ps(g11);
@@ -1147,10 +1147,10 @@ unsafe fn comb_filter_const_sse_fma(
     g11: f32,
     g12: f32,
 ) {
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
     #[cfg(target_arch = "x86")]
     use core::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::*;
 
     let g10v = _mm_set1_ps(g10);
     let g11v = _mm_set1_ps(g11);
@@ -2091,6 +2091,13 @@ fn dynalloc_analysis_simple(
 
 impl CeltEncoder {
     pub fn new(mode: &'static CeltMode, channels: usize) -> Self {
+        // All internal buffers are sized for at most 2 channels; a larger
+        // value would panic later inside `FixedVec::from_value` with an
+        // unhelpful message (issue #27 deep scan).
+        assert!(
+            (1..=2).contains(&channels),
+            "CeltEncoder::new: channels must be 1 or 2 (got {channels})"
+        );
         let overlap = mode.overlap;
         let channel_mem_size = 2048 + overlap;
         let syn_mem_size = channels * channel_mem_size;
@@ -2236,6 +2243,20 @@ impl CeltEncoder {
         let channels = self.channels;
         let nb_ebands = mode.nb_ebands;
         let overlap = mode.overlap;
+
+        // The encoder geometry requires frame_size == short_mdct_size << lm
+        // (120/240/480/960). Any other size makes the lm search fall back to
+        // lm=0, which mis-sizes the MDCT buffers and panics mid-transform
+        // (or worse, silently mis-encodes). Fail fast with a clear message;
+        // OpusEncoder::encode() validates this before reaching CELT.
+        assert!(
+            (1..=mode.max_lm + 1).any(|lm| mode.short_mdct_size << lm == frame_size),
+            "CeltEncoder: invalid frame_size {} (valid: {}..={} kHz multiples of {})",
+            frame_size,
+            mode.short_mdct_size,
+            mode.short_mdct_size << mode.max_lm,
+            mode.short_mdct_size
+        );
 
         let mut lm = 0;
         while (mode.short_mdct_size << lm) != frame_size {
@@ -3105,6 +3126,12 @@ impl CeltDecoder {
     /// (8000–48000); the decoder always operates at 48 kHz internally and
     /// decimates by `resampling_factor(sampling_rate)` on output.
     pub fn new(mode: &'static CeltMode, channels: usize, sampling_rate: i32) -> Self {
+        // All internal buffers are sized for at most 2 channels
+        // (issue #27 deep scan).
+        assert!(
+            (1..=2).contains(&channels),
+            "CeltDecoder::new: channels must be 1 or 2 (got {channels})"
+        );
         let overlap = mode.overlap;
         let nb_ebands = mode.nb_ebands;
         let nb_x_ch = nb_ebands * channels;
@@ -3238,6 +3265,28 @@ impl CeltDecoder {
         // celt_decoder.c:1196: `frame_size *= st->downsample`).
         let api_frame_size = frame_size;
         let frame_size = frame_size * self.downsample;
+
+        // The decode geometry requires frame_size == short_mdct_size << lm.
+        // A non-matching size makes the lm search below fall back to lm=0,
+        // which silently decodes garbage for large frames and indexes out of
+        // bounds for tiny ones — reject early (issue #27 deep scan).
+        let mut lm_matched = false;
+        for cand in 0..=mode.max_lm {
+            if mode.short_mdct_size << cand == frame_size {
+                lm_matched = true;
+                break;
+            }
+        }
+        if !lm_matched || frame_size < mode.short_mdct_size {
+            return 0;
+        }
+
+        // Reject an undersized output buffer before spending the whole decode
+        // (it used to panic only at the final sample copy, issue #27 deep
+        // scan).
+        if pcm.len() < api_frame_size * channels {
+            return 0;
+        }
 
         let mut lm = 0;
         while (mode.short_mdct_size << lm) != frame_size {
@@ -3421,7 +3470,12 @@ impl CeltDecoder {
             channels,
         );
 
-        if frame_size > DECODE_BUFFER_SIZE + overlap {
+        // Hard bound: `out_syn_idx = DECODE_BUFFER_SIZE - frame_size` below must
+        // stay non-negative and w_pcm_frame is sized DECODE_BUFFER_SIZE. libopus
+        // rejects frame sizes beyond DECODE_BUFFER_SIZE the same way
+        // (celt_decoder.c). The old `+ overlap` bound let 2049..=2168 through and
+        // caused an underflow/panic (issue #27 deep-scan).
+        if frame_size > DECODE_BUFFER_SIZE {
             return 0;
         }
 

@@ -93,7 +93,10 @@ impl<T, const N: usize> FixedVec<T, N> {
     }
 
     pub fn push(&mut self, value: T) {
-        debug_assert!(self.len < N, "FixedVec push past capacity");
+        // `assert!` (not `debug_assert!`): in release builds a silent overflow
+        // here would be out-of-bounds UB, e.g. `KissFftState::new(nfft)` with
+        // nfft > KISS_MAX_N (issue #27 deep-scan).
+        assert!(self.len < N, "FixedVec push past capacity");
         self.buf[self.len].write(value);
         self.len += 1;
     }

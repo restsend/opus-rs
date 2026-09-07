@@ -481,6 +481,22 @@ impl OpusEncoder {
         let frame_rate = frame_rate_from_params(self.sampling_rate, frame_size)
             .ok_or("Invalid frame size for sampling rate")?;
 
+        // Clamp caller-provided control fields the way libopus's ctl
+        // interface does (OPUS_SET_BITRATE clamps to [500, 3000000];
+        // complexity to [0, 10]). Unclamped extremes overflow the bitrate
+        // arithmetic downstream (bitrate*6 in celt, `equiv*(90+complexity)`
+        // in the mode selection) — issue #27 deep scan.
+        self.bitrate_bps = self.bitrate_bps.clamp(500, 3_000_000);
+        self.complexity = self.complexity.clamp(0, 10);
+        self.packet_loss_perc = self.packet_loss_perc.clamp(0, 100);
+
+        // The encoder consumes exactly frame_size * channels samples per call;
+        // reject short input up front instead of panicking inside the HP filter
+        // or the float→int conversion loops (issue #27 deep-scan).
+        if input.len() < frame_size * self.channels {
+            return Err("Input buffer too small for frame");
+        }
+
         // Mode selection: match C's opus_encode_native() behavior.
         // C reference auto-selects between SILK_ONLY and CELT_ONLY; Hybrid is
         // produced afterwards by bandwidth overrides (SILK-only + FB/SWB → Hybrid).
@@ -643,7 +659,8 @@ impl OpusEncoder {
                     self.sampling_rate,
                 );
             } else {
-                for (i, &x) in input.iter().enumerate() {
+                let required_size = frame_size * self.channels;
+                for (i, &x) in input.iter().enumerate().take(required_size) {
                     self.buf_filtered[i] = (x * 32768.0).clamp(-32768.0, 32767.0) as i16;
                 }
             }
@@ -653,7 +670,13 @@ impl OpusEncoder {
             let silk_input: &[i16] = if mode == OpusMode::SilkOnly && self.sampling_rate > 16000 {
                 if self.sampling_rate == 48000 {
                     let stage1_size = frame_size / 2;
-                    let mut stage1_buf = [0i16; 480];
+                    // 48 kHz SILK-only supports up to 40 ms frames (frame_rate 25):
+                    // 1920 API samples -> 960 stage-1 samples at 24 kHz. Guard the
+                    // stack buffer instead of panicking on out-of-range lengths.
+                    if stage1_size > 960 {
+                        return Err("Invalid frame size for SILK mode");
+                    }
+                    let mut stage1_buf = [0i16; 960];
                     silk_resampler_down2(
                         &mut self.down2_state_first,
                         &mut stage1_buf[..stage1_size],
@@ -1367,11 +1390,16 @@ impl OpusDecoder {
                     }
                 } else if self.silk_resampler.is_initialized() {
                     // Resample channel 0 to the API rate for the bridge.
+                    // The resampler must receive an output buffer sized for the
+                    // FULL resampled length (issue #15): truncating the buffer to
+                    // `f5_bridge` caused out-of-bounds writes in the Up2HQ/Copy
+                    // paths. We size it fully, then copy only the bridge window.
                     let ratio = self.sampling_rate as f64 / internal_rate as f64;
-                    let out_len = ((n as f64 * ratio) as usize).min(f5_bridge);
+                    let full_len = ((n as f64 * ratio) as usize).max(1);
+                    let out_len = full_len.min(f5_bridge);
                     let n_us = n as usize;
                     let mut resampled: FixedVec<i16, OPUS_MAX_FRAME> =
-                        FixedVec::from_value(0i16, out_len);
+                        FixedVec::from_value(0i16, full_len);
                     self.silk_resampler
                         .process(&mut resampled, &plc_i16[..n_us], n);
                     for i in 0..out_len {
@@ -1418,87 +1446,105 @@ impl OpusDecoder {
                     let pcm_i16_len = internal_frame_size * self.channels;
                     debug_assert!(pcm_i16_len <= self.w_pcm_i16.len());
 
-                    let ret = {
-                        let (silk_dec, pcm_i16) = (
-                            state_mut(&mut self.silk_dec),
-                            state_mut(&mut self.w_pcm_i16),
-                        );
-                        let lost_flag = if lost_frame {
-                            silk::decode_frame::FLAG_PACKET_LOST
-                        } else {
-                            silk::decode_frame::FLAG_DECODE_NORMAL
-                        };
-                        silk_dec.decode(
-                            &mut rc,
-                            &mut pcm_i16[..pcm_i16_len],
-                            lost_flag,
-                            true,
-                            frame_duration_ms,
-                            internal_sample_rate,
-                        )
-                    };
-
-                    if ret < 0 {
-                        return Err("SILK decoding failed");
-                    }
-
-                    let decoded_samples = ret as usize;
-                    let out_start = fi * sub_output_len;
-
-                    // SILK decoder outputs planar: ch0 at [0..fl], ch1 at [fl..2*fl].
-                    if self.sampling_rate == internal_sample_rate {
-                        let frames = decoded_samples.min(sub_frame_size);
-                        for i in 0..frames {
-                            for ch in 0..self.channels {
-                                let src = if ch == 0 { i } else { internal_frame_size + i };
-                                let v = self.w_pcm_i16[src] as f32 / 32768.0;
-                                let idx = out_start + i * self.channels + ch;
-                                if idx < output.len() {
-                                    output[idx] = v;
-                                }
-                            }
-                        }
+                    // Decode every SILK frame carried by this payload. A 40/60 ms
+                    // SILK packet (Code 0) contains 2/3 internal frames in ONE
+                    // range-coded stream; libopus loops silk_Decode until the full
+                    // frame duration is produced (opus_decoder.c), with
+                    // new_packet set only on the first call (issue #27).
+                    let lost_flag = if lost_frame {
+                        silk::decode_frame::FLAG_PACKET_LOST
                     } else {
-                        let ratio = self.sampling_rate as f64 / internal_sample_rate as f64;
-                        let out_len =
-                            ((decoded_samples as f64 * ratio) as usize).min(sub_frame_size);
-                        debug_assert!(out_len * self.channels <= self.w_pcm_resampled.len());
-                        // Resample channel 0.
-                        {
-                            let (res, inp, out) = (
-                                &mut self.silk_resampler,
-                                state_ref(&self.w_pcm_i16),
-                                state_mut(&mut self.w_pcm_resampled),
+                        silk::decode_frame::FLAG_DECODE_NORMAL
+                    };
+                    let out_start = fi * sub_output_len;
+                    let mut frame_pos = 0usize; // internal-rate samples decoded so far
+                    let mut new_packet = true;
+                    while frame_pos < internal_frame_size {
+                        let ret = {
+                            let (silk_dec, pcm_i16) = (
+                                state_mut(&mut self.silk_dec),
+                                state_mut(&mut self.w_pcm_i16),
                             );
-                            res.process(
-                                &mut out[..out_len],
-                                &inp[..decoded_samples],
-                                decoded_samples as i32,
-                            );
+                            silk_dec.decode(
+                                &mut rc,
+                                &mut pcm_i16[..pcm_i16_len],
+                                lost_flag,
+                                new_packet,
+                                frame_duration_ms,
+                                internal_sample_rate,
+                            )
+                        };
+                        new_packet = false;
+
+                        if ret < 0 {
+                            return Err("SILK decoding failed");
                         }
-                        // Resample channel 1 (stereo only).
-                        if self.channels == 2 {
-                            let (res, inp, out) = (
-                                &mut self.silk_resampler_2,
-                                state_ref(&self.w_pcm_i16),
-                                state_mut(&mut self.w_pcm_resampled),
-                            );
-                            res.process(
-                                &mut out[out_len..2 * out_len],
-                                &inp[internal_frame_size..internal_frame_size + decoded_samples],
-                                decoded_samples as i32,
-                            );
+                        let decoded_samples = ret as usize;
+                        if decoded_samples == 0 {
+                            break;
                         }
-                        let frames = out_len.min(sub_frame_size);
-                        for i in 0..frames {
-                            for ch in 0..self.channels {
-                                let v = self.w_pcm_resampled[ch * out_len + i] as f32 / 32768.0;
-                                let idx = out_start + i * self.channels + ch;
-                                if idx < output.len() {
-                                    output[idx] = v;
+
+                        // SILK decoder outputs planar for THIS frame:
+                        // ch0 at [0..fl], ch1 at [fl..2*fl].
+                        if self.sampling_rate == internal_sample_rate {
+                            let frames = decoded_samples.min(internal_frame_size - frame_pos);
+                            for i in 0..frames {
+                                for ch in 0..self.channels {
+                                    let src = if ch == 0 { i } else { decoded_samples + i };
+                                    let v = self.w_pcm_i16[src] as f32 / 32768.0;
+                                    let idx = out_start + (frame_pos + i) * self.channels + ch;
+                                    if idx < output.len() {
+                                        output[idx] = v;
+                                    }
+                                }
+                            }
+                        } else {
+                            let resampled_len = decoded_samples * self.sampling_rate as usize
+                                / internal_sample_rate as usize;
+                            let api_pos = frame_pos * self.sampling_rate as usize
+                                / internal_sample_rate as usize;
+                            let copy_len = resampled_len.min(sub_frame_size - api_pos);
+                            debug_assert!(
+                                resampled_len * self.channels <= self.w_pcm_resampled.len()
+                            );
+                            // Resample channel 0.
+                            {
+                                let (res, inp, out) = (
+                                    &mut self.silk_resampler,
+                                    state_ref(&self.w_pcm_i16),
+                                    state_mut(&mut self.w_pcm_resampled),
+                                );
+                                res.process(
+                                    &mut out[..resampled_len],
+                                    &inp[..decoded_samples],
+                                    decoded_samples as i32,
+                                );
+                            }
+                            // Resample channel 1 (stereo only).
+                            if self.channels == 2 {
+                                let (res, inp, out) = (
+                                    &mut self.silk_resampler_2,
+                                    state_ref(&self.w_pcm_i16),
+                                    state_mut(&mut self.w_pcm_resampled),
+                                );
+                                res.process(
+                                    &mut out[resampled_len..2 * resampled_len],
+                                    &inp[decoded_samples..2 * decoded_samples],
+                                    decoded_samples as i32,
+                                );
+                            }
+                            for i in 0..copy_len {
+                                for ch in 0..self.channels {
+                                    let v = self.w_pcm_resampled[ch * resampled_len + i] as f32
+                                        / 32768.0;
+                                    let idx = out_start + (api_pos + i) * self.channels + ch;
+                                    if idx < output.len() {
+                                        output[idx] = v;
+                                    }
                                 }
                             }
                         }
+                        frame_pos += decoded_samples;
                     }
                 }
                 decoded_total
@@ -1572,52 +1618,66 @@ impl OpusDecoder {
                     let pcm_silk_i16_len = internal_frame_size * self.channels;
                     debug_assert!(pcm_silk_i16_len <= self.w_pcm_i16.len());
 
-                    let ret = {
-                        let (silk_dec, pcm_i16) = (
-                            state_mut(&mut self.silk_dec),
-                            state_mut(&mut self.w_pcm_i16),
-                        );
-                        let lost_flag = if lost_frame {
-                            silk::decode_frame::FLAG_PACKET_LOST
-                        } else {
-                            silk::decode_frame::FLAG_DECODE_NORMAL
-                        };
-                        silk_dec.decode(
-                            &mut rc,
-                            &mut pcm_i16[..pcm_silk_i16_len],
-                            lost_flag,
-                            true,
-                            frame_duration_ms,
-                            internal_sample_rate,
-                        )
-                    };
-
-                    if ret < 0 {
-                        return Err("SILK decoding failed");
-                    }
-
+                    // Decode every SILK frame carried by this payload (issue #27):
+                    // 40/60 ms Hybrid packets carry 2/3 internal SILK frames in a
+                    // single range-coded stream, exactly like SILK-only packets.
                     let silk_out_len = sub_frame_size * self.channels;
                     self.w_silk_out[..silk_out_len].fill(0.0);
-                    if ret > 0 {
+                    let lost_flag = if lost_frame {
+                        silk::decode_frame::FLAG_PACKET_LOST
+                    } else {
+                        silk::decode_frame::FLAG_DECODE_NORMAL
+                    };
+                    let mut frame_pos = 0usize;
+                    let mut new_packet = true;
+                    while frame_pos < internal_frame_size {
+                        let ret = {
+                            let (silk_dec, pcm_i16) = (
+                                state_mut(&mut self.silk_dec),
+                                state_mut(&mut self.w_pcm_i16),
+                            );
+                            silk_dec.decode(
+                                &mut rc,
+                                &mut pcm_i16[..pcm_silk_i16_len],
+                                lost_flag,
+                                new_packet,
+                                frame_duration_ms,
+                                internal_sample_rate,
+                            )
+                        };
+                        new_packet = false;
+
+                        if ret < 0 {
+                            return Err("SILK decoding failed");
+                        }
                         let decoded_samples = ret as usize;
-                        // SILK decoder outputs planar: ch0 at [0..fl], ch1 at [fl..2*fl].
+                        if decoded_samples == 0 {
+                            break;
+                        }
+
+                        // SILK decoder outputs planar for THIS frame:
+                        // ch0 at [0..fl], ch1 at [fl..2*fl].
                         if self.sampling_rate == internal_sample_rate {
-                            let frames = decoded_samples.min(sub_frame_size);
+                            let frames = decoded_samples.min(internal_frame_size - frame_pos);
                             for i in 0..frames {
                                 for ch in 0..self.channels {
-                                    let src = if ch == 0 { i } else { internal_frame_size + i };
+                                    let src = if ch == 0 { i } else { decoded_samples + i };
                                     let v = self.w_pcm_i16[src] as f32 / 32768.0;
-                                    let idx = i * self.channels + ch;
+                                    let idx = (frame_pos + i) * self.channels + ch;
                                     if idx < silk_out_len {
                                         self.w_silk_out[idx] = v;
                                     }
                                 }
                             }
                         } else {
-                            let ratio = self.sampling_rate as f64 / internal_sample_rate as f64;
-                            let out_len =
-                                ((decoded_samples as f64 * ratio) as usize).min(sub_frame_size);
-                            debug_assert!(out_len * self.channels <= self.w_pcm_resampled.len());
+                            let resampled_len = decoded_samples * self.sampling_rate as usize
+                                / internal_sample_rate as usize;
+                            let api_pos = frame_pos * self.sampling_rate as usize
+                                / internal_sample_rate as usize;
+                            let copy_len = resampled_len.min(sub_frame_size - api_pos);
+                            debug_assert!(
+                                resampled_len * self.channels <= self.w_pcm_resampled.len()
+                            );
                             // Resample channel 0.
                             {
                                 let (res, inp, out) = (
@@ -1626,7 +1686,7 @@ impl OpusDecoder {
                                     state_mut(&mut self.w_pcm_resampled),
                                 );
                                 res.process(
-                                    &mut out[..out_len],
+                                    &mut out[..resampled_len],
                                     &inp[..decoded_samples],
                                     decoded_samples as i32,
                                 );
@@ -1639,23 +1699,23 @@ impl OpusDecoder {
                                     state_mut(&mut self.w_pcm_resampled),
                                 );
                                 res.process(
-                                    &mut out[out_len..2 * out_len],
-                                    &inp[internal_frame_size
-                                        ..internal_frame_size + decoded_samples],
+                                    &mut out[resampled_len..2 * resampled_len],
+                                    &inp[decoded_samples..2 * decoded_samples],
                                     decoded_samples as i32,
                                 );
                             }
-                            let frames = out_len.min(sub_frame_size);
-                            for i in 0..frames {
+                            for i in 0..copy_len {
                                 for ch in 0..self.channels {
-                                    let v = self.w_pcm_resampled[ch * out_len + i] as f32 / 32768.0;
-                                    let idx = i * self.channels + ch;
+                                    let v = self.w_pcm_resampled[ch * resampled_len + i] as f32
+                                        / 32768.0;
+                                    let idx = (api_pos + i) * self.channels + ch;
                                     if idx < silk_out_len {
                                         self.w_silk_out[idx] = v;
                                     }
                                 }
                             }
                         }
+                        frame_pos += decoded_samples;
                     }
 
                     let total_bits = (payload.len() * 8) as i32;

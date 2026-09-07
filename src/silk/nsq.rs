@@ -59,11 +59,14 @@ pub fn silk_nsq(
             lag = pitch_l[k] as usize;
 
             if (k & (3 - (lsf_interpolation_flag << 1) as usize)) == 0 {
-                let start_idx_signed = ps_enc_c.ltp_mem_length
+                // Clamp: lag/order are geometry-bounded for valid streams; a
+                // corrupted state must not yield a negative start index
+                // (issue #27 deep-scan).
+                let start_idx_signed = (ps_enc_c.ltp_mem_length
                     - lag as i32
                     - ps_enc_c.predict_lpc_order
-                    - (LTP_ORDER as i32 / 2);
-                debug_assert!(start_idx_signed > 0);
+                    - (LTP_ORDER as i32 / 2))
+                    .max(0);
                 start_idx = start_idx_signed as usize;
 
                 silk_lpc_analysis_filter(

@@ -226,10 +226,10 @@ pub fn haar1(x: &mut [f32], n0: usize, stride: usize) {
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2")]
 unsafe fn haar1_avx2(x: &mut [f32], n0: usize) {
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
     #[cfg(target_arch = "x86")]
     use core::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::*;
     let n = n0 >> 1;
     let scale = _mm256_set1_ps(core::f32::consts::FRAC_1_SQRT_2);
     let fixup = _mm256_set_epi32(7, 6, 3, 2, 5, 4, 1, 0);
@@ -1860,10 +1860,10 @@ fn prepare_lowband_views(
 #[target_feature(enable = "avx2")]
 #[allow(dead_code)]
 unsafe fn stereo_merge_avx2(x: &mut [f32], y: &mut [f32], mid: f32, side: f32, n: usize) {
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
     #[cfg(target_arch = "x86")]
     use core::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::*;
 
     let mut i = 0;
 
@@ -2527,10 +2527,10 @@ fn compute_band_energy_neon(band: &[f32]) -> f32 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn compute_band_energy_avx2(band: &[f32]) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
     #[cfg(target_arch = "x86")]
     use core::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::*;
 
     let n = band.len();
     let mut i = 0usize;
@@ -2677,10 +2677,10 @@ pub fn normalise_bands(
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn scale_slice_avx2(src: &[f32], dst: &mut [f32], scale: f32, n: usize) {
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
     #[cfg(target_arch = "x86")]
     use core::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::*;
     let vscale = _mm256_set1_ps(scale);
     let mut i = 0;
 
@@ -2863,10 +2863,10 @@ unsafe fn renormalise_vector_neon(x: &mut [f32], n: usize, gain: f32) {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn renormalise_vector_avx2(x: &mut [f32], n: usize, gain: f32) {
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
     #[cfg(target_arch = "x86")]
     use core::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::*;
 
     let mut i = 0usize;
 

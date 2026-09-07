@@ -348,13 +348,18 @@ impl RangeCoder {
 
     #[inline(always)]
     fn celt_udiv(n: u32, d: u32) -> u32 {
-        debug_assert!(d > 0);
+        // assert! (not debug_assert!): d == 0 is a hard arithmetic fault in
+        // release builds too; fail fast with a clear message instead
+        // (issue #27 deep scan).
+        assert!(d > 0, "celt_udiv: division by zero");
         n / d
     }
 
     #[inline(always)]
     pub fn encode(&mut self, fl: u32, fh: u32, ft: u32) {
-        debug_assert!(ft > 0, "encode: ft must be > 0");
+        // assert! (not debug_assert!): ft == 0 hits celt_udiv's hard fault in
+        // release as well (issue #27 deep scan).
+        assert!(ft > 0, "encode: ft must be > 0");
         let r = Self::celt_udiv(self.rng, ft);
         if fl > 0 {
             self.val = self
@@ -478,6 +483,7 @@ impl RangeCoder {
 
     #[inline(always)]
     pub fn decode(&mut self, ft: u32) -> u32 {
+        assert!(ft > 0, "decode: ft must be > 0");
         let r = Self::celt_udiv(self.rng, ft);
         self.ext = r;
         let s = self.val / r;

@@ -3,7 +3,12 @@ use crate::silk::define::*;
 
 /// SILK maximum frame length in samples (`5 * 4 * 16`). Used to size the
 /// heap-free stereo side buffer.
-const SILK_SIDE_MAX: usize = MAX_FRAME_LENGTH;
+///
+/// The buffer must hold a whole *packet* worth of side samples at the internal
+/// rate, not just one 20 ms frame (issue #27): 40/60 ms packets at 16 kHz need
+/// 640/960 samples respectively, which exceeded the old 320 capacity and
+/// panicked in `FixedVec::resize`.
+const SILK_SIDE_MAX: usize = 3 * MAX_FRAME_LENGTH;
 
 #[derive(Clone, Default)]
 pub struct SilkStereoState {
