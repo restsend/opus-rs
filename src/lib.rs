@@ -136,10 +136,6 @@ pub struct OpusEncoder {
     #[cfg(feature = "heap")]
     buf_stereo_mid: Box<FixedVec<i16, OPUS_MAX_FRAME>>,
     #[cfg(not(feature = "heap"))]
-    buf_stereo_side: FixedVec<i16, OPUS_MAX_FRAME>,
-    #[cfg(feature = "heap")]
-    buf_stereo_side: Box<FixedVec<i16, OPUS_MAX_FRAME>>,
-    #[cfg(not(feature = "heap"))]
     buf_celt_input: FixedVec<f32, OPUS_MAX_FRAME>,
     #[cfg(feature = "heap")]
     buf_celt_input: Box<FixedVec<f32, OPUS_MAX_FRAME>>,
@@ -172,10 +168,9 @@ pub struct OpusEncoder {
     hp_mem_float: [f32; 4],
     /// Encoder-direction SILK input resampler (C `resampler_state` with
     /// `forEnc = 1`): API rate -> SILK internal rate, carrying the
-    /// `delay_matrix_enc` input delay and the private down-FIR chain. One
-    /// instance per signal (mid and side).
+    /// `delay_matrix_enc` input delay and the private down-FIR chain. Stereo
+    /// input is downmixed to the mid before it, as SILK codes the mid only.
     silk_resampler_enc: silk::resampler::SilkResampler,
-    silk_resampler_enc_side: silk::resampler::SilkResampler,
 
     rc: RangeCoder,
 }
@@ -533,10 +528,6 @@ impl OpusEncoder {
             #[cfg(feature = "heap")]
             buf_stereo_mid: Box::new(FixedVec::new()),
             #[cfg(not(feature = "heap"))]
-            buf_stereo_side: FixedVec::new(),
-            #[cfg(feature = "heap")]
-            buf_stereo_side: Box::new(FixedVec::new()),
-            #[cfg(not(feature = "heap"))]
             buf_celt_input: FixedVec::new(),
             #[cfg(feature = "heap")]
             buf_celt_input: Box::new(FixedVec::new()),
@@ -564,7 +555,6 @@ impl OpusEncoder {
             },
             hp_mem_float: [0.0; 4],
             silk_resampler_enc: silk::resampler::SilkResampler::default(),
-            silk_resampler_enc_side: silk::resampler::SilkResampler::default(),
             rc: RangeCoder::new_encoder(1),
         })
     }
@@ -932,7 +922,6 @@ impl OpusEncoder {
                 if ret != 0 {
                     return Err("Unsupported SILK resampling ratio");
                 }
-                self.silk_resampler_enc_side = self.silk_resampler_enc.clone();
             }
 
             self.silk_enc.s_cmn.use_in_band_fec = if self.use_inband_fec { 1 } else { 0 };
@@ -1023,71 +1012,40 @@ impl OpusEncoder {
 
             let input_i16 = state_ref(&self.buf_filtered);
 
-            // Stereo mid/side split at the API rate (C silk_stereo_LR_to_MS
-            // works at the internal rate, but this port splits first and
-            // resamples each signal below).
-            let is_stereo_silk = mode == OpusMode::SilkOnly && self.channels == 2;
-            if is_stereo_silk {
-                let frame_length = input_i16.len() / 2;
-                self.buf_stereo_mid.resize(frame_length, 0);
-                self.buf_stereo_side.resize(frame_length, 0);
-                for i in 0..frame_length {
-                    let l = input_i16[2 * i] as i32;
-                    let r = input_i16[2 * i + 1] as i32;
-                    self.buf_stereo_mid[i] = ((l + r) / 2) as i16;
-                    self.buf_stereo_side[i] = (l - r) as i16;
+            // SILK codes stereo as the mid only (its stereo header carries a
+            // zero predictor and the mid-only flag), so downmix stereo before
+            // resampling, in SILK-only and Hybrid alike, as C silk_Encode does
+            // for a stereo API coded as one internal channel (enc_API.c,
+            // nChannelsAPI 2 / nChannelsInternal 1).
+            let silk_src: &[i16] = if self.channels == 2 {
+                self.buf_stereo_mid.resize(frame_size, 0);
+                for (m, lr) in self
+                    .buf_stereo_mid
+                    .iter_mut()
+                    .zip(input_i16.chunks_exact(2))
+                {
+                    *m = ((lr[0] as i32 + lr[1] as i32 + 1) >> 1) as i16;
                 }
-            }
+                state_ref(&self.buf_stereo_mid)
+            } else {
+                input_i16
+            };
 
             // SILK input resampling (C silk_Encode always runs silk_resampler
             // on the API-rate input; the Copy path still applies its
             // delay_matrix_enc input delay at equal rates).
             let silk_frame_len_samples =
                 frame_size * silk_fs_khz as usize / (self.sampling_rate.max(1000) / 1000) as usize;
-            let needs_resampler = mode == OpusMode::SilkOnly || mode == OpusMode::Hybrid;
-            let silk_input: &[i16] = if needs_resampler {
-                self.buf_silk_input.resize(silk_frame_len_samples, 0);
-                if is_stereo_silk {
-                    self.buf_stereo_side.resize(silk_frame_len_samples, 0);
-                }
-                let mid_src: &[i16] = if is_stereo_silk {
-                    state_ref(&self.buf_stereo_mid)
-                } else {
-                    input_i16
-                };
-                let got = self.silk_resampler_enc.process(
-                    state_mut(&mut self.buf_silk_input),
-                    mid_src,
-                    frame_size as i32,
-                );
-                if got != 0 {
-                    return Err("SILK input resampling failed");
-                }
-                if is_stereo_silk {
-                    // Resample the API-rate side (buf_stereo_side) into the
-                    // encoder's side buffer.
-                    let side_src: &[i16] = state_ref(&self.buf_stereo_side);
-                    self.silk_enc.stereo.side.resize(silk_frame_len_samples, 0);
-                    let side_dst: &mut [i16] = state_mut(&mut self.silk_enc.stereo.side);
-                    let got = self
-                        .silk_resampler_enc_side
-                        .process(side_dst, side_src, frame_size as i32);
-                    if got != 0 {
-                        return Err("SILK input resampling failed");
-                    }
-                }
-                state_ref(&self.buf_silk_input)
-            } else if is_stereo_silk {
-                let frame_length = input_i16.len() / 2;
-                self.silk_enc.stereo.side.resize(frame_length, 0);
-                self.silk_enc
-                    .stereo
-                    .side
-                    .copy_from_slice(&self.buf_stereo_side[..frame_length]);
-                state_ref(&self.buf_stereo_mid)
-            } else {
-                input_i16
-            };
+            self.buf_silk_input.resize(silk_frame_len_samples, 0);
+            let got = self.silk_resampler_enc.process(
+                state_mut(&mut self.buf_silk_input),
+                silk_src,
+                frame_size as i32,
+            );
+            if got != 0 {
+                return Err("SILK input resampling failed");
+            }
+            let silk_input: &[i16] = state_ref(&self.buf_silk_input);
 
             let mut pn_bytes = 0;
 

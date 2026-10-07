@@ -18,6 +18,8 @@ pub struct SilkStereoState {
 
     pub left: i16,
 
+    /// Side signal at the internal rate. Unused: the encoder codes the mid
+    /// only, with a zero stereo predictor (issue #42).
     pub side: FixedVec<i16, SILK_SIDE_MAX>,
 }
 

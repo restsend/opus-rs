@@ -122,14 +122,9 @@ impl SilkDecoder {
             }
         }
 
-        // Initialise second channel and stereo state on mono→stereo transition.
-        if self.n_channels_internal == 2
-            && self.prev_decode_only_middle == 0
-            && self.s_stereo.pred_prev_q13 == [0, 0]
-        {
-            // Fresh stereo init: clear stereo state.
-            self.s_stereo = StereoDecState::default();
-        }
+        // libopus clears the stereo predictor state only on a mono->stereo
+        // change of the internal channel count (dec_API.c). Here the count is
+        // fixed by `init()`, so the state carries over from frame to frame.
 
         if lost_flag != FLAG_PACKET_LOST && self.channel_state[0].n_frames_decoded == 0 {
             let n_frames_per_packet = self.channel_state[0].n_frames_per_packet.max(1);
@@ -234,7 +229,13 @@ impl SilkDecoder {
             ch1.first_frame_after_reset = 1;
         }
 
-        let has_side = decode_only_middle == 0;
+        // A lost frame conceals the side only if the last good frame coded
+        // one (dec_API.c).
+        let has_side = if lost_flag == FLAG_DECODE_NORMAL {
+            decode_only_middle == 0
+        } else {
+            self.prev_decode_only_middle == 0
+        };
         let n_channels = self.n_channels_internal as usize;
         let frame_length = self.channel_state[0].frame_length as usize;
 
@@ -318,7 +319,11 @@ impl SilkDecoder {
             output[..fl].copy_from_slice(&self.w_silk_buf[0][1..1 + fl]);
         }
 
-        self.prev_decode_only_middle = decode_only_middle;
+        // A lost frame carries no mid-only flag; keep the last good one
+        // (dec_API.c).
+        if lost_flag != FLAG_PACKET_LOST {
+            self.prev_decode_only_middle = decode_only_middle;
+        }
 
         if n_samples_out < 0 { -1 } else { n_samples_out }
     }
@@ -383,5 +388,36 @@ mod tests {
         let ret = dec.init(16000, 1);
         assert_eq!(ret, 0);
         assert_eq!(dec.frame_length(), 320);
+    }
+
+    /// Conceal one lost 20 ms stereo frame after a good frame whose mid-only
+    /// flag was `prev_mid_only`, and return the decoder.
+    fn conceal_after(prev_mid_only: i32) -> SilkDecoder {
+        let mut dec = SilkDecoder::new();
+        assert_eq!(dec.init(16000, 2), 0);
+        dec.prev_decode_only_middle = prev_mid_only;
+        let mut out = [0i16; 2 * 320];
+        let mut rc = RangeCoder::new_decoder(&[]);
+        let n = dec.decode(&mut rc, &mut out, FLAG_PACKET_LOST, true, 20, 16000);
+        assert_eq!(n, 320);
+        dec
+    }
+
+    /// libopus dec_API.c: a lost frame conceals the side channel only if
+    /// the last good frame coded one, and leaves the mid-only flag alone.
+    #[test]
+    fn a_lost_frame_after_a_mid_only_frame_conceals_the_mid_only() {
+        let dec = conceal_after(1);
+        assert_eq!(dec.prev_decode_only_middle, 1);
+        assert_eq!(dec.channel_state[0].loss_cnt, 1);
+        assert_eq!(dec.channel_state[1].loss_cnt, 0, "side was concealed");
+    }
+
+    #[test]
+    fn a_lost_frame_after_a_side_coded_frame_conceals_both() {
+        let dec = conceal_after(0);
+        assert_eq!(dec.prev_decode_only_middle, 0);
+        assert_eq!(dec.channel_state[0].loss_cnt, 1);
+        assert_eq!(dec.channel_state[1].loss_cnt, 1);
     }
 }

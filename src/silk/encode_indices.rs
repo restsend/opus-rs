@@ -162,19 +162,62 @@ pub fn silk_encode_indices(
     ps_range_enc.encode_icdf(ps_indices.seed as i32, &SILK_UNIFORM4_ICDF, 8);
 }
 
+/// Quantization indices `[interval % 3, sub-step, interval / 3]` of a zero
+/// stereo predictor: what libopus's `silk_stereo_quant_pred` makes of
+/// pred (0, 0), as for its `toMono` frames. Interval 7, sub-step 2 is level
+/// -820 + 164 * 5 = 0, and the joint symbol is 5 * 2 + 2 = 12.
+const NEUTRAL_PRED_IX: [[i8; 3]; 2] = [[1, 2, 2], [1, 2, 2]];
+
+/// Write a frame's stereo header: the mid/side predictors, then the
+/// mid-only flag (libopus `silk_stereo_encode_pred` and
+/// `silk_stereo_encode_mid_only`).
+///
+/// This encoder codes the mid only, so the predictors are always zero. The
+/// decoder applies them to mid-only frames too (side = pred * mid in
+/// `silk_stereo_ms_to_lr`), so anything else skews the channels: index 0,
+/// which this used to write, is pred (0, -13364) and decodes as
+/// L = -0.63 * mid, R = 2.63 * mid (issue #42). `_side_idx` and `_pred_idx`
+/// are ignored until the side channel is coded.
 pub fn silk_encode_stereo(
     ps_range_enc: &mut RangeCoder,
     _side_idx: i8,
     _pred_idx: i8,
     only_middle: i8,
 ) {
-    // C-compatible order: stereo_pred (5 ICDFs) first, then mid_only flag
-    // Use zero/neutral values for prediction (decoder discards these anyway)
-    ps_range_enc.encode_icdf(0, &SILK_STEREO_PRED_JOINT_ICDF, 8);
-    ps_range_enc.encode_icdf(0, &SILK_UNIFORM3_ICDF, 8);
-    ps_range_enc.encode_icdf(0, &SILK_UNIFORM5_ICDF, 8);
-    ps_range_enc.encode_icdf(0, &SILK_UNIFORM3_ICDF, 8);
-    ps_range_enc.encode_icdf(0, &SILK_UNIFORM5_ICDF, 8);
-    // Write mid-only flag (since ch1_VAD == 0 for our mid-only stereo, decoder always reads this)
+    let ix = &NEUTRAL_PRED_IX;
+    ps_range_enc.encode_icdf(
+        (5 * ix[0][2] + ix[1][2]) as i32,
+        &SILK_STEREO_PRED_JOINT_ICDF,
+        8,
+    );
+    for pred in ix {
+        ps_range_enc.encode_icdf(pred[0] as i32, &SILK_UNIFORM3_ICDF, 8);
+        ps_range_enc.encode_icdf(pred[1] as i32, &SILK_UNIFORM5_ICDF, 8);
+    }
     ps_range_enc.encode_icdf(only_middle as i32, &SILK_STEREO_ONLY_CODE_MID_ICDF, 8);
+}
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use super::*;
+    use crate::silk::decode_indices::{silk_stereo_decode_mid_only, silk_stereo_decode_pred};
+
+    fn round_trip(only_middle: i8) -> ([i32; 2], bool) {
+        let mut enc = RangeCoder::new_encoder(64);
+        silk_encode_stereo(&mut enc, 0, 0, only_middle);
+        let bytes = enc.finish();
+        let mut dec = RangeCoder::new_decoder(&bytes);
+        let pred = silk_stereo_decode_pred(&mut dec);
+        (pred, silk_stereo_decode_mid_only(&mut dec))
+    }
+
+    #[test]
+    fn stereo_header_is_neutral_mid_only() {
+        assert_eq!(round_trip(1), ([0, 0], true));
+    }
+
+    #[test]
+    fn stereo_header_keeps_the_mid_only_flag() {
+        assert_eq!(round_trip(0), ([0, 0], false));
+    }
 }
