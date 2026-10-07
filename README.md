@@ -116,6 +116,21 @@ Measured on Apple Silicon M-series (aarch64), compiled with `--release` (opt-lev
 
 ## Release Notes
 
+### Unreleased
+
+- **Fix: SILK-only VBR ignored `bitrate_bps` (issue #43).** The SILK target
+  rate came from the packet budget, which under VBR is the caller's output
+  buffer: a 1500-byte buffer asked SILK for ~510 kb/s, so every bitrate coded
+  the same ~87-byte packets (16 kHz, 20 ms). The rate now follows libopus
+  1.6's `bits_target` / `total_bitRate` (opus_encoder.c): the requested
+  bitrate, capped by the buffer, less the TOC byte. The buffer stays the hard
+  cap (`maxBits`). At 12-64 kb/s, 16 kHz VBR now codes 21-69 bytes a packet,
+  against libopus's 27-73. CBR and Hybrid streams are byte-identical to
+  before. Known gap: at wideband, opus-rs codes fewer excitation bits than
+  libopus at the same gains (0.78x libopus's size at 12 kb/s, 1.01x at
+  narrowband). That is a separate SILK encoder divergence, tracked for
+  follow-up.
+
 ### 0.1.37
 
 - **Fix: starved CBR budgets (issues #45, #46).** Budgets below 3 bytes per
