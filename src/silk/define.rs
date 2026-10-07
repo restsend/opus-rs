@@ -2,6 +2,8 @@ pub const ENCODER_NUM_CHANNELS: usize = 2;
 pub const DECODER_NUM_CHANNELS: usize = 2;
 
 pub const SILK_NO_ERROR: i32 = 0;
+/// The encoder was given fewer samples than a packet holds.
+pub const SILK_ENC_INPUT_INVALID_NO_OF_SAMPLES: i32 = -101;
 
 pub const MAX_FRAMES_PER_PACKET: usize = 3;
 
@@ -68,6 +70,21 @@ pub const TYPE_UNVOICED: i32 = 1;
 pub const TYPE_VOICED: i32 = 2;
 
 pub const CODE_INDEPENDENTLY_NO_LTP_SCALING: i32 = 2;
+
+/// Length of the stereo predictor and width interpolation at the start of a
+/// frame, in ms (libopus `STEREO_INTERP_LEN_MS`).
+pub const STEREO_INTERP_LEN_MS: i32 = 8;
+/// Size of the stereo predictor quantization table (`STEREO_QUANT_TAB_SIZE`).
+pub const STEREO_QUANT_TAB_SIZE: usize = 16;
+/// Sub-steps per stereo predictor quantization interval
+/// (`STEREO_QUANT_SUB_STEPS`).
+pub const STEREO_QUANT_SUB_STEPS: i32 = 5;
+/// Half a predictor sub-step, `SILK_FIX_CONST(0.5 / STEREO_QUANT_SUB_STEPS, 16)`
+/// in libopus (stereo_decode_pred.c, stereo_quant_pred.c). SILK_FIX_CONST
+/// rounds, so this is 6554, not the 6553 of `(1 << 16) / 10`; the truncated
+/// value dequantized 45 of the 75 predictor levels a few Q13 units off
+/// libopus, and the neutral index to (0, -5) instead of (0, 0).
+pub const STEREO_HALF_SUB_STEP_Q16: i32 = 6554;
 
 pub const SILK_PE_MIN_COMPLEX: usize = 0;
 pub const SILK_PE_MID_COMPLEX: usize = 1;

@@ -2,7 +2,7 @@
 //!
 //! Each test mirrors the minimal reproducer from the corresponding issue.
 
-use opus_rs::{Application, OpusDecoder, OpusEncoder};
+use opus_rs::OpusDecoder;
 
 fn try_decode(label: &str, pkt: &[u8], frame_size: usize, channels: usize) {
     let mut dec = OpusDecoder::new(48000, channels).unwrap();
@@ -188,57 +188,109 @@ fn issue_7_decode_returns_actual_sample_count() {
 
 // ---------------------------------------------------------------------------
 // Issue #7 sub-item 3: Stereo SILK must decode M/S, not replicate mono.
+//
+// libopus encodes these streams: opus-rs's own encoder codes stereo as the
+// mid only (issue #42), so its packets cannot show whether the decoder
+// applies the predictor and the side channel.
 // ---------------------------------------------------------------------------
+
+/// Encode 0.5 s of 16 kHz stereo SILK with libopus, with `l`/`r` giving each
+/// channel's sample at time `t`, and decode it with opus-rs and with libopus.
+/// Returns both interleaved outputs, opus-rs's first.
+fn libopus_stereo_silk(l: impl Fn(f64) -> f32, r: impl Fn(f64) -> f32) -> (Vec<f32>, Vec<f32>) {
+    use opus::{
+        Application as CApp, Bandwidth as CBw, Bitrate as CBitrate, Channels as CCh,
+        Decoder as CDec, Encoder as CEnc, Signal as CSignal,
+    };
+    let (sr, fs) = (16000, 320);
+    let mut enc = CEnc::new(sr, CCh::Stereo, CApp::Voip).unwrap();
+    enc.set_bitrate(CBitrate::Bits(32000)).unwrap();
+    enc.set_bandwidth(CBw::Wideband).unwrap();
+    enc.set_signal(CSignal::Voice).unwrap();
+    enc.set_force_channels(Some(CCh::Stereo)).unwrap();
+    let mut c_dec = CDec::new(sr, CCh::Stereo).unwrap();
+    let mut rs_dec = OpusDecoder::new(sr as i32, 2).unwrap();
+
+    let (mut rs_out, mut c_out) = (Vec::new(), Vec::new());
+    let (mut pkt, mut buf) = (vec![0u8; 1500], vec![0f32; fs * 2]);
+    for p in 0..25 {
+        let pcm: Vec<f32> = (p * fs..(p + 1) * fs)
+            .flat_map(|i| {
+                let t = i as f64 / sr as f64;
+                [l(t), r(t)]
+            })
+            .collect();
+        let n = enc.encode_float(&pcm, &mut pkt).unwrap();
+        assert!(pkt[0] >> 3 <= 11, "libopus did not code SILK-only");
+        assert_eq!(rs_dec.decode(&pkt[..n], fs, &mut buf).unwrap(), fs);
+        rs_out.extend_from_slice(&buf);
+        assert_eq!(c_dec.decode_float(&pkt[..n], &mut buf, false).unwrap(), fs);
+        c_out.extend_from_slice(&buf);
+    }
+    (rs_out, c_out)
+}
+
+/// SNR (dB) of channel `c` of `test` against the same channel of
+/// `reference`, both interleaved stereo.
+fn channel_snr(reference: &[f32], test: &[f32], c: usize) -> f64 {
+    let (mut sig, mut err) = (0f64, 0f64);
+    for (r, t) in reference.iter().zip(test).skip(c).step_by(2) {
+        sig += (*r as f64).powi(2);
+        err += (*r as f64 - *t as f64).powi(2);
+    }
+    10.0 * (sig / err.max(1e-30)).log10()
+}
+
+/// opus-rs's SILK decoder is fixed-point like libopus's, so the two agree
+/// to float rounding (~190 dB measured). A predictor dequantized one step
+/// off (the old 6553 constant) or a stereo state wrongly reset shows as a
+/// small but systematic error, far below this.
+const SILK_MATCH_DB: f64 = 100.0;
+
+fn assert_matches_libopus(rs: &[f32], c: &[f32]) {
+    for (ch, name) in [(0, "L"), (1, "R")] {
+        let snr = channel_snr(c, rs, ch);
+        assert!(
+            snr > SILK_MATCH_DB,
+            "{name}: opus-rs vs libopus {snr:.1} dB"
+        );
+    }
+}
+
 #[test]
 fn issue_7_stereo_silk_channels_differ() {
-    let sr = 16000;
-    let ch = 2;
-    let fs = 320; // 20ms at 16kHz
-
-    let mut enc = OpusEncoder::new(sr, ch, Application::Voip).unwrap();
-    enc.bitrate_bps = 32000;
-
     // Left = 440 Hz tone, Right = silence. Different per channel.
-    let mut pcm = vec![0.0f32; fs * ch];
-    for i in 0..fs {
-        let t = i as f64 / sr as f64;
-        let val = (440.0 * t * 2.0 * std::f64::consts::PI).sin() as f32 * 0.3;
-        pcm[i * 2] = val; // L
-        pcm[i * 2 + 1] = 0.0; // R (silence)
-    }
+    let tone = |t: f64| (440.0 * t * 2.0 * std::f64::consts::PI).sin() as f32 * 0.3;
+    let (out, c_out) = libopus_stereo_silk(tone, |_| 0.0);
 
-    let mut packet = vec![0u8; 400];
-    let n = enc.encode(&pcm, fs, &mut packet).unwrap();
-
-    let mut dec = OpusDecoder::new(sr, ch).unwrap();
-    let mut out = vec![0.0f32; fs * ch];
-    let decoded = dec.decode(&packet[..n], fs, &mut out).unwrap();
-    assert_eq!(decoded, fs);
-
-    // Verify L and R are NOT identical (old code replicated mono → L==R).
-    let mut l_max = 0.0f32;
-    let mut r_max = 0.0f32;
-    for i in 0..fs {
-        l_max = l_max.max(out[i * 2].abs());
-        r_max = r_max.max(out[i * 2 + 1].abs());
-    }
-    // Left should have significant energy.
+    let l_max = out.iter().step_by(2).fold(0f32, |m, x| m.max(x.abs()));
     assert!(
         l_max > 0.01,
         "Left channel should have energy, got max={l_max}"
     );
-    // Right should differ significantly from Left (not a mono copy).
-    // With M/S stereo and different L/R, R will not be zero but should be
-    // substantially different from L.
-    let mut l_minus_r = 0.0f32;
-    for i in 0..fs {
-        l_minus_r += (out[i * 2] - out[i * 2 + 1]).abs();
-    }
+    // Right should differ substantially from Left (not a mono copy).
+    let frames = out.len() / 2;
+    let l_minus_r: f32 = out.chunks_exact(2).map(|p| (p[0] - p[1]).abs()).sum();
     assert!(
-        l_minus_r / fs as f32 > 0.005,
+        l_minus_r / frames as f32 > 0.005,
         "L and R should differ (M/S decoding), got avg diff={}",
-        l_minus_r / fs as f32
+        l_minus_r / frames as f32
     );
+    assert_matches_libopus(&out, &c_out);
+}
+
+/// A quadrature pair (same tone, 90° apart): equal power and spectrum but
+/// uncorrelated, so libopus codes the side with both predictors quantized to
+/// exactly zero. The decoder used to clear its stereo state on every such
+/// frame (a heuristic keyed on a zero predictor), which libopus never does.
+#[test]
+fn issue_7_stereo_silk_zero_predictor_matches_libopus() {
+    use std::f64::consts::PI;
+    let (out, c_out) = libopus_stereo_silk(
+        |t| (300.0 * t * 2.0 * PI).sin() as f32 * 0.3,
+        |t| (300.0 * t * 2.0 * PI).cos() as f32 * 0.3,
+    );
+    assert_matches_libopus(&out, &c_out);
 }
 
 // helper used by the println-based debug tests

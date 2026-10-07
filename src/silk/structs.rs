@@ -10,15 +10,70 @@ use crate::silk::define::*;
 /// panicked in `FixedVec::resize`.
 const SILK_SIDE_MAX: usize = 3 * MAX_FRAME_LENGTH;
 
-#[derive(Clone, Default)]
+/// Stereo encoder state: libopus `stereo_enc_state` plus
+/// `silk_encoder.prev_decode_only_middle`. It lives on the mid channel's
+/// [`SilkEncoderState`]; a mono encoder uses only `s_mid`.
+#[derive(Clone)]
 pub struct SilkStereoState {
+    /// Last two mid (or mono) samples of the previous frame.
     pub s_mid: [i16; 2],
 
+    /// Last two side samples of the previous frame.
     pub s_side: [i16; 2],
 
+    /// Unused.
     pub left: i16,
 
+    /// Unused; kept because it is a public field.
     pub side: FixedVec<i16, SILK_SIDE_MAX>,
+
+    /// Quantized predictors of the previous frame (Q13).
+    pub pred_prev_q13: [i16; 2],
+    /// Smoothed norms of the mid and the prediction residual, for the low
+    /// band (`[0]`, `[1]`) and the high band (`[2]`, `[3]`).
+    pub mid_side_amp_q0: [i32; 4],
+    /// Smoothed stereo width (Q14).
+    pub smth_width_q14: i16,
+    /// Stereo width of the previous frame (Q14).
+    pub width_prev_q14: i16,
+    /// Samples coded with a silent side since the last side-coded frame.
+    pub silent_side_len: i16,
+    /// Quantization indices of each frame's predictors, as written.
+    pub pred_ix: [[[i8; 3]; 2]; MAX_FRAMES_PER_PACKET],
+    /// Each frame's mid-only flag, as written.
+    pub mid_only_flags: [i8; MAX_FRAMES_PER_PACKET],
+    /// Whether the previous frame coded the mid only.
+    pub prev_decode_only_middle: i32,
+}
+
+impl Default for SilkStereoState {
+    /// The state libopus's `silk_Encode` sets up when a stream starts coding
+    /// two channels (enc_API.c, mono -> stereo transition): full smoothed
+    /// width, zero previous width and predictors, unit residual norms.
+    fn default() -> Self {
+        Self {
+            s_mid: [0; 2],
+            s_side: [0; 2],
+            left: 0,
+            side: FixedVec::new(),
+            pred_prev_q13: [0; 2],
+            mid_side_amp_q0: [0, 1, 0, 1],
+            smth_width_q14: 1 << 14,
+            width_prev_q14: 0,
+            silent_side_len: 0,
+            pred_ix: [[[0; 3]; 2]; MAX_FRAMES_PER_PACKET],
+            mid_only_flags: [0; MAX_FRAMES_PER_PACKET],
+            prev_decode_only_middle: 0,
+        }
+    }
+}
+
+impl SilkStereoState {
+    /// Back to the start-of-stream state, as libopus's `silk_InitEncoder`
+    /// followed by the mono -> stereo transition leaves it.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
 }
 
 #[derive(Clone, Copy)]

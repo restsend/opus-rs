@@ -57,11 +57,17 @@ fn report_struct_sizes() {
 /// Full encode + decode round-trip on a small-stack thread.
 #[cfg(feature = "heap")]
 fn roundtrip_on_stack(stack_size: usize) -> bool {
+    roundtrip_on_stack_with(stack_size, Application::Audio, 128_000)
+}
+
+/// [`roundtrip_on_stack`] for one application and bitrate.
+#[cfg(feature = "heap")]
+fn roundtrip_on_stack_with(stack_size: usize, application: Application, bitrate: i32) -> bool {
     std::thread::Builder::new()
         .stack_size(stack_size)
-        .spawn(|| {
-            let mut enc = OpusEncoder::new(48000, 2, Application::Audio).unwrap();
-            enc.bitrate_bps = 128_000;
+        .spawn(move || {
+            let mut enc = OpusEncoder::new(48000, 2, application).unwrap();
+            enc.bitrate_bps = bitrate;
 
             let frame_size = 960; // 20 ms @ 48 kHz
             let mut input = vec![0.0f32; frame_size * 2];
@@ -93,5 +99,16 @@ fn construction_and_roundtrip_fit_in_768kb_stack() {
     assert!(
         roundtrip_on_stack(768 * 1024),
         "constructing + encoding + decoding overflowed a 768 KiB stack"
+    );
+}
+
+/// The same for stereo Hybrid, whose SILK part codes a mid and a side
+/// channel (issue #48).
+#[cfg(feature = "heap")]
+#[test]
+fn stereo_hybrid_roundtrip_fits_in_768kb_stack() {
+    assert!(
+        roundtrip_on_stack_with(768 * 1024, Application::Voip, 32_000),
+        "stereo Hybrid encoding + decoding overflowed a 768 KiB stack"
     );
 }
