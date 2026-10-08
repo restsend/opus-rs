@@ -116,6 +116,54 @@ Measured on Apple Silicon M-series (aarch64), compiled with `--release` (opt-lev
 
 ## Release Notes
 
+### Unreleased
+
+- **Fix: SILK CBR with in-band FEC busted packets into concealed frames
+  (issue #51).** SILK's frame target now leaves room for the packet's LBRR
+  section, as libopus's does. This ports `enc_API.c`'s per-frame target, for
+  mono and stereo: the moving average of LBRR bits (`nBitsUsedLBRR`), the
+  bit reservoir across packets (`nBitsExceeded`) and the balance within a
+  multi-frame packet (`bitsBalance`). The frame cap no longer takes the
+  LBRR bits off a second time, since the rate control already counts them.
+  At 16-48 kb/s, 20 ms and 40% loss, mono busts 0-1 packets in 50 (was up
+  to 8; libopus 0-2) and stereo 0-2 (was up to 15). Stereo carries LBRR in
+  22-31 packets (was 5-20; libopus 29-30). Mono's main frame codes as well
+  as without FEC (worst window 4.6 dB, was 0.3). Hybrid's SILK layer also
+  pays back its overshoot of the target rate, as libopus's does.
+- **Stereo SILK/Hybrid codes the side, as libopus does (issue #48).** L and R
+  are resampled separately and converted to mid/side at the internal rate by
+  a bit-exact port of libopus's `silk_stereo_LR_to_MS`: predictor estimation
+  and quantization, stereo-width smoothing, the panned-mono and reduced-width
+  decisions, and the mid/side bit split. A second SILK channel codes the
+  side, with its own VAD, LBRR (in-band FEC) and rate control, and libopus's
+  side reset after mid-only frames. On the #42 signal each channel now
+  measures within 0.3 dB of libopus (R: +3.8 → +5.1 dB, libopus +5.1).
+  Anti-phase input, which decoded as silence, measures +7.0 dB per channel,
+  as libopus does. Two unrelated voices go from +1.9/+2.8 to +6.0/+9.3 dB
+  (libopus +5.4/+8.0). Hybrid splits its SILK rate per channel, as libopus's
+  `compute_silk_rate_for_hybrid` does. Mono output is unchanged, byte for
+  byte. Under CBR with in-band FEC the side's LBRR at first crowded LBRR
+  out of many packets; #51 (above) fixes that.
+- **Fix: stereo SILK/Hybrid decoded as L ≈ −0.63·mid, R ≈ 2.63·mid (issue
+  #42).** The encoder codes stereo SILK as the mid only, but wrote stereo
+  predictor index 0, which dequantizes to `pred_Q13 = (0, −13364)`. The
+  decoder applies the predictor to mid-only frames too, so the left channel
+  came out phase-inverted and the right ~8 dB hot. It now writes the zero
+  predictor, joint symbol 12, as libopus does for its `toMono` frames. Hybrid
+  also fed SILK the interleaved L,R input as if it were mono; it is now
+  downmixed like SILK-only, which lifts the 24/48 kHz Hybrid mid from −2.4 dB
+  to +5.8 dB SNR (libopus +5.9 dB). Both channels now carry the mid
+  (L = R ≈ 0.85·mid, SNR +5.2/+3.8 dB, libopus +5.1/+5.1 dB with real side
+  coding), until #48 (above) adds the side.
+- **Fix: the SILK decoder's stereo predictor levels match libopus.** The
+  half-step constant was `(1 << 16) / 10` = 6553 instead of libopus's
+  `SILK_FIX_CONST(0.1, 16)` = 6554, so 45 of the 75 levels came out a few
+  Q13 units off and libopus stereo streams decoded at ~65 dB against libopus
+  instead of bit-exactly. The stereo state is no longer cleared on frames
+  whose predictor is zero (libopus clears it only on a mono→stereo switch),
+  and a lost frame keeps the last mid-only flag and conceals the side only
+  if the last good frame coded one (dec_API.c).
+
 ### 0.1.37
 
 - **Fix: starved CBR budgets (issues #45, #46).** Budgets below 3 bytes per

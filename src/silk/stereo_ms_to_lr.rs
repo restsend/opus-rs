@@ -1,9 +1,8 @@
+use crate::silk::define::STEREO_INTERP_LEN_MS;
 use crate::silk::macros::{
     silk_add_lshift32, silk_div32_16, silk_lshift, silk_rshift_round, silk_sat16, silk_smlawb,
     silk_smulbb,
 };
-
-const STEREO_INTERP_LEN_MS: i32 = 8;
 
 /// Persistent stereo decoder state (mirrors libopus `stereo_dec_state`).
 #[derive(Default)]

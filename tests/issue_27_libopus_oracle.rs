@@ -385,27 +385,48 @@ fn check_fec_decodes_in_libopus(ch: usize, cbr: bool) {
         fec.lbrr.len()
     );
     if cbr {
-        // CBR + FEC is a genuinely squeezed regime: when LBRR + main frame
-        // exceed the packet, both opus-rs and libopus degrade the packet
-        // (libopus emits 30-36 fallback packets per 50 here), and the main
-        // frame can land on its minimal damage-control encode. Judge the
-        // normal decode by the fraction of healthy windows; libopus's own
-        // CBR+FEC stream measures worst 4.5 dB / 47 of 47 windows > 2 dB.
-        let healthy = fec.normal.iter().filter(|s| **s > 2.0).count();
+        // CBR + FEC is a squeezed regime: the LBRR section and the main frame
+        // share a fixed packet. Since opus-rs takes the LBRR bits out of the
+        // frame target as libopus does (enc_API.c nBitsUsedLBRR, issue #51),
+        // packets no longer bust into concealed frames, and the main frame
+        // keeps its quality. Across input levels 0.90-1.10x, mono's worst
+        // window measures 4.6-4.7 dB, as without FEC (libopus's own stream
+        // 4.5-4.8 dB; before #51, 0.2-0.4 dB with 36-42 of 47 windows
+        // healthy). Stereo keeps 44-47 of 47 windows above 2 dB, worst
+        // 1.3-2.3 dB (libopus 47 of 47, worst 2.2-3.7 dB).
+        if ch == 1 {
+            assert!(
+                worst > INPUT_FLOOR_DB && worst > plain_worst - 1.0,
+                "1ch CBR + FEC: main frame degraded by FEC; per-window SNR: {:.1?}",
+                fec.normal
+            );
+        } else {
+            let healthy = fec.normal.iter().filter(|s| **s > 2.0).count();
+            assert!(
+                healthy as f64 >= 0.90 * fec.normal.len() as f64,
+                "{ch}ch CBR + FEC: too many degraded main-frame windows ({healthy}/{}); \
+                 per-window SNR: {:.1?}",
+                fec.normal.len(),
+                fec.normal
+            );
+        }
+        // Recovery swings with tiny input changes (a 1-LSB change in the
+        // downmix rounding once moved the stereo median from 1.5 to 4.2 dB),
+        // so these floors sit under the minimum over input levels
+        // 0.90-1.10x: mono 2.1-4.1 dB with 24-41 of 46 windows > 2 dB,
+        // stereo 1.9-4.7 dB with 20-41 windows. Before #51, LBRR alternated
+        // with gaps in stereo (11-16 of 50 packets carried it, 6-13 busted):
+        // 0.5-2.1 dB, 7-23 windows. Mono measured 2.3-3.8 dB, 26-35
+        // windows. libopus's own streams recover more, 5.1-6.2 dB with 41-44
+        // windows, from as many LBRR packets as opus-rs now codes (28-31),
+        // so the gap is in the LBRR payload, not the budget.
+        let (median_floor, frac) = if ch == 1 { (1.8, 0.45) } else { (1.5, 0.40) };
         assert!(
-            healthy as f64 >= 0.75 * fec.normal.len() as f64,
-            "{ch}ch CBR + FEC: too many degraded main-frame windows ({healthy}/{}); \
-             per-window SNR: {:.1?}",
-            fec.normal.len(),
-            fec.normal
-        );
-        assert!(
-            lbrr_median > 2.0,
-            "{ch}ch CBR FEC: LBRR recovery too weak (median {lbrr_median:.1} dB < 2.0); \
-             per-window SNR: {:.1?}",
+            lbrr_median > median_floor,
+            "{ch}ch CBR FEC: LBRR recovery too weak (median {lbrr_median:.1} dB < \
+             {median_floor}); per-window SNR: {:.1?}",
             fec.lbrr
         );
-        let frac = if ch == 1 { 0.60 } else { 0.35 };
         assert!(
             above2 as f64 >= frac * fec.lbrr.len() as f64,
             "{ch}ch CBR FEC: too few windows with real LBRR recovery ({above2}/{} < \

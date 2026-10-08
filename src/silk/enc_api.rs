@@ -12,7 +12,9 @@ use crate::silk::noise_shape_analysis::*;
 use crate::silk::nsq::*;
 use crate::silk::nsq_del_dec::*;
 use crate::silk::pitch_analysis::*;
+use crate::silk::stereo_lr_to_ms::silk_stereo_lr_to_ms;
 use crate::silk::structs::*;
+use crate::silk::tuning_parameters::BITRESERVOIR_DECAY_TIME_MS;
 use crate::silk::vad::silk_vad_get_sa_q8;
 
 pub fn silk_encode_do_vad(ps_enc: &mut SilkEncoderState, input: &[i16], activity: i32) {
@@ -44,19 +46,104 @@ pub fn silk_encode_do_vad(ps_enc: &mut SilkEncoderState, input: &[i16], activity
     }
 }
 
-pub fn silk_encode_prefill(ps_enc: &mut SilkEncoderState, samples: &[i16], _activity: i32) {
-    let fs_khz = ps_enc.s_cmn.fs_khz as usize;
-
+/// Internal sample rate (kHz) and 10 ms prefill length of `ps_enc`, or
+/// `None` when SILK isn't configured to a supported rate.
+fn prefill_geometry(ps_enc: &SilkEncoderState) -> Option<(i32, usize)> {
+    let fs_khz = ps_enc.s_cmn.fs_khz;
     if fs_khz != 8 && fs_khz != 12 && fs_khz != 16 {
-        return;
+        return None;
     }
+    Some((fs_khz, fs_khz as usize * 10))
+}
 
-    let prefill_frame_length = fs_khz * 10;
-
+pub fn silk_encode_prefill(ps_enc: &mut SilkEncoderState, samples: &[i16], _activity: i32) {
+    let Some((_, prefill_frame_length)) = prefill_geometry(ps_enc) else {
+        return;
+    };
     if samples.len() < prefill_frame_length {
         return;
     }
 
+    let mut input_buf = [0i16; MAX_FRAME_LENGTH + 2];
+    input_buf[0] = ps_enc.stereo.s_mid[0];
+    input_buf[1] = ps_enc.stereo.s_mid[1];
+    input_buf[2..2 + prefill_frame_length].copy_from_slice(&samples[..prefill_frame_length]);
+    ps_enc.stereo.s_mid[0] = input_buf[prefill_frame_length];
+    ps_enc.stereo.s_mid[1] = input_buf[prefill_frame_length + 1];
+
+    prefill_frame(ps_enc, &mut input_buf, prefill_frame_length);
+}
+
+/// Prefill a stereo encoder with 10 ms of internal-rate `left` and `right`
+/// input, as libopus's `silk_Encode` does with `prefillFlag` set for two
+/// internal channels: convert to mid/side (updating the stereo state, writing
+/// nothing), run the VADs, and push the frame into the history of the mid
+/// and, unless the frame codes the mid only, of the side, without coding it.
+/// `total_rate_bps` is the SILK bitrate.
+pub fn silk_encode_prefill_stereo(
+    mid: &mut SilkEncoderState,
+    side: &mut SilkEncoderState,
+    left: &[i16],
+    right: &[i16],
+    total_rate_bps: i32,
+    activity: i32,
+) {
+    let Some((fs_khz, prefill_frame_length)) = prefill_geometry(mid) else {
+        return;
+    };
+    if left.len() < prefill_frame_length || right.len() < prefill_frame_length {
+        return;
+    }
+
+    let mut x1 = [0i16; MAX_FRAME_LENGTH + 2];
+    let mut x2 = [0i16; MAX_FRAME_LENGTH + 2];
+    x1[2..2 + prefill_frame_length].copy_from_slice(&left[..prefill_frame_length]);
+    x2[2..2 + prefill_frame_length].copy_from_slice(&right[..prefill_frame_length]);
+    let (mut ix, mut mid_only, mut rates) = ([[0i8; 3]; 2], 0i8, [0i32; 2]);
+    // The encoders were just reset, so the previous speech activity is 0.
+    silk_stereo_lr_to_ms(
+        &mut mid.stereo,
+        &mut x1,
+        &mut x2,
+        &mut ix,
+        &mut mid_only,
+        &mut rates,
+        total_rate_bps,
+        0,
+        false,
+        fs_khz,
+        prefill_frame_length,
+    );
+    mid.stereo.pred_ix[0] = ix;
+    mid.stereo.mid_only_flags[0] = mid_only;
+
+    mid.s_cmn.n_frames_encoded = 0;
+    side.s_cmn.n_frames_encoded = 0;
+    if mid_only == 0 {
+        if mid.stereo.prev_decode_only_middle == 1 {
+            reset_side_for_coding(side);
+        }
+        silk_encode_do_vad(side, &x2[1..1 + prefill_frame_length], activity);
+    } else {
+        side.s_cmn.vad_flags[0] = 0;
+    }
+    silk_encode_do_vad(mid, &x1[1..1 + prefill_frame_length], activity);
+    prefill_frame(mid, &mut x1, prefill_frame_length);
+    if rates[1] > 0 {
+        prefill_frame(side, &mut x2, prefill_frame_length);
+    }
+    mid.stereo.prev_decode_only_middle = mid_only as i32;
+}
+
+/// The prefill part of libopus's `silk_encode_frame_FIX`: low-pass the 10 ms
+/// frame at `input_buf[1..]` and push it into the encoder's analysis buffer,
+/// coding nothing.
+fn prefill_frame(
+    ps_enc: &mut SilkEncoderState,
+    input_buf: &mut [i16; MAX_FRAME_LENGTH + 2],
+    prefill_frame_length: usize,
+) {
+    let fs_khz = ps_enc.s_cmn.fs_khz as usize;
     let real_frame_length = ps_enc.s_cmn.frame_length as usize;
     let real_nb_subfr = ps_enc.s_cmn.nb_subfr;
     let real_subfr_length = ps_enc.s_cmn.subfr_length;
@@ -67,15 +154,6 @@ pub fn silk_encode_prefill(ps_enc: &mut SilkEncoderState, samples: &[i16], _acti
 
     let ltp_mem_length = ps_enc.s_cmn.ltp_mem_length as usize;
     let la_shape_ms_samples = 5 * fs_khz;
-
-    let n = prefill_frame_length.min(samples.len());
-
-    let mut input_buf = [0i16; super::define::MAX_FRAME_LENGTH + 2];
-    input_buf[0] = ps_enc.stereo.s_mid[0];
-    input_buf[1] = ps_enc.stereo.s_mid[1];
-    input_buf[2..2 + n].copy_from_slice(&samples[..n]);
-    ps_enc.stereo.s_mid[0] = input_buf[prefill_frame_length];
-    ps_enc.stereo.s_mid[1] = input_buf[prefill_frame_length + 1];
 
     silk_lp_variable_cutoff(
         &mut ps_enc.s_cmn.s_lp,
@@ -559,12 +637,7 @@ fn encode_lbrr_section(
     let start_bits = rc.tell();
 
     if n_frames_per_packet > 1 {
-        let lbrr_icdf = match n_frames_per_packet {
-            2 => &crate::silk::tables::SILK_LBRR_FLAGS_2_ICDF[..],
-            3 => &crate::silk::tables::SILK_LBRR_FLAGS_3_ICDF[..],
-            _ => &crate::silk::tables::SILK_LBRR_FLAGS_2_ICDF[..],
-        };
-        rc.encode_icdf(lbrr_symbol - 1, lbrr_icdf, 8);
+        rc.encode_icdf(lbrr_symbol - 1, lbrr_flags_icdf(n_frames_per_packet), 8);
     }
 
     for i in 0..n_frames_per_packet as usize {
@@ -608,6 +681,73 @@ fn silk_frame_max_bits(max_bits: i32, tot_blocks: i32, frame_idx: i32) -> i32 {
     }
 }
 
+/// Number of 20 ms blocks (or one 10 ms block) in a packet of `n_samples_in`
+/// internal-rate samples: libopus enc_API.c `tot_blocks`.
+fn packet_blocks(n_samples_in: usize, fs_khz: i32) -> i32 {
+    let n_blocks_of_10ms = (100 * n_samples_in as i32) / (fs_khz * 1000);
+    if n_blocks_of_10ms > 1 {
+        n_blocks_of_10ms >> 1
+    } else {
+        1
+    }
+}
+
+/// The target rate of the packet's next frame, in bits per second
+/// (enc_API.c:398-432): its share of `bit_rate`, less the packet's LBRR
+/// section, less a 500 ms payback of the bits coded beyond the target, both
+/// in earlier packets (`n_bits_exceeded`) and in this packet's earlier frames
+/// (`bits_so_far`, the range coder's `tell`).
+///
+/// `lbrr_bits` is the size of the packet's LBRR section for its first frame
+/// and 0 for the others, as libopus's `curr_nBitsUsedLBRR` is: a later frame
+/// drops the LBRR average to 0, and the section then counts against it as
+/// overshoot.
+fn silk_frame_target_rate_bps(
+    ps_enc: &mut SilkEncoderState,
+    bit_rate: i32,
+    lbrr_bits: i32,
+    bits_so_far: i32,
+) -> i32 {
+    let packet_size_ms = ps_enc.s_cmn.packet_size_ms;
+    // A moving average of the LBRR usage, except that the first packet with
+    // LBRR isn't averaged and a packet without LBRR drops it to 0 at once.
+    ps_enc.n_bits_used_lbrr = if lbrr_bits < 10 {
+        0
+    } else if ps_enc.n_bits_used_lbrr < 10 {
+        lbrr_bits
+    } else {
+        (ps_enc.n_bits_used_lbrr + lbrr_bits) / 2
+    };
+    let n_bits = (bit_rate * packet_size_ms / 1000 - ps_enc.n_bits_used_lbrr)
+        / ps_enc.s_cmn.n_frames_per_packet;
+    let mut target = n_bits * if packet_size_ms == 10 { 100 } else { 50 };
+    target -= ps_enc.n_bits_exceeded * 1000 / BITRESERVOIR_DECAY_TIME_MS;
+    let n_frames_encoded = ps_enc.s_cmn.n_frames_encoded;
+    if n_frames_encoded > 0 {
+        let bits_balance = bits_so_far - ps_enc.n_bits_used_lbrr - n_bits * n_frames_encoded;
+        target -= bits_balance * 1000 / BITRESERVOIR_DECAY_TIME_MS;
+    }
+    // Never above the input rate. Like silk_LIMIT, the bounds swap when
+    // `bit_rate` is below 5000.
+    target.clamp(bit_rate.min(5000), bit_rate.max(5000))
+}
+
+/// Add the packet's overshoot of `bit_rate` to the bit reservoir that later
+/// frame targets pay back (enc_API.c:544-546).
+fn silk_update_bit_reservoir(ps_enc: &mut SilkEncoderState, bit_rate: i32, n_bytes_out: i32) {
+    let target_bits = bit_rate * ps_enc.s_cmn.packet_size_ms / 1000;
+    ps_enc.n_bits_exceeded =
+        (ps_enc.n_bits_exceeded + n_bytes_out * 8 - target_bits).clamp(0, 10000);
+}
+
+/// iCDF of the per-frame LBRR flags of a 40 or 60 ms packet.
+fn lbrr_flags_icdf(n_frames_per_packet: i32) -> &'static [u8] {
+    match n_frames_per_packet {
+        3 => &crate::silk::tables::SILK_LBRR_FLAGS_3_ICDF[..],
+        _ => &crate::silk::tables::SILK_LBRR_FLAGS_2_ICDF[..],
+    }
+}
+
 pub fn silk_encode(
     ps_enc: &mut SilkEncoderState,
     samples_in: &[i16],
@@ -630,24 +770,10 @@ pub fn silk_encode(
     );
     let n_frames_per_packet = ps_enc.s_cmn.n_frames_per_packet;
     let frame_length = ps_enc.s_cmn.frame_length as usize;
-    let packet_size_ms = ps_enc.s_cmn.packet_size_ms;
 
     ps_enc.s_cmn.n_frames_encoded = 0;
 
-    let n_blocks_of_10ms = (100 * n_samples_in as i32) / (ps_enc.s_cmn.fs_khz * 1000);
-    let _tot_blocks = if n_blocks_of_10ms > 1 {
-        n_blocks_of_10ms >> 1
-    } else {
-        1
-    };
-
-    let n_bits_total = target_rate_bps * packet_size_ms / 1000;
-    let n_bits_per_frame = n_bits_total / n_frames_per_packet;
-    let frame_rate_bps = if packet_size_ms == 10 {
-        n_bits_per_frame * 100
-    } else {
-        n_bits_per_frame * 50
-    };
+    let tot_blocks = packet_blocks(n_samples_in, ps_enc.s_cmn.fs_khz);
 
     let lbrr_possible = ps_enc.s_cmn.use_in_band_fec != 0
         && ps_enc.s_cmn.packet_loss_perc > 0
@@ -671,9 +797,9 @@ pub fn silk_encode(
 
     let mut sample_offset = 0usize;
 
-    // Bits consumed by the LBRR section written at the start of the packet;
-    // subtracted from the per-frame budget like libopus (nBitsUsedLBRR).
-    let mut lbrr_bits_reserved = 0i32;
+    // Bits of the LBRR section written at the start of the packet, which come
+    // out of the frame target (libopus `curr_nBitsUsedLBRR`).
+    let mut lbrr_bits = 0i32;
 
     for frame_idx in 0..n_frames_per_packet {
         if frame_idx == 0 {
@@ -723,8 +849,7 @@ pub fn silk_encode(
                 // the packet budget cannot hold the LBRR data plus a minimal
                 // main frame, drop LBRR entirely (the decoder sees
                 // lbrr_flag = 0 and skips nothing) instead of overflowing the
-                // encoder buffer. libopus reserves the LBRR bits from the
-                // main-frame budget up front (enc_API.c nBitsUsedLBRR).
+                // encoder buffer.
                 let capacity_bits = (rc.storage as i32) * 8 - 8;
                 let saved_ec_prev_signal_type = ps_enc.s_cmn.ec_prev_signal_type;
                 let saved_ec_prev_lag_index = ps_enc.s_cmn.ec_prev_lag_index;
@@ -734,8 +859,7 @@ pub fn silk_encode(
                 ps_enc.s_cmn.ec_prev_signal_type = saved_ec_prev_signal_type;
                 ps_enc.s_cmn.ec_prev_lag_index = saved_ec_prev_lag_index;
                 if trial.tell() + 64 <= capacity_bits {
-                    lbrr_bits_reserved =
-                        encode_lbrr_section(rc, ps_enc, lbrr_symbol, n_frames_per_packet);
+                    lbrr_bits = encode_lbrr_section(rc, ps_enc, lbrr_symbol, n_frames_per_packet);
                 } else {
                     ps_enc.s_cmn.lbrr_flag = 0;
                     lbrr_symbol = 0;
@@ -753,6 +877,12 @@ pub fn silk_encode(
             // bitstream of multi-frame stereo packets (issue #27).
         }
 
+        let frame_rate_bps = silk_frame_target_rate_bps(
+            ps_enc,
+            target_rate_bps,
+            if frame_idx == 0 { lbrr_bits } else { 0 },
+            rc.tell(),
+        );
         silk_control_snr(&mut ps_enc.s_cmn, frame_rate_bps);
 
         let vad_frame = &input_buf[1..1 + frame_length];
@@ -776,9 +906,6 @@ pub fn silk_encode(
             CODE_CONDITIONALLY
         };
 
-        let frame_max_bits =
-            (silk_frame_max_bits(max_bits, _tot_blocks, frame_idx) - lbrr_bits_reserved).max(48);
-
         let mut frame_bytes = 0i32;
         let ret = silk_encode_frame(
             ps_enc,
@@ -786,7 +913,9 @@ pub fn silk_encode(
             rc,
             &mut frame_bytes,
             cond_coding,
-            frame_max_bits,
+            // A cap on the packet's bits so far, the LBRR section included,
+            // since the rate control measures the range coder's `tell`.
+            silk_frame_max_bits(max_bits, tot_blocks, frame_idx),
             if use_cbr != 0 && frame_idx == n_frames_per_packet - 1 {
                 1
             } else {
@@ -817,6 +946,373 @@ pub fn silk_encode(
     rc.patch_initial_bits(flags, n_flag_bits);
 
     *n_bytes_out = (rc.tell() + 7) >> 3;
+    silk_update_bit_reservoir(ps_enc, target_rate_bps, *n_bytes_out);
 
     0
+}
+
+/// Encode one packet of stereo input as SILK mid/side, the way libopus's
+/// `silk_Encode` does for two internal channels (enc_API.c).
+///
+/// `left` and `right` hold `n_samples_in` samples each, at the internal
+/// rate, de-interleaved. Each frame is converted to mid/side by
+/// [`silk_stereo_lr_to_ms`], which also picks the predictors, the stereo
+/// width and the split of the frame's bits between mid and side. `mid` codes
+/// the mid and holds the stereo state; `side` codes the side residual, except
+/// in frames that code the mid only (panned mono).
+pub fn silk_encode_stereo_packet(
+    mid: &mut SilkEncoderState,
+    side: &mut SilkEncoderState,
+    left: &[i16],
+    right: &[i16],
+    n_samples_in: usize,
+    rc: &mut RangeCoder,
+    n_bytes_out: &mut i32,
+    target_rate_bps: i32,
+    max_bits: i32,
+    use_cbr: i32,
+    activity: i32,
+) -> i32 {
+    let n_frames_per_packet = mid.s_cmn.n_frames_per_packet;
+    let frame_length = mid.s_cmn.frame_length as usize;
+    let fs_khz = mid.s_cmn.fs_khz;
+    let packet_length = n_frames_per_packet as usize * frame_length;
+    // A frame skipped for want of input would desynchronize the stereo
+    // header, so the whole packet must be there.
+    if n_samples_in < packet_length || left.len() < packet_length || right.len() < packet_length {
+        return SILK_ENC_INPUT_INVALID_NO_OF_SAMPLES;
+    }
+
+    mid.s_cmn.n_frames_encoded = 0;
+    side.s_cmn.n_frames_encoded = 0;
+    let tot_blocks = packet_blocks(n_samples_in, fs_khz);
+
+    // Each channel's LBRR flags left by the previous packet; a reset drops
+    // them.
+    let lbrr_possible = mid.s_cmn.use_in_band_fec != 0
+        && mid.s_cmn.packet_loss_perc > 0
+        && mid.s_cmn.lbrr_enabled != 0;
+    let mut lbrr_symbols = [0i32; 2];
+    for (symbol, ch) in lbrr_symbols.iter_mut().zip([&mut *mid, &mut *side]) {
+        if ch.s_cmn.first_frame_after_reset != 0 {
+            ch.s_cmn.lbrr_flags = [0; MAX_FRAMES_PER_PACKET];
+        }
+        if lbrr_possible {
+            for i in 0..n_frames_per_packet as usize {
+                *symbol |= ch.s_cmn.lbrr_flags[i] << i;
+            }
+        }
+        ch.s_cmn.lbrr_flag = (*symbol > 0) as i8;
+    }
+
+    let n_flag_bits = ((n_frames_per_packet + 1) * 2) as u32;
+    let mut lbrr_bits = 0i32;
+
+    for frame_idx in 0..n_frames_per_packet {
+        let fi = frame_idx as usize;
+        if frame_idx == 0 {
+            silk_hp_variable_cutoff(&mut mid.s_cmn);
+        }
+
+        // libopus `inputBuf` layout: two history slots, then the frame.
+        let offset = fi * frame_length;
+        let mut x1 = [0i16; MAX_FRAME_LENGTH + 2];
+        let mut x2 = [0i16; MAX_FRAME_LENGTH + 2];
+        x1[2..2 + frame_length].copy_from_slice(&left[offset..offset + frame_length]);
+        x2[2..2 + frame_length].copy_from_slice(&right[offset..offset + frame_length]);
+
+        if frame_idx == 0 {
+            // Room for both channels' VAD and LBRR flags, patched in below.
+            let icdf = [(256i32 - (256i32 >> n_flag_bits)) as u8, 0u8];
+            rc.encode_icdf(0, &icdf, 8);
+
+            if lbrr_symbols != [0, 0] {
+                // Write the LBRR section only if the packet can hold it plus
+                // a minimal frame, as the mono path does.
+                let capacity_bits = (rc.storage as i32) * 8 - 8;
+                let saved = [&*mid, &*side]
+                    .map(|ch| (ch.s_cmn.ec_prev_signal_type, ch.s_cmn.ec_prev_lag_index));
+                let mut trial = rc.clone();
+                encode_lbrr_section_stereo(
+                    &mut trial,
+                    mid,
+                    side,
+                    lbrr_symbols,
+                    n_frames_per_packet,
+                );
+                for (ch, saved) in [&mut *mid, &mut *side].into_iter().zip(saved) {
+                    (ch.s_cmn.ec_prev_signal_type, ch.s_cmn.ec_prev_lag_index) = saved;
+                }
+                if trial.tell() + 64 <= capacity_bits {
+                    lbrr_bits = encode_lbrr_section_stereo(
+                        rc,
+                        mid,
+                        side,
+                        lbrr_symbols,
+                        n_frames_per_packet,
+                    );
+                } else {
+                    mid.s_cmn.lbrr_flag = 0;
+                    side.s_cmn.lbrr_flag = 0;
+                }
+            }
+            mid.s_cmn.lbrr_flags = [0; MAX_FRAMES_PER_PACKET];
+            side.s_cmn.lbrr_flags = [0; MAX_FRAMES_PER_PACKET];
+        }
+
+        // The frame's target, which the mid/side split shares out.
+        let frame_rate_bps = silk_frame_target_rate_bps(
+            mid,
+            target_rate_bps,
+            if frame_idx == 0 { lbrr_bits } else { 0 },
+            rc.tell(),
+        );
+        let (mut ix, mut mid_only, mut rates) = ([[0i8; 3]; 2], 0i8, [0i32; 2]);
+        silk_stereo_lr_to_ms(
+            &mut mid.stereo,
+            &mut x1,
+            &mut x2,
+            &mut ix,
+            &mut mid_only,
+            &mut rates,
+            frame_rate_bps,
+            mid.s_cmn.speech_activity_q8,
+            false,
+            fs_khz,
+            frame_length,
+        );
+        mid.stereo.pred_ix[fi] = ix;
+        mid.stereo.mid_only_flags[fi] = mid_only;
+        let side_after_mid_only = mid.stereo.prev_decode_only_middle == 1;
+        if mid_only == 0 {
+            if side_after_mid_only {
+                reset_side_for_coding(side);
+            }
+            silk_encode_do_vad(side, &x2[1..1 + frame_length], activity);
+        } else {
+            side.s_cmn.vad_flags[fi] = 0;
+        }
+
+        silk_stereo_encode_pred(rc, &ix);
+        // A side with voice activity is coded, so the decoder knows the
+        // frame isn't mid-only without the flag.
+        if side.s_cmn.vad_flags[fi] == 0 {
+            silk_stereo_encode_mid_only(rc, mid_only);
+        }
+        silk_encode_do_vad(mid, &x1[1..1 + frame_length], activity);
+
+        for (n, (ch, buf)) in [(&mut *mid, &mut x1), (&mut *side, &mut x2)]
+            .into_iter()
+            .enumerate()
+        {
+            let mut channel_max_bits = silk_frame_max_bits(max_bits, tot_blocks, frame_idx);
+            let mut channel_use_cbr = use_cbr != 0 && frame_idx == n_frames_per_packet - 1;
+            if n == 0 && rates[1] > 0 {
+                // The side fills the frame up to the cap; give the mid up to
+                // half of the frame's bits.
+                channel_use_cbr = false;
+                channel_max_bits -= max_bits / (tot_blocks * 2);
+            }
+            if rates[n] > 0 {
+                silk_control_snr(&mut ch.s_cmn, rates[n]);
+                let cond_coding = if frame_idx == 0 {
+                    CODE_INDEPENDENTLY
+                } else if n == 1 && side_after_mid_only {
+                    // The side's previous frame wasn't coded, but its LTP
+                    // state is well-defined after the reset.
+                    CODE_INDEPENDENTLY_NO_LTP_SCALING
+                } else {
+                    CODE_CONDITIONALLY
+                };
+                silk_lp_variable_cutoff(&mut ch.s_cmn.s_lp, &mut buf[1..], frame_length);
+                let mut frame_bytes = 0i32;
+                let ret = silk_encode_frame(
+                    ch,
+                    &buf[1..1 + frame_length],
+                    rc,
+                    &mut frame_bytes,
+                    cond_coding,
+                    channel_max_bits,
+                    channel_use_cbr as i32,
+                );
+                if ret != 0 {
+                    return ret;
+                }
+            }
+            ch.s_cmn.n_frames_encoded += 1;
+        }
+        mid.stereo.prev_decode_only_middle = mid_only as i32;
+    }
+
+    // Each channel's VAD flags then its LBRR flag, mid first.
+    let mut flags = 0u32;
+    for ch in [&*mid, &*side] {
+        for i in 0..n_frames_per_packet as usize {
+            flags = (flags << 1) | ch.s_cmn.vad_flags[i] as u32;
+        }
+        flags = (flags << 1) | ch.s_cmn.lbrr_flag as u32;
+    }
+    rc.patch_initial_bits(flags, n_flag_bits);
+
+    *n_bytes_out = (rc.tell() + 7) >> 3;
+    silk_update_bit_reservoir(mid, target_rate_bps, *n_bytes_out);
+    SILK_NO_ERROR
+}
+
+/// The LBRR section of a stereo packet (enc_API.c:352-389): each channel's
+/// per-frame LBRR symbol for multi-frame packets, then the LBRR frames, mid
+/// before side. A mid LBRR frame is preceded by the stereo header of the
+/// frame it repeats, written in the previous packet and still in `pred_ix` /
+/// `mid_only_flags`; its mid-only flag is implied when the side has LBRR too.
+/// Returns the bits written.
+fn encode_lbrr_section_stereo(
+    rc: &mut RangeCoder,
+    mid: &mut SilkEncoderState,
+    side: &mut SilkEncoderState,
+    lbrr_symbols: [i32; 2],
+    n_frames_per_packet: i32,
+) -> i32 {
+    let start_bits = rc.tell();
+    if n_frames_per_packet > 1 {
+        for symbol in lbrr_symbols.into_iter().filter(|&s| s > 0) {
+            rc.encode_icdf(symbol - 1, lbrr_flags_icdf(n_frames_per_packet), 8);
+        }
+    }
+    for i in 0..n_frames_per_packet as usize {
+        if mid.s_cmn.lbrr_flags[i] != 0 {
+            silk_stereo_encode_pred(rc, &mid.stereo.pred_ix[i]);
+            if side.s_cmn.lbrr_flags[i] == 0 {
+                silk_stereo_encode_mid_only(rc, mid.stereo.mid_only_flags[i]);
+            }
+            encode_lbrr_frame(rc, mid, i);
+        }
+        if side.s_cmn.lbrr_flags[i] != 0 {
+            encode_lbrr_frame(rc, side, i);
+        }
+    }
+    rc.tell() - start_bits
+}
+
+/// One channel's LBRR frame `i`: indices, then pulses.
+fn encode_lbrr_frame(rc: &mut RangeCoder, ch: &mut SilkEncoderState, i: usize) {
+    let cond_coding = if i > 0 && ch.s_cmn.lbrr_flags[i - 1] != 0 {
+        CODE_CONDITIONALLY
+    } else {
+        CODE_INDEPENDENTLY
+    };
+    silk_encode_indices(ch, rc, i, true, cond_coding);
+    silk_encode_pulses(
+        rc,
+        ch.s_cmn.indices_lbrr[i].signal_type as i32,
+        ch.s_cmn.indices_lbrr[i].quant_offset_type as i32,
+        &ch.s_cmn.pulses_lbrr[i],
+        ch.s_cmn.frame_length as usize,
+    );
+}
+
+/// Reset the side encoder's memory for its first coded frame after frames
+/// that coded the mid only, whose side was never coded (enc_API.c:441-453).
+fn reset_side_for_coding(side: &mut SilkEncoderState) {
+    side.s_shape = SilkShapeState::default();
+    side.s_nsq = SilkNSQState::default();
+    side.s_cmn.prev_nlsf_q15 = [0; MAX_LPC_ORDER];
+    side.s_cmn.s_lp.in_lp_state = [0; 2];
+    side.s_cmn.prev_lag = 100;
+    side.s_nsq.lag_prev = 100;
+    side.s_shape.last_gain_index = 10;
+    side.s_cmn.prev_signal_type = TYPE_NO_VOICE_ACTIVITY;
+    side.s_nsq.prev_gain_q16 = 65536;
+    side.s_cmn.first_frame_after_reset = 1;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An encoder coding `packet_size_ms` packets of `n_frames` frames, with
+    /// `n_frames_encoded` of them coded so far.
+    fn encoder(packet_size_ms: i32, n_frames: i32, n_frames_encoded: i32) -> SilkEncoderState {
+        let mut enc = SilkEncoderState::default();
+        enc.s_cmn.packet_size_ms = packet_size_ms;
+        enc.s_cmn.n_frames_per_packet = n_frames;
+        enc.s_cmn.n_frames_encoded = n_frames_encoded;
+        enc
+    }
+
+    #[test]
+    fn frame_target_takes_out_the_lbrr_average() {
+        let mut enc = encoder(20, 1, 0);
+        // No LBRR: the packet's 640 bits.
+        assert_eq!(silk_frame_target_rate_bps(&mut enc, 32000, 0, 0), 32000);
+        // The first LBRR packet isn't averaged: (640 - 200) * 50.
+        assert_eq!(silk_frame_target_rate_bps(&mut enc, 32000, 200, 0), 22000);
+        assert_eq!(enc.n_bits_used_lbrr, 200);
+        // Then the average: (200 + 100) / 2 = 150, (640 - 150) * 50.
+        assert_eq!(silk_frame_target_rate_bps(&mut enc, 32000, 100, 0), 24500);
+        assert_eq!(enc.n_bits_used_lbrr, 150);
+        // Under 10 bits counts as no LBRR, which drops the average at once.
+        assert_eq!(silk_frame_target_rate_bps(&mut enc, 32000, 9, 0), 32000);
+        assert_eq!(enc.n_bits_used_lbrr, 0);
+    }
+
+    #[test]
+    fn frame_target_pays_back_the_reservoir() {
+        let mut enc = encoder(20, 1, 0);
+        enc.n_bits_exceeded = 1000;
+        // 1000 bits over 500 ms: 2000 b/s off.
+        assert_eq!(silk_frame_target_rate_bps(&mut enc, 32000, 0, 0), 30000);
+        // 10 ms packets: (320 bits) * 100, less the same payback.
+        let mut enc = encoder(10, 1, 0);
+        enc.n_bits_exceeded = 1000;
+        assert_eq!(silk_frame_target_rate_bps(&mut enc, 32000, 0, 0), 30000);
+    }
+
+    #[test]
+    fn later_frames_count_the_lbrr_section_as_overshoot() {
+        // 40 ms at 32 kb/s: 1280 bits in two frames.
+        let mut enc = encoder(40, 2, 0);
+        // Frame 0: (1280 - 200) / 2 = 540 bits.
+        assert_eq!(
+            silk_frame_target_rate_bps(&mut enc, 32000, 200, 2 + 200),
+            27000
+        );
+        // Frame 1 drops the LBRR average (libopus resets `curr_nBitsUsedLBRR`
+        // per frame): 640 bits a frame, and the 2 flag bits, the 200-bit
+        // section and frame 0's 540 bits are 102 over 640: 204 b/s off.
+        enc.s_cmn.n_frames_encoded = 1;
+        assert_eq!(silk_frame_target_rate_bps(&mut enc, 32000, 0, 742), 31796);
+        assert_eq!(enc.n_bits_used_lbrr, 0);
+    }
+
+    #[test]
+    fn frame_target_stays_within_5000_and_the_input_rate() {
+        // An LBRR section nearly as large as the packet: floored at 5000.
+        let mut enc = encoder(20, 1, 0);
+        assert_eq!(silk_frame_target_rate_bps(&mut enc, 32000, 600, 0), 5000);
+        // Frames under budget so far raise the target, but never above the
+        // input rate.
+        let mut enc = encoder(40, 2, 1);
+        assert_eq!(silk_frame_target_rate_bps(&mut enc, 32000, 0, 100), 32000);
+        // Below 5000 the bounds swap, as in silk_LIMIT: 4000 stays 4000, and
+        // a payback below the input rate stops at it.
+        let mut enc = encoder(20, 1, 0);
+        assert_eq!(silk_frame_target_rate_bps(&mut enc, 4000, 0, 0), 4000);
+        enc.n_bits_exceeded = 100;
+        assert_eq!(silk_frame_target_rate_bps(&mut enc, 4000, 0, 0), 4000);
+    }
+
+    #[test]
+    fn bit_reservoir_keeps_the_overshoot_within_0_and_10000() {
+        // 32 kb/s at 20 ms: 640 bits a packet.
+        let mut enc = encoder(20, 1, 0);
+        silk_update_bit_reservoir(&mut enc, 32000, 90);
+        assert_eq!(enc.n_bits_exceeded, 80);
+        silk_update_bit_reservoir(&mut enc, 32000, 70);
+        assert_eq!(enc.n_bits_exceeded, 0);
+        silk_update_bit_reservoir(&mut enc, 32000, 70);
+        assert_eq!(enc.n_bits_exceeded, 0, "an undershoot isn't banked");
+        enc.n_bits_exceeded = 9900;
+        silk_update_bit_reservoir(&mut enc, 32000, 200);
+        assert_eq!(enc.n_bits_exceeded, 10000);
+    }
 }

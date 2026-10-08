@@ -396,26 +396,10 @@ pub fn silk_autocorr(
 }
 
 pub fn silk_sum_sqr_shift(energy: &mut i32, shift: &mut i32, x: &[i16], len: usize) {
-    let mut i: usize;
-    let mut shft: i32;
-    let mut nrg_tmp: u32;
     let mut nrg: i32;
 
-    shft = 31 - silk_clz32(len as i32);
-
-    nrg = len as i32;
-    i = 0;
-    while i < len - 1 {
-        nrg_tmp = silk_smulbb(x[i] as i32, x[i] as i32) as u32;
-        nrg_tmp = nrg_tmp.wrapping_add(silk_smulbb(x[i + 1] as i32, x[i + 1] as i32) as u32);
-        nrg = nrg.wrapping_add((nrg_tmp >> shft) as i32);
-        i += 2;
-    }
-    if i < len {
-        nrg_tmp = silk_smulbb(x[i] as i32, x[i] as i32) as u32;
-        nrg = nrg.wrapping_add((nrg_tmp >> shft) as i32);
-    }
-
+    let mut shft = 31 - silk_clz32(len as i32);
+    nrg = sum_sqr_pairs_shifted(x, len, len as i32, shft);
     shft = (shft + 3 - silk_clz32(nrg)).max(0);
 
     #[cfg(target_arch = "aarch64")]
@@ -426,37 +410,47 @@ pub fn silk_sum_sqr_shift(energy: &mut i32, shift: &mut i32, x: &[i16], len: usi
     if crate::compat::x86_has_avx2() {
         nrg = unsafe { silk_sum_sqr_shift_avx2(x, len, shft) };
     } else {
-        nrg = 0;
-        i = 0;
-        while i < len - 1 {
-            nrg_tmp = silk_smulbb(x[i] as i32, x[i] as i32) as u32;
-            nrg_tmp = nrg_tmp.wrapping_add(silk_smulbb(x[i + 1] as i32, x[i + 1] as i32) as u32);
-            nrg = nrg.wrapping_add((nrg_tmp >> shft) as i32);
-            i += 2;
-        }
-        if i < len {
-            nrg_tmp = silk_smulbb(x[i] as i32, x[i] as i32) as u32;
-            nrg = nrg.wrapping_add((nrg_tmp >> shft) as i32);
-        }
+        nrg = sum_sqr_pairs_shifted(x, len, 0, shft);
     }
     #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
     {
-        nrg = 0;
-        i = 0;
-        while i < len - 1 {
-            nrg_tmp = silk_smulbb(x[i] as i32, x[i] as i32) as u32;
-            nrg_tmp = nrg_tmp.wrapping_add(silk_smulbb(x[i + 1] as i32, x[i + 1] as i32) as u32);
-            nrg = nrg.wrapping_add((nrg_tmp >> shft) as i32);
-            i += 2;
-        }
-        if i < len {
-            nrg_tmp = silk_smulbb(x[i] as i32, x[i] as i32) as u32;
-            nrg = nrg.wrapping_add((nrg_tmp >> shft) as i32);
-        }
+        nrg = sum_sqr_pairs_shifted(x, len, 0, shft);
     }
 
     *shift = shft;
     *energy = nrg;
+}
+
+/// `silk_sum_sqr_shift` exactly as libopus computes it (sum_sqr_shift.c), on
+/// every target. The SIMD second passes of [`silk_sum_sqr_shift`] are not
+/// bit-exact with it: the AVX2 tail shifts each square on its own instead of
+/// each pair's sum, and NEON shifts every square before adding. Code that must
+/// match libopus to the bit, such as the stereo predictor estimate, uses this.
+pub(crate) fn silk_sum_sqr_shift_exact(energy: &mut i32, shift: &mut i32, x: &[i16], len: usize) {
+    let mut shft = 31 - silk_clz32(len as i32);
+    let nrg = sum_sqr_pairs_shifted(x, len, len as i32, shft);
+    shft = (shft + 3 - silk_clz32(nrg)).max(0);
+    *energy = sum_sqr_pairs_shifted(x, len, 0, shft);
+    *shift = shft;
+}
+
+/// One pass of libopus's `silk_sum_sqr_shift`: squares summed in pairs, each
+/// pair's sum shifted right by `shft` (as unsigned) and added to `init`.
+#[inline(always)]
+fn sum_sqr_pairs_shifted(x: &[i16], len: usize, init: i32, shft: i32) -> i32 {
+    let mut nrg = init;
+    let mut i = 0;
+    while i + 1 < len {
+        let mut nrg_tmp = silk_smulbb(x[i] as i32, x[i] as i32) as u32;
+        nrg_tmp = nrg_tmp.wrapping_add(silk_smulbb(x[i + 1] as i32, x[i + 1] as i32) as u32);
+        nrg = nrg.wrapping_add((nrg_tmp >> shft) as i32);
+        i += 2;
+    }
+    if i < len {
+        let nrg_tmp = silk_smulbb(x[i] as i32, x[i] as i32) as u32;
+        nrg = nrg.wrapping_add((nrg_tmp >> shft) as i32);
+    }
+    nrg
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -493,6 +487,21 @@ unsafe fn silk_sum_sqr_shift_neon(x: &[i16], len: usize, shft: i32) -> i32 {
         i += 1;
     }
     nrg
+}
+
+/// Inner product with each product shifted right by `scale` before it is
+/// accumulated (libopus `silk_inner_prod_aligned_scale`).
+pub fn silk_inner_prod_aligned_scale(
+    in_vec1: &[i16],
+    in_vec2: &[i16],
+    scale: i32,
+    len: usize,
+) -> i32 {
+    let mut sum: i32 = 0;
+    for (&a, &b) in in_vec1[..len].iter().zip(&in_vec2[..len]) {
+        sum = sum.wrapping_add(silk_smulbb(a as i32, b as i32) >> scale);
+    }
+    sum
 }
 
 #[inline(always)]
