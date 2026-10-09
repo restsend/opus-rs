@@ -116,6 +116,17 @@ Measured on Apple Silicon M-series (aarch64), compiled with `--release` (opt-lev
 
 ## Release Notes
 
+### Unreleased
+
+- **Fix: mediumband (12 kHz) SILK decoded to noise (issue #53).** The decoder
+  gave 12 kHz the NB/MB NLSF codebook (order 10) but the wideband LPC order
+  (16), so it built a 16-tap synthesis filter from ten decoded NLSFs. Every
+  mediumband packet, from libopus or from opus-rs, decoded to loud noise at
+  every output rate (-14 to -18 dB against libopus). The order and the
+  codebook now come from one branch, as in libopus's `decoder_set_fs.c`: mono
+  mediumband decodes bit-exactly against libopus, and stereo matches it as
+  far as the stereo predictor allows (issue #42).
+
 ### 0.1.37
 
 - **Fix: starved CBR budgets (issues #45, #46).** Budgets below 3 bytes per

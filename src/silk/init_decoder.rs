@@ -33,21 +33,22 @@ pub fn silk_decoder_set_fs(dec: &mut SilkDecoderState, fs_khz: i32, fs_api_hz: i
             // 288 at 16 kHz) survives a switch to 8 kHz and drives
             // out-of-bounds indexing in silk_decode_core (issue #27 deep scan).
             dec.ltp_mem_length = (LTP_MEM_LENGTH_MS as i32) * fs_khz;
-            dec.lpc_order = if fs_khz == 8 {
-                MIN_LPC_ORDER as i32
+            // NB and MB share the order-10 NLSF codebook; only WB codes 16
+            // coefficients. Set both from one branch, as libopus does: the
+            // decoder reads `ps_nlsf_cb.order` NLSF indices and filters with
+            // `lpc_order` coefficients (issue #53: 12 kHz had 16 against 10).
+            let (lpc_order, nlsf_cb) = if fs_khz == 8 || fs_khz == 12 {
+                (MIN_LPC_ORDER, &SILK_NLSF_CB_NB_MB)
             } else {
-                MAX_LPC_ORDER as i32
+                (MAX_LPC_ORDER, &SILK_NLSF_CB_WB)
             };
+            dec.lpc_order = lpc_order as i32;
+            dec.ps_nlsf_cb = Some(nlsf_cb);
             dec.pitch_lag_low_bits_icdf = match fs_khz {
                 8 => &crate::silk::tables::SILK_UNIFORM4_ICDF,
                 12 => &crate::silk::tables::SILK_UNIFORM6_ICDF,
                 _ => &crate::silk::tables::SILK_UNIFORM8_ICDF,
             };
-            dec.ps_nlsf_cb = Some(if fs_khz == 8 || fs_khz == 12 {
-                &SILK_NLSF_CB_NB_MB
-            } else {
-                &SILK_NLSF_CB_WB
-            });
             dec.first_frame_after_reset = 1;
             dec.lag_prev = 100;
             dec.last_gain_index = 10;
