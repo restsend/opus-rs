@@ -1559,12 +1559,31 @@ fn run_prefilter(
 
     let cancel_pitch = (0..channels).any(|c| after[c] > before[c]);
 
+    // C 1572-1584: revert to a gain of zero, but still fade the previous
+    // frame's filter out over the overlap. The decoder's post-filter always
+    // cross-fades from the old gain, so dropping the fade here leaves 120
+    // samples it post-filters that were never pre-filtered (issue #54).
     if cancel_pitch {
         for c in 0..channels {
-            in_buf[c * buf_stride + overlap..c * buf_stride + overlap + frame_size]
-                .copy_from_slice(
-                    &pre[c * pre_size + max_period..c * pre_size + max_period + frame_size],
-                );
+            let body = c * buf_stride + overlap;
+            in_buf[body..body + frame_size].copy_from_slice(
+                &pre[c * pre_size + max_period..c * pre_size + max_period + frame_size],
+            );
+            comb_filter(
+                in_buf,
+                &pre[c * pre_size..],
+                body + offset,
+                max_period + offset,
+                prev_period,
+                pitch_index,
+                overlap,
+                -prefilter_gain,
+                0.0,
+                prefilter_tapset,
+                tapset_decision,
+                window,
+                overlap,
+            );
         }
     }
 
@@ -3884,5 +3903,55 @@ mod tests {
         let pcm = vec![0.0f32; 48 + mode.overlap]; // supply ≥ frame_size samples
         let mut rc = RangeCoder::new_encoder(100);
         enc.encode_with_budget(&pcm, 48, &mut rc, 0, 800);
+    }
+
+    // Issue #54: a frame whose comb filter is cancelled must still fade the
+    // previous frame's filter out over the overlap, because the decoder's
+    // post-filter always does. Pitched history into a silent frame: any
+    // filtering adds energy, so the filter is cancelled after an "on" frame.
+    #[test]
+    fn cancelled_prefilter_still_fades_out_previous_filter() {
+        let mode = modes::default_mode();
+        let (n, overlap, max_period) = (960, mode.overlap, COMBFILTER_MAXPERIOD);
+        let mut mem: Vec<f32> = (0..max_period)
+            .map(|i| (i as f32 * 0.3).sin() * 1000.0)
+            .collect();
+        let mut in_buf = vec![0.0f32; n + overlap];
+        let mut pre = vec![0.0f32; max_period + n];
+        let mut pitch_buf = vec![0.0f32; (max_period + n) >> 1];
+        let (mut before, mut after) = ([0.0f32], [0.0f32]);
+        let (pf_on, gain, _) = run_prefilter(
+            &mut in_buf,
+            &mut mem,
+            100,
+            0.5,
+            0,
+            0,
+            mode.window,
+            1,
+            n,
+            overlap,
+            &mut pre,
+            &mut pitch_buf,
+            &mut before,
+            &mut after,
+            &AnalysisInfo::default(),
+            0,
+            0.0,
+            100,
+            -1.0,
+            0.0,
+            9,
+        );
+        assert!(!pf_on && gain == 0.0, "expected a cancelled filter");
+        let body = &in_buf[overlap..];
+        assert!(
+            body[..overlap].iter().any(|&v| v.abs() > 1.0),
+            "previous filter was not faded out over the overlap"
+        );
+        assert!(
+            body[overlap..].iter().all(|&v| v == 0.0),
+            "frame past the overlap must be the unfiltered input"
+        );
     }
 }

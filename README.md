@@ -139,6 +139,19 @@ Measured on Apple Silicon M-series (aarch64), compiled with `--release` (opt-lev
 
 ### Unreleased
 
+- **Fix: CELT from 24 kHz input stuck at ~20 dB SNR (issue #54).** When
+  `run_prefilter` cancelled the pitch pre-filter for a frame (libopus 1.6's
+  `cancel_pitch`), it restored the unfiltered input over the whole frame.
+  libopus still fades the previous frame's comb filter out over the overlap
+  (celt_encoder.c:1572-1584), and the decoder's post-filter always applies
+  that fade. So every cancel right after an "on" frame left 120 samples the
+  decoder post-filtered but the encoder never pre-filtered. From 24 kHz the
+  zero-stuffed input is dominated by its image above 12 kHz, so the filter
+  was cancelled whenever the pitch period was odd, in 18 of 66 frames on the
+  issue's chirp. The SNR was 20.1 / 20.9 / 21.1 dB at 32 / 64 / 128 kbps and
+  is now 29.4 / 36.2 / 41.9 dB. libopus 1.6.1 scores 38.8 / 41.9 dB at 64 /
+  128 kbps (35.2 / 41.1 with its tonality analysis off, which opus-rs does
+  not port). The 48 kHz chirp packets are byte-identical.
 - **Fix: CELT flagged transients on steady pitched input (issue #38).** The
   encoder ran `tone_detect` and `transient_analysis` on a buffer whose
   overlap head was the previous frame's *prefiltered* signal while the body
