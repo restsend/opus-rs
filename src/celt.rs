@@ -3234,8 +3234,9 @@ impl CeltDecoder {
             prefilter_gain_old: 0.0,
             prefilter_tapset: 0,
             prefilter_tapset_old: 0,
-            old_band_e2: FixedVec::from_value(0.0, nb_x_ch),
-            old_band_e3: FixedVec::from_value(0.0, nb_x_ch),
+            // oldLogE and oldLogE2 start at -28 dB, as libopus's reset (run at init) sets them.
+            old_band_e2: FixedVec::from_value(-28.0, nb_x_ch),
+            old_band_e3: FixedVec::from_value(-28.0, nb_x_ch),
             rng: 0,
 
             w_tf_res: FixedVec::from_value(0, nb_ebands),
@@ -3271,8 +3272,9 @@ impl CeltDecoder {
         self.prefilter_gain_old = 0.0;
         self.prefilter_tapset = 0;
         self.prefilter_tapset_old = 0;
-        self.old_band_e2.fill(0.0);
-        self.old_band_e3.fill(0.0);
+        // -28 dB, as libopus's OPUS_RESET_STATE.
+        self.old_band_e2.fill(-28.0);
+        self.old_band_e3.fill(-28.0);
         self.rng = 0;
     }
 
@@ -3861,6 +3863,15 @@ impl CeltDecoder {
             let nb_ebands = mode.nb_ebands;
             for i in 0..channels * nb_ebands {
                 self.old_band_e2[i] = self.old_band_e2[i].min(self.old_band_e[i]);
+            }
+        }
+        // In case start or end change (libopus celt_decoder.c), the bands this frame didn't code
+        // forget their energy and history.
+        for c in 0..channels {
+            for i in (0..start_band).chain(end_band..nb_ebands) {
+                self.old_band_e[c * nb_ebands + i] = 0.0;
+                self.old_band_e2[c * nb_ebands + i] = -28.0;
+                self.old_band_e3[c * nb_ebands + i] = -28.0;
             }
         }
 
