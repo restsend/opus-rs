@@ -1986,7 +1986,30 @@ impl OpusDecoder {
             self.prev_mode,
             Some(prev) if prev != mode && !self.prev_redundancy
         );
-        if mode_transition {
+        // The transitions libopus's opus_decode_frame bridges with 5 ms of the old mode concealed
+        // forward: into CELT from SILK or Hybrid (unless that frame's redundancy did it), and out of CELT. A Hybrid
+        // frame carrying redundancy clears it below (libopus: `if (redundancy) transition = 0`).
+        let mut transition = match self.prev_mode {
+            Some(prev) => {
+                (mode == OpusMode::CeltOnly && prev != OpusMode::CeltOnly && !self.prev_redundancy)
+                    || (mode != OpusMode::CeltOnly && prev == OpusMode::CeltOnly)
+            }
+            None => false,
+        };
+        let from_celt = self.prev_mode == Some(OpusMode::CeltOnly) && mode != OpusMode::CeltOnly;
+        if from_celt {
+            // SILK starts over, as libopus's silk_ResetDecoder on a switch from CELT (its resampler too: the reset
+            // clears the SILK rate, so the next set_fs initialises it again).
+            self.silk_dec.reset();
+            self.prev_internal_rate = 0;
+        }
+        // Out of CELT into SILK only, the bridge is the old CELT state concealed forward (a Hybrid frame decides once
+        // its redundancy is read), not the previous frame's last 5 ms, which already played.
+        if from_celt && mode == OpusMode::SilkOnly {
+            self.conceal_celt_bridge()?;
+        }
+        // A Hybrid frame resets CELT itself, after a CELT-to-SILK redundant frame is decoded from the old state.
+        if mode_transition && mode != OpusMode::Hybrid {
             self.celt_dec.reset_state();
         }
 
@@ -1995,7 +2018,8 @@ impl OpusDecoder {
         // (opus_decoder.c:387-391) and crossfades it with the new frame. We
         // reuse the F5-sized prev_pcm_tail buffer for this bridge.
         let f5_bridge = self.sampling_rate as usize / 200; // F5 = Fs/200
-        if mode_transition
+        if transition
+            && mode == OpusMode::CeltOnly
             && f5_bridge > 0
             && matches!(
                 self.prev_mode,
@@ -2185,22 +2209,61 @@ impl OpusDecoder {
                     )?;
                     let silk_out_len = sub_frame_size * self.channels;
 
-                    let total_bits = (payload.len() * 8) as i32;
-                    let redundancy = rc.decode_bit_logp(12);
-                    let skip_celt = if redundancy {
-                        let _celt_to_silk = rc.decode_bit_logp(1);
-                        has_redundancy = true;
-                        // When redundancy is present, the redundant CELT frame
-                        // provides the transition audio. We skip the main CELT
-                        // decode for this sub-frame (the SILK output stands alone)
-                        // — a simplified version of libopus's behaviour where the
-                        // redundant frame is decoded separately and crossfaded.
-                        true
-                    } else {
-                        false
-                    };
+                    // A mode switch's redundancy (RFC 6716 §4.5.1; libopus
+                    // opus_decode_frame): after the SILK layer, when enough bits
+                    // are left, a flag; if set, which way the switch goes and the
+                    // size of a 5 ms CELT frame carried at the packet's end. The
+                    // main CELT layer reads only the bytes before it; the
+                    // redundant frame is decoded on its own and crossfaded in
+                    // below.
+                    let mut len = payload.len();
+                    let mut redundancy = false;
+                    let mut celt_to_silk = false;
+                    let mut redundancy_bytes = 0usize;
+                    if !payload.is_empty() && rc.tell() + 17 + 20 <= (8 * len) as i32 {
+                        redundancy = rc.decode_bit_logp(12);
+                        if redundancy {
+                            celt_to_silk = rc.decode_bit_logp(1);
+                            redundancy_bytes = rc.dec_uint(256) as usize + 2;
+                            if redundancy_bytes > len
+                                || ((len - redundancy_bytes) * 8) < rc.tell() as usize
+                            {
+                                len = 0;
+                                redundancy_bytes = 0;
+                                redundancy = false;
+                            } else {
+                                len -= redundancy_bytes;
+                                rc.storage -= redundancy_bytes as u32;
+                            }
+                        }
+                    }
+                    // libopus remembers only a SILK-to-CELT frame's redundancy (`prev_redundancy = redundancy &&
+                    // !celt_to_silk`).
+                    has_redundancy = redundancy && !celt_to_silk;
+                    let f5 = self.sampling_rate as usize / 200;
+                    let f2_5 = f5 / 2;
+                    let mut redundant = [0.0f32; REDUNDANT_MAX];
+                    if fi == 0 {
+                        if redundancy {
+                            transition = false;
+                        } else if from_celt {
+                            self.conceal_celt_bridge()?;
+                        }
+                    }
+                    if redundancy && celt_to_silk {
+                        self.decode_redundant(
+                            &payload[len..len + redundancy_bytes],
+                            celt_end_band,
+                            f5,
+                            &mut redundant,
+                        );
+                    }
+                    if fi == 0 && mode_transition {
+                        self.celt_dec.reset_state();
+                    }
 
-                    if skip_celt {
+                    let total_bits = (len * 8) as i32;
+                    if len <= 1 {
                         self.w_celt_out[..silk_out_len].fill(0.0);
                     } else {
                         let (celt_dec, celt_planar) = (
@@ -2235,6 +2298,57 @@ impl OpusDecoder {
                         output[out_start + j] =
                             (self.w_silk_out[j] + self.w_celt_out[j]).clamp(-1.0, 1.0);
                     }
+
+                    // The redundant frame crossfaded in (libopus
+                    // opus_decode_frame): going SILK to CELT, the frame's last
+                    // 2.5 ms fade into its second half (decoded from a fresh CELT
+                    // state, which the next CELT frame then carries on from);
+                    // going CELT to SILK, its first half opens the frame and its
+                    // second half fades into the frame's next 2.5 ms.
+                    let ch = self.channels;
+                    let use_redundant = !celt_to_silk
+                        || self.prev_mode != Some(OpusMode::SilkOnly)
+                        || self.prev_redundancy;
+                    if redundancy && use_redundant && f5 > 0 && total >= f5 * ch {
+                        let window = modes::default_mode().window;
+                        let inc = (48000 / self.sampling_rate) as usize;
+                        if !celt_to_silk {
+                            self.celt_dec.reset_state();
+                            self.decode_redundant(
+                                &payload[len..len + redundancy_bytes],
+                                celt_end_band,
+                                f5,
+                                &mut redundant,
+                            );
+                            let at = out_start + (sub_frame_size - f2_5) * ch;
+                            let mut tail = [0.0f32; REDUNDANT_MAX];
+                            tail[..f2_5 * ch].copy_from_slice(&output[at..at + f2_5 * ch]);
+                            smooth_fade(
+                                &tail[..f2_5 * ch],
+                                &redundant[f2_5 * ch..f5 * ch],
+                                &mut output[at..at + f2_5 * ch],
+                                f2_5,
+                                ch,
+                                window,
+                                inc,
+                            );
+                        } else {
+                            output[out_start..out_start + f2_5 * ch]
+                                .copy_from_slice(&redundant[..f2_5 * ch]);
+                            let at = out_start + f2_5 * ch;
+                            let mut next = [0.0f32; REDUNDANT_MAX];
+                            next[..f2_5 * ch].copy_from_slice(&output[at..at + f2_5 * ch]);
+                            smooth_fade(
+                                &redundant[f2_5 * ch..f5 * ch],
+                                &next[..f2_5 * ch],
+                                &mut output[at..at + f2_5 * ch],
+                                f2_5,
+                                ch,
+                                window,
+                                inc,
+                            );
+                        }
+                    }
                 }
                 decoded_total
             }
@@ -2247,7 +2361,7 @@ impl OpusDecoder {
         // F5 = Fs/200, F2_5 = Fs/400.
         let f2_5 = self.sampling_rate as usize / 400;
         let f5 = f2_5 * 2;
-        if mode_transition && f5 > 0 && decoded_total >= f5 {
+        if transition && f5 > 0 && decoded_total >= f5 {
             let window = modes::default_mode().window;
             let inc = (48000 / self.sampling_rate) as usize;
             let f2_5_ch = f2_5 * self.channels;
@@ -2381,6 +2495,21 @@ impl OpusDecoder {
 
         self.save_pcm_tail(output, total);
         Ok(total)
+    }
+
+    /// 5 ms of the old CELT state concealed forward, the bridge out of CELT (libopus
+    /// opus_decode_frame's `pcm_transition`), into `prev_pcm_tail`.
+    fn conceal_celt_bridge(&mut self) -> Result<(), &'static str> {
+        let f5 = self.sampling_rate as usize / 200;
+        if f5 == 0 {
+            return Ok(());
+        }
+        self.conceal_celt(f5, 0)?;
+        let n = (f5 * self.channels).min(self.prev_pcm_tail.len());
+        for i in 0..n {
+            self.prev_pcm_tail[i] = self.w_celt_out[i].clamp(-1.0, 1.0);
+        }
+        Ok(())
     }
 
     /// CELT concealment for `n` samples: decode an empty payload, which takes
@@ -2705,6 +2834,40 @@ fn frame_samples_from_toc(toc: u8, sampling_rate: i32) -> Option<usize> {
 
 fn channels_from_toc(toc: u8) -> usize {
     if toc & 0x04 != 0 { 2 } else { 1 }
+}
+
+/// A 5 ms redundant CELT frame at 48 kHz in stereo, the most it holds.
+const REDUNDANT_MAX: usize = 480;
+
+impl OpusDecoder {
+    /// A mode switch's 5 ms redundant CELT frame (libopus opus_decode_frame:
+    /// all bands from 0, its own range coder over its bytes), interleaved into
+    /// `out`.
+    fn decode_redundant(&mut self, data: &[u8], end_band: usize, f5: usize, out: &mut [f32]) {
+        let n = f5 * self.channels;
+        if data.is_empty() || n > REDUNDANT_MAX {
+            return;
+        }
+        let mut planar = [0.0f32; REDUNDANT_MAX];
+        let mut rrc = RangeCoder::new_decoder(data);
+        self.celt_dec.decode_from_range_coder_with_band_range(
+            &mut rrc,
+            (data.len() * 8) as i32,
+            f5,
+            &mut planar[..n],
+            0,
+            end_band,
+        );
+        if self.channels == 1 {
+            out[..n].copy_from_slice(&planar[..n]);
+        } else {
+            for i in 0..f5 {
+                for c in 0..self.channels {
+                    out[i * self.channels + c] = planar[c * f5 + i];
+                }
+            }
+        }
+    }
 }
 
 /// Crossfade two signals using a squared-sine window (libopus smooth_fade).
