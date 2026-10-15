@@ -2543,6 +2543,11 @@ impl OpusDecoder {
             let trim = (data0 >> 5) as usize;
             return top.saturating_sub(2 * trim).max(1);
         }
+        // A Hybrid frame's CELT layer ends where its bandwidth does (libopus opus_decode_frame:
+        // super-wideband 19 bands, fullband 21); it decoded to 21 at every bandwidth.
+        if mode_from_toc(toc) == OpusMode::Hybrid && (toc >> 3) < 14 {
+            return top.saturating_sub(2).max(1);
+        }
         top
     }
 }
