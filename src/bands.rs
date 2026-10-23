@@ -575,8 +575,8 @@ pub struct SplitCtx {
 pub fn compute_theta(
     ctx: &mut BandCtx,
     sctx: &mut SplitCtx,
-    x: &[f32],
-    y: &[f32],
+    x: &mut [f32],
+    y: &mut [f32],
     n: usize,
     b: &mut i32,
     b_blocks: i32,
@@ -704,13 +704,7 @@ pub fn compute_theta(
         }
         itheta = (itheta as u32 * 16384 / qn as u32) as i32;
         if ctx.encode && stereo {
-            let (bx, by) = (x.as_ptr() as *mut f32, y.as_ptr() as *mut f32);
-            let (sx, sy) = unsafe {
-                (
-                    core::slice::from_raw_parts_mut(bx, n),
-                    core::slice::from_raw_parts_mut(by, n),
-                )
-            };
+            let (sx, sy) = (&mut x[..n], &mut y[..n]);
             if itheta == 0 {
                 intensity_stereo(ctx.m, sx, sy, ctx.band_e, ctx.i, n);
             } else {
@@ -720,13 +714,7 @@ pub fn compute_theta(
     } else if stereo {
         if ctx.encode {
             let inv = itheta > 8192 && !ctx.disable_inv;
-            let (bx, by) = (x.as_ptr() as *mut f32, y.as_ptr() as *mut f32);
-            let (sx, sy) = unsafe {
-                (
-                    core::slice::from_raw_parts_mut(bx, n),
-                    core::slice::from_raw_parts_mut(by, n),
-                )
-            };
+            let (sx, sy) = (&mut x[..n], &mut y[..n]);
             if inv {
                 for yv in sy.iter_mut() {
                     *yv = -*yv;
