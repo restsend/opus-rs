@@ -128,6 +128,11 @@ Measured on Apple Silicon M-series (aarch64), compiled with `--release` (opt-lev
 
 ### Unreleased
 
+- **Fix: the AVX2 pulse search no longer puts pulses past the band.** On
+  an all-zero band (K > 4, N not a multiple of 8) every score ties at 0,
+  and the zero-filled padding lanes won the tie, so each pulse was written
+  past the end of `y` and the band kept none. Padding lanes now score
+  negative infinity.
 ### 0.1.39
 
 - **Fix: a SILK-only frame's trailing redundancy now decodes, like libopus
