@@ -1,5 +1,7 @@
 use crate::range_coder::RangeCoder;
-use crate::silk::decode_frame::{FLAG_DECODE_NORMAL, FLAG_PACKET_LOST, silk_decode_frame};
+use crate::silk::decode_frame::{
+    FLAG_DECODE_LBRR, FLAG_DECODE_NORMAL, FLAG_PACKET_LOST, silk_decode_frame,
+};
 use crate::silk::decode_indices::{
     silk_decode_indices, silk_stereo_decode_mid_only, silk_stereo_decode_pred,
 };
@@ -211,7 +213,8 @@ impl SilkDecoder {
                 }
             }
 
-            // Skip LBRR data for all frames/channels
+            // Normal decoding skips the LBRR data of every frame and channel;
+            // FEC decoding (`FLAG_DECODE_LBRR`) reads it frame by frame below.
             if lost_flag == FLAG_DECODE_NORMAL {
                 for i in 0..n_frames_per_packet as usize {
                     for n in 0..n_channels {
@@ -253,10 +256,21 @@ impl SilkDecoder {
         let mut ms_pred_q13 = [0i32; 2];
         let mut decode_only_middle = 0i32;
         let frame_index = self.channel_state[0].n_frames_decoded as usize;
+        // An LBRR frame carries its own predictor, and its own mid-only flag
+        // when the side has no LBRR; a frame without LBRR conceals with the
+        // last predictor (dec_API.c).
+        let lbrr = lost_flag == FLAG_DECODE_LBRR;
         if self.n_channels_internal == 2 {
-            if lost_flag == FLAG_DECODE_NORMAL {
+            if lost_flag == FLAG_DECODE_NORMAL
+                || (lbrr && self.channel_state[0].lbrr_flags[frame_index] == 1)
+            {
                 ms_pred_q13 = silk_stereo_decode_pred(range_dec);
-                if self.channel_state[1].vad_flags[frame_index] == 0 {
+                let side_coded = if lbrr {
+                    self.channel_state[1].lbrr_flags[frame_index]
+                } else {
+                    self.channel_state[1].vad_flags[frame_index]
+                };
+                if side_coded == 0 {
                     decode_only_middle = if silk_stereo_decode_mid_only(range_dec) {
                         1
                     } else {
@@ -283,11 +297,16 @@ impl SilkDecoder {
         }
 
         // A lost frame conceals the side only if the last good frame coded
-        // one (dec_API.c).
+        // one; an LBRR frame also decodes a side that has LBRR (dec_API.c).
         let has_side = if lost_flag == FLAG_DECODE_NORMAL {
             decode_only_middle == 0
         } else {
             self.prev_decode_only_middle == 0
+                || (self.n_channels_internal == 2
+                    && lbrr
+                    && self.channel_state[1].lbrr_flags
+                        [self.channel_state[1].n_frames_decoded as usize]
+                        == 1)
         };
         let n_channels = self.n_channels_internal as usize;
         let frame_length = self.channel_state[0].frame_length as usize;
@@ -297,8 +316,17 @@ impl SilkDecoder {
         for n in 0..n_channels {
             if n == 0 || has_side {
                 let frame_idx = self.channel_state[0].n_frames_decoded - n as i32;
+                // LBRR frames are coded conditionally only on an LBRR frame
+                // before them; libopus indexes the side's flags with the
+                // side's offset frame index too.
                 let cond_coding = if frame_idx <= 0 {
                     CODE_INDEPENDENTLY
+                } else if lbrr {
+                    if self.channel_state[n].lbrr_flags[frame_idx as usize - 1] != 0 {
+                        CODE_CONDITIONALLY
+                    } else {
+                        CODE_INDEPENDENTLY
+                    }
                 } else if n > 0 && self.prev_decode_only_middle != 0 {
                     CODE_INDEPENDENTLY_NO_LTP_SCALING
                 } else {

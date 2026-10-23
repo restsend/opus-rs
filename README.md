@@ -128,6 +128,28 @@ Measured on Apple Silicon M-series (aarch64), compiled with `--release` (opt-lev
 
 ### Unreleased
 
+- **New: `OpusDecoder::decode_fec(input, frame_size, output)` decodes
+  in-band FEC, like libopus's `opus_decode(..., decode_fec = 1)`.** With a
+  packet lost, pass the packet after it: its first frame's LBRR (the
+  encoder's `use_inband_fec`) rebuilds the lost audio, then `decode` that
+  packet as usual. As in libopus (`opus_decode_native`), a request longer
+  than the packet's frame conceals the head and takes the LBRR for the tail;
+  a SILK frame without LBRR is concealed (`silk_decode_frame`); stereo
+  decodes the mid and side LBRR with their own predictor and mid-only flag
+  (`dec_API.c`); Hybrid takes only its SILK layer's LBRR and conceals the
+  CELT layer; and CELT-only packets, packets after CELT, and packets longer
+  than the request conceal everything. SILK-only recoveries, 10/20/40/60 ms,
+  mono and stereo, from libopus's encoder and from opus-rs's, are bit-exact
+  with libopus 1.6 (~274 dB), and so is the packet decoded after them;
+  Hybrid is 110+ dB in the SILK band, while its concealed CELT layer differs
+  from libopus's CELT concealment (28-32 dB full band).
+- **Fix: 10 ms SILK frames decode like libopus.** `silk_decoder_set_fs`
+  forced four subframes before picking the pitch contour table, so 10 ms
+  frames read their contour with the 20 ms table: the first voiced 10 ms
+  frame desynced the range decoder, and 10 ms SILK streams decoded to noise
+  (-7 dB against libopus). The caller's subframe count now picks the table,
+  as in libopus; 10 ms NB/MB/WB, mono and stereo, decode bit-exact (~274 dB).
+
 ### 0.1.39
 
 - **Fix: a SILK-only frame's trailing redundancy now decodes, like libopus
