@@ -1,4 +1,5 @@
 use crate::range_coder::RangeCoder;
+use crate::silk::cng::silk_cng;
 use crate::silk::decode_core::silk_decode_core;
 use crate::silk::decode_indices::silk_decode_indices;
 use crate::silk::decode_parameters::silk_decode_parameters;
@@ -70,6 +71,9 @@ pub fn silk_decode_frame(
         ps_dec.out_buf.rotate_left(ps_dec.frame_length as usize);
         ps_dec.out_buf[mv_len as usize..mv_len as usize + l].copy_from_slice(&p_out[..l]);
     }
+
+    // Comfort noise generation / estimation.
+    silk_cng(ps_dec, &ps_dec_ctrl, p_out, l);
 
     // Ensure smooth connection of extrapolated and good frames.
     silk_plc_glue_frames(ps_dec, p_out, l);

@@ -56,7 +56,8 @@ pub fn silk_decode_core(
 
     for k in 0..ps_dec.nb_subfr as usize {
         let a_q12 = &ps_dec_ctrl.pred_coef_q12[k >> 1];
-        let b_q14 = &ps_dec_ctrl.ltp_coef_q14[k * LTP_ORDER..];
+        let mut b_q14 = [0i16; LTP_ORDER];
+        b_q14.copy_from_slice(&ps_dec_ctrl.ltp_coef_q14[k * LTP_ORDER..(k + 1) * LTP_ORDER]);
         let signal_type = ps_dec.indices.signal_type;
 
         let mut inv_gain_q31 = silk_inverse32_varq(ps_dec_ctrl.gains_q16[k], 47);
@@ -79,6 +80,10 @@ pub fn silk_decode_core(
             && ps_dec.indices.signal_type as i32 != TYPE_VOICED
             && k < MAX_NB_SUBFR / 2
         {
+            // Avoid an abrupt switch from voiced concealment to unvoiced
+            // decoding: a weak pitch tap at the last concealed lag.
+            b_q14 = [0; LTP_ORDER];
+            b_q14[LTP_ORDER / 2] = 4096; // 0.25 in Q14
             (TYPE_VOICED, ps_dec.lag_prev)
         } else {
             (signal_type as i32, ps_dec_ctrl.pitch_l[k])

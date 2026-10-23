@@ -301,7 +301,8 @@ fn assert_agrees_with_libopus(
 }
 
 /// A stereo decoder plays mono packets on both channels, sample for sample
-/// what a mono decoder produces, losses included, and agrees with libopus.
+/// what a mono decoder produces outside a concealed loss, and agrees with
+/// libopus.
 #[test]
 fn stereo_decoder_plays_mono_packets_on_both_channels() {
     for mode in MODES {
@@ -315,7 +316,16 @@ fn stereo_decoder_plays_mono_packets_on_both_channels() {
             let lost = [packets.len() / 2];
             let stereo = rs_decode(&packets, mode.ms, 2, rate, &lost);
             let mono = rs_decode(&packets, mode.ms, 1, rate, &lost);
+            // libopus conceals CELT with noise drawn for each output channel:
+            // a stereo decoder's channels differ in the lost frame, and its
+            // CELT seed then differs from a mono decoder's for the next two
+            // frames (libopus 1.6 behaves the same).
+            let frame = rate * mode.ms / 1000;
+            let concealed = lost[0] * frame..(lost[0] + 3) * frame;
             for (i, m) in mono.iter().enumerate() {
+                if concealed.contains(&i) {
+                    continue;
+                }
                 for (c, s) in stereo[2 * i..2 * i + 2].iter().enumerate() {
                     assert_eq!(
                         s.to_bits(),

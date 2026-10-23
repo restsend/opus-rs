@@ -7,7 +7,9 @@ use crate::silk::decoder_structs::{SilkDecoderControl, SilkDecoderState};
 use crate::silk::define::*;
 use crate::silk::lpc_analysis::silk_lpc_inverse_pred_gain;
 use crate::silk::macros::*;
-use crate::silk::sigproc_fix::{silk_bwexpander, silk_lpc_analysis_filter, silk_sum_sqr_shift};
+use crate::silk::sigproc_fix::{
+    silk_bwexpander, silk_lpc_analysis_filter, silk_sum_sqr_shift_exact as silk_sum_sqr_shift,
+};
 
 /// Reset PLC state (silk_PLC_Reset).
 pub fn silk_plc_reset(ps_dec: &mut SilkDecoderState) {
@@ -185,7 +187,9 @@ fn silk_plc_conceal(
     };
     let rand_src = &ps_dec.exc_q14[rand_idx..rand_idx + RAND_BUF_SIZE];
 
-    let mut b_q14 = ps_plc.ltp_coef_q14;
+    // B_Q14 in libopus points into the PLC state: the decay of the LTP taps
+    // below carries over to the next lost frame.
+    let b_q14 = &mut ps_plc.ltp_coef_q14;
     let mut rand_scale_q14 = ps_plc.rand_scale_q14 as i32;
 
     // Set up attenuation gains.
@@ -210,14 +214,15 @@ fn silk_plc_conceal(
     if ps_dec.loss_cnt == 0 {
         rand_scale_q14 = 1 << 14;
         if ps_dec.prev_signal_type == TYPE_VOICED {
+            // `rand_scale_Q14` is an opus_int16 in libopus.
             for i in 0..LTP_ORDER {
-                rand_scale_q14 -= b_q14[i] as i32;
+                rand_scale_q14 = (rand_scale_q14 - b_q14[i] as i32) as i16 as i32;
             }
             rand_scale_q14 = rand_scale_q14.max(3277); // 0.2
             rand_scale_q14 = silk_rshift(
                 silk_smulbb(rand_scale_q14, ps_plc.prev_ltp_scale_q14 as i32),
                 14,
-            );
+            ) as i16 as i32;
         } else {
             // Reduce random noise for unvoiced frames with high LPC gain.
             let inv_gain_q30 = silk_lpc_inverse_pred_gain(&a_q12, ps_dec.lpc_order as usize);
@@ -272,7 +277,7 @@ fn silk_plc_conceal(
             let ridx = (silk_rshift(rand_seed, 25) as usize) & RAND_BUF_MASK;
             let rv = rand_src[ridx];
             s_ltp_q14[s_ltp_buf_idx] =
-                silk_lshift_sat32(silk_smlawb(ltp_pred_q12, rv, rand_scale_q14), 2);
+                silk_lshift(silk_smlawb(ltp_pred_q12, rv, rand_scale_q14), 2);
             s_ltp_buf_idx += 1;
         }
 
@@ -281,7 +286,7 @@ fn silk_plc_conceal(
             b_q14[j] = silk_rshift(silk_smulbb(harm_gain_q15, b_q14[j] as i32), 15) as i16;
         }
         // Gradually reduce excitation gain.
-        rand_scale_q14 = silk_rshift(silk_smulbb(rand_scale_q14, rand_gain_q15), 15);
+        rand_scale_q14 = silk_rshift(silk_smulbb(rand_scale_q14, rand_gain_q15), 15) as i16 as i32;
         // Slowly increase pitch lag.
         ps_plc.pitch_l_q8 = silk_smlawb(ps_plc.pitch_l_q8, ps_plc.pitch_l_q8, PITCH_DRIFT_FAC_Q16);
         ps_plc.pitch_l_q8 = ps_plc

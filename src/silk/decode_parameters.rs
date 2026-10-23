@@ -7,7 +7,7 @@ use crate::silk::sigproc_fix::silk_bwexpander;
 use crate::silk::tables::SILK_LTP_SCALES_TABLE_Q14;
 use crate::silk::tables::SILK_LTP_VQ_PTRS_Q7;
 
-const BWE_AFTER_LOSS_Q16: i32 = 64738;
+const BWE_AFTER_LOSS_Q16: i32 = 63570; // 0.97 in Q16, as define.h
 
 fn silk_decode_pitch(
     lag_index: i16,

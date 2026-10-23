@@ -1833,132 +1833,8 @@ impl OpusDecoder {
         let bandwidth = bandwidth_from_toc(toc);
         let frame_duration_ms = frame_duration_ms_from_toc(toc);
 
-        let code = toc & 0x03;
-        let frame_count: usize;
-        let frame_payloads: FixedVec<&[u8], OPUS_MAX_PACKET_FRAMES>;
-
-        match code {
-            0 => {
-                frame_count = 1;
-                frame_payloads = FixedVec::from_slice(&[&input[1..]]);
-            }
-            1 => {
-                frame_count = 2;
-                let data_len = input.len() - 1;
-                // RFC 6716 §3.2.1: code 1 carries two equal-size (CBR) frames,
-                // so the payload length must be even. libopus rejects odd lengths.
-                if !data_len.is_multiple_of(2) {
-                    return Err("Code 1: payload length must be even");
-                }
-                let half = data_len / 2;
-                if half == 0 {
-                    return Err("Code 1: empty frame");
-                }
-                frame_payloads = FixedVec::from_slice(&[&input[1..1 + half], &input[1 + half..]]);
-            }
-            2 => {
-                frame_count = 2;
-                let data = &input[1..];
-                if data.is_empty() {
-                    return Err("Code 2 packet has no data");
-                }
-                let (first_len, header_size) = parse_frame_size(data)?;
-                if header_size + first_len > data.len() {
-                    return Err("Code 2: first frame size exceeds packet");
-                }
-                frame_payloads = FixedVec::from_slice(&[
-                    &data[header_size..header_size + first_len],
-                    &data[header_size + first_len..],
-                ]);
-            }
-            3 => {
-                if input.len() < 2 {
-                    return Err("Code 3 packet too short");
-                }
-                let count_byte = input[1];
-                let n_frames = (count_byte & 0x3F) as usize;
-                if !(1..=48).contains(&n_frames) {
-                    return Err("Code 3: invalid frame count");
-                }
-                frame_count = n_frames;
-                // Bit 6 = padding flag, bit 7 = VBR flag (RFC 6716 §3.2.1).
-                let padding_flag = (count_byte & 0x40) != 0;
-                let vbr = (count_byte & 0x80) != 0;
-
-                // Parse the optional padding length bytes that follow the count
-                // byte. The padding *content* (pad_len bytes) lives at the end of
-                // the packet and is not part of any frame.
-                let mut ptr = 2usize;
-                let mut pad_len = 0usize;
-                if padding_flag {
-                    loop {
-                        if ptr >= input.len() {
-                            return Err("Code 3: padding overflow");
-                        }
-                        let p = input[ptr] as usize;
-                        ptr += 1;
-                        if p == 255 {
-                            pad_len += 254;
-                        } else {
-                            pad_len += p;
-                            break;
-                        }
-                    }
-                }
-                if ptr + pad_len > input.len() {
-                    return Err("Code 3: padding exceeds packet");
-                }
-                let payload_end = input.len() - pad_len;
-                let payload = &input[ptr..payload_end];
-
-                let mut payloads: FixedVec<&[u8], OPUS_MAX_PACKET_FRAMES> = FixedVec::new();
-                if frame_count == 1 {
-                    // Single frame: the entire payload region is the frame, both
-                    // for VBR and CBR (no length prefix is present).
-                    payloads.push(payload);
-                } else if vbr {
-                    // VBR (V=1): the per-frame length fields for all frames
-                    // except the last come first, then all frame payloads
-                    // (RFC 6716 §3.2.1; libopus `opus_packet_parse_impl`).
-                    // Interleaving length and data — as this used to — parsed
-                    // any libopus code-3 VBR packet wrong.
-                    let mut cursor = 0usize;
-                    let mut frame_bytes = 0usize;
-                    let mut sizes = [0usize; OPUS_MAX_PACKET_FRAMES];
-                    for i in 0..frame_count - 1 {
-                        if cursor >= payload.len() {
-                            return Err("Code 3: unexpected end in VBR header");
-                        }
-                        let (frame_len, header_bytes) = parse_frame_size(&payload[cursor..])?;
-                        cursor += header_bytes;
-                        sizes[i] = frame_len;
-                        frame_bytes += frame_len;
-                    }
-                    if frame_bytes > payload.len() - cursor {
-                        return Err("Code 3: frame length exceeds packet");
-                    }
-                    sizes[frame_count - 1] = payload.len() - cursor - frame_bytes;
-                    let mut data_pos = cursor;
-                    for i in 0..frame_count {
-                        payloads.push(&payload[data_pos..data_pos + sizes[i]]);
-                        data_pos += sizes[i];
-                    }
-                } else {
-                    // CBR (V=0): remaining bytes are split equally into M frames
-                    // (RFC 6716 §3.2.1: "the remaining bytes are split into M
-                    // equal chunks").
-                    if !payload.len().is_multiple_of(frame_count) {
-                        return Err("Code 3 CBR: payload not divisible by frame count");
-                    }
-                    let frame_len = payload.len() / frame_count;
-                    for i in 0..frame_count {
-                        payloads.push(&payload[i * frame_len..(i + 1) * frame_len]);
-                    }
-                }
-                frame_payloads = payloads;
-            }
-            _ => unreachable!(),
-        }
+        let frame_payloads = frame_payloads(input)?;
+        let frame_count = frame_payloads.len();
 
         self.frame_size = frame_size;
         self.bandwidth = bandwidth;
@@ -2521,6 +2397,106 @@ impl OpusDecoder {
         Ok(decoded_total)
     }
 
+    /// Rebuild a lost packet from the in-band FEC of the packet after it,
+    /// into interleaved `f32` PCM, returning the number of samples per
+    /// channel written (always `frame_size`). This is libopus's
+    /// `opus_decode(..., decode_fec = 1)`.
+    ///
+    /// `input` is the packet that followed the loss. When it is SILK-only or
+    /// Hybrid and its first frame carries LBRR (the encoder's
+    /// `use_inband_fec`), the last frame's worth of `frame_size` (one frame
+    /// of `input`, 10 to 60 ms) is rebuilt from that LBRR, and anything
+    /// before it is concealed. A SILK frame without LBRR is concealed too,
+    /// and all of `frame_size` is, as for `decode(&[], frame_size, ..)`, when
+    /// `input` is CELT-only, follows a CELT packet, or has frames longer than
+    /// `frame_size`. Hybrid uses only the SILK layer's LBRR, with the CELT
+    /// layer concealed. `frame_size` is a multiple of 2.5 ms.
+    ///
+    /// `input` itself is not consumed: decode it with [`Self::decode`] next.
+    pub fn decode_fec(
+        &mut self,
+        input: &[u8],
+        frame_size: usize,
+        output: &mut [f32],
+    ) -> Result<usize, &'static str> {
+        if input.len() <= 1 {
+            return self.decode_lost(None, frame_size, output);
+        }
+        let toc = input[0];
+        let mode = mode_from_toc(toc);
+        let packet_frame = frame_samples_from_toc(toc, self.sampling_rate)
+            .ok_or("Invalid TOC for sampling rate")?;
+        let payloads = frame_payloads(input)?;
+        // No FEC can be present: conceal it all (opus_decode_native).
+        if frame_size < packet_frame
+            || payloads[0].len() <= 1
+            || mode == OpusMode::CeltOnly
+            || self.prev_mode == Some(OpusMode::CeltOnly)
+        {
+            return self.decode_lost(None, frame_size, output);
+        }
+        let channels = self.channels;
+        if output.len() < frame_size * channels {
+            return Err("Output buffer too small for packet");
+        }
+        // Conceal everything but the duration the packet's FEC covers.
+        let head = frame_size - packet_frame;
+        if head > 0 {
+            self.decode_lost(None, head, output)?;
+        }
+
+        let bandwidth = bandwidth_from_toc(toc);
+        let packet_channels = channels_from_toc(toc);
+        self.frame_size = frame_size;
+        self.bandwidth = bandwidth;
+        self.stream_channels = packet_channels;
+        self.celt_dec.set_stream_channels(packet_channels);
+        let internal_rate = match (mode, bandwidth) {
+            (OpusMode::SilkOnly, Bandwidth::Narrowband) => 8000,
+            (OpusMode::SilkOnly, Bandwidth::Mediumband) => 12000,
+            _ => 16000,
+        };
+        if internal_rate != self.prev_internal_rate || !self.silk_resampler.is_initialized() {
+            self.silk_resampler.init(internal_rate, self.sampling_rate);
+            self.silk_resampler_2
+                .init(internal_rate, self.sampling_rate);
+        }
+        self.prev_internal_rate = internal_rate;
+
+        // The first frame's LBRR, frame by frame; a SILK frame without LBRR
+        // is concealed (silk_decode_frame).
+        let mut rc = RangeCoder::new_decoder(payloads[0]);
+        self.decode_silk_frames(
+            &mut rc,
+            silk::decode_frame::FLAG_DECODE_LBRR,
+            frame_duration_ms_from_toc(toc),
+            internal_rate,
+            packet_frame,
+        )?;
+        let len = packet_frame * channels;
+        if mode == OpusMode::Hybrid {
+            // FEC never reads the CELT layer: conceal it above SILK's band,
+            // from a reset state unless the last packet was Hybrid too
+            // (opus_decode_frame 551-553).
+            if self.prev_mode.is_some_and(|m| m != OpusMode::Hybrid) && !self.prev_redundancy {
+                self.celt_dec.reset_state();
+            }
+            self.conceal_celt(packet_frame, 17)?;
+        } else {
+            self.w_celt_out[..len].fill(0.0);
+        }
+        let tail = &mut output[head * channels..frame_size * channels];
+        for (i, d) in tail.iter_mut().enumerate() {
+            *d = (self.w_silk_out[i] + self.w_celt_out[i]).clamp(-1.0, 1.0);
+        }
+        output[frame_size * channels..].fill(0.0);
+
+        self.save_pcm_tail(output, frame_size);
+        self.prev_mode = Some(mode);
+        self.prev_redundancy = false;
+        Ok(frame_size)
+    }
+
     /// Conceal a lost frame (libopus `opus_decode_frame` with `data == NULL`).
     ///
     /// Only the duration comes from the caller: the placeholder ToC of a
@@ -2645,27 +2621,17 @@ impl OpusDecoder {
         Ok(())
     }
 
-    /// CELT concealment for `n` samples: decode an empty payload, which takes
-    /// the silence path — the previous frame's MDCT overlap decays into
-    /// silence with the decoder state kept continuous. Output lands
+    /// CELT concealment for `n` samples from band `start_band` (libopus
+    /// `celt_decode_lost`): pitch repetition or noise, decaying. Output lands
     /// interleaved in `w_celt_out[..n * channels]`.
     fn conceal_celt(&mut self, n: usize, start_band: usize) -> Result<(), &'static str> {
         let len = n * self.channels;
-        let end_band = modes::default_mode().eff_ebands;
-        let mut rc = RangeCoder::new_decoder(&[]);
         let decoded = {
             let (celt_dec, planar) = (
                 state_mut(&mut self.celt_dec),
                 state_mut(&mut self.w_celt_planar),
             );
-            celt_dec.decode_from_range_coder_with_band_range(
-                &mut rc,
-                0,
-                n,
-                &mut planar[..len],
-                start_band,
-                end_band,
-            )
+            celt_dec.decode_lost(n, &mut planar[..len], start_band)
         };
         if decoded != n {
             return Err("CELT concealment failed");
@@ -3006,6 +2972,128 @@ fn frame_samples_from_toc(toc: u8, sampling_rate: i32) -> Option<usize> {
 
 fn channels_from_toc(toc: u8) -> usize {
     if toc & 0x04 != 0 { 2 } else { 1 }
+}
+
+/// The frames of a packet of at least 2 bytes, split as its ToC's code says
+/// (RFC 6716 §3.2; libopus `opus_packet_parse_impl`).
+fn frame_payloads(input: &[u8]) -> Result<FixedVec<&[u8], OPUS_MAX_PACKET_FRAMES>, &'static str> {
+    Ok(match input[0] & 0x03 {
+        0 => FixedVec::from_slice(&[&input[1..]]),
+        1 => {
+            let data_len = input.len() - 1;
+            // RFC 6716 §3.2.1: code 1 carries two equal-size (CBR) frames,
+            // so the payload length must be even. libopus rejects odd lengths.
+            if !data_len.is_multiple_of(2) {
+                return Err("Code 1: payload length must be even");
+            }
+            let half = data_len / 2;
+            if half == 0 {
+                return Err("Code 1: empty frame");
+            }
+            FixedVec::from_slice(&[&input[1..1 + half], &input[1 + half..]])
+        }
+        2 => {
+            let data = &input[1..];
+            if data.is_empty() {
+                return Err("Code 2 packet has no data");
+            }
+            let (first_len, header_size) = parse_frame_size(data)?;
+            if header_size + first_len > data.len() {
+                return Err("Code 2: first frame size exceeds packet");
+            }
+            FixedVec::from_slice(&[
+                &data[header_size..header_size + first_len],
+                &data[header_size + first_len..],
+            ])
+        }
+        3 => {
+            if input.len() < 2 {
+                return Err("Code 3 packet too short");
+            }
+            let count_byte = input[1];
+            let n_frames = (count_byte & 0x3F) as usize;
+            if !(1..=48).contains(&n_frames) {
+                return Err("Code 3: invalid frame count");
+            }
+            let frame_count = n_frames;
+            // Bit 6 = padding flag, bit 7 = VBR flag (RFC 6716 §3.2.1).
+            let padding_flag = (count_byte & 0x40) != 0;
+            let vbr = (count_byte & 0x80) != 0;
+
+            // Parse the optional padding length bytes that follow the count
+            // byte. The padding *content* (pad_len bytes) lives at the end of
+            // the packet and is not part of any frame.
+            let mut ptr = 2usize;
+            let mut pad_len = 0usize;
+            if padding_flag {
+                loop {
+                    if ptr >= input.len() {
+                        return Err("Code 3: padding overflow");
+                    }
+                    let p = input[ptr] as usize;
+                    ptr += 1;
+                    if p == 255 {
+                        pad_len += 254;
+                    } else {
+                        pad_len += p;
+                        break;
+                    }
+                }
+            }
+            if ptr + pad_len > input.len() {
+                return Err("Code 3: padding exceeds packet");
+            }
+            let payload_end = input.len() - pad_len;
+            let payload = &input[ptr..payload_end];
+
+            let mut payloads: FixedVec<&[u8], OPUS_MAX_PACKET_FRAMES> = FixedVec::new();
+            if frame_count == 1 {
+                // Single frame: the entire payload region is the frame, both
+                // for VBR and CBR (no length prefix is present).
+                payloads.push(payload);
+            } else if vbr {
+                // VBR (V=1): the per-frame length fields for all frames
+                // except the last come first, then all frame payloads
+                // (RFC 6716 §3.2.1; libopus `opus_packet_parse_impl`).
+                // Interleaving length and data — as this used to — parsed
+                // any libopus code-3 VBR packet wrong.
+                let mut cursor = 0usize;
+                let mut frame_bytes = 0usize;
+                let mut sizes = [0usize; OPUS_MAX_PACKET_FRAMES];
+                for i in 0..frame_count - 1 {
+                    if cursor >= payload.len() {
+                        return Err("Code 3: unexpected end in VBR header");
+                    }
+                    let (frame_len, header_bytes) = parse_frame_size(&payload[cursor..])?;
+                    cursor += header_bytes;
+                    sizes[i] = frame_len;
+                    frame_bytes += frame_len;
+                }
+                if frame_bytes > payload.len() - cursor {
+                    return Err("Code 3: frame length exceeds packet");
+                }
+                sizes[frame_count - 1] = payload.len() - cursor - frame_bytes;
+                let mut data_pos = cursor;
+                for i in 0..frame_count {
+                    payloads.push(&payload[data_pos..data_pos + sizes[i]]);
+                    data_pos += sizes[i];
+                }
+            } else {
+                // CBR (V=0): remaining bytes are split equally into M frames
+                // (RFC 6716 §3.2.1: "the remaining bytes are split into M
+                // equal chunks").
+                if !payload.len().is_multiple_of(frame_count) {
+                    return Err("Code 3 CBR: payload not divisible by frame count");
+                }
+                let frame_len = payload.len() / frame_count;
+                for i in 0..frame_count {
+                    payloads.push(&payload[i * frame_len..(i + 1) * frame_len]);
+                }
+            }
+            payloads
+        }
+        _ => unreachable!(),
+    })
 }
 
 /// A 5 ms redundant CELT frame at 48 kHz in stereo, the most it holds.
