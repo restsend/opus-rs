@@ -403,6 +403,7 @@ impl SilkDecoder {
             output[..fl].copy_from_slice(&self.w_silk_buf[0][1..1 + fl]);
         }
 
+
         // A lost frame carries no mid-only flag; keep the last good one
         // (dec_API.c).
         if lost_flag == FLAG_PACKET_LOST {

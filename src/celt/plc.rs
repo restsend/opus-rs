@@ -343,6 +343,9 @@ impl CeltDecoder {
             &self.decode_mem[..mem_len],
             &self.decode_mem[mem_len.min(self.decode_mem.len())..],
         ];
+        // `pitch_downsample` ends with the whitening FIR (libopus
+        // pitch.c:192-229), so no extra whitening happens before
+        // `pitch_search` (`celt_plc_pitch_search` has none).
         pitch_downsample(
             &channels[..self.channels],
             &mut lp,
@@ -350,13 +353,30 @@ impl CeltDecoder {
             self.channels,
             2,
         );
-        whiten_lp(&mut lp);
+        // TEMP bit-exactness trace.
+        #[cfg(feature = "std")]
+        let trace_n = {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static N: AtomicUsize = AtomicUsize::new(0);
+            if let Ok(dir) = std::env::var("OPUS_TRACE_PLC") {
+                let n = N.fetch_add(1, Ordering::SeqCst);
+                let bytes: Vec<u8> = lp.iter().flat_map(|v| v.to_le_bytes()).collect();
+                let _ = std::fs::write(format!("{dir}/rs_lp_{n}.f32"), &bytes);
+                n
+            } else {
+                usize::MAX
+            }
+        };
         let pitch = pitch_search(
             &lp[PLC_PITCH_LAG_MAX >> 1..],
             &lp,
             DECODE_BUFFER_SIZE - PLC_PITCH_LAG_MAX,
             PLC_PITCH_LAG_MAX - PLC_PITCH_LAG_MIN,
         );
+        #[cfg(feature = "std")]
+        if trace_n != usize::MAX {
+            eprintln!("RS plc search {trace_n}: lag {}", PLC_PITCH_LAG_MAX - pitch);
+        }
         PLC_PITCH_LAG_MAX - pitch
     }
 
@@ -453,44 +473,5 @@ pub(super) fn prefilter_and_fold(
     );
     for i in 0..overlap / 2 {
         mem[x0 + i] = window[i] * etmp[overlap - 1 - i] + window[overlap - i - 1] * etmp[i];
-    }
-}
-
-/// The whitening `pitch_downsample` applies after decimating: a 4th-order
-/// LPC with an added zero (float build).
-fn whiten_lp(x_lp: &mut [f32]) {
-    let len = x_lp.len();
-    let mut ac = [0.0f32; 5];
-    autocorr(x_lp, &mut ac, None, 0, 4, len);
-    ac[0] *= 1.0001;
-    for (i, a) in ac.iter_mut().enumerate().skip(1) {
-        *a -= *a * (0.008 * i as f32) * (0.008 * i as f32);
-    }
-    let mut lpc = [0.0f32; 4];
-    celt_lpc(&mut lpc, &ac, 4);
-    let mut tmp = 1.0f32;
-    for l in lpc.iter_mut() {
-        tmp *= 0.9;
-        *l *= tmp;
-    }
-    let c1 = 0.8f32;
-    let lpc2 = [
-        lpc[0] + 0.8,
-        lpc[1] + c1 * lpc[0],
-        lpc[2] + c1 * lpc[1],
-        lpc[3] + c1 * lpc[2],
-        c1 * lpc[3],
-    ];
-    let mut mem = [0.0f32; 5];
-    for v in x_lp.iter_mut() {
-        let sum = *v
-            + lpc2[0] * mem[0]
-            + lpc2[1] * mem[1]
-            + lpc2[2] * mem[2]
-            + lpc2[3] * mem[3]
-            + lpc2[4] * mem[4];
-        mem.copy_within(..4, 1);
-        mem[0] = *v;
-        *v = sum;
     }
 }

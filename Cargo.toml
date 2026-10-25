@@ -42,6 +42,7 @@ portable-atomic = { version = "1", optional = true, default-features = false }
 criterion = { version = "0.8.2", features = ["html_reports"] }
 proptest = "1"
 opus = { version = "0.3", default-features = false }
+opusic-sys = "0.7"
 [[bench]]
 name = "opus_bench"
 harness = false

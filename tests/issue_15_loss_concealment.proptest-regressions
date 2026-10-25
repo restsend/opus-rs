@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f093af5abd33f333d04b9c7e239e7c4804de00a8d53295ba249d9da5d52f1ba4 # shrinks to cfg = 0, events = [Garbage([0, 55, 27, 26, 128, 168, 42, 166, 170, 82, 243, 188, 228, 0, 0, 0, 0])]

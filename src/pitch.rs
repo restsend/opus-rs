@@ -6,7 +6,6 @@ use crate::fixedvec::FixedVec;
 /// `COMBFILTER_MAXPERIOD = 1024` and the maximum pitch lag.
 const PITCH_BUF_MAX: usize = 1024;
 
-#[cfg(target_arch = "aarch64")]
 use crate::celt_lpc::{autocorr, lpc};
 
 pub fn inner_prod(x: &[f32], y: &[f32], n: usize) -> f32 {
@@ -139,7 +138,16 @@ unsafe fn inner_prod_neon(x: &[f32], y: &[f32], n: usize) -> f32 {
         i += 4;
     }
 
-    let mut sum = vaddvq_f32(xy);
+    let mut sum = {
+        // Reduce exactly like libopus's float `celt_inner_prod_neon`
+        // (pitch_neon_intr.c): pairwise low+high, then a pairwise add of
+        // that — not `vaddvq_f32`, whose grouping differs in the last bits.
+        let lo = vget_low_f32(xy);
+        let hi = vget_high_f32(xy);
+        let paired = vadd_f32(lo, hi);
+        let halved = vpadd_f32(paired, paired);
+        vget_lane_f32::<0>(halved)
+    };
 
     for j in i..n {
         sum += x[j] * y[j];
@@ -720,7 +728,6 @@ unsafe fn xcorr_kernel_avx(x: &[f32], y: &[f32], sum: &mut [f32; 4], len: usize)
     _mm_storeu_ps(sum.as_mut_ptr(), _mm_add_ps(xsum1, xsum2));
 }
 
-#[cfg(target_arch = "aarch64")]
 fn celt_fir5(x: &mut [f32], num: &[f32], n: usize) {
     let mut mem = [0.0f32; 5];
 
@@ -762,6 +769,7 @@ pub fn pitch_downsample(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, fa
     #[cfg(target_arch = "aarch64")]
     if factor == 2 && c <= 2 && x.iter().take(c).all(|s| s.len() >= factor * len + offset) {
         pitch_downsample_neon(x, x_lp, len, c, offset);
+        whiten_downsampled(x_lp, len);
         return;
     }
 
@@ -782,6 +790,47 @@ pub fn pitch_downsample(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, fa
     }
 
     pitch_downsample_boundary(x, x_lp, c, offset);
+    whiten_downsampled(x_lp, len);
+}
+
+/// Whitening of the decimated signal, shared by every `pitch_downsample`
+/// path (the tail of libopus `pitch_downsample`, pitch.c:192-229): a 4-tap
+/// LPC from the decimated autocorrelation, lag-windowed, with a zero added,
+/// applied as a 5-tap FIR so the pitch search sees a flat spectrum with a
+/// sharp correlation peak.
+fn whiten_downsampled(x_lp: &mut [f32], len: usize) {
+    let mut ac = [0.0f32; 5];
+    autocorr(&x_lp[0..len], &mut ac, None, 0, 4, len);
+
+    // Noise floor -40 dB.
+    ac[0] *= 1.0001;
+
+    // Lag windowing.
+    for i in 1..=4 {
+        let f = 0.008 * (i as f32);
+        ac[i] -= ac[i] * f * f;
+    }
+
+    let mut lpc_coeffs = [0.0f32; 4];
+    lpc(&mut lpc_coeffs, &ac, 4);
+
+    let mut tmp = 1.0f32;
+    for coeff in lpc_coeffs.iter_mut() {
+        tmp *= 0.9;
+        *coeff *= tmp;
+    }
+
+    // Add a zero.
+    let c1 = 0.8f32;
+    let lpc2 = [
+        lpc_coeffs[0] + c1,
+        lpc_coeffs[1] + c1 * lpc_coeffs[0],
+        lpc_coeffs[2] + c1 * lpc_coeffs[1],
+        lpc_coeffs[3] + c1 * lpc_coeffs[2],
+        c1 * lpc_coeffs[3],
+    ];
+
+    celt_fir5(x_lp, &lpc2, len);
 }
 
 #[inline]
@@ -806,9 +855,6 @@ fn pitch_downsample_neon(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, o
     use core::arch::aarch64::*;
 
     unsafe {
-        let v025 = vdupq_n_f32(0.25);
-        let v05 = vdupq_n_f32(0.5);
-
         if c == 1 {
             let x0 = x[0];
 
@@ -822,9 +868,14 @@ fn pitch_downsample_neon(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, o
                 let vp = vld1q_f32(x0.as_ptr().add(idx_p));
                 let vc = vld1q_f32(x0.as_ptr().add(idx_c));
 
-                let mut val = vmulq_f32(vm, v025);
-                val = vfmaq_f32(val, vp, v025);
-                val = vfmaq_f32(val, vc, v05);
+                // Separate multiply and add, matching the C scalar loop's
+                // rounding (libopus pitch.c has no FMA here): an `vfmaq`
+                // fuses the product into the add and changes the last bits,
+                // which flips near-tied pitch choices downstream.
+                let val = vaddq_f32(
+                    vaddq_f32(vmulq_n_f32(vm, 0.25), vmulq_n_f32(vp, 0.25)),
+                    vmulq_n_f32(vc, 0.5),
+                );
 
                 vst1q_f32(x_lp.as_mut_ptr().add(i), val);
                 i += 4;
@@ -860,35 +911,6 @@ fn pitch_downsample_neon(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, o
     }
 
     pitch_downsample_boundary(x, x_lp, c, offset);
-
-    let mut ac = [0.0f32; 5];
-    autocorr(&x_lp[0..len], &mut ac, None, 0, 4, len);
-
-    ac[0] *= 1.0001;
-
-    for i in 1..=4 {
-        let f = 0.008 * (i as f32);
-        ac[i] -= ac[i] * f * f;
-    }
-
-    let mut lpc_coeffs = [0.0f32; 4];
-    lpc(&mut lpc_coeffs, &ac, 4);
-
-    let mut tmp = 1.0f32;
-    for i in 0..4 {
-        tmp *= 0.9;
-        lpc_coeffs[i] *= tmp;
-    }
-
-    let c1 = 0.8f32;
-    let mut lpc2 = [0.0f32; 5];
-    lpc2[0] = lpc_coeffs[0] + c1;
-    lpc2[1] = lpc_coeffs[1] + c1 * lpc_coeffs[0];
-    lpc2[2] = lpc_coeffs[2] + c1 * lpc_coeffs[1];
-    lpc2[3] = lpc_coeffs[3] + c1 * lpc_coeffs[2];
-    lpc2[4] = c1 * lpc_coeffs[3];
-
-    celt_fir5(x_lp, &lpc2, len);
 }
 
 #[inline(always)]
@@ -905,89 +927,23 @@ fn find_best_pitch(
     best_pitch[0] = 0;
     best_pitch[1] = 1;
 
-    #[cfg(target_arch = "aarch64")]
-    let mut syy = unsafe {
-        use core::arch::aarch64::*;
-        let mut sum_vec = vdupq_n_f32(0.0);
-        let mut j = 0;
-        while j + 16 <= len {
-            let y0 = vld1q_f32(y.as_ptr().add(j));
-            let y1 = vld1q_f32(y.as_ptr().add(j + 4));
-            let y2 = vld1q_f32(y.as_ptr().add(j + 8));
-            let y3 = vld1q_f32(y.as_ptr().add(j + 12));
-            sum_vec = vfmaq_f32(sum_vec, y0, y0);
-            sum_vec = vfmaq_f32(sum_vec, y1, y1);
-            sum_vec = vfmaq_f32(sum_vec, y2, y2);
-            sum_vec = vfmaq_f32(sum_vec, y3, y3);
-            j += 16;
-        }
-        while j + 4 <= len {
-            let y0 = vld1q_f32(y.as_ptr().add(j));
-            sum_vec = vfmaq_f32(sum_vec, y0, y0);
-            j += 4;
-        }
-        let mut sum = 1.0f32 + vaddvq_f32(sum_vec);
-        while j < len {
-            sum += y[j] * y[j];
-            j += 1;
-        }
-        sum
-    };
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    let mut syy = unsafe {
-        if crate::compat::x86_has_avx() {
-            #[cfg(target_arch = "x86")]
-            use core::arch::x86::*;
-            #[cfg(target_arch = "x86_64")]
-            use core::arch::x86_64::*;
-            let mut acc0 = _mm256_setzero_ps();
-            let mut acc1 = _mm256_setzero_ps();
-            let mut j = 0;
-            while j + 16 <= len {
-                let y0 = _mm256_loadu_ps(y.as_ptr().add(j));
-                let y1 = _mm256_loadu_ps(y.as_ptr().add(j + 8));
-                acc0 = _mm256_add_ps(acc0, _mm256_mul_ps(y0, y0));
-                acc1 = _mm256_add_ps(acc1, _mm256_mul_ps(y1, y1));
-                j += 16;
-            }
-            while j + 8 <= len {
-                let y0 = _mm256_loadu_ps(y.as_ptr().add(j));
-                acc0 = _mm256_add_ps(acc0, _mm256_mul_ps(y0, y0));
-                j += 8;
-            }
-            let acc = _mm256_add_ps(acc0, acc1);
-            let hi = _mm256_extractf128_ps(acc, 1);
-            let lo = _mm256_castps256_ps128(acc);
-            let sum4 = _mm_add_ps(lo, hi);
-            let tmp = _mm_movehl_ps(sum4, sum4);
-            let sum2 = _mm_add_ps(sum4, tmp);
-            let tmp2 = _mm_shuffle_ps(sum2, sum2, 0x55);
-            let mut sum = 1.0f32 + _mm_cvtss_f32(_mm_add_ss(sum2, tmp2));
-            while j < len {
-                sum += y[j] * y[j];
-                j += 1;
-            }
-            sum
-        } else {
-            let mut sum = 1.0f32;
-            for j in 0..len {
-                sum += y[j] * y[j];
-            }
-            sum
-        }
-    };
-    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")))]
-    let mut syy = {
-        let mut sum = 1.0f32;
-        for j in 0..len {
-            sum += y[j] * y[j];
-        }
-        sum
-    };
+    // libopus accumulates `Syy` sequentially in scalar float
+    // (pitch.c find_best_pitch); SIMD tree reductions reorder the adds
+    // and change the last bits, which can flip a near-tied pitch choice.
+    let mut syy = 1.0f32;
+    for yv in &y[..len] {
+        syy += yv * yv;
+    }
 
     for i in 0..max_pitch {
         if xcorr[i] > 0.0 {
-            let num = xcorr[i] * xcorr[i];
+            // The 1e-12 scaling is libopus's (pitch.c find_best_pitch): it
+            // keeps `num` in a safe squaring range, and because it is not a
+            // power of two the rounding of every comparison below depends
+            // on it being applied first.
+            let mut xcorr16 = xcorr[i];
+            xcorr16 *= 1e-12;
+            let num = xcorr16 * xcorr16;
             if num * best_den[1] > best_num[1] * syy {
                 if num * best_den[0] > best_num[0] * syy {
                     best_num[1] = best_num[0];
