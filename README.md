@@ -128,6 +128,11 @@ Measured on Apple Silicon M-series (aarch64), compiled with `--release` (opt-lev
 
 ### Unreleased
 
+- **Fix: `compute_theta` takes its bands as `&mut [f32]`.** The stereo
+  encoder wrote through `&[f32]` cast to `*mut f32`, which is undefined
+  behaviour; release builds were optimized on that assumption and coded
+  some stereo CELT and Hybrid frames differently from debug builds. With
+  mutable slices, release output matches the debug build.
 ### 0.1.39
 
 - **Fix: a SILK-only frame's trailing redundancy now decodes, like libopus
