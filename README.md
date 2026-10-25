@@ -126,7 +126,7 @@ Measured on Apple Silicon M-series (aarch64), compiled with `--release` (opt-lev
 
 ## Release Notes
 
-### Unreleased
+### 0.1.40
 
 - **Fix: `compute_theta` takes its bands as `&mut [f32]`.** The stereo
   encoder wrote through `&[f32]` cast to `*mut f32`, which is undefined
@@ -170,6 +170,26 @@ Measured on Apple Silicon M-series (aarch64), compiled with `--release` (opt-lev
   frame desynced the range decoder, and 10 ms SILK streams decoded to noise
   (-7 dB against libopus). The caller's subframe count now picks the table,
   as in libopus; 10 ms NB/MB/WB, mono and stereo, decode bit-exact (~274 dB).
+- **Fix: the PLC pitch search is bit-faithful to libopus on every
+  architecture.** `pitch_downsample` whitened its output only on aarch64
+  (the NEON path ended with the whitening FIR, the scalar path did not), the
+  PLC search whitened a second time, `find_best_pitch` skipped libopus's
+  `1e-12` scaling and accumulated its normalization with SIMD tree
+  reductions, the mono downsample fused its multiply-adds, and the
+  inner-product reduction paired its sums differently: each pushed the
+  search's input a few ulps away from libopus's, enough to flip the period
+  (or twice it) that concealment extrapolates on a harmonic signal. A
+  stereo decoder and a mono decoder agree again after a concealed CELT
+  loss (issue-62 scenario), the first concealed frame regains ~30 dB
+  against libopus 1.6.1, and the x86_64 encoder's pitch analysis matches
+  libopus's rounding.
+- **Tests: the PLC oracle moved to libopus 1.6.1** (`opusic-sys`): the
+  concealment above is 1.6's, and the previous oracle predates the 1.6 PLC
+  rework, so consecutive-loss frames diverge from it by design. Float CELT
+  concealment - chaotic at octave near-ties, where libopus 1.6.1's own x86
+  and aarch64 builds agree only to ~74 dB - is asserted as the same energy
+  scale (SNR ≥ 0 dB) plus correlation ≥ 0.7 with libopus's concealment;
+  SILK and Hybrid stay bit-exact / near-exact.
 
 ### 0.1.39
 
