@@ -138,6 +138,17 @@ Measured on Apple Silicon M-series (aarch64), compiled with `--release` (opt-lev
   and the zero-filled padding lanes won the tie, so each pulse was written
   past the end of `y` and the band kept none. Padding lanes now score
   negative infinity.
+- **Fix: packet-loss concealment like libopus.** SILK carries the LTP decay
+  from one lost frame to the next, uses libopus's `BWE_AFTER_LOSS` and exact
+  energy, resets `LastGainIndex` and adds comfort noise (`silk_CNG`): lost
+  SILK and Hybrid frames, and the frames after them, are bit-exact with
+  libopus 1.6, where a second lost frame used to fall 10-45 dB too quiet.
+  CELT losses run a port of `celt_decode_lost` (pitch-based and noise-based
+  concealment, with its decay) instead of fading to silence from the second
+  lost frame, and Hybrid conceals its CELT high band from band 17: 74-100 dB
+  against libopus (floating point, so close rather than bit-exact). This
+  also lifts `decode_fec`'s Hybrid full band from the 28-32 dB below to
+  146-149 dB.
 - **New: `OpusDecoder::decode_fec(input, frame_size, output)` decodes
   in-band FEC, like libopus's `opus_decode(..., decode_fec = 1)`.** With a
   packet lost, pass the packet after it: its first frame's LBRR (the

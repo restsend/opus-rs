@@ -1,5 +1,6 @@
 pub mod ana_filt_bank_1;
 pub mod biquad_alt;
+pub mod cng;
 pub mod control_codec;
 pub mod control_fixed;
 pub mod control_snr;

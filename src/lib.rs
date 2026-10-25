@@ -2621,27 +2621,17 @@ impl OpusDecoder {
         Ok(())
     }
 
-    /// CELT concealment for `n` samples: decode an empty payload, which takes
-    /// the silence path — the previous frame's MDCT overlap decays into
-    /// silence with the decoder state kept continuous. Output lands
+    /// CELT concealment for `n` samples from band `start_band` (libopus
+    /// `celt_decode_lost`): pitch repetition or noise, decaying. Output lands
     /// interleaved in `w_celt_out[..n * channels]`.
     fn conceal_celt(&mut self, n: usize, start_band: usize) -> Result<(), &'static str> {
         let len = n * self.channels;
-        let end_band = modes::default_mode().eff_ebands;
-        let mut rc = RangeCoder::new_decoder(&[]);
         let decoded = {
             let (celt_dec, planar) = (
                 state_mut(&mut self.celt_dec),
                 state_mut(&mut self.w_celt_planar),
             );
-            celt_dec.decode_from_range_coder_with_band_range(
-                &mut rc,
-                0,
-                n,
-                &mut planar[..len],
-                start_band,
-                end_band,
-            )
+            celt_dec.decode_lost(n, &mut planar[..len], start_band)
         };
         if decoded != n {
             return Err("CELT concealment failed");

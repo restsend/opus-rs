@@ -14,6 +14,8 @@ use core::mem::MaybeUninit;
 #[cfg(not(feature = "std"))]
 use crate::compat::Math;
 use crate::fixedvec::FixedVec;
+
+mod plc;
 #[inline]
 fn bitrate_to_bits(bitrate: i32, fs: i32, frame_size: i32) -> i32 {
     bitrate * 6 / (6 * fs / frame_size)
@@ -3194,6 +3196,24 @@ pub struct CeltDecoder {
     old_band_e2: FixedVec<f32, CELT_NB_X_CH>,
     old_band_e3: FixedVec<f32, CELT_NB_X_CH>,
     rng: u32,
+    /// Background noise energy per band (libopus `backgroundLogE`).
+    background_log_e: FixedVec<f32, CELT_NB_X_CH>,
+    /// Lost time since the last decoded frame, in 2.5 ms units.
+    loss_duration: u32,
+    /// Concealed time since the last decoded frame, in 2.5 ms units.
+    plc_duration: u32,
+    /// Conceal with noise until two frames in a row decode (`skip_plc`).
+    skip_plc: bool,
+    /// Kind of the last frame (`plc::FRAME_*`).
+    last_frame_type: u8,
+    /// Pitch period the periodic concealment repeats.
+    last_pitch_index: usize,
+    /// Whether the next frame must fold a concealed overlap first.
+    prefilter_and_fold: bool,
+    /// Concealment LPC filter per channel.
+    plc_lpc: [f32; plc::LPC_ORDER * CELT_MAX_CHANNELS],
+    /// End band of the last decoded frame, which noise concealment keeps.
+    end_band: usize,
 
     w_tf_res: FixedVec<i32, CELT_NB_EBANDS>,
     w_cap: FixedVec<i32, CELT_NB_EBANDS>,
@@ -3267,6 +3287,15 @@ impl CeltDecoder {
             FixedVec::write_from_value(&raw mut (*this).old_band_e2, -28.0, nb_x_ch);
             FixedVec::write_from_value(&raw mut (*this).old_band_e3, -28.0, nb_x_ch);
             (&raw mut (*this).rng).write(0);
+            FixedVec::write_from_value(&raw mut (*this).background_log_e, 0.0, nb_x_ch);
+            (&raw mut (*this).loss_duration).write(0);
+            (&raw mut (*this).plc_duration).write(0);
+            (&raw mut (*this).skip_plc).write(true);
+            (&raw mut (*this).last_frame_type).write(plc::FRAME_NONE);
+            (&raw mut (*this).last_pitch_index).write(0);
+            (&raw mut (*this).prefilter_and_fold).write(false);
+            (&raw mut (*this).plc_lpc).write([0.0; plc::LPC_ORDER * CELT_MAX_CHANNELS]);
+            (&raw mut (*this).end_band).write(mode.eff_ebands);
             FixedVec::write_from_value(&raw mut (*this).w_tf_res, 0, nb_ebands);
             FixedVec::write_from_value(&raw mut (*this).w_cap, 0, nb_ebands);
             FixedVec::write_from_value(&raw mut (*this).w_offsets, 0, nb_ebands);
@@ -3322,6 +3351,15 @@ impl CeltDecoder {
         self.old_band_e2.fill(-28.0);
         self.old_band_e3.fill(-28.0);
         self.rng = 0;
+        self.background_log_e.fill(0.0);
+        self.loss_duration = 0;
+        self.plc_duration = 0;
+        self.skip_plc = true;
+        self.last_frame_type = plc::FRAME_NONE;
+        self.last_pitch_index = 0;
+        self.prefilter_and_fold = false;
+        self.plc_lpc = [0.0; plc::LPC_ORDER * CELT_MAX_CHANNELS];
+        self.end_band = self.mode.eff_ebands;
     }
 
     pub fn decode_with_start_band(
@@ -3434,6 +3472,11 @@ impl CeltDecoder {
             lm = 0;
         }
 
+        // Pitch-based concealment only after two good frames in a row.
+        if self.loss_duration == 0 {
+            self.skip_plc = false;
+        }
+
         // A mono stream predicts from the louder channel of a stereo frame
         // before it (celt_decoder.c).
         if channels == 1 {
@@ -3491,6 +3534,11 @@ impl CeltDecoder {
             false
         };
 
+        if !intra_ener && self.loss_duration != 0 {
+            self.make_energy_prediction_safe(start_band, end_band, lm);
+        }
+        // A concealed overlap is folded before the MDCT adds onto it.
+        let fold = self.prefilter_and_fold.then(|| self.postfilter());
         unquant_coarse_energy(
             mode,
             start_band,
@@ -3767,6 +3815,15 @@ impl CeltDecoder {
                 channel_mem_offset + frame_size..channel_mem_offset + mem_size,
                 channel_mem_offset,
             );
+            if let Some(pf) = &fold {
+                plc::prefilter_and_fold(
+                    &mut self.decode_mem[channel_mem_offset..channel_mem_offset + mem_size],
+                    frame_size,
+                    pf,
+                    mode.window,
+                    overlap,
+                );
+            }
 
             let out_syn_idx = DECODE_BUFFER_SIZE - frame_size;
 
@@ -3938,6 +3995,13 @@ impl CeltDecoder {
                 *e2 = e2.min(e);
             }
         }
+        // The background may rise 2.4 dB/s; after a gap (DTX) the update
+        // packet carries the weight of all the missing ones.
+        let max_background_increase =
+            ((self.loss_duration as usize + (1 << lm)).min(160) as f32) * 0.001;
+        for (bg, &e) in self.background_log_e.iter_mut().zip(self.old_band_e.iter()) {
+            *bg = (*bg + max_background_increase).min(e);
+        }
         // In case start or end change (libopus celt_decoder.c), the bands this frame didn't code
         // forget their energy and history. Both halves, as libopus clears them: a mono stream
         // keeps the second, and its next frame predicts from the larger of the two.
@@ -3950,6 +4014,11 @@ impl CeltDecoder {
         }
 
         self.rng = rc.rng;
+        self.loss_duration = 0;
+        self.plc_duration = 0;
+        self.last_frame_type = plc::FRAME_NORMAL;
+        self.prefilter_and_fold = false;
+        self.end_band = end_band;
 
         api_frame_size
     }

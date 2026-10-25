@@ -405,7 +405,17 @@ impl SilkDecoder {
 
         // A lost frame carries no mid-only flag; keep the last good one
         // (dec_API.c).
-        if lost_flag != FLAG_PACKET_LOST {
+        if lost_flag == FLAG_PACKET_LOST {
+            // Drop the gain clamping, so the level can recover if it was
+            // falling when the loss began (dec_API.c).
+            for ch in self
+                .channel_state
+                .iter_mut()
+                .take(self.n_channels_internal as usize)
+            {
+                ch.last_gain_index = 10;
+            }
+        } else {
             self.prev_decode_only_middle = decode_only_middle;
         }
 
