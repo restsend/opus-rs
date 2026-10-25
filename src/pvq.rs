@@ -1769,7 +1769,10 @@ unsafe fn pvq_search_avx2(x: &[f32], y: &mut [i32], k: i32, n: usize) {
     let y_ptr = y.as_mut_ptr();
     let n8 = n & !7;
     let n_ceil8 = (n + 7) & !7;
-    let mut scores = [0.0f32; 32];
+    // Lanes past `n` must never win the tie-break on the maximum score:
+    // with an all-zero band every score is 0, and a zero-filled pad would
+    // put the pulse at an index past the end of `y`.
+    let mut scores = [f32::NEG_INFINITY; 32];
 
     while k > 0 {
         yy += 1.0;
