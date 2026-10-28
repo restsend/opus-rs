@@ -126,6 +126,24 @@ Measured on Apple Silicon M-series (aarch64), compiled with `--release` (opt-lev
 
 ## Release Notes
 
+### 0.1.41
+
+- **Fix: the encoder no longer panics with in-band FEC at 24/48 kHz and
+  20-28 kb/s.** With a packet-loss rate above 5%, the FEC decision walks the
+  frame's bandwidth down until FEC fits the rate, and the hybrid → SILK-only
+  mode fixup has to re-run on that post-FEC bandwidth. It only ran before
+  the walk, so the frame stayed hybrid at wideband: CELT was entered with
+  start band 17 == end band 17 — zero coded bands — and the bit allocation
+  divided by zero on the very first frame, any signal, release builds
+  included. The equivalent rate fed to the FEC decision is also recomputed
+  with the decided mode now (full SILK packet-loss term, none for CELT);
+  the pre-decision half-loss variant flipped FEC decisions near the
+  thresholds. The issue's whole matrix — mono and stereo, 10 and 20 ms,
+  12-32 kb/s, FEC on and off — encodes and decodes, the hybrid/SILK mode
+  decision matches libopus across it, CBR packet sizes are bit-identical on
+  real speech, and VBR lands within 2% for the frames the fix rescued
+  (issue #71).
+
 ### 0.1.40
 
 - **Fix: `compute_theta` takes its bands as `&mut [f32]`.** The stereo
