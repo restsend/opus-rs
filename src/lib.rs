@@ -216,11 +216,18 @@ impl PcmInput<'_> {
     }
 }
 
+/// Equivalent 20-ms rate used for the mode and FEC decisions: the configured
+/// bitrate adjusted for frame duration, CBR penalty, complexity and packet
+/// loss. `mode` is the decided mode where one exists; `None` matches the
+/// call sites that run before the mode decision, which apply only half of
+/// the SILK loss adjustment. Feeding the wrong variant to the FEC decision
+/// flips its threshold comparisons near the boundary.
 fn compute_equiv_rate(
     bitrate: i32,
     channels: usize,
     frame_rate: i32,
     vbr: bool,
+    mode: Option<OpusMode>,
     complexity: i32,
     loss: i32,
 ) -> i32 {
@@ -232,8 +239,26 @@ fn compute_equiv_rate(
         equiv -= equiv / 12;
     }
     equiv = equiv * (90 + complexity) / 100;
-    if loss > 0 {
-        equiv -= equiv * loss / (12 * loss + 20);
+    match mode {
+        Some(OpusMode::SilkOnly | OpusMode::Hybrid) => {
+            // SILK complexity 0-1 uses the non-delayed-decision NSQ, which
+            // costs about 20%.
+            if complexity < 2 {
+                equiv = equiv * 4 / 5;
+            }
+            equiv -= equiv * loss / (6 * loss + 10);
+        }
+        Some(OpusMode::CeltOnly) => {
+            // CELT complexity 0-4 doesn't have the pitch filter, which costs
+            // about 10%. No packet-loss adjustment.
+            if complexity < 5 {
+                equiv = equiv * 9 / 10;
+            }
+        }
+        // Mode not known yet: half the SILK loss.
+        None => {
+            equiv -= equiv * loss / (12 * loss + 20);
+        }
     }
     equiv
 }
@@ -717,6 +742,7 @@ impl OpusEncoder {
                 self.channels,
                 frame_rate,
                 !self.use_cbr,
+                None,
                 self.complexity,
                 self.packet_loss_perc,
             );
@@ -805,11 +831,15 @@ impl OpusEncoder {
         // is left untouched, matching C where the bandwidth is re-derived
         // every frame.
         let mut frame_bandwidth = self.bandwidth;
+        // Recompute the equivalent rate with the decided mode: SILK and
+        // hybrid pay the full packet-loss adjustment, CELT none. Using the
+        // pre-decision rate here flips FEC decisions near the thresholds.
         let equiv_rate = compute_equiv_rate(
             self.bitrate_bps,
             self.channels,
             frame_rate,
             !self.use_cbr,
+            Some(mode),
             self.complexity,
             self.packet_loss_perc,
         );
@@ -821,6 +851,19 @@ impl OpusEncoder {
             &mut frame_bandwidth,
             equiv_rate,
         );
+        // The mode/bandwidth fixup must also run *after* decide_fec(), on
+        // the post-FEC bandwidth: with loss > 5%, decide_fec walks the
+        // bandwidth down until FEC fits the rate, and a hybrid frame reduced
+        // to WB or below must code as SILK-only. Otherwise CELT is entered
+        // with start band 17 == end band 17 — zero coded bands — and
+        // interp_bits2pulses divides by zero (issue #71).
+        if mode == OpusMode::Hybrid
+            && (frame_bandwidth == Bandwidth::Narrowband
+                || frame_bandwidth == Bandwidth::Mediumband
+                || frame_bandwidth == Bandwidth::Wideband)
+        {
+            mode = OpusMode::SilkOnly;
+        }
         if mode == OpusMode::CeltOnly {
             // silk_mode.LBRR_coded persists across frames even while SILK is
             // idle; it feeds decide_fec's hysteresis on the next SILK frame.
