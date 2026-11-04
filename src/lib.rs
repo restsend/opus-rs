@@ -633,6 +633,14 @@ impl OpusEncoder {
         })
     }
 
+    /// The encoder's lookahead in samples at its sampling rate, like libopus
+    /// `OPUS_GET_LOOKAHEAD`: the pre-skip an Ogg Opus `OpusHead` needs.
+    /// `Fs/400 + Fs/250` (312 samples at 48 kHz), only `Fs/400` for
+    /// `RestrictedLowDelay`.
+    pub fn lookahead(&self) -> usize {
+        self.sampling_rate as usize / 400 + self.delay_compensation
+    }
+
     pub fn enable_hybrid_mode(&mut self) -> Result<(), &'static str> {
         if self.sampling_rate != 24000 && self.sampling_rate != 48000 {
             return Err("Hybrid mode requires 24kHz or 48kHz sampling rate");
