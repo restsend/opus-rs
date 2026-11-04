@@ -2838,21 +2838,25 @@ impl CeltEncoder {
             offsets[i] = boost;
         }
 
-        let alloc_trim = alloc_trim_analysis(
-            mode,
-            x,
-            band_log_e,
-            end,
-            lm as i32,
-            channels,
-            frame_size,
-            &mut stereo_saving,
-            tf_estimate,
-            self.intensity,
-            0.0,
-            equiv_rate,
-        );
+        // C: the trim is only analysed and coded when it fits after the
+        // boosts; otherwise both sides allocate with the default of 5
+        // (celt_encoder.c:2397-2410).
+        let mut alloc_trim = 5;
         if rc.tell_frac() + (6 << BITRES) <= total_bits_bitres - total_boost {
+            alloc_trim = alloc_trim_analysis(
+                mode,
+                x,
+                band_log_e,
+                end,
+                lm as i32,
+                channels,
+                frame_size,
+                &mut stereo_saving,
+                tf_estimate,
+                self.intensity,
+                0.0,
+                equiv_rate,
+            );
             rc.encode_icdf(alloc_trim, &TRIM_ICDF, 7);
         }
         // Second VBR: compute target via simplified compute_vbr (libopus 2436-2534)
