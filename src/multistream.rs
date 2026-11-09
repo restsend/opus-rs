@@ -168,6 +168,23 @@ impl MultistreamDecoder {
         if table.coupled_count > table.stream_count {
             return Err("coupled_count exceeds stream_count");
         }
+        // RFC 7845 §5.1.1, as libopus validates the layout: at least one
+        // stream, at most 255 decoded channels, and every mapping entry
+        // either a decoded channel or 255 (silence).
+        if table.stream_count == 0 {
+            return Err("stream_count must not be zero");
+        }
+        let decoded_channels = table.stream_count as usize + table.coupled_count as usize;
+        if decoded_channels > 255 {
+            return Err("more than 255 decoded channels");
+        }
+        if table
+            .mapping
+            .iter()
+            .any(|&m| m != SILENT_CHANNEL && m as usize >= decoded_channels)
+        {
+            return Err("channel mapping entry exceeds the decoded channels");
+        }
 
         let mut decoders = Vec::with_capacity(table.stream_count as usize);
         for i in 0..table.stream_count {
