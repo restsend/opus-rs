@@ -749,22 +749,6 @@ impl OpusEncoder {
             }
         };
 
-        if self.forced_mode.is_none() {
-            let curr_bw = self.bandwidth;
-            if mode == OpusMode::SilkOnly
-                && (curr_bw == Bandwidth::Superwideband || curr_bw == Bandwidth::Fullband)
-            {
-                mode = OpusMode::Hybrid;
-            }
-            if mode == OpusMode::Hybrid
-                && (curr_bw == Bandwidth::Narrowband
-                    || curr_bw == Bandwidth::Mediumband
-                    || curr_bw == Bandwidth::Wideband)
-            {
-                mode = OpusMode::SilkOnly;
-            }
-        }
-
         // Per-frame packet budget (C computes this before the mode-dependent
         // encode; the starved-budget rules below need it too).
         let target_bits =
@@ -795,18 +779,7 @@ impl OpusEncoder {
             mode = OpusMode::CeltOnly;
         }
 
-        // 40/60 ms frames are only legal as a single Opus frame in SILK-only
-        // mode. CELT and Hybrid cap a frame at 20 ms, so libopus encodes 20 ms
-        // sub-frames and repacketizes them into one code 1/2/3 packet
-        // (opus_encoder.c `encode_multiframe_packet`). (issue #35)
-        if self.forced_mode.is_none()
-            && mode != OpusMode::SilkOnly
-            && frame_size > self.sampling_rate as usize / 50
-        {
-            return self.encode_multiframe(input, frame_size, mode, output);
-        }
-
-        // C opus_encoder.c: with mode and bandwidth settled, decide whether
+        // C opus_encoder.c: with the base mode selected, decide whether
         // this packet codes in-band FEC (decide_fec()); it can lower the
         // frame's bandwidth when a high loss rate demands FEC at any cost.
         // The reduction is per-frame: `self.bandwidth` (the user/auto state)
@@ -829,6 +802,34 @@ impl OpusEncoder {
             &mut frame_bandwidth,
             equiv_rate,
         );
+
+        // FEC can lower the bandwidth. Choose SILK-only or Hybrid after
+        // that decision, as libopus does: Hybrid needs bands above wideband.
+        if mode == OpusMode::SilkOnly
+            && (frame_bandwidth == Bandwidth::Superwideband
+                || frame_bandwidth == Bandwidth::Fullband)
+        {
+            mode = OpusMode::Hybrid;
+        }
+        if mode == OpusMode::Hybrid
+            && (frame_bandwidth == Bandwidth::Narrowband
+                || frame_bandwidth == Bandwidth::Mediumband
+                || frame_bandwidth == Bandwidth::Wideband)
+        {
+            mode = OpusMode::SilkOnly;
+        }
+
+        // 40/60 ms frames are only legal as a single Opus frame in SILK-only
+        // mode. CELT and Hybrid cap a frame at 20 ms, so libopus encodes 20 ms
+        // sub-frames and repacketizes them into one code 1/2/3 packet
+        // (opus_encoder.c `encode_multiframe_packet`). (issue #35)
+        if self.forced_mode.is_none()
+            && mode != OpusMode::SilkOnly
+            && frame_size > self.sampling_rate as usize / 50
+        {
+            return self.encode_multiframe(input, frame_size, mode, output);
+        }
+
         if mode == OpusMode::CeltOnly {
             // silk_mode.LBRR_coded persists across frames even while SILK is
             // idle; it feeds decide_fec's hysteresis on the next SILK frame.
