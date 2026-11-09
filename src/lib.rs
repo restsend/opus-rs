@@ -921,7 +921,10 @@ impl OpusEncoder {
                         1
                     };
                     output[0] = (output[0] & 0xFC) | 0x03;
-                    output[1] = 0x40 | m as u8; // padding present, CBR, m frames
+                    // CBR, m frames. Two bytes leave no room for a padding
+                    // length, so no padding flag (opus_packet_pad).
+                    let padding = if target_total > 2 { 0x40 } else { 0 };
+                    output[1] = padding | m as u8;
                     if target_total > 2 {
                         let pad_amount = target_total - 2;
                         let nb_255s = (pad_amount - 1) / 255;
