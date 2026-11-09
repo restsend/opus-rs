@@ -1829,9 +1829,15 @@ impl OpusDecoder {
         frame_size: usize,
         output: &mut [f32],
     ) -> Result<usize, &'static str> {
-        // A packet of 0 or 1 bytes (ToC only) is a lost/DTX frame: conceal it
-        // in the previous mode without touching the mode state (issue #15).
-        if input.len() <= 1 {
+        if input.is_empty() {
+            return self.decode_lost(None, frame_size, output);
+        }
+        // A ToC-only packet (lost/DTX frame) is concealed in the previous
+        // mode without touching the mode state (issue #15), but its framing
+        // is checked first, as libopus does: codes 0 and 1 can carry empty
+        // frames, codes 2 and 3 need more header bytes.
+        let frame_payloads = frame_payloads(input)?;
+        if input.len() == 1 {
             return self.decode_lost(input.first().copied(), frame_size, output);
         }
 
@@ -1841,7 +1847,6 @@ impl OpusDecoder {
         let bandwidth = bandwidth_from_toc(toc);
         let frame_duration_ms = frame_duration_ms_from_toc(toc);
 
-        let frame_payloads = frame_payloads(input)?;
         let frame_count = frame_payloads.len();
 
         self.frame_size = frame_size;
@@ -2427,14 +2432,17 @@ impl OpusDecoder {
         frame_size: usize,
         output: &mut [f32],
     ) -> Result<usize, &'static str> {
-        if input.len() <= 1 {
+        if input.is_empty() {
+            return self.decode_lost(None, frame_size, output);
+        }
+        let payloads = frame_payloads(input)?;
+        if input.len() == 1 {
             return self.decode_lost(None, frame_size, output);
         }
         let toc = input[0];
         let mode = mode_from_toc(toc);
         let packet_frame = frame_samples_from_toc(toc, self.sampling_rate)
             .ok_or("Invalid TOC for sampling rate")?;
-        let payloads = frame_payloads(input)?;
         // No FEC can be present: conceal it all (opus_decode_native).
         if frame_size < packet_frame
             || payloads[0].len() <= 1
@@ -2529,12 +2537,12 @@ impl OpusDecoder {
                 frame_size
             }
             Some(toc) => {
-                // A ToC-only packet: code 0 is one empty frame, codes 1 and 2
-                // are two; code 3 lacks its frame-count byte (libopus rejects).
+                // A validated ToC-only packet: code 0 is one empty frame,
+                // code 1 is two. Codes 2 and 3 need more header bytes.
                 let count = match toc & 0x03 {
                     0 => 1,
-                    1 | 2 => 2,
-                    _ => return Err("Code 3 packet too short"),
+                    1 => 2,
+                    _ => return Err("Packet header too short"),
                 };
                 let per_frame = frame_samples_from_toc(toc, self.sampling_rate)
                     .ok_or("Invalid TOC for sampling rate")?;
@@ -2982,10 +2990,10 @@ fn channels_from_toc(toc: u8) -> usize {
     if toc & 0x04 != 0 { 2 } else { 1 }
 }
 
-/// The frames of a packet of at least 2 bytes, split as its ToC's code says
+/// The frames of a nonempty packet, split as its ToC's code says
 /// (RFC 6716 §3.2; libopus `opus_packet_parse_impl`).
 fn frame_payloads(input: &[u8]) -> Result<FixedVec<&[u8], OPUS_MAX_PACKET_FRAMES>, &'static str> {
-    Ok(match input[0] & 0x03 {
+    let payloads = match input[0] & 0x03 {
         0 => FixedVec::from_slice(&[&input[1..]]),
         1 => {
             let data_len = input.len() - 1;
@@ -2995,9 +3003,6 @@ fn frame_payloads(input: &[u8]) -> Result<FixedVec<&[u8], OPUS_MAX_PACKET_FRAMES
                 return Err("Code 1: payload length must be even");
             }
             let half = data_len / 2;
-            if half == 0 {
-                return Err("Code 1: empty frame");
-            }
             FixedVec::from_slice(&[&input[1..1 + half], &input[1 + half..]])
         }
         2 => {
@@ -3101,7 +3106,17 @@ fn frame_payloads(input: &[u8]) -> Result<FixedVec<&[u8], OPUS_MAX_PACKET_FRAMES
             payloads
         }
         _ => unreachable!(),
-    })
+    };
+    // RFC 6716 §3.4 R2 and R5 apply to implicit lengths too, including the
+    // final VBR frame. Padding is outside these frame payloads.
+    if payloads.iter().any(|payload| payload.len() > 1275) {
+        return Err("Frame exceeds 1275 bytes");
+    }
+    let samples = frame_samples_from_toc(input[0], 48000).ok_or("Invalid TOC")?;
+    if samples * payloads.len() > 5760 {
+        return Err("Packet exceeds 120 ms");
+    }
+    Ok(payloads)
 }
 
 /// A 5 ms redundant CELT frame at 48 kHz in stereo, the most it holds.
