@@ -2111,6 +2111,12 @@ pub fn quant_band_stereo(
             x[1] = mx1 - sy1;
             y[0] = mx0 + sy0;
             y[1] = mx1 + sy1;
+            // The intensity phase flip applies to N=2 bands too (libopus
+            // quant_band_stereo skips only stereo_merge for them).
+            if sctx.inv {
+                y[0] = -y[0];
+                y[1] = -y[1];
+            }
         }
         return cm;
     }
