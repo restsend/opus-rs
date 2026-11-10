@@ -386,8 +386,9 @@ pub fn silk_process_nlsfs(
     let interp_coef_q2 = ps_enc.s_cmn.indices.nlsf_interp_coef_q2 as i32;
     let use_interp = ps_enc.s_cmn.use_interpolated_nlsfs != 0;
 
-    silk_nlsf_stabilize(nlsf_q15, p_cb.delta_min_q15, order);
-
+    // The weights come from the NLSFs as the analysis left them, possibly
+    // out of order; silk_nlsf_encode stabilizes them before quantizing
+    // (process_NLSFs.c:63, NLSF_encode.c:67).
     let mut w_q5 = [0i16; MAX_LPC_ORDER];
     silk_nlsf_vq_weights_laroia(&mut w_q5, nlsf_q15, order);
 
