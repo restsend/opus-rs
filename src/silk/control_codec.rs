@@ -66,9 +66,10 @@ pub fn silk_setup_fs(ps_enc: &mut SilkEncoderState, fs_khz: i32, packet_size_ms:
 pub fn silk_setup_complexity(ps_enc: &mut SilkEncoderState, complexity: i32) -> i32 {
     let cmn = &mut ps_enc.s_cmn;
 
+    // The thresholds are SILK_FIX_CONST values, rounded to nearest.
     if complexity < 1 {
         cmn.pitch_estimation_complexity = SILK_PE_MIN_COMPLEX as i32;
-        cmn.pitch_estimation_threshold_q16 = (0.8f32 * 65536.0) as i32;
+        cmn.pitch_estimation_threshold_q16 = (0.8f32 * 65536.0 + 0.5) as i32;
         ps_enc.pitch_estimation_lpc_order = 6;
         cmn.shaping_lpc_order = 12;
         cmn.la_shape = 3 * cmn.fs_khz;
@@ -78,7 +79,7 @@ pub fn silk_setup_complexity(ps_enc: &mut SilkEncoderState, complexity: i32) -> 
         cmn.warping_q16 = 0;
     } else if complexity < 2 {
         cmn.pitch_estimation_complexity = SILK_PE_MID_COMPLEX as i32;
-        cmn.pitch_estimation_threshold_q16 = (0.76f32 * 65536.0) as i32;
+        cmn.pitch_estimation_threshold_q16 = (0.76f32 * 65536.0 + 0.5) as i32;
         ps_enc.pitch_estimation_lpc_order = 8;
         cmn.shaping_lpc_order = 14;
         cmn.la_shape = 5 * cmn.fs_khz;
@@ -88,7 +89,7 @@ pub fn silk_setup_complexity(ps_enc: &mut SilkEncoderState, complexity: i32) -> 
         cmn.warping_q16 = 0;
     } else if complexity < 3 {
         cmn.pitch_estimation_complexity = SILK_PE_MIN_COMPLEX as i32;
-        cmn.pitch_estimation_threshold_q16 = (0.8f32 * 65536.0) as i32;
+        cmn.pitch_estimation_threshold_q16 = (0.8f32 * 65536.0 + 0.5) as i32;
         ps_enc.pitch_estimation_lpc_order = 6;
         cmn.shaping_lpc_order = 12;
         cmn.la_shape = 3 * cmn.fs_khz;
@@ -98,7 +99,7 @@ pub fn silk_setup_complexity(ps_enc: &mut SilkEncoderState, complexity: i32) -> 
         cmn.warping_q16 = 0;
     } else if complexity < 4 {
         cmn.pitch_estimation_complexity = SILK_PE_MID_COMPLEX as i32;
-        cmn.pitch_estimation_threshold_q16 = (0.76f32 * 65536.0) as i32;
+        cmn.pitch_estimation_threshold_q16 = (0.76f32 * 65536.0 + 0.5) as i32;
         ps_enc.pitch_estimation_lpc_order = 8;
         cmn.shaping_lpc_order = 14;
         cmn.la_shape = 5 * cmn.fs_khz;
@@ -108,7 +109,7 @@ pub fn silk_setup_complexity(ps_enc: &mut SilkEncoderState, complexity: i32) -> 
         cmn.warping_q16 = 0;
     } else if complexity < 6 {
         cmn.pitch_estimation_complexity = SILK_PE_MID_COMPLEX as i32;
-        cmn.pitch_estimation_threshold_q16 = (0.74f32 * 65536.0) as i32;
+        cmn.pitch_estimation_threshold_q16 = (0.74f32 * 65536.0 + 0.5) as i32;
         ps_enc.pitch_estimation_lpc_order = 10;
         cmn.shaping_lpc_order = 16;
         cmn.la_shape = 5 * cmn.fs_khz;
@@ -118,7 +119,7 @@ pub fn silk_setup_complexity(ps_enc: &mut SilkEncoderState, complexity: i32) -> 
         cmn.warping_q16 = cmn.fs_khz * WARPING_MULTIPLIER_Q16;
     } else if complexity < 8 {
         cmn.pitch_estimation_complexity = SILK_PE_MID_COMPLEX as i32;
-        cmn.pitch_estimation_threshold_q16 = (0.72f32 * 65536.0) as i32;
+        cmn.pitch_estimation_threshold_q16 = (0.72f32 * 65536.0 + 0.5) as i32;
         ps_enc.pitch_estimation_lpc_order = 12;
         cmn.shaping_lpc_order = 20;
         cmn.la_shape = 5 * cmn.fs_khz;
@@ -128,7 +129,7 @@ pub fn silk_setup_complexity(ps_enc: &mut SilkEncoderState, complexity: i32) -> 
         cmn.warping_q16 = cmn.fs_khz * WARPING_MULTIPLIER_Q16;
     } else {
         cmn.pitch_estimation_complexity = SILK_PE_MAX_COMPLEX as i32;
-        cmn.pitch_estimation_threshold_q16 = (0.7f32 * 65536.0) as i32;
+        cmn.pitch_estimation_threshold_q16 = (0.7f32 * 65536.0 + 0.5) as i32;
         ps_enc.pitch_estimation_lpc_order = 16;
         cmn.shaping_lpc_order = 24;
         cmn.la_shape = 5 * cmn.fs_khz;
@@ -161,6 +162,85 @@ pub fn silk_control_encoder(
     ret
 }
 
+/// The limits within which libopus lets SILK pick its internal sample rate
+/// (`silk_EncControlStruct` API, desired, maximum and minimum rates).
+#[derive(Clone, Copy, Debug)]
+pub struct SilkRateLimits {
+    pub api_fs_hz: i32,
+    pub desired_fs_hz: i32,
+    pub max_fs_hz: i32,
+    pub min_fs_hz: i32,
+}
+
+/// Port of `silk_control_audio_bandwidth` (control_audio_bandwidth.c): the
+/// internal sample rate for the next packet. A change needs either the
+/// encoder's permission (low speech activity) or the Opus layer's
+/// `opus_can_switch`; until then the variable low-pass filter fades the band
+/// edge, and `switch_ready` asks the Opus layer to switch at the next packet.
+/// `max_bits` loses room for the redundant frame of such a switch.
+pub fn silk_control_audio_bandwidth(
+    cmn: &mut SilkEncoderStateCommon,
+    limits: SilkRateLimits,
+    allow_bandwidth_switch: bool,
+    opus_can_switch: bool,
+    payload_size_ms: i32,
+    max_bits: &mut i32,
+    switch_ready: &mut bool,
+) -> i32 {
+    let mut orig_khz = cmn.fs_khz;
+    // A bandwidth-switching reset keeps the rate it was running at.
+    if orig_khz == 0 {
+        orig_khz = cmn.s_lp.saved_fs_khz;
+    }
+    let mut fs_khz = orig_khz;
+    let fs_hz = fs_khz * 1000;
+    if fs_hz == 0 {
+        // The encoder has just been initialized.
+        fs_khz = limits.desired_fs_hz.min(limits.api_fs_hz) / 1000;
+    } else if fs_hz > limits.api_fs_hz || fs_hz > limits.max_fs_hz || fs_hz < limits.min_fs_hz {
+        fs_khz = limits.api_fs_hz.min(limits.max_fs_hz).max(limits.min_fs_hz) / 1000;
+    } else {
+        if cmn.s_lp.transition_frame_no >= TRANSITION_FRAMES {
+            cmn.s_lp.mode = 0;
+        }
+        if allow_bandwidth_switch || opus_can_switch {
+            if orig_khz * 1000 > limits.desired_fs_hz {
+                // Switch down, after fading out the top of the band.
+                if cmn.s_lp.mode == 0 {
+                    cmn.s_lp.transition_frame_no = TRANSITION_FRAMES;
+                    cmn.s_lp.in_lp_state = [0; 2];
+                }
+                if opus_can_switch {
+                    cmn.s_lp.mode = 0;
+                    fs_khz = if orig_khz == 16 { 12 } else { 8 };
+                } else if cmn.s_lp.transition_frame_no <= 0 {
+                    *switch_ready = true;
+                    *max_bits -= *max_bits * 5 / (payload_size_ms + 5);
+                } else {
+                    // At double speed.
+                    cmn.s_lp.mode = -2;
+                }
+            } else if orig_khz * 1000 < limits.desired_fs_hz {
+                // Switch up, then fade in the top of the band.
+                if opus_can_switch {
+                    fs_khz = if orig_khz == 8 { 12 } else { 16 };
+                    cmn.s_lp.transition_frame_no = 0;
+                    cmn.s_lp.in_lp_state = [0; 2];
+                    cmn.s_lp.mode = 1;
+                } else if cmn.s_lp.mode == 0 {
+                    *switch_ready = true;
+                    *max_bits -= *max_bits * 5 / (payload_size_ms + 5);
+                } else {
+                    cmn.s_lp.mode = 1;
+                }
+            } else if cmn.s_lp.mode < 0 {
+                cmn.s_lp.mode = 1;
+            }
+        }
+    }
+    fs_khz
+}
+
 /// Port of `silk_setup_LBRR` (control_codec.c:403-423): track the
 /// packet-to-packet FEC state and derive the gain increase used when coding
 /// LBRR excitation. `lbrr_coded` is the (already decided) per-packet FEC flag
@@ -175,9 +255,9 @@ pub fn silk_setup_lbrr(ps_enc: &mut SilkEncoderState, lbrr_coded: i32) -> i32 {
             // higher bitrate.
             ps_enc.s_cmn.lbrr_gain_increases = 7;
         } else {
-            // silk_max_int(7 - SMULWB(PacketLoss_perc, 0.4 in Q16), 2)
+            // libopus 1.5: silk_max_int(7 - SMULWB(loss, 0.2 in Q16), 3).
             ps_enc.s_cmn.lbrr_gain_increases =
-                (7 - silk_smulwb(ps_enc.s_cmn.packet_loss_perc, 26214)).max(2);
+                (7 - silk_smulwb(ps_enc.s_cmn.packet_loss_perc, 13107)).max(3);
         }
     }
 

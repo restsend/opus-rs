@@ -813,11 +813,12 @@ pub fn silk_resampler_private_ar2(
     a_q14: &[i16],
     len: i32,
 ) {
-    let mut out32: i32;
     for k in 0..len as usize {
-        out32 = s[0].wrapping_add((input[k] as i32) << 10);
+        // resampler_private_AR2.c: the output is Q8, the recursion Q10.
+        let out32 = s[0].wrapping_add((input[k] as i32) << 8);
         out_q8[k] = out32;
-        s[0] = s[1].wrapping_add(silk_smulwb(out32, a_q14[0] as i32));
+        let out32 = out32.wrapping_shl(2);
+        s[0] = silk_smlawb(s[1], out32, a_q14[0] as i32);
         s[1] = silk_smulwb(out32, a_q14[1] as i32);
     }
 }
@@ -867,7 +868,7 @@ pub fn silk_resampler_down2_3(s: &mut [i32], out: &mut [i16], input: &[i16], in_
                 SILK_RESAMPLER_2_3_COEFS_LQ[4] as i32,
             );
 
-            out[out_idx] = silk_sat16(silk_rshift_round(res_q6, 9)) as i16;
+            out[out_idx] = silk_sat16(silk_rshift_round(res_q6, 6)) as i16;
             out_idx += 1;
 
             res_q6 = silk_smulwb(buf[buf_ptr + 1], SILK_RESAMPLER_2_3_COEFS_LQ[4] as i32);
@@ -887,7 +888,7 @@ pub fn silk_resampler_down2_3(s: &mut [i32], out: &mut [i16], input: &[i16], in_
                 SILK_RESAMPLER_2_3_COEFS_LQ[2] as i32,
             );
 
-            out[out_idx] = silk_sat16(silk_rshift_round(res_q6, 8)) as i16;
+            out[out_idx] = silk_sat16(silk_rshift_round(res_q6, 6)) as i16;
             out_idx += 1;
 
             buf_ptr += 3;

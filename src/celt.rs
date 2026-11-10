@@ -2688,7 +2688,14 @@ impl CeltEncoder {
         );
         self.w_tf_res[..nb_ebands].fill(0);
         let tf_res = &mut self.w_tf_res[..nb_ebands];
-        let effective_bytes = ((total_bits / 8) as usize).max(1);
+        // VBR analysis uses the CELT share, including in unconstrained hybrid
+        // mode where the range coder still has the caller's full capacity.
+        let effective_bytes = if self.vbr && self.bitrate != OPUS_BITRATE_MAX {
+            (bitrate_to_bits(self.bitrate, mode.fs, frame_size as i32) / 8).max(1) as usize
+        } else {
+            (total_bits / 8) as usize - nb_filled_bytes_initial
+        }
+        .max(1);
         let lambda = 80.max(20480 / effective_bytes + 2) as i32;
 
         // C runs dynalloc_analysis before tf_analysis: it produces `importance`

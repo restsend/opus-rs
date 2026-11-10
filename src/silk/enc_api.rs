@@ -46,6 +46,50 @@ pub fn silk_encode_do_vad(ps_enc: &mut SilkEncoderState, input: &[i16], activity
     }
 }
 
+/// Restart a channel encoder for an internal sample rate switch, as the
+/// prefill with `prefillFlag == 2` does (enc_API.c:223-238): the state is
+/// initialized again except for the variable low-pass filter, which records
+/// the rate it ran at. The packet-level state that opus-rs keeps in the mono
+/// or mid encoder (libopus `silk_encoder`) is kept.
+pub fn silk_reset_for_rate_switch(ps_enc: &mut SilkEncoderState) {
+    let mut s_lp = ps_enc.s_cmn.s_lp;
+    s_lp.saved_fs_khz = ps_enc.s_cmn.fs_khz;
+    let stereo = ps_enc.stereo.clone();
+    let (n_bits_used_lbrr, n_bits_exceeded) = (ps_enc.n_bits_used_lbrr, ps_enc.n_bits_exceeded);
+    let (allow, since) = (
+        ps_enc.allow_bandwidth_switch,
+        ps_enc.time_since_switch_allowed_ms,
+    );
+    *ps_enc = SilkEncoderState::default();
+    crate::silk::init_encoder::silk_init_encoder(ps_enc, 0);
+    ps_enc.s_cmn.s_lp = s_lp;
+    ps_enc.stereo = stereo;
+    ps_enc.n_bits_used_lbrr = n_bits_used_lbrr;
+    ps_enc.n_bits_exceeded = n_bits_exceeded;
+    ps_enc.allow_bandwidth_switch = allow;
+    ps_enc.time_since_switch_allowed_ms = since;
+}
+
+/// After each packet, allow a change of the internal rate if the speech
+/// activity is low, with a threshold that rises to 1 over
+/// MAX_BANDWIDTH_SWITCH_DELAY_MS (enc_API.c:560-568).
+fn silk_update_switch_allowed(ps_enc: &mut SilkEncoderState) {
+    // SILK_FIX_CONST(SPEECH_ACTIVITY_DTX_THRES, 8) and
+    // SILK_FIX_CONST((1 - SPEECH_ACTIVITY_DTX_THRES) / 5000, 16 + 8).
+    let threshold_q8 = silk_smlawb(
+        SPEECH_ACTIVITY_DTX_THRES_Q8,
+        3188,
+        ps_enc.time_since_switch_allowed_ms,
+    );
+    if ps_enc.s_cmn.speech_activity_q8 < threshold_q8 {
+        ps_enc.allow_bandwidth_switch = 1;
+        ps_enc.time_since_switch_allowed_ms = 0;
+    } else {
+        ps_enc.allow_bandwidth_switch = 0;
+        ps_enc.time_since_switch_allowed_ms += ps_enc.s_cmn.packet_size_ms;
+    }
+}
+
 /// Internal sample rate (kHz) and 10 ms prefill length of `ps_enc`, or
 /// `None` when SILK isn't configured to a supported rate.
 fn prefill_geometry(ps_enc: &SilkEncoderState) -> Option<(i32, usize)> {
@@ -56,7 +100,7 @@ fn prefill_geometry(ps_enc: &SilkEncoderState) -> Option<(i32, usize)> {
     Some((fs_khz, fs_khz as usize * 10))
 }
 
-pub fn silk_encode_prefill(ps_enc: &mut SilkEncoderState, samples: &[i16], _activity: i32) {
+pub fn silk_encode_prefill(ps_enc: &mut SilkEncoderState, samples: &[i16], activity: i32) {
     let Some((_, prefill_frame_length)) = prefill_geometry(ps_enc) else {
         return;
     };
@@ -71,7 +115,17 @@ pub fn silk_encode_prefill(ps_enc: &mut SilkEncoderState, samples: &[i16], _acti
     ps_enc.stereo.s_mid[0] = input_buf[prefill_frame_length];
     ps_enc.stereo.s_mid[1] = input_buf[prefill_frame_length + 1];
 
+    // The prefill runs the VAD too (enc_API.c:480).
+    prefill_vad(ps_enc, &input_buf[1..1 + prefill_frame_length], activity);
     prefill_frame(ps_enc, &mut input_buf, prefill_frame_length);
+}
+
+/// The VAD of a 10 ms prefill frame: libopus prefills with a 10 ms payload.
+fn prefill_vad(ps_enc: &mut SilkEncoderState, frame: &[i16], activity: i32) {
+    let real_frame_length = ps_enc.s_cmn.frame_length;
+    ps_enc.s_cmn.frame_length = frame.len() as i32;
+    silk_encode_do_vad(ps_enc, frame, activity);
+    ps_enc.s_cmn.frame_length = real_frame_length;
 }
 
 /// Prefill a stereo encoder with 10 ms of internal-rate `left` and `right`
@@ -123,11 +177,11 @@ pub fn silk_encode_prefill_stereo(
         if mid.stereo.prev_decode_only_middle == 1 {
             reset_side_for_coding(side);
         }
-        silk_encode_do_vad(side, &x2[1..1 + prefill_frame_length], activity);
+        prefill_vad(side, &x2[1..1 + prefill_frame_length], activity);
     } else {
         side.s_cmn.vad_flags[0] = 0;
     }
-    silk_encode_do_vad(mid, &x1[1..1 + prefill_frame_length], activity);
+    prefill_vad(mid, &x1[1..1 + prefill_frame_length], activity);
     prefill_frame(mid, &mut x1, prefill_frame_length);
     if rates[1] > 0 {
         prefill_frame(side, &mut x2, prefill_frame_length);
@@ -151,6 +205,9 @@ fn prefill_frame(
     ps_enc.s_cmn.frame_length = prefill_frame_length as i32;
     ps_enc.s_cmn.nb_subfr = 2;
     ps_enc.s_cmn.subfr_length = (prefill_frame_length / 2) as i32;
+    // The frame takes a seed like a coded one (encode_frame_FIX.c:120).
+    ps_enc.s_cmn.indices.seed = (ps_enc.s_cmn.frame_counter & 3) as i8;
+    ps_enc.s_cmn.frame_counter += 1;
 
     let ltp_mem_length = ps_enc.s_cmn.ltp_mem_length as usize;
     let la_shape_ms_samples = 5 * fs_khz;
@@ -583,7 +640,7 @@ fn silk_lbrr_encode(
     /*****************************************/
     let mut pulses_lbrr = [0i8; MAX_FRAME_LENGTH];
     if ps_enc.s_cmn.n_states_delayed_decision > 1 || ps_enc.s_cmn.warping_q16 > 0 {
-        silk_nsq_del_dec(
+        let winner_seed = silk_nsq_del_dec(
             &ps_enc.s_cmn,
             &mut nsq_lbrr,
             &indices_lbrr,
@@ -600,6 +657,7 @@ fn silk_lbrr_encode(
             s_enc_ctrl.lambda_q10,
             s_enc_ctrl.ltp_scale_q14,
         );
+        indices_lbrr.seed = winner_seed as i8;
     } else {
         silk_nsq(
             &ps_enc.s_cmn,
@@ -947,6 +1005,7 @@ pub fn silk_encode(
 
     *n_bytes_out = (rc.tell() + 7) >> 3;
     silk_update_bit_reservoir(ps_enc, target_rate_bps, *n_bytes_out);
+    silk_update_switch_allowed(ps_enc);
 
     0
 }
@@ -1156,6 +1215,7 @@ pub fn silk_encode_stereo_packet(
 
     *n_bytes_out = (rc.tell() + 7) >> 3;
     silk_update_bit_reservoir(mid, target_rate_bps, *n_bytes_out);
+    silk_update_switch_allowed(mid);
     SILK_NO_ERROR
 }
 

@@ -32,9 +32,12 @@ use core::mem::MaybeUninit;
 pub use celt::{CeltDecoder, CeltEncoder};
 use hp_cutoff::{dc_reject_float, hp_cutoff, hp_cutoff_float, hp_cutoff_i16};
 use range_coder::RangeCoder;
-use silk::control_codec::{silk_control_encoder, silk_setup_lbrr};
+use silk::control_codec::{
+    SilkRateLimits, silk_control_audio_bandwidth, silk_control_encoder, silk_setup_lbrr,
+};
 use silk::enc_api::{
     silk_encode, silk_encode_prefill, silk_encode_prefill_stereo, silk_encode_stereo_packet,
+    silk_reset_for_rate_switch,
 };
 use silk::init_encoder::silk_init_encoder;
 use silk::lin2log::silk_lin2log;
@@ -186,6 +189,16 @@ pub struct OpusEncoder {
     /// Float filter state for `dc_reject_float` / `hp_cutoff_float`
     /// (C `st->hp_mem[4]`, opus_val32 in the float build).
     hp_mem_float: [f32; 4],
+    /// libopus `silk_mode.opusCanSwitch` and `silk_bw_switch`: SILK asked to
+    /// change its internal rate, which the next packet does.
+    silk_opus_can_switch: bool,
+    silk_bw_switch: bool,
+    /// The 16-bit SILK input of the last 10 ms (libopus `delay_buffer` in the
+    /// fixed-point build), which a SILK prefill encodes.
+    #[cfg(not(feature = "heap"))]
+    silk_delay_buffer: FixedVec<i16, OPUS_DELAY_BUF>,
+    #[cfg(feature = "heap")]
+    silk_delay_buffer: Box<FixedVec<i16, OPUS_DELAY_BUF>>,
     /// Encoder-direction SILK input resampler (C `resampler_state` with
     /// `forEnc = 1`): API rate -> SILK internal rate, carrying the
     /// `delay_matrix_enc` input delay and the private down-FIR chain. It
@@ -224,6 +237,7 @@ fn compute_equiv_rate(
     channels: usize,
     frame_rate: i32,
     vbr: bool,
+    mode: Option<OpusMode>,
     complexity: i32,
     loss: i32,
 ) -> i32 {
@@ -235,10 +249,43 @@ fn compute_equiv_rate(
         equiv -= equiv / 12;
     }
     equiv = equiv * (90 + complexity) / 100;
-    if loss > 0 {
+    if matches!(mode, Some(OpusMode::SilkOnly | OpusMode::Hybrid)) {
+        if complexity < 2 {
+            equiv = equiv * 4 / 5;
+        }
+        equiv -= equiv * loss / (6 * loss + 10);
+    } else if mode == Some(OpusMode::CeltOnly) {
+        if complexity < 5 {
+            equiv = equiv * 9 / 10;
+        }
+    } else {
         equiv -= equiv * loss / (12 * loss + 20);
     }
     equiv
+}
+
+#[cfg(test)]
+mod fec_rate_tests {
+    use super::{OpusMode, compute_equiv_rate};
+
+    #[test]
+    fn fec_uses_the_selected_modes_loss_cost() {
+        assert_eq!(compute_equiv_rate(20000, 1, 50, true, None, 9, 10), 18386);
+        for mode in [OpusMode::SilkOnly, OpusMode::Hybrid] {
+            assert_eq!(
+                compute_equiv_rate(20000, 1, 50, true, Some(mode), 9, 10),
+                16972
+            );
+            assert_eq!(
+                compute_equiv_rate(16000, 2, 50, false, Some(mode), 9, 40),
+                12197
+            );
+        }
+        assert_eq!(
+            compute_equiv_rate(20000, 1, 50, true, Some(OpusMode::CeltOnly), 9, 10),
+            19800,
+        );
+    }
 }
 
 /// `fec_thresholds` (opus_encoder.c:160): LBRR rate threshold and hysteresis
@@ -409,6 +456,86 @@ fn silk_rate_for_hybrid_per_channel(rate_bps: i32, frame20ms: bool) -> i32 {
         };
         (lo * (x1 - rate_bps) + hi * (rate_bps - x0)) / (x1 - x0)
     }
+}
+
+/// libopus `pcm_buf` and `delay_buffer` (opus_encoder.c:1966-2028,
+/// 2297-2312): `pcm` receives the delayed history, then the high-passed
+/// frame, and the delay line moves on by the frame.
+#[allow(clippy::too_many_arguments)]
+fn push_delay_history(
+    delay_buffer: &mut [f32],
+    pcm: &mut [f32],
+    hp_mem: &mut [f32; 4],
+    input: &[f32],
+    voip: bool,
+    cutoff_hz: i32,
+    frame_size: usize,
+    ch: usize,
+    fs: i32,
+) {
+    let ebuf = delay_buffer.len() / ch;
+    let delay = pcm.len() / ch - frame_size;
+    // 1. the delayed history
+    let prefix = delay * ch;
+    pcm[..prefix].copy_from_slice(&delay_buffer[(ebuf - delay) * ch..ebuf * ch]);
+    // 2. the high-passed frame
+    let out = &mut pcm[prefix..];
+    if voip {
+        hp_cutoff_float(input, cutoff_hz, out, hp_mem, frame_size, ch, fs);
+    } else {
+        dc_reject_float(input, 3, out, hp_mem, frame_size, ch, fs);
+    }
+    // 3. NaN guard, in libopus's shape (`!(sum < 1e9f) || celt_isnan(sum)`).
+    let sum: f32 = pcm[prefix..].iter().map(|v| v * v).sum();
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    if !(sum < 1e9) || sum.is_nan() {
+        pcm[prefix..].fill(0.0);
+        *hp_mem = [0.0; 4];
+    }
+    // 4. the delay line
+    let n = (frame_size + delay) * ch;
+    if ebuf > frame_size + delay {
+        let keep = ebuf - frame_size - delay;
+        delay_buffer.copy_within(ch * frame_size..ch * (frame_size + keep), 0);
+        delay_buffer[ch * keep..ch * keep + n].copy_from_slice(&pcm[..n]);
+    } else {
+        delay_buffer.copy_from_slice(&pcm[n - ebuf * ch..n]);
+    }
+}
+
+/// Sample `k` of the 2.5 ms fade-in that starts libopus's SILK prefill:
+/// gain_fade from 0 to Q15ONE with the squared CELT window
+/// (opus_encoder.c:2202-2203), in the fixed-point arithmetic of the 16-bit
+/// SILK input.
+fn prefill_fade(x: i16, k: usize, fs: i32) -> i16 {
+    let window = modes::default_mode().window;
+    let inc = (48000 / fs).max(1) as usize;
+    match window.get(k * inc) {
+        Some(&w) => {
+            // The Q15 window of the fixed-point build.
+            let w = ((f64::from(w) * 32768.0 + 0.5) as i32).min(32767);
+            let w = (w * w) >> 15;
+            let g = (w * 32767) >> 15;
+            ((g * i32::from(x)) >> 15) as i16
+        }
+        None => x,
+    }
+}
+
+/// libopus `FLOAT2INT16`: scale, saturate and round half to even (lrintf).
+fn float_to_i16(x: f32) -> i16 {
+    let v = (x * 32768.0).clamp(-32768.0, 32767.0);
+    let t = v as i32;
+    let frac = v - t as f32;
+    let odd = t & 1 == 1;
+    let r = if frac > 0.5 || (frac == 0.5 && odd) {
+        t + 1
+    } else if frac < -0.5 || (frac == -0.5 && odd) {
+        t - 1
+    } else {
+        t
+    };
+    r as i16
 }
 
 #[cfg(all(test, feature = "std"))]
@@ -630,6 +757,12 @@ impl OpusEncoder {
                 (sampling_rate / 250) as usize
             },
             hp_mem_float: [0.0; 4],
+            silk_opus_can_switch: false,
+            silk_bw_switch: false,
+            #[cfg(not(feature = "heap"))]
+            silk_delay_buffer: FixedVec::from_value(0, OPUS_DELAY_BUF),
+            #[cfg(feature = "heap")]
+            silk_delay_buffer: Box::new(FixedVec::from_value(0, OPUS_DELAY_BUF)),
             silk_resampler_enc: silk::resampler::SilkResampler::default(),
             silk_resampler_enc_right: silk::resampler::SilkResampler::default(),
             rc: RangeCoder::new_encoder(1),
@@ -739,6 +872,7 @@ impl OpusEncoder {
                 self.channels,
                 frame_rate,
                 !self.use_cbr,
+                None,
                 self.complexity,
                 self.packet_loss_perc,
             );
@@ -805,6 +939,7 @@ impl OpusEncoder {
             self.channels,
             frame_rate,
             !self.use_cbr,
+            Some(mode),
             self.complexity,
             self.packet_loss_perc,
         );
@@ -875,7 +1010,7 @@ impl OpusEncoder {
             }
         }
 
-        let toc = gen_toc(mode, frame_rate, frame_bandwidth, self.channels);
+        let mut toc = gen_toc(mode, frame_rate, frame_bandwidth, self.channels);
         output[0] = toc;
 
         // C opus_encoder.c:1226-1243: a budget too small to code anything
@@ -971,7 +1106,8 @@ impl OpusEncoder {
             self.silk_enc.s_cmn.variable_hp_smth1_q15
         };
 
-        const VARIABLE_HP_SMTH_COEF2_Q16: i32 = 984;
+        // SILK_FIX_CONST(VARIABLE_HP_SMTH_COEF2, 16): 0.015 in Q16, rounded to nearest.
+        const VARIABLE_HP_SMTH_COEF2_Q16: i32 = 983;
         self.variable_hp_smth2_q15 = silk_smlawb(
             self.variable_hp_smth2_q15,
             hp_freq_smth1 - self.variable_hp_smth2_q15,
@@ -980,13 +1116,8 @@ impl OpusEncoder {
 
         let cutoff_hz = silk_log2lin(silk_rshift(self.variable_hp_smth2_q15, 8));
 
+        let mut silk_switch_ready = false;
         if mode == OpusMode::SilkOnly || mode == OpusMode::Hybrid {
-            let silk_fs_khz = if mode == OpusMode::Hybrid {
-                16
-            } else {
-                self.sampling_rate.min(16000) / 1000
-            };
-
             let frame_ms = (frame_size as i32 * 1000) / self.sampling_rate;
 
             // C opus_encoder.c `bits_target` / `total_bitRate` (1.6): SILK
@@ -1023,7 +1154,96 @@ impl OpusEncoder {
                 }
                 self.silk_initialized = false;
             }
-            if !self.silk_initialized || self.silk_enc.s_cmn.fs_khz != silk_fs_khz {
+
+            // The internal sample rate (opus_encoder.c:2112-2147, enc_API.c,
+            // control_audio_bandwidth.c): the frame's bandwidth asks for a
+            // rate, which SILK reaches only by its switching state machine.
+            let mut desired_fs_hz = match frame_bandwidth {
+                Bandwidth::Narrowband => 8000,
+                Bandwidth::Mediumband => 12000,
+                _ => 16000,
+            };
+            let mut max_fs_hz = 16000;
+            if mode == OpusMode::SilkOnly {
+                let mut effective_max_rate =
+                    bits_to_bitrate(n_bytes as i32 * 8, self.sampling_rate, frame_size);
+                if frame_rate > 50 {
+                    effective_max_rate = effective_max_rate * 2 / 3;
+                }
+                if effective_max_rate < 8000 {
+                    max_fs_hz = 12000;
+                    desired_fs_hz = desired_fs_hz.min(12000);
+                }
+                if effective_max_rate < 7000 {
+                    max_fs_hz = 8000;
+                    desired_fs_hz = desired_fs_hz.min(8000);
+                }
+            }
+            let rate_limits = SilkRateLimits {
+                api_fs_hz: self.sampling_rate,
+                desired_fs_hz,
+                max_fs_hz,
+                // Hybrid doesn't reduce the SILK bandwidth.
+                min_fs_hz: if mode == OpusMode::Hybrid {
+                    16000
+                } else {
+                    8000
+                },
+            };
+            // A switch prepared by the previous packet restarts the SILK
+            // encoders, keeping their low-pass state, and prefills them
+            // (opus_encoder.c:1933-1940, prefill 2 in enc_API.c:215-246).
+            let silk_switch_prefill = core::mem::take(&mut self.silk_bw_switch);
+            if silk_switch_prefill {
+                for enc in [&mut self.silk_enc, &mut self.silk_enc_side]
+                    .into_iter()
+                    .take(self.channels)
+                {
+                    silk_reset_for_rate_switch(state_mut(enc));
+                }
+                self.silk_initialized = false;
+            }
+            let allow_switch = self.silk_enc.allow_bandwidth_switch != 0;
+            let rate_control = |enc: &mut SilkEncoderState, can_switch: bool| {
+                let (mut ready, mut unused_max_bits) = (false, 0);
+                let fs = silk_control_audio_bandwidth(
+                    &mut enc.s_cmn,
+                    rate_limits,
+                    allow_switch,
+                    can_switch,
+                    frame_ms,
+                    &mut unused_max_bits,
+                    &mut ready,
+                );
+                (fs, ready)
+            };
+            let silk_fs_khz = if !self.silk_initialized && !silk_switch_prefill {
+                // A fresh encoder starts at the desired rate.
+                rate_limits.desired_fs_hz.min(rate_limits.api_fs_hz) / 1000
+            } else {
+                let (fs, ready) =
+                    rate_control(state_mut(&mut self.silk_enc), self.silk_opus_can_switch);
+                if self.channels == 2 {
+                    // The side follows the mid's rate (force_fs_kHz) but
+                    // keeps its own low-pass state machine.
+                    rate_control(
+                        state_mut(&mut self.silk_enc_side),
+                        self.silk_opus_can_switch,
+                    );
+                }
+                if !silk_switch_prefill {
+                    silk_switch_ready = ready;
+                }
+                fs
+            };
+            let rate_change = !self.silk_initialized || self.silk_enc.s_cmn.fs_khz != silk_fs_khz;
+            // A new frame duration alone sets the packet up again: libopus
+            // runs silk_setup_fs for every packet (control_codec.c:208-238),
+            // as a 40 ms SILK-only packet followed by 20 ms hybrid frames
+            // needs, and drops the FEC flags of the old layout
+            // (enc_API.c:207, 268-272).
+            let duration_change = self.silk_enc.s_cmn.packet_size_ms != frame_ms;
+            if rate_change || duration_change {
                 silk_control_encoder(
                     state_mut(&mut self.silk_enc),
                     silk_fs_khz,
@@ -1035,17 +1255,25 @@ impl OpusEncoder {
 
                 self.silk_enc.s_cmn.n_channels = self.channels as i32;
                 self.silk_initialized = true;
+                if duration_change {
+                    self.silk_enc.s_cmn.lbrr_flags.fill(0);
+                    self.silk_enc_side.s_cmn.lbrr_flags.fill(0);
+                }
                 // C silk_setup_resamplers: re-init the encoder-direction
                 // resampler whenever the SILK rate changes; the input delay
                 // comes from delay_matrix_enc.
-                let ret = self
-                    .silk_resampler_enc
-                    .init_for_enc(self.sampling_rate as i32, silk_fs_khz * 1000);
-                if ret != 0 {
-                    return Err("Unsupported SILK resampling ratio");
+                if rate_change {
+                    let ret = self
+                        .silk_resampler_enc
+                        .init_for_enc(self.sampling_rate as i32, silk_fs_khz * 1000);
+                    if ret != 0 {
+                        return Err("Unsupported SILK resampling ratio");
+                    }
                 }
                 if self.channels == 2 {
-                    self.silk_resampler_enc_right = self.silk_resampler_enc.clone();
+                    if rate_change {
+                        self.silk_resampler_enc_right = self.silk_resampler_enc.clone();
+                    }
                     // The side runs at the mid's rate and frame size (C
                     // silk_control_encoder with force_fs_kHz).
                     let side = state_mut(&mut self.silk_enc_side);
@@ -1063,7 +1291,7 @@ impl OpusEncoder {
 
             // C silk_setup_LBRR (control_codec.c): per-packet FEC state and
             // LBRR gain increase (7 on the first FEC packet, then
-            // max(7 - 0.2*loss, 2)), for each coded channel.
+            // max(7 - 0.2*loss, 3)), for each coded channel.
             for enc in [&mut self.silk_enc, &mut self.silk_enc_side]
                 .into_iter()
                 .take(self.channels)
@@ -1088,14 +1316,16 @@ impl OpusEncoder {
             // the tail of the delay buffer, zeroed before a 2.5 ms fade-in,
             // resampled through the fresh encoder resampler so its delay
             // state also starts consistent.
-            if silk_restart_after_celt && self.encoder_buffer > 0 && self.delay_compensation > 0
+            if (silk_restart_after_celt || silk_switch_prefill)
+                && self.encoder_buffer > 0
+                && self.delay_compensation > 0
             {
                 let ch = self.channels;
                 let f2_5 = self.sampling_rate / 400;
                 let eb = self.encoder_buffer;
                 let offset = eb - self.delay_compensation.min(eb) - f2_5 as usize;
-                let silk_rate = self.sampling_rate.min(16000);
-                let pre_resampled_len = eb * silk_rate as usize / self.sampling_rate as usize;
+                let pre_resampled_len =
+                    eb * silk_fs_khz as usize * 1000 / self.sampling_rate as usize;
                 // Stack-fixed: encoder_buffer = Fs/100 <= 480, and the
                 // resampled prefill is at most the same length (Copy at equal
                 // rates). No allocation: this crate is heap-free without the
@@ -1105,12 +1335,12 @@ impl OpusEncoder {
                     // at the internal rate, as C silk_Encode prefills two
                     // internal channels.
                     let (mut pre_l, mut pre_r) = ([0i16; 480], [0i16; 480]);
-                    if offset < eb {
-                        for i in offset..eb {
-                            let fade = (((i - offset) as f32) / f2_5 as f32).min(1.0);
-                            pre_l[i] = (self.delay_buffer[2 * i] * fade * 32768.0) as i16;
-                            pre_r[i] = (self.delay_buffer[2 * i + 1] * fade * 32768.0) as i16;
-                        }
+                    for i in offset.min(eb)..eb {
+                        let k = i - offset;
+                        pre_l[i] =
+                            prefill_fade(self.silk_delay_buffer[2 * i], k, self.sampling_rate);
+                        pre_r[i] =
+                            prefill_fade(self.silk_delay_buffer[2 * i + 1], k, self.sampling_rate);
                     }
                     let (mut int_l, mut int_r) = ([0i16; 480], [0i16; 480]);
                     let int_l = &mut int_l[..pre_resampled_len];
@@ -1130,17 +1360,30 @@ impl OpusEncoder {
                 } else {
                     let mut pre = [0i16; 480];
                     let pre = &mut pre[..eb];
-                    if offset < eb {
-                        for i in offset..eb {
-                            let fade = (((i - offset) as f32) / f2_5 as f32).min(1.0);
-                            pre[i] = (self.delay_buffer[i] * fade * 32768.0) as i16;
-                        }
+                    for i in offset.min(eb)..eb {
+                        pre[i] =
+                            prefill_fade(self.silk_delay_buffer[i], i - offset, self.sampling_rate);
                     }
                     let mut pre_internal = [0i16; 480];
                     let pre_internal = &mut pre_internal[..pre_resampled_len];
                     self.silk_resampler_enc
                         .process(pre_internal, pre, eb as i32);
                     silk_encode_prefill(state_mut(&mut self.silk_enc), pre_internal, 1);
+                }
+            }
+            if silk_switch_prefill {
+                // The coding call controls again, now unable to switch, and
+                // repeats the LBRR setup of the prefill call.
+                let (_, ready) = rate_control(state_mut(&mut self.silk_enc), false);
+                if self.channels == 2 {
+                    rate_control(state_mut(&mut self.silk_enc_side), false);
+                }
+                silk_switch_ready = ready;
+                for enc in [&mut self.silk_enc, &mut self.silk_enc_side]
+                    .into_iter()
+                    .take(self.channels)
+                {
+                    silk_setup_lbrr(state_mut(enc), lbrr_coded);
                 }
             }
 
@@ -1236,7 +1479,7 @@ impl OpusEncoder {
 
             let mut pn_bytes = 0;
 
-            let silk_max_bits = if mode == OpusMode::Hybrid {
+            let mut silk_max_bits = if mode == OpusMode::Hybrid {
                 let total_max_bits = ((n_bytes - 1) * 8) as i32;
                 if self.use_cbr {
                     let silk_bits = (silk_bitrate as i64 * frame_size as i64
@@ -1256,6 +1499,10 @@ impl OpusEncoder {
             } else {
                 ((n_bytes - 1) * 8) as i32
             };
+            if silk_switch_ready {
+                // Room for the redundant frame of the coming switch.
+                silk_max_bits -= silk_max_bits * 5 / (frame_ms + 5);
+            }
             let silk_use_cbr = if mode == OpusMode::Hybrid && self.use_cbr {
                 0
             } else if self.use_cbr {
@@ -1293,6 +1540,30 @@ impl OpusEncoder {
             if ret != 0 {
                 return Err("SILK encoding failed");
             }
+            // The TOC signals the rate SILK coded at (opus_encoder.c:2221-2232).
+            if mode == OpusMode::SilkOnly {
+                frame_bandwidth = match silk_fs_khz {
+                    8 => Bandwidth::Narrowband,
+                    12 => Bandwidth::Mediumband,
+                    _ => Bandwidth::Wideband,
+                };
+                toc = gen_toc(mode, frame_rate, frame_bandwidth, self.channels);
+                output[0] = toc;
+            }
+            // A ready switch happens at the next packet, which prefills SILK
+            // again.
+            self.silk_opus_can_switch = silk_switch_ready;
+            self.silk_bw_switch = silk_switch_ready;
+            // The last 10 ms of SILK input, which a prefill reuses (libopus
+            // delay_buffer; SILK frames are at least 10 ms).
+            let n = self.encoder_buffer * self.channels;
+            let len = frame_size * self.channels;
+            if n > 0 && n <= len {
+                let filtered = state_ref(&self.buf_filtered);
+                self.silk_delay_buffer[..n].copy_from_slice(&filtered[len - n..len]);
+            }
+        } else {
+            self.silk_bw_switch = false;
         }
 
         // No redundancy. The decoder reads the flag only when 37 bits are
@@ -1333,6 +1604,36 @@ impl OpusEncoder {
                     self.rc.shrink(new_payload as u32);
                 }
             }
+        }
+        // libopus moves its delay line on in every frame, so the CELT input
+        // after a SILK-only stretch starts from recent history.
+        if mode == OpusMode::SilkOnly && self.delay_compensation > 0 {
+            let input_f32: &[f32] = match input {
+                PcmInput::F32(samples) => samples,
+                PcmInput::I16(samples) => {
+                    let n = frame_size * self.channels;
+                    self.buf_f32_frame.resize(n, 0.0);
+                    let staging = state_mut(&mut self.buf_f32_frame);
+                    for (dst, &src) in staging[..n].iter_mut().zip(samples[..n].iter()) {
+                        *dst = src as f32 / 32768.0;
+                    }
+                    state_ref(&self.buf_f32_frame)
+                }
+            };
+            let (ch, ebuf) = (self.channels, self.encoder_buffer);
+            let total = (self.delay_compensation + frame_size) * ch;
+            self.buf_celt_pcm.resize(total, 0.0);
+            push_delay_history(
+                &mut self.delay_buffer[..ebuf * ch],
+                &mut self.buf_celt_pcm[..total],
+                &mut self.hp_mem_float,
+                input_f32,
+                self.application == Application::Voip,
+                cutoff_hz,
+                frame_size,
+                ch,
+                self.sampling_rate,
+            );
         }
         if mode == OpusMode::CeltOnly || mode == OpusMode::Hybrid {
             self.celt_enc.complexity = self.complexity;
@@ -1393,59 +1694,25 @@ impl OpusEncoder {
                 let ch = self.channels;
                 let total = (delay + frame_size) * ch;
                 self.buf_celt_pcm.resize(total, 0.0);
-                // 1. delay prefix from the ring (C: OPUS_COPY at 1967)
-                let prefix = delay * ch;
-                let src_start = (ebuf - delay) * ch;
-                self.buf_celt_pcm[..prefix]
-                    .copy_from_slice(&self.delay_buffer[src_start..src_start + prefix]);
-                // 2. filter current frame into pcm_buf[delay..] (C: 2002-2010)
-                let out = &mut self.buf_celt_pcm[prefix..];
-                if self.application == Application::Voip {
-                    hp_cutoff_float(
-                        input_f32,
-                        cutoff_hz,
-                        out,
-                        &mut self.hp_mem_float,
-                        frame_size,
-                        ch,
-                        self.sampling_rate,
-                    );
-                } else {
-                    dc_reject_float(
-                        input_f32,
-                        3,
-                        out,
-                        &mut self.hp_mem_float,
-                        frame_size,
-                        ch,
-                        self.sampling_rate,
-                    );
-                }
-                // 3. float NaN guard (C: 2016-2028)
-                let mut sum = 0.0f32;
-                for &v in &self.buf_celt_pcm[prefix..] {
-                    sum += v * v;
-                }
-                // C shape kept verbatim (`!(sum < 1e9f) || celt_isnan(sum)`):
-                // the negated comparison is deliberate NaN handling.
-                #[allow(clippy::neg_cmp_op_on_partial_ord)]
-                if !(sum < 1e9) || sum.is_nan() {
-                    self.buf_celt_pcm[prefix..].fill(0.0);
-                    self.hp_mem_float = [0.0; 4];
-                }
-                // 4. delay ring update (C: 2300-2312)
-                let keep = ebuf as i64 - (frame_size as i64 + delay as i64);
-                if keep > 0 {
-                    let keep = keep as usize;
-                    self.delay_buffer
-                        .copy_within(ch * frame_size..ch * (frame_size + keep), 0);
-                    let dst = ch * keep;
-                    let n = (frame_size + delay) * ch;
-                    self.delay_buffer[dst..dst + n].copy_from_slice(&self.buf_celt_pcm[..n]);
-                } else {
-                    let n = ebuf * ch;
-                    let src = (frame_size + delay - ebuf) * ch;
-                    self.delay_buffer[..n].copy_from_slice(&self.buf_celt_pcm[src..src + n]);
+                push_delay_history(
+                    &mut self.delay_buffer[..ebuf * ch],
+                    &mut self.buf_celt_pcm[..total],
+                    &mut self.hp_mem_float,
+                    input_f32,
+                    self.application == Application::Voip,
+                    cutoff_hz,
+                    frame_size,
+                    ch,
+                    self.sampling_rate,
+                );
+                if mode == OpusMode::CeltOnly {
+                    // The SILK history follows the input in CELT frames too.
+                    for (h, &x) in self.silk_delay_buffer[..ebuf * ch]
+                        .iter_mut()
+                        .zip(&self.delay_buffer[..ebuf * ch])
+                    {
+                        *h = float_to_i16(x);
+                    }
                 }
                 // 5. deinterleave pcm_buf[0..frame_size*ch] (interleaved) to
                 //    channel-major for the Rust CELT encoder.

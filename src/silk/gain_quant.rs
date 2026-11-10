@@ -118,8 +118,7 @@ pub fn silk_quant_ltp_gains(
 ) {
     let mut temp_idx = [0i8; MAX_NB_SUBFR];
     let mut res_nrg_q15: i32 = 0;
-    let mut res_nrg_total_q15: i32;
-    let mut best_res_nrg_total_q15: i32 = 0;
+    let mut res_nrg_total_q15: i32 = 0;
     let mut rate_dist_total_q7: i32;
     let mut rate_dist_subfr_q7: i32 = 0;
     let mut min_rate_dist_q7: i32;
@@ -170,7 +169,6 @@ pub fn silk_quant_ltp_gains(
 
         if rate_dist_total_q7 <= min_rate_dist_q7 {
             min_rate_dist_q7 = rate_dist_total_q7;
-            best_res_nrg_total_q15 = res_nrg_total_q15;
             best_sum_log_gain_q7 = sum_log_gain_tmp_q7;
             *periodicity_index = k as i8;
             cbk_index[..nb_subfr].copy_from_slice(&temp_idx[..nb_subfr]);
@@ -186,11 +184,8 @@ pub fn silk_quant_ltp_gains(
         }
     }
 
-    let res_nrg_shift = if nb_subfr == 2 {
-        silk_rshift32(best_res_nrg_total_q15, 1)
-    } else {
-        silk_rshift32(best_res_nrg_total_q15, 2)
-    };
+    // libopus estimates the prediction gain from the final codebook search.
+    let res_nrg_shift = silk_rshift32(res_nrg_total_q15, if nb_subfr == 2 { 1 } else { 2 });
     *pred_gain_db_q7 = silk_smulbb(-3, silk_lin2log(res_nrg_shift) - 1920);
 }
 

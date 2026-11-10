@@ -346,6 +346,11 @@ pub struct SilkEncoderState {
     /// Bits by which the coded packets have overshot the target rate, which
     /// the next frames pay back (libopus `nBitsExceeded`, 0..=10000).
     pub n_bits_exceeded: i32,
+    /// Whether the internal sample rate may change at the next packet, and
+    /// for how long it has not been allowed (libopus `allowBandwidthSwitch`
+    /// and `timeSinceSwitchAllowed_ms`, also packet-level state).
+    pub allow_bandwidth_switch: i32,
+    pub time_since_switch_allowed_ms: i32,
 
     pub resampler_delay_buf: [i16; 48],
 }
@@ -364,6 +369,8 @@ impl Default for SilkEncoderState {
             stereo: SilkStereoState::default(),
             n_bits_used_lbrr: 0,
             n_bits_exceeded: 0,
+            allow_bandwidth_switch: 0,
+            time_since_switch_allowed_ms: 0,
             resampler_delay_buf: [0; 48],
         }
     }

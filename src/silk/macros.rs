@@ -17,14 +17,8 @@ pub fn silk_lshift_sat32(a: i32, shift: i32) -> i32 {
 
 #[inline(always)]
 pub fn silk_add_pos_sat32(a: i32, b: i32) -> i32 {
-    let res = (a as i64) + (b as i64);
-    if res > i32::MAX as i64 {
-        i32::MAX
-    } else if res < i32::MIN as i64 {
-        i32::MIN
-    } else {
-        res as i32
-    }
+    let res = a.wrapping_add(b);
+    if res < 0 { i32::MAX } else { res }
 }
 
 #[inline(always)]
