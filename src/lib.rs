@@ -1222,6 +1222,13 @@ impl OpusEncoder {
             mode = OpusMode::CeltOnly;
         }
 
+        // SILK and Hybrid frames are 10 ms or longer: shorter frames are
+        // coded in CELT, as libopus overrides the mode to meet the requested
+        // frame size (opus_encode_native).
+        if mode != OpusMode::CeltOnly && frame_size < self.sampling_rate as usize / 100 {
+            mode = OpusMode::CeltOnly;
+        }
+
         // Mode switches (opus_encoder.c:1540-1556): entering or leaving
         // CELT-only adds a 5 ms CELT frame of redundancy. Going to CELT, this
         // frame keeps the previous mode and the redundancy ends it.
