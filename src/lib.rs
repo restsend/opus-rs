@@ -187,9 +187,11 @@ pub struct OpusEncoder {
     /// The analysis read position before the last packet's analysis
     /// (libopus `analysis_read_pos_bak`), when it ran.
     analysis_read_bak: Option<(usize, i32)>,
-    /// The analysis of the next frame of a multiframe packet, which reads
-    /// its share of the packet's analysis.
-    frame_analysis: Option<AnalysisInfo>,
+    /// The analysis and digital-silence flag of the next frame of a
+    /// multiframe packet, which reads its share of the packet's analysis.
+    frame_analysis: Option<(AnalysisInfo, bool)>,
+    /// libopus `peak_signal_energy`, for the activity of quiet frames.
+    peak_signal_energy: f32,
 
     #[cfg(not(feature = "heap"))]
     buf_filtered: FixedVec<i16, OPUS_MAX_FRAME>,
@@ -443,10 +445,14 @@ fn is_digital_silence(input: PcmInput<'_>, len: usize) -> bool {
     }
 }
 
-/// libopus `decide_dtx_mode` for a frame without activity: whether it is
-/// sent as DTX, counting the inactive time in milliseconds (Q1).
-fn decide_dtx_mode(nb_no_activity_ms_q1: &mut i32, frame_size_ms_q1: i32) -> bool {
+/// libopus `decide_dtx_mode`: whether a frame is sent as DTX, counting the
+/// inactive time in milliseconds (Q1); an active frame resets the count.
+fn decide_dtx_mode(activity: bool, nb_no_activity_ms_q1: &mut i32, frame_size_ms_q1: i32) -> bool {
     use silk::define::{MAX_CONSECUTIVE_DTX, NB_SPEECH_FRAMES_BEFORE_DTX};
+    if activity {
+        *nb_no_activity_ms_q1 = 0;
+        return false;
+    }
     *nb_no_activity_ms_q1 += frame_size_ms_q1;
     if *nb_no_activity_ms_q1 > NB_SPEECH_FRAMES_BEFORE_DTX * 20 * 2 {
         if *nb_no_activity_ms_q1 <= (NB_SPEECH_FRAMES_BEFORE_DTX + MAX_CONSECUTIVE_DTX) * 20 * 2 {
@@ -455,6 +461,26 @@ fn decide_dtx_mode(nb_no_activity_ms_q1: &mut i32, frame_size_ms_q1: i32) -> boo
         *nb_no_activity_ms_q1 = NB_SPEECH_FRAMES_BEFORE_DTX * 20 * 2;
     }
     false
+}
+
+/// libopus `DTX_ACTIVITY_THRESHOLD`: the activity probability of the signal
+/// analysis below which a frame counts as inactive.
+const DTX_ACTIVITY_THRESHOLD: f32 = 0.1;
+/// libopus `PSEUDO_SNR_THRESHOLD` (25 dB): an inactive frame this close to
+/// the loudest active one still counts as active.
+const PSEUDO_SNR_THRESHOLD: f32 = 316.23;
+
+/// libopus `compute_frame_energy` (float build): the mean square of the
+/// input, at the float API's scale.
+fn compute_frame_energy(input: PcmInput<'_>, len: usize) -> f32 {
+    let sum = match input {
+        PcmInput::F32(s) => s[..len].iter().fold(0.0f32, |acc, &x| acc + x * x),
+        PcmInput::I16(s) => s[..len].iter().fold(0.0f32, |acc, &x| {
+            let x = f32::from(x) / 32768.0;
+            acc + x * x
+        }),
+    };
+    sum / len as f32
 }
 
 /// libopus `StereoWidthState`.
@@ -1141,6 +1167,7 @@ impl OpusEncoder {
             analysis: Box::new(analysis::TonalityAnalysisState::new(sampling_rate)),
             analysis_read_bak: None,
             frame_analysis: None,
+            peak_signal_energy: 0.0,
 
             #[cfg(not(feature = "heap"))]
             buf_filtered: FixedVec::new(),
@@ -1219,11 +1246,12 @@ impl OpusEncoder {
     /// Discontinuous transmission, as libopus `OPUS_SET_DTX` (off by
     /// default). After 200 ms without speech the encoder sends packets of
     /// the ToC byte alone, which decoders conceal with comfort noise, and a
-    /// coded frame every 400 ms to refresh the background. SILK's voice
-    /// activity detection drives it; frames of digital silence go through
-    /// libopus's own DTX when its signal analysis would run (complexity 7
-    /// and above, 16 kHz and above), as in libopus, and VoIP streams with
-    /// DTX code in SILK, whose detector needs it.
+    /// coded frame every 400 ms to refresh the background. As in libopus,
+    /// the signal analysis decides where it runs (complexity 7 and above,
+    /// 16 kHz and above), in every mode; elsewhere SILK's voice activity
+    /// detection does, and VoIP streams with DTX code in SILK, whose
+    /// detector needs it. Digital silence always counts as inactive where
+    /// the analysis would run.
     pub fn set_dtx(&mut self, enabled: bool) {
         self.use_dtx = enabled;
     }
@@ -1325,31 +1353,41 @@ impl OpusEncoder {
     }
 
     /// libopus's signal analysis of a packet (run_analysis in
-    /// opus_encode_native, float build): it runs for complexity 7 and up at
-    /// 16 kHz and up, and is reset when it stops running. Both entry points
-    /// analyse their input at the float API's 24-bit depth, as `encode_i16`
-    /// codes like `encode`.
-    fn analyse(&mut self, input: PcmInput<'_>, frame_size: usize) -> AnalysisInfo {
+    /// opus_encode_native, float build): the analysis, and whether the
+    /// packet is digital silence. It runs for complexity 7 and up at 16 kHz
+    /// and up, where libopus also detects digital silence and tracks the
+    /// energy of active frames, and is reset when it stops running. Both
+    /// entry points analyse their input at the float API's 24-bit depth, as
+    /// `encode_i16` codes like `encode`.
+    fn analyse(&mut self, input: PcmInput<'_>, frame_size: usize) -> (AnalysisInfo, bool) {
         self.analysis_read_bak = None;
         if self.complexity >= 7 && self.sampling_rate >= 16000 {
             let n = frame_size * self.channels;
+            let is_silence = is_digital_silence(input, n);
             self.analysis_read_bak = Some(self.analysis.read_position());
             let pcm = match input {
                 PcmInput::F32(s) => analysis::AnalysisPcm::F32(&s[..n]),
                 PcmInput::I16(s) => analysis::AnalysisPcm::I16(&s[..n]),
             };
-            self.analysis.run(
+            let info = self.analysis.run(
                 modes::default_mode().mdct.fft(0),
                 pcm,
                 frame_size,
                 self.channels,
                 24,
-            )
+            );
+            // The peak energy of active frames.
+            if !is_silence && info.activity_probability > DTX_ACTIVITY_THRESHOLD {
+                let energy = compute_frame_energy(input, n);
+                let decayed = 0.999 * self.peak_signal_energy;
+                self.peak_signal_energy = if decayed > energy { decayed } else { energy };
+            }
+            (info, is_silence)
         } else {
             if self.analysis.initialized() {
                 self.analysis.reset();
             }
-            AnalysisInfo::zeroed()
+            (AnalysisInfo::zeroed(), false)
         }
     }
 
@@ -1385,23 +1423,28 @@ impl OpusEncoder {
 
         // libopus's signal analysis of the packet; the frames of a multiframe
         // packet read their part of it.
-        let analysis_info = match self.frame_analysis.take() {
-            Some(info) => info,
+        let (analysis_info, is_silence) = match self.frame_analysis.take() {
+            Some(frame) => frame,
             None => self.analyse(input, frame_size),
         };
-
-        // libopus detects digital silence where its signal analysis runs
-        // (complexity 7 and up, 16 kHz and up, float build); such frames use
-        // its own DTX. SILK does DTX on the other frames, as libopus does
-        // when the analysis gives no answer, which in this port, without
-        // that analysis, is every frame that is not digital silence.
-        let is_silence = self.complexity >= 7
-            && self.sampling_rate >= 16000
-            && is_digital_silence(input, frame_size * self.channels);
-        let silk_use_dtx = self.use_dtx && !is_silence;
+        // libopus's own DTX decides where its analysis ran or the frame is
+        // digital silence; SILK's DTX on the other frames.
+        let silk_use_dtx = self.use_dtx && !(analysis_info.valid || is_silence);
         self.silk_use_dtx = silk_use_dtx;
-        // VAD hint to SILK: none, unless the frame is digital silence.
-        let activity = if is_silence { 0 } else { 1 };
+        // The frame's voice activity (opus_encode_frame_native): none in
+        // digital silence; from the analysis where it ran, an inactive frame
+        // loud enough against the loudest active one counting as active;
+        // otherwise SILK's own detector decides (1).
+        let activity = if is_silence {
+            0
+        } else if analysis_info.valid {
+            let active = analysis_info.activity_probability >= DTX_ACTIVITY_THRESHOLD
+                || self.peak_signal_energy
+                    < PSEUDO_SNR_THRESHOLD * compute_frame_energy(input, frame_size * self.channels);
+            i32::from(active)
+        } else {
+            1
+        };
 
         // How far stereo input is from mono (libopus compute_stereo_width),
         // once per packet.
@@ -2568,12 +2611,12 @@ impl OpusEncoder {
 
         self.rc.done();
 
-        // libopus's DTX for digital silence (decide_dtx_mode): after 200 ms
-        // of it the frame is sent as its ToC alone, with one coded frame
-        // every 400 ms.
-        if self.use_dtx && is_silence {
+        // libopus's own DTX (decide_dtx_mode), where its analysis ran or the
+        // frame is digital silence: after 200 ms without activity the frame
+        // is sent as its ToC alone, with one coded frame every 400 ms.
+        if self.use_dtx && (analysis_info.valid || is_silence) {
             let frame_ms_q1 = (2000 * frame_size as i64 / self.sampling_rate as i64) as i32;
-            if decide_dtx_mode(&mut self.nb_no_activity_ms_q1, frame_ms_q1) {
+            if decide_dtx_mode(activity != 0, &mut self.nb_no_activity_ms_q1, frame_ms_q1) {
                 self.prev_enc_mode = Some(next_prev_mode);
                 output[0] = toc;
                 return Ok(1);
@@ -2808,9 +2851,12 @@ impl OpusEncoder {
                     PcmInput::I16(s) => PcmInput::I16(&s[start..end]),
                 };
                 self.frame_analysis = Some(if analysed.is_some() {
-                    self.analysis.get_info(enc_frame)
+                    (
+                        self.analysis.get_info(enc_frame),
+                        is_digital_silence(sub_input, enc_frame * ch),
+                    )
                 } else {
-                    AnalysisInfo::zeroed()
+                    (AnalysisInfo::zeroed(), false)
                 });
                 let to_celt = transition.to_celt && i == nb - 1;
                 self.frame_transition = Some(FrameTransition {
