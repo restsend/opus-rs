@@ -2551,11 +2551,24 @@ impl OpusDecoder {
         }
         output[total * channels..].fill(0.0);
 
+        // After a frame that ended in a SILK-to-CELT redundant frame, libopus
+        // conceals in CELT, continuing the redundant frame ("Run PLC using
+        // last used mode (CELT if we ended with CELT redundancy)",
+        // opus_decode_frame), and the next frame follows on from CELT.
+        let mode = if self.prev_redundancy {
+            Some(OpusMode::CeltOnly)
+        } else {
+            self.prev_mode
+        };
+        if mode.is_some() {
+            self.prev_mode = mode;
+            self.prev_redundancy = false;
+        }
         let mut pos = 0usize;
         while pos < total {
             let remaining = total - pos;
             let dst = &mut output[pos * channels..total * channels];
-            let produced = match self.prev_mode {
+            let produced = match mode {
                 None => {
                     dst.fill(0.0);
                     remaining
