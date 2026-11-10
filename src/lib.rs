@@ -141,6 +141,11 @@ pub struct OpusEncoder {
     /// The mode-switch decisions for the next sub-frame of a multiframe
     /// packet, which libopus makes once for the whole packet.
     frame_transition: Option<FrameTransition>,
+    /// The bandwidth and in-band FEC decision for the next sub-frame of a
+    /// multiframe packet: its frames share one ToC, and libopus decides both
+    /// once for the whole packet (opus_encode_native, before
+    /// encode_multiframe_packet).
+    frame_fec: Option<(Bandwidth, i32)>,
 
     variable_hp_smth2_q15: i32,
     hp_mem: FixedVec<i32, OPUS_HP_MEM>,
@@ -989,6 +994,7 @@ impl OpusEncoder {
             prev_enc_mode: None,
             forced_mode: None,
             frame_transition: None,
+            frame_fec: None,
             mode: opus_mode,
             variable_hp_smth2_q15,
             hp_mem: FixedVec::from_value(0, channels * 2),
@@ -1276,24 +1282,30 @@ impl OpusEncoder {
         // The reduction is per-frame: `self.bandwidth` (the user/auto state)
         // is left untouched, matching C where the bandwidth is re-derived
         // every frame.
-        let mut frame_bandwidth = self.bandwidth;
-        let equiv_rate = compute_equiv_rate(
-            self.bitrate_bps,
-            self.channels,
-            frame_rate,
-            !self.use_cbr,
-            Some(mode),
-            self.complexity,
-            self.packet_loss_perc,
-        );
-        let lbrr_coded = decide_fec(
-            if self.use_inband_fec { 1 } else { 0 },
-            self.packet_loss_perc,
-            self.silk_enc.s_cmn.lbrr_enabled,
-            mode,
-            &mut frame_bandwidth,
-            equiv_rate,
-        );
+        let (mut frame_bandwidth, lbrr_coded) = match self.frame_fec.take() {
+            Some(decided) => decided,
+            None => {
+                let mut frame_bandwidth = self.bandwidth;
+                let equiv_rate = compute_equiv_rate(
+                    self.bitrate_bps,
+                    self.channels,
+                    frame_rate,
+                    !self.use_cbr,
+                    Some(mode),
+                    self.complexity,
+                    self.packet_loss_perc,
+                );
+                let lbrr_coded = decide_fec(
+                    if self.use_inband_fec { 1 } else { 0 },
+                    self.packet_loss_perc,
+                    self.silk_enc.s_cmn.lbrr_enabled,
+                    mode,
+                    &mut frame_bandwidth,
+                    equiv_rate,
+                );
+                (frame_bandwidth, lbrr_coded)
+            }
+        };
 
         // FEC can lower the bandwidth. Choose SILK-only or Hybrid after
         // that decision, as libopus does: Hybrid needs bands above wideband.
@@ -1319,7 +1331,14 @@ impl OpusEncoder {
             && mode != OpusMode::SilkOnly
             && frame_size > self.sampling_rate as usize / 50
         {
-            return self.encode_multiframe(input, frame_size, mode, transition, output);
+            return self.encode_multiframe(
+                input,
+                frame_size,
+                mode,
+                transition,
+                (frame_bandwidth, lbrr_coded),
+                output,
+            );
         }
 
         if mode == OpusMode::CeltOnly {
@@ -2391,15 +2410,17 @@ impl OpusEncoder {
 
     /// Repacketize 40/60 ms CELT/Hybrid input as 20 ms sub-frames in one code
     /// 1/2/3 Opus packet (libopus `encode_multiframe_packet`). Every sub-frame
-    /// is forced to `mode` so the packet carries a single config. A mode
-    /// switch's redundancy goes to the first sub-frame, or going to CELT, to
-    /// the last (opus_encoder.c:1781-1783).
+    /// is forced to `mode` and to the packet's bandwidth and FEC decision
+    /// `fec`, so the packet carries a single config. A mode switch's
+    /// redundancy goes to the first sub-frame, or going to CELT, to the last
+    /// (opus_encoder.c:1781-1783).
     fn encode_multiframe(
         &mut self,
         input: PcmInput<'_>,
         frame_size: usize,
         mode: OpusMode,
         transition: FrameTransition,
+        fec: (Bandwidth, i32),
         output: &mut [u8],
     ) -> Result<usize, &'static str> {
         const MAX_SUB: usize = 3; // up to 60 ms of 20 ms frames
@@ -2477,6 +2498,7 @@ impl OpusEncoder {
                     to_celt,
                     prefill: transition.prefill && i == 0,
                 });
+                self.frame_fec = Some(fec);
                 let budget = sub_budget.min(max_len_sum.saturating_sub(used)).max(2);
                 let n = self.encode_impl(sub_input, enc_frame, &mut sub[i][..budget])?;
                 if n == 0 {
@@ -2503,6 +2525,7 @@ impl OpusEncoder {
         })();
         self.forced_mode = None;
         self.frame_transition = None;
+        self.frame_fec = None;
         enc_res?;
 
         let toc = sub[0][0] & 0xFC;
