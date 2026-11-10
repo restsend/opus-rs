@@ -835,6 +835,11 @@ impl OpusEncoder {
             self.silk_enc.s_cmn.lbrr_enabled = 0;
             self.silk_enc_side.s_cmn.lbrr_enabled = 0;
         }
+        // CELT has no mediumband, and its ToC cannot signal one: libopus
+        // codes such frames as wideband (opus_encode_native).
+        if mode == OpusMode::CeltOnly && frame_bandwidth == Bandwidth::Mediumband {
+            frame_bandwidth = Bandwidth::Wideband;
+        }
 
         if mode == OpusMode::CeltOnly {
             match frame_rate {
