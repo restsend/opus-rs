@@ -131,6 +131,14 @@ pub struct OpusEncoder {
     pub use_inband_fec: bool,
 
     pub packet_loss_perc: i32,
+    /// Discontinuous transmission (see [`OpusEncoder::set_dtx`]).
+    use_dtx: bool,
+    /// Whether SILK ran its own DTX on the last frame (libopus
+    /// `silk_mode.useDTX`).
+    silk_use_dtx: bool,
+    /// Milliseconds (Q1) of digital silence in a row, for DTX (libopus
+    /// `nb_no_activity_ms_Q1`).
+    nb_no_activity_ms_q1: i32,
     silk_initialized: bool,
     mode: OpusMode,
     prev_enc_mode: Option<OpusMode>,
@@ -394,6 +402,29 @@ fn decide_fec(
     // Couldn't find any bandwidth to enable FEC, keep original bandwidth.
     *bandwidth = orig_bandwidth;
     0
+}
+
+/// libopus `is_digital_silence`: no sample above the input's resolution
+/// (24 bits for float input, 16 for 16-bit input).
+fn is_digital_silence(input: PcmInput<'_>, len: usize) -> bool {
+    match input {
+        PcmInput::F32(s) => s[..len].iter().all(|x| x.abs() <= 1.0 / (1 << 24) as f32),
+        PcmInput::I16(s) => s[..len].iter().all(|&x| x == 0),
+    }
+}
+
+/// libopus `decide_dtx_mode` for a frame without activity: whether it is
+/// sent as DTX, counting the inactive time in milliseconds (Q1).
+fn decide_dtx_mode(nb_no_activity_ms_q1: &mut i32, frame_size_ms_q1: i32) -> bool {
+    use silk::define::{MAX_CONSECUTIVE_DTX, NB_SPEECH_FRAMES_BEFORE_DTX};
+    *nb_no_activity_ms_q1 += frame_size_ms_q1;
+    if *nb_no_activity_ms_q1 > NB_SPEECH_FRAMES_BEFORE_DTX * 20 * 2 {
+        if *nb_no_activity_ms_q1 <= (NB_SPEECH_FRAMES_BEFORE_DTX + MAX_CONSECUTIVE_DTX) * 20 * 2 {
+            return true;
+        }
+        *nb_no_activity_ms_q1 = NB_SPEECH_FRAMES_BEFORE_DTX * 20 * 2;
+    }
+    false
 }
 
 fn compute_mode_threshold(
@@ -993,6 +1024,9 @@ impl OpusEncoder {
             use_cbr: false,
             use_inband_fec: false,
             packet_loss_perc: 0,
+            use_dtx: false,
+            silk_use_dtx: false,
+            nb_no_activity_ms_q1: 0,
             silk_initialized: false,
             prev_enc_mode: None,
             forced_mode: None,
@@ -1075,6 +1109,45 @@ impl OpusEncoder {
     /// ToC-only packet, or the empty frame sent when a budget is exceeded).
     pub fn final_range(&self) -> u32 {
         self.range_final
+    }
+
+    /// Discontinuous transmission, as libopus `OPUS_SET_DTX` (off by
+    /// default). After 200 ms without speech the encoder sends packets of
+    /// the ToC byte alone, which decoders conceal with comfort noise, and a
+    /// coded frame every 400 ms to refresh the background. SILK's voice
+    /// activity detection drives it; frames of digital silence go through
+    /// libopus's own DTX when its signal analysis would run (complexity 7
+    /// and above, 16 kHz and above), as in libopus, and VoIP streams with
+    /// DTX code in SILK, whose detector needs it.
+    pub fn set_dtx(&mut self, enabled: bool) {
+        self.use_dtx = enabled;
+    }
+
+    /// Whether DTX is on (libopus `OPUS_GET_DTX`).
+    pub fn dtx(&self) -> bool {
+        self.use_dtx
+    }
+
+    /// Whether the encoder is in DTX, so that the last packet was or would
+    /// have been a ToC-only packet (libopus `OPUS_GET_IN_DTX`).
+    pub fn in_dtx(&self) -> bool {
+        let silk_mode = matches!(
+            self.prev_enc_mode,
+            Some(OpusMode::SilkOnly | OpusMode::Hybrid)
+        );
+        if self.silk_use_dtx && silk_mode {
+            let quiet = |enc: &SilkEncoderState| {
+                enc.s_cmn.no_speech_counter >= silk::define::NB_SPEECH_FRAMES_BEFORE_DTX
+            };
+            quiet(state_ref(&self.silk_enc))
+                && (self.channels == 1
+                    || self.silk_enc.stereo.prev_decode_only_middle != 0
+                    || quiet(state_ref(&self.silk_enc_side)))
+        } else if self.use_dtx {
+            self.nb_no_activity_ms_q1 >= silk::define::NB_SPEECH_FRAMES_BEFORE_DTX * 20 * 2
+        } else {
+            false
+        }
     }
 
     pub fn enable_hybrid_mode(&mut self) -> Result<(), &'static str> {
@@ -1164,6 +1237,19 @@ impl OpusEncoder {
             return Err("Input buffer too small for frame");
         }
 
+        // libopus detects digital silence where its signal analysis runs
+        // (complexity 7 and up, 16 kHz and up, float build); such frames use
+        // its own DTX. SILK does DTX on the other frames, as libopus does
+        // when the analysis gives no answer, which in this port, without
+        // that analysis, is every frame that is not digital silence.
+        let is_silence = self.complexity >= 7
+            && self.sampling_rate >= 16000
+            && is_digital_silence(input, frame_size * self.channels);
+        let silk_use_dtx = self.use_dtx && !is_silence;
+        self.silk_use_dtx = silk_use_dtx;
+        // VAD hint to SILK: none, unless the frame is digital silence.
+        let activity = if is_silence { 0 } else { 1 };
+
         // Mode selection: match C's opus_encode_native() behavior.
         // C reference auto-selects between SILK_ONLY and CELT_ONLY; Hybrid is
         // produced afterwards by bandwidth overrides (SILK-only + FB/SWB → Hybrid).
@@ -1195,7 +1281,11 @@ impl OpusEncoder {
                 has_prev_mode,
                 voice_est,
             );
-            if equiv >= threshold && self.sampling_rate >= 24000 {
+            if silk_use_dtx && voice_est > 100 {
+                // libopus: voice with DTX is coded in SILK, whose voice
+                // activity detection drives DTX.
+                OpusMode::SilkOnly
+            } else if equiv >= threshold && self.sampling_rate >= 24000 {
                 OpusMode::CeltOnly
             } else {
                 OpusMode::SilkOnly
@@ -1744,6 +1834,7 @@ impl OpusEncoder {
                 .take(self.channels)
             {
                 enc.s_cmn.use_in_band_fec = if self.use_inband_fec { 1 } else { 0 };
+                enc.s_cmn.use_dtx = silk_use_dtx as i32;
                 enc.s_cmn.packet_loss_perc = self.packet_loss_perc.clamp(0, 100);
                 silk_setup_lbrr(state_mut(enc), lbrr_coded);
             }
@@ -1812,7 +1903,7 @@ impl OpusEncoder {
                         int_l,
                         int_r,
                         silk_bitrate,
-                        1,
+                        activity,
                     );
                 } else {
                     let mut pre = [0i16; 480];
@@ -1825,7 +1916,7 @@ impl OpusEncoder {
                     let pre_internal = &mut pre_internal[..pre_resampled_len];
                     self.silk_resampler_enc
                         .process(pre_internal, pre, eb as i32);
-                    silk_encode_prefill(state_mut(&mut self.silk_enc), pre_internal, 1);
+                    silk_encode_prefill(state_mut(&mut self.silk_enc), pre_internal, activity);
                 }
             }
             if silk_prefilled {
@@ -1950,7 +2041,7 @@ impl OpusEncoder {
                     silk_bitrate,
                     silk_max_bits,
                     silk_use_cbr,
-                    1,
+                    activity,
                 )
             } else {
                 silk_encode(
@@ -1962,7 +2053,7 @@ impl OpusEncoder {
                     silk_bitrate,
                     silk_max_bits,
                     silk_use_cbr,
-                    1,
+                    activity,
                 )
             };
             if ret != 0 {
@@ -1983,6 +2074,11 @@ impl OpusEncoder {
             // (opus_encoder.c:2065).
             let silk_can_switch = silk_switch_ready && !self.nonfinal_frame;
             self.silk_opus_can_switch = silk_can_switch;
+            // SILK DTX: the packet is the ToC alone, and the frame does not
+            // count as coded (opus_encode_frame_native).
+            if pn_bytes == 0 {
+                return Ok(1);
+            }
             self.silk_bw_switch = silk_can_switch;
             if silk_can_switch {
                 // The packet before the switch ends with redundancy
@@ -2294,6 +2390,20 @@ impl OpusEncoder {
 
         self.rc.done();
 
+        // libopus's DTX for digital silence (decide_dtx_mode): after 200 ms
+        // of it the frame is sent as its ToC alone, with one coded frame
+        // every 400 ms.
+        if self.use_dtx && is_silence {
+            let frame_ms_q1 = (2000 * frame_size as i64 / self.sampling_rate as i64) as i32;
+            if decide_dtx_mode(&mut self.nb_no_activity_ms_q1, frame_ms_q1) {
+                self.prev_enc_mode = Some(next_prev_mode);
+                output[0] = toc;
+                return Ok(1);
+            }
+        } else {
+            self.nb_no_activity_ms_q1 = 0;
+        }
+
         // C opus_encoder.c:2170-2179: "In the unlikely case that the SILK
         // encoder busted its target, tell the decoder to call the PLC" — emit
         // a minimal packet with an EMPTY frame instead of failing hard. The
@@ -2549,6 +2659,22 @@ impl OpusEncoder {
         self.frame_fec = None;
         self.nonfinal_frame = false;
         enc_res?;
+
+        // Every 20 ms frame in DTX: libopus's repacketizer sends the empty
+        // frames as code 1 (two frames) or code 3 CBR, unpadded.
+        if lens[..nb].iter().all(|&len| len == 0) && sub[..nb].iter().all(|s| s[0] & 0x03 == 0) {
+            let toc = sub[0][0] & 0xFC;
+            if nb == 2 {
+                output[0] = toc | 0x01;
+                return Ok(1);
+            }
+            if output.len() < 2 {
+                return Err("Output buffer too small");
+            }
+            output[0] = toc | 0x03;
+            output[1] = nb as u8;
+            return Ok(2);
+        }
 
         let toc = sub[0][0] & 0xFC;
         let mut pos = 0usize;

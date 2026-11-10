@@ -830,6 +830,9 @@ pub fn silk_encode(
     let frame_length = ps_enc.s_cmn.frame_length as usize;
 
     ps_enc.s_cmn.n_frames_encoded = 0;
+    // In DTX unless a frame of the packet has speech (silk_encode_do_vad
+    // clears it); enc_API.c.
+    ps_enc.s_cmn.in_dtx = ps_enc.s_cmn.use_dtx;
 
     let tot_blocks = packet_blocks(n_samples_in, ps_enc.s_cmn.fs_khz);
 
@@ -999,6 +1002,10 @@ pub fn silk_encode(
     rc.patch_initial_bits(flags, n_flag_bits);
 
     *n_bytes_out = (rc.tell() + 7) >> 3;
+    // Zero bytes when the packet is DTX (enc_API.c).
+    if ps_enc.s_cmn.in_dtx != 0 {
+        *n_bytes_out = 0;
+    }
     silk_update_bit_reservoir(ps_enc, target_rate_bps, *n_bytes_out);
     silk_update_switch_allowed(ps_enc);
 
@@ -1039,6 +1046,8 @@ pub fn silk_encode_stereo_packet(
 
     mid.s_cmn.n_frames_encoded = 0;
     side.s_cmn.n_frames_encoded = 0;
+    mid.s_cmn.in_dtx = mid.s_cmn.use_dtx;
+    side.s_cmn.in_dtx = side.s_cmn.use_dtx;
     let tot_blocks = packet_blocks(n_samples_in, fs_khz);
 
     // Each channel's LBRR flags left by the previous packet, coded even when
@@ -1204,6 +1213,10 @@ pub fn silk_encode_stereo_packet(
     rc.patch_initial_bits(flags, n_flag_bits);
 
     *n_bytes_out = (rc.tell() + 7) >> 3;
+    // Zero bytes when both channels are DTX (enc_API.c).
+    if mid.s_cmn.in_dtx != 0 && side.s_cmn.in_dtx != 0 {
+        *n_bytes_out = 0;
+    }
     silk_update_bit_reservoir(mid, target_rate_bps, *n_bytes_out);
     silk_update_switch_allowed(mid);
     SILK_NO_ERROR
