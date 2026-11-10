@@ -2435,6 +2435,31 @@ impl OpusEncoder {
 
         let mut sub = [[0u8; 1276]; MAX_SUB];
         let mut lens = [0usize; MAX_SUB];
+        // Where each sub-packet's frame starts in `sub`.
+        let mut offs = [0usize; MAX_SUB];
+        // Under CBR the packet is the CBR size, to which it is padded
+        // (encode_multiframe_packet).
+        let cbr_total = if self.use_cbr {
+            let bits = self.bitrate_bps as i64 * frame_size as i64 / self.sampling_rate as i64;
+            Some(
+                (((bits + 4) / 8) as usize)
+                    .clamp(1, OPUS_MAX_PACKET_BYTES)
+                    .min(output.len()),
+            )
+        } else {
+            None
+        };
+        // Each frame gets at most its share of the packet (the CBR size, or
+        // the output buffer in VBR) less the worst-case header, and no more
+        // than the bitrate's bytes per frame, as in libopus.
+        let packet_room = cbr_total.unwrap_or(output.len());
+        let max_header = if nb == 2 { 3 } else { 2 + (nb - 1) * 2 };
+        let max_len_sum = (nb + packet_room).saturating_sub(max_header);
+        let frame_bytes = (3 * self.bitrate_bps as i64
+            / (3 * 8 * self.sampling_rate as i64 / enc_frame as i64))
+            as usize;
+        let sub_budget = frame_bytes.min(max_len_sum / nb).clamp(2, 1276);
+        let mut used = 0usize;
         self.forced_mode = Some(mode);
         let enc_res = (|| -> Result<(), &'static str> {
             for i in 0..nb {
@@ -2452,11 +2477,27 @@ impl OpusEncoder {
                     to_celt,
                     prefill: transition.prefill && i == 0,
                 });
-                let n = self.encode_impl(sub_input, enc_frame, &mut sub[i])?;
+                let budget = sub_budget.min(max_len_sum.saturating_sub(used)).max(2);
+                let n = self.encode_impl(sub_input, enc_frame, &mut sub[i][..budget])?;
                 if n == 0 {
                     return Err("Empty sub-frame");
                 }
-                lens[i] = n - 1;
+                used += n;
+                // A sub-packet is not always a ToC and a frame: CBR pads it
+                // as a code 3 packet, and a frame over its budget or below 3
+                // bytes is sent empty, padded the same way (a two-byte code 3
+                // packet has no room for padding). Take its one frame, as
+                // libopus's repacketizer does.
+                if n == 2 && sub[i][0] & 0x03 == 0x03 {
+                    (offs[i], lens[i]) = (2, 0);
+                    continue;
+                }
+                let frames = frame_payloads(&sub[i][..n])?;
+                if frames.len() != 1 {
+                    return Err("Unexpected sub-frame packet");
+                }
+                offs[i] = frames[0].as_ptr() as usize - sub[i].as_ptr() as usize;
+                lens[i] = frames[0].len();
             }
             Ok(())
         })();
@@ -2477,26 +2518,51 @@ impl OpusEncoder {
             };
         // Use explicit per-frame lengths (code 2 / code 3 VBR) for every
         // sub-frame packet: it is always valid, and avoids the code-3 CBR
-        // assumption that all frames are byte-identical in size.
-        if nb == 2 {
+        // assumption that all frames are byte-identical in size. Under CBR
+        // a packet short of the CBR size becomes code 3 with padding, as
+        // libopus's opus_repacketizer_out_range_impl pads it.
+        let length_bytes: usize = lens[..nb - 1]
+            .iter()
+            .map(|&len| if len < 252 { 1 } else { 2 })
+            .sum();
+        let code3_len = 2 + length_bytes + lens[..nb].iter().sum::<usize>();
+        let target = cbr_total.unwrap_or(0);
+        let mut pad_amount = 0;
+        if nb == 2 && target < code3_len {
             push(output, &mut pos, toc | 0x02)?;
             put_size(output, &mut pos, lens[0])?;
         } else {
+            pad_amount = target.saturating_sub(code3_len);
+            let pad_flag = if pad_amount > 0 { 0x40 } else { 0 };
             push(output, &mut pos, toc | 0x03)?;
-            push(output, &mut pos, nb as u8 | 0x80)?;
+            push(output, &mut pos, nb as u8 | 0x80 | pad_flag)?;
+            if pad_amount > 0 {
+                let nb_255s = (pad_amount - 1) / 255;
+                for _ in 0..nb_255s {
+                    push(output, &mut pos, 255)?;
+                }
+                push(output, &mut pos, (pad_amount - 255 * nb_255s - 1) as u8)?;
+                // The length bytes are part of the padding.
+                pad_amount -= nb_255s + 1;
+            }
             for i in 0..nb - 1 {
                 put_size(output, &mut pos, lens[i])?;
             }
         }
 
         for i in 0..nb {
-            let payload = &sub[i][1..1 + lens[i]];
+            let payload = &sub[i][offs[i]..offs[i] + lens[i]];
             if pos + payload.len() > output.len() {
                 return Err("Output buffer too small");
             }
             output[pos..pos + payload.len()].copy_from_slice(payload);
             pos += payload.len();
         }
+        if pos + pad_amount > output.len() {
+            return Err("Output buffer too small");
+        }
+        output[pos..pos + pad_amount].fill(0);
+        pos += pad_amount;
         Ok(pos)
     }
 }
