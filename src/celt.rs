@@ -3158,7 +3158,11 @@ impl CeltEncoder {
             }
         }
 
-        rc.pad_to_bits(total_bits);
+        // Bits left unused (only at very high rates) need no padding: the
+        // range coder's done() zeroes the space between the two ends, as
+        // libopus relies on ("it's already filled with zeros"). Padding here
+        // wrote the zero bytes ahead of the raw bits still in the window,
+        // moving them where the decoder does not read them.
 
         if pf_on {
             self.prefilter_period = pitch_index;
