@@ -146,6 +146,9 @@ pub struct OpusEncoder {
     /// once for the whole packet (opus_encode_native, before
     /// encode_multiframe_packet).
     frame_fec: Option<(Bandwidth, i32)>,
+    /// The frame is not the last of a multiframe packet (libopus
+    /// `nonfinal_frame`): SILK may then not switch its rate.
+    nonfinal_frame: bool,
 
     variable_hp_smth2_q15: i32,
     hp_mem: FixedVec<i32, OPUS_HP_MEM>,
@@ -995,6 +998,7 @@ impl OpusEncoder {
             forced_mode: None,
             frame_transition: None,
             frame_fec: None,
+            nonfinal_frame: false,
             mode: opus_mode,
             variable_hp_smth2_q15,
             hp_mem: FixedVec::from_value(0, channels * 2),
@@ -1222,8 +1226,9 @@ impl OpusEncoder {
         // switches to CELT-only mode, which codes it as a small valid packet
         // instead of a PLC placeholder (issue #46).
         let tiny_budget_rate: i64 = if frame_rate > 50 { 9000 } else { 6000 };
-        if ((n_bytes as i64) * 8 * (self.sampling_rate as i64))
-            < (tiny_budget_rate * (frame_size as i64))
+        if self.forced_mode.is_none()
+            && ((n_bytes as i64) * 8 * (self.sampling_rate as i64))
+                < (tiny_budget_rate * (frame_size as i64))
         {
             mode = OpusMode::CeltOnly;
         }
@@ -1327,9 +1332,10 @@ impl OpusEncoder {
         // mode. CELT and Hybrid cap a frame at 20 ms, so libopus encodes 20 ms
         // sub-frames and repacketizes them into one code 1/2/3 packet
         // (opus_encoder.c `encode_multiframe_packet`). (issue #35)
+        // Frames over 60 ms are split in every mode (80, 100 and 120 ms).
         if self.forced_mode.is_none()
-            && mode != OpusMode::SilkOnly
-            && frame_size > self.sampling_rate as usize / 50
+            && ((mode != OpusMode::SilkOnly && frame_size > self.sampling_rate as usize / 50)
+                || frame_size > 3 * self.sampling_rate as usize / 50)
         {
             return self.encode_multiframe(
                 input,
@@ -1973,10 +1979,12 @@ impl OpusEncoder {
                 output[0] = toc;
             }
             // A ready switch happens at the next packet, which prefills SILK
-            // again.
-            self.silk_opus_can_switch = silk_switch_ready;
-            self.silk_bw_switch = silk_switch_ready;
-            if silk_switch_ready {
+            // again; within a multiframe packet only after its last frame
+            // (opus_encoder.c:2065).
+            let silk_can_switch = silk_switch_ready && !self.nonfinal_frame;
+            self.silk_opus_can_switch = silk_can_switch;
+            self.silk_bw_switch = silk_can_switch;
+            if silk_can_switch {
                 // The packet before the switch ends with redundancy
                 // (opus_encoder.c:2250-2260).
                 redundancy_bytes =
@@ -2408,8 +2416,10 @@ impl OpusEncoder {
         Ok(end)
     }
 
-    /// Repacketize 40/60 ms CELT/Hybrid input as 20 ms sub-frames in one code
-    /// 1/2/3 Opus packet (libopus `encode_multiframe_packet`). Every sub-frame
+    /// Repacketize 40/60 ms CELT/Hybrid input as 20 ms sub-frames, and
+    /// 80-120 ms input as SILK's 40, 20 or 60 ms frames or CELT/Hybrid's
+    /// 20 ms ones, in one code 1/2/3 Opus packet (libopus
+    /// `encode_multiframe_packet`). Every sub-frame
     /// is forced to `mode` and to the packet's bandwidth and FEC decision
     /// `fec`, so the packet carries a single config. A mode switch's
     /// redundancy goes to the first sub-frame, or going to CELT, to the last
@@ -2423,9 +2433,19 @@ impl OpusEncoder {
         fec: (Bandwidth, i32),
         output: &mut [u8],
     ) -> Result<usize, &'static str> {
-        const MAX_SUB: usize = 3; // up to 60 ms of 20 ms frames
+        const MAX_SUB: usize = 6; // up to 120 ms of 20 ms frames
         let ch = self.channels;
-        let enc_frame = (self.sampling_rate / 50) as usize; // 20 ms
+        // libopus encode_multiframe_packet: SILK codes 80 ms as 2 x 40 ms,
+        // 120 ms as 2 x 60 ms and 100 ms as 5 x 20 ms; CELT and Hybrid use
+        // 20 ms frames.
+        let fs = self.sampling_rate as usize;
+        let enc_frame = if mode == OpusMode::SilkOnly && frame_size == 2 * fs / 25 {
+            fs / 25
+        } else if mode == OpusMode::SilkOnly && frame_size == 3 * fs / 25 {
+            3 * fs / 50
+        } else {
+            fs / 50
+        };
         if enc_frame == 0 || !frame_size.is_multiple_of(enc_frame) {
             return Err("Invalid multi-frame size");
         }
@@ -2499,6 +2519,7 @@ impl OpusEncoder {
                     prefill: transition.prefill && i == 0,
                 });
                 self.frame_fec = Some(fec);
+                self.nonfinal_frame = i < nb - 1;
                 let budget = sub_budget.min(max_len_sum.saturating_sub(used)).max(2);
                 let n = self.encode_impl(sub_input, enc_frame, &mut sub[i][..budget])?;
                 if n == 0 {
@@ -2526,6 +2547,7 @@ impl OpusEncoder {
         self.forced_mode = None;
         self.frame_transition = None;
         self.frame_fec = None;
+        self.nonfinal_frame = false;
         enc_res?;
 
         let toc = sub[0][0] & 0xFC;
@@ -3762,18 +3784,22 @@ fn frame_rate_from_params(sampling_rate: i32, frame_size: usize) -> Option<i32> 
     if frame_size <= 0 {
         return None;
     }
-    // libopus `frame_size_select`: a frame is 2.5, 5, 10, 20, 40 or 60 ms.
-    // Validating by duration (not by `sampling_rate % frame_size == 0`) is what
-    // lets 60 ms through: its rate is 16.67 frames/s, so the old divisibility
-    // test rejected it before encoding could start (issue #35). Longer frames
-    // (>60 ms) are handled by the caller's multiframe path.
+    // libopus `frame_size_select`: a frame is 2.5, 5, 10, 20, 40, 60, 80, 100
+    // or 120 ms. Validating by duration (not by `sampling_rate % frame_size
+    // == 0`) is what lets 60 ms through: its rate is 16.67 frames/s, so the
+    // old divisibility test rejected it before encoding could start (issue
+    // #35). Frames over 60 ms are coded as several shorter frames
+    // (`encode_multiframe`).
     let fs = sampling_rate;
     let valid = frame_size == fs / 400
         || frame_size == fs / 200
         || frame_size == fs / 100
         || frame_size == fs / 50
         || frame_size == fs / 25
-        || 50 * frame_size == 3 * fs;
+        || 50 * frame_size == 3 * fs
+        || 50 * frame_size == 4 * fs
+        || 50 * frame_size == 5 * fs
+        || 50 * frame_size == 6 * fs;
     if !valid {
         return None;
     }
