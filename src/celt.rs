@@ -2377,7 +2377,7 @@ impl CeltEncoder {
         let mut tf_chan = 0;
         let mut weak_transient = false;
 
-        let is_transient = if self.complexity >= 1 {
+        let mut is_transient = if self.complexity >= 1 {
             transient_analysis(
                 in_buf,
                 buf_stride,
@@ -2570,11 +2570,18 @@ impl CeltEncoder {
         }
 
         let mut short_blocks = false;
+        let mut transient_got_disabled = false;
         if lm > 0 && rc.tell() + 3 <= total_bits {
             rc.encode_bit_logp(is_transient, 3);
             if is_transient {
                 short_blocks = true;
             }
+        } else {
+            // No transient flag is coded (2.5 ms frames, or no room for it),
+            // so the decoder takes the frame as not transient: code it that
+            // way too, as libopus does.
+            is_transient = false;
+            transient_got_disabled = true;
         }
         let second_mdct = short_blocks && self.complexity >= 8;
         if second_mdct {
@@ -3170,7 +3177,7 @@ impl CeltEncoder {
             self.prefilter_tapset = self.tapset_decision;
         }
 
-        if is_transient {
+        if is_transient || transient_got_disabled {
             self.consec_transient += 1;
         } else {
             self.consec_transient = 0;
@@ -4032,6 +4039,32 @@ impl CeltDecoder {
 mod tests {
     use super::*;
     use crate::{modes, range_coder::RangeCoder};
+
+    #[test]
+    fn frames_without_a_transient_flag_are_coded_as_not_transient() {
+        // A 2.5 ms frame codes no transient flag, so decoders take it as not
+        // transient. libopus codes it with long blocks and counts it as a
+        // transient frame (celt_encoder.c:1728-1735, 2805-2808): every frame
+        // of a 2.5 ms stream counts, whatever its transient analysis says.
+        let mut enc = CeltEncoder::new(modes::default_mode(), 1);
+        enc.set_end_band(21);
+        enc.complexity = 10;
+        let code = |enc: &mut CeltEncoder, pcm: &[f32]| {
+            let mut rc = RangeCoder::new_encoder(20);
+            enc.encode_with_budget_vbr(pcm, pcm.len(), &mut rc, 0, 160, false);
+            rc.done();
+        };
+        let tone: Vec<f32> = (0..120 * 8).map(|i| 0.1 * (i as f32 * 0.3).sin()).collect();
+        for f in 0..7 {
+            code(&mut enc, &tone[f * 120..(f + 1) * 120]);
+        }
+        let mut clicks = tone[840..].to_vec();
+        for (i, x) in clicks[60..90].iter_mut().enumerate() {
+            *x = if i % 2 == 0 { 0.9 } else { -0.9 };
+        }
+        code(&mut enc, &clicks);
+        assert_eq!(enc.consec_transient, 8);
+    }
 
     // Regression test: directly drive CeltEncoder with an invalid frame_size=48,
     // bypassing the OpusEncoder::encode() validation layer.
