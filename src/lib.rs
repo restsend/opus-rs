@@ -5,7 +5,10 @@
 
 mod compat;
 mod fixedvec;
+mod mlp;
+mod mlp_data;
 
+pub mod analysis;
 pub mod bands;
 pub mod celt;
 pub mod celt_lpc;
@@ -31,6 +34,7 @@ pub use silk::{SilkResampler, SilkResamplerDown1_3, SilkResamplerDown1_6};
 use crate::compat::Math;
 use crate::fixedvec::FixedVec;
 pub use celt::{CeltDecoder, CeltEncoder};
+use celt::AnalysisInfo;
 use core::mem::MaybeUninit;
 use hp_cutoff::{dc_reject_float, hp_cutoff, hp_cutoff_float, hp_cutoff_i16};
 use range_coder::RangeCoder;
@@ -175,6 +179,17 @@ pub struct OpusEncoder {
     width_mem: StereoWidthState,
     /// libopus `signal_type` (`OPUS_SET_SIGNAL`).
     signal: Signal,
+    /// libopus's signal analysis of the input (`TonalityAnalysisState`).
+    #[cfg(not(feature = "heap"))]
+    analysis: analysis::TonalityAnalysisState,
+    #[cfg(feature = "heap")]
+    analysis: Box<analysis::TonalityAnalysisState>,
+    /// The analysis read position before the last packet's analysis
+    /// (libopus `analysis_read_pos_bak`), when it ran.
+    analysis_read_bak: Option<(usize, i32)>,
+    /// The analysis of the next frame of a multiframe packet, which reads
+    /// its share of the packet's analysis.
+    frame_analysis: Option<AnalysisInfo>,
 
     #[cfg(not(feature = "heap"))]
     buf_filtered: FixedVec<i16, OPUS_MAX_FRAME>,
@@ -1120,6 +1135,12 @@ impl OpusEncoder {
             hp_mem: FixedVec::from_value(0, channels * 2),
             width_mem: StereoWidthState::default(),
             signal: Signal::Auto,
+            #[cfg(not(feature = "heap"))]
+            analysis: analysis::TonalityAnalysisState::new(sampling_rate),
+            #[cfg(feature = "heap")]
+            analysis: Box::new(analysis::TonalityAnalysisState::new(sampling_rate)),
+            analysis_read_bak: None,
+            frame_analysis: None,
 
             #[cfg(not(feature = "heap"))]
             buf_filtered: FixedVec::new(),
@@ -1303,6 +1324,35 @@ impl OpusEncoder {
         self.encode_impl(PcmInput::I16(input), frame_size, output)
     }
 
+    /// libopus's signal analysis of a packet (run_analysis in
+    /// opus_encode_native, float build): it runs for complexity 7 and up at
+    /// 16 kHz and up, and is reset when it stops running. Both entry points
+    /// analyse their input at the float API's 24-bit depth, as `encode_i16`
+    /// codes like `encode`.
+    fn analyse(&mut self, input: PcmInput<'_>, frame_size: usize) -> AnalysisInfo {
+        self.analysis_read_bak = None;
+        if self.complexity >= 7 && self.sampling_rate >= 16000 {
+            let n = frame_size * self.channels;
+            self.analysis_read_bak = Some(self.analysis.read_position());
+            let pcm = match input {
+                PcmInput::F32(s) => analysis::AnalysisPcm::F32(&s[..n]),
+                PcmInput::I16(s) => analysis::AnalysisPcm::I16(&s[..n]),
+            };
+            self.analysis.run(
+                modes::default_mode().mdct.fft(0),
+                pcm,
+                frame_size,
+                self.channels,
+                24,
+            )
+        } else {
+            if self.analysis.initialized() {
+                self.analysis.reset();
+            }
+            AnalysisInfo::zeroed()
+        }
+    }
+
     fn encode_impl(
         &mut self,
         input: PcmInput<'_>,
@@ -1332,6 +1382,13 @@ impl OpusEncoder {
         if input.len() < frame_size * self.channels {
             return Err("Input buffer too small for frame");
         }
+
+        // libopus's signal analysis of the packet; the frames of a multiframe
+        // packet read their part of it.
+        let analysis_info = match self.frame_analysis.take() {
+            Some(info) => info,
+            None => self.analyse(input, frame_size),
+        };
 
         // libopus detects digital silence where its signal analysis runs
         // (complexity 7 and up, 16 kHz and up, float build); such frames use
@@ -2366,6 +2423,9 @@ impl OpusEncoder {
         // libopus `CELT_SET_END_BAND` matches the TOC bandwidth so the
         // decoder reads the same number of coded bands (issue #37).
         if mode != OpusMode::SilkOnly || redundancy {
+            // libopus `CELT_SET_ANALYSIS`: the analysis steers CELT's
+            // allocation, trim, VBR target and pitch pre-filter.
+            self.celt_enc.set_analysis(&analysis_info);
             self.celt_enc.complexity = self.complexity;
             self.celt_enc.set_end_band(match frame_bandwidth {
                 Bandwidth::Narrowband => 13,
@@ -2732,6 +2792,12 @@ impl OpusEncoder {
             as usize;
         let sub_budget = frame_bytes.min(max_len_sum / nb).clamp(2, 1276);
         let mut used = 0usize;
+        // The frames read the packet's analysis one at a time, from where it
+        // started (libopus `analysis_read_pos_bak`).
+        let analysed = self.analysis_read_bak;
+        if let Some(read_pos) = analysed {
+            self.analysis.set_read_position(read_pos);
+        }
         self.forced_mode = Some(mode);
         let enc_res = (|| -> Result<(), &'static str> {
             for i in 0..nb {
@@ -2741,6 +2807,11 @@ impl OpusEncoder {
                     PcmInput::F32(s) => PcmInput::F32(&s[start..end]),
                     PcmInput::I16(s) => PcmInput::I16(&s[start..end]),
                 };
+                self.frame_analysis = Some(if analysed.is_some() {
+                    self.analysis.get_info(enc_frame)
+                } else {
+                    AnalysisInfo::zeroed()
+                });
                 let to_celt = transition.to_celt && i == nb - 1;
                 self.frame_transition = Some(FrameTransition {
                     redundancy: transition.redundancy
@@ -2778,6 +2849,7 @@ impl OpusEncoder {
         self.forced_mode = None;
         self.frame_transition = None;
         self.frame_fec = None;
+        self.frame_analysis = None;
         self.nonfinal_frame = false;
         enc_res?;
 

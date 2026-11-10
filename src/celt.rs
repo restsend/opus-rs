@@ -297,6 +297,26 @@ pub struct AnalysisInfo {
     pub leak_boost: [u8; 19], // LEAK_BANDS = 19
 }
 
+impl AnalysisInfo {
+    /// The all-zero analysis of a new or reset libopus analysis state.
+    pub(crate) const fn zeroed() -> Self {
+        Self {
+            valid: false,
+            tonality: 0.0,
+            tonality_slope: 0.0,
+            noisiness: 0.0,
+            activity: 0.0,
+            music_prob: 0.0,
+            music_prob_min: 0.0,
+            music_prob_max: 0.0,
+            bandwidth: 0,
+            activity_probability: 0.0,
+            max_pitch_ratio: 0.0,
+            leak_boost: [0; 19],
+        }
+    }
+}
+
 impl Default for AnalysisInfo {
     fn default() -> Self {
         Self {
@@ -1755,6 +1775,7 @@ fn alloc_trim_analysis(
     lm: i32,
     channels: usize,
     n0: usize,
+    analysis: &AnalysisInfo,
     stereo_saving: &mut f32,
     tf_estimate: f32,
     intensity: i32,
@@ -1810,6 +1831,10 @@ fn alloc_trim_analysis(
     trim -= (-2.0f32).max(2.0f32.min((diff + 1.0) / 6.0));
     trim -= surround_trim;
     trim -= 2.0 * tf_estimate;
+    // A tilt of the tonality towards high frequencies lowers the trim.
+    if analysis.valid {
+        trim -= (-2.0f32).max(2.0f32.min(2.0 * (analysis.tonality_slope + 0.05)));
+    }
 
     let trim_index = (trim + 0.5).floor() as i32;
     trim_index.clamp(0, 10)
@@ -2357,6 +2382,12 @@ impl CeltEncoder {
     }
     pub fn set_constrained_vbr(&mut self, cvbr: bool) {
         self.constrained_vbr = cvbr;
+    }
+    /// libopus `CELT_SET_ANALYSIS`: the encoder's signal analysis of the
+    /// frame, which steers the allocation, the trim, the VBR target and the
+    /// pitch pre-filter where it is valid.
+    pub fn set_analysis(&mut self, analysis: &AnalysisInfo) {
+        self.analysis = *analysis;
     }
 
     fn encode_impl(
@@ -2996,6 +3027,7 @@ impl CeltEncoder {
                     lm as i32,
                     channels,
                     frame_size,
+                    &self.analysis,
                     &mut stereo_saving,
                     tf_estimate,
                     self.intensity,
@@ -3164,6 +3196,24 @@ impl CeltEncoder {
             0
         };
         alloc_bits -= anti_collapse_rsv;
+        // The highest band with signal (celt_encoder.c:2606-2625), by the
+        // analysis where it is valid, but not below what the rate supports.
+        let mut signal_bandwidth = end as i32 - 1;
+        if self.analysis.valid {
+            let c = channels as i32;
+            let min_bandwidth = if equiv_rate < 32000 * c {
+                13
+            } else if equiv_rate < 48000 * c {
+                16
+            } else if equiv_rate < 60000 * c {
+                18
+            } else if equiv_rate < 80000 * c {
+                19
+            } else {
+                20
+            };
+            signal_bandwidth = self.analysis.bandwidth.max(min_bandwidth);
+        }
 
         let coded_bands = clt_compute_allocation(
             mode,
@@ -3184,7 +3234,7 @@ impl CeltEncoder {
             rc,
             true,
             self.last_coded_bands,
-            nb_ebands as i32 - 1,
+            signal_bandwidth,
         );
         // libopus keeps a slowly moving count of the coded bands for the
         // allocator's hysteresis (celt_encoder.c:2629-2632).

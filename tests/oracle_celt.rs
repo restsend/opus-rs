@@ -48,18 +48,18 @@ fn sine_fixture_hex() -> Option<&'static str> {
 
 #[cfg(target_arch = "x86_64")]
 fn impulse_fixture_hex() -> Option<&'static str> {
-    // First 7 bytes match libopus 1.6.1; byte 7+ diverges because the Rust
-    // port does not run libopus' tonality analysis (analysis.c), which nudges
-    // alloc_trim via tonality_slope (C trim=1 vs Rust trim=0 here).
+    // With the signal analysis (analysis.c), which libopus also runs at this
+    // complexity, the packet follows libopus 1.5.2's for 33 bytes on aarch64
+    // (7 before it).
     Some(
-        "f87346b9c0165858f73144258b8b79c2179a4272570325a2d263ab6067bb993375941787ac6e1904601599cafeb058f8eeb514adbb22ecb11412d9d75cf1169fdb36a4d7a7d06817cffc23fd39b6e3e7829db5edf6ed58cb3f58cb3f6a03976a5e05ee0ba8221ad585de11653bfacdcab607c26370d5f7945c3ca511ba07ffb4d8ff77d0c3d7e883f06d09b55d8db6a05ad7119fb82d72fb7375ccb483588e35",
+        "f87346b9c0165896519f68c91698758327739376655822edca7ba4112abfbe8e8e44a2f891f5ab3e37ec047bf7c99459e3cb9e4e8115b744661012318adec16f7ef7c4afde81ec65f3ff020ca26dc7cf053b6bdbeddab1967eb1967ed4072ed4a6d9c85d41115f3924611653bfacdcab60dc357c261f7945c3c899e131822bbb84feefa187afd104cdf41f008e3ed56572028fa2e8a25f18d75ccb482b623856",
     )
 }
 
 #[cfg(target_arch = "aarch64")]
 fn impulse_fixture_hex() -> Option<&'static str> {
     Some(
-        "f87346b9c0165858f73144258b8b79c2179a4272570325a2d263ab6067bb99337594b193d46e1904601599caff6d6cf2137f5b308605f16268351c8f23efd5a0648d719e14506817cffc23fd39b6e3e782a662edfe6a671d1c58cb3f6a3f210bcba83e1dfad82ad585de11653bfacdcab60fc26370d5f7945c3ca511ba07ffb4d8ff77fa73d7e883f06d09b55d8db6a05ad7119fb82d72fb7375ccb483588e35",
+        "f87346b9c0165896519f68c91698758327739376655822edca7ba4112abfbe8e8e45751c39f5ab3e37ec047bf7c9945c769c77af896db7fc3a421232312f816f7ef7c4afde81ec65f3ff020ca26dc7cf054cc5dbfcd4ce3a38b1967ed47e4217a6d910efd6c11f3824611653bfacdcab60dc35fc261f7945c3c899e131822bbb84feeff4e7afd104cdf41f008e3ed56572028fa2e8a25f10ef5ccb482b623856",
     )
 }
 
