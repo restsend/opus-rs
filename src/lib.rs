@@ -95,6 +95,17 @@ pub enum Bandwidth {
     Fullband = 1105,
 }
 
+/// The kind of signal the encoder codes, as libopus `OPUS_SET_SIGNAL`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Signal {
+    /// Estimated by the encoder (by default from the application).
+    Auto = -1000,
+    /// Speech (`OPUS_SIGNAL_VOICE`).
+    Voice = 3001,
+    /// Music (`OPUS_SIGNAL_MUSIC`).
+    Music = 3002,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpusMode {
     SilkOnly,
@@ -160,6 +171,10 @@ pub struct OpusEncoder {
 
     variable_hp_smth2_q15: i32,
     hp_mem: FixedVec<i32, OPUS_HP_MEM>,
+    /// libopus `width_mem`, the state of `compute_stereo_width`.
+    width_mem: StereoWidthState,
+    /// libopus `signal_type` (`OPUS_SET_SIGNAL`).
+    signal: Signal,
 
     #[cfg(not(feature = "heap"))]
     buf_filtered: FixedVec<i16, OPUS_MAX_FRAME>,
@@ -427,36 +442,103 @@ fn decide_dtx_mode(nb_no_activity_ms_q1: &mut i32, frame_size_ms_q1: i32) -> boo
     false
 }
 
+/// libopus `StereoWidthState`.
+#[derive(Clone, Copy, Default)]
+struct StereoWidthState {
+    xx: f32,
+    xy: f32,
+    yy: f32,
+    smoothed_width: f32,
+    max_follower: f32,
+}
+
+/// libopus `compute_stereo_width` (float build): how far the two channels
+/// of the input are from mono, 0 to 1, smoothed over about a second.
+fn compute_stereo_width(
+    input: PcmInput<'_>,
+    frame_size: usize,
+    fs: i32,
+    mem: &mut StereoWidthState,
+) -> f32 {
+    let sample = |i: usize| match input {
+        PcmInput::F32(s) => s[i],
+        PcmInput::I16(s) => f32::from(s[i]) / 32768.0,
+    };
+    let frame_rate = fs / frame_size as i32;
+    let short_alpha = 25.0 / 50.max(frame_rate) as f32;
+    let (mut xx, mut xy, mut yy) = (0.0f32, 0.0f32, 0.0f32);
+    // Four samples at a time: the frame size is a multiple of 4 except for
+    // 2.5 ms frames at 12 kHz, which lose their last two samples.
+    let mut i = 0;
+    while i + 3 < frame_size {
+        let (mut pxx, mut pxy, mut pyy) = (0.0f32, 0.0f32, 0.0f32);
+        for k in 0..4 {
+            let x = sample(2 * (i + k));
+            let y = sample(2 * (i + k) + 1);
+            pxx += x * x;
+            pxy += x * y;
+            pyy += y * y;
+        }
+        xx += pxx;
+        xy += pxy;
+        yy += pyy;
+        i += 4;
+    }
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    if !(xx < 1e9) || xx.is_nan() || !(yy < 1e9) || yy.is_nan() {
+        xx = 0.0;
+        xy = 0.0;
+        yy = 0.0;
+    }
+    mem.xx += short_alpha * (xx - mem.xx);
+    // Written to avoid overflows on an abrupt change of sign.
+    mem.xy = (1.0 - short_alpha) * mem.xy + short_alpha * xy;
+    mem.yy += short_alpha * (yy - mem.yy);
+    mem.xx = mem.xx.max(0.0);
+    mem.xy = mem.xy.max(0.0);
+    mem.yy = mem.yy.max(0.0);
+    if mem.xx.max(mem.yy) > 8e-4 {
+        let sqrt_xx = mem.xx.sqrt();
+        let sqrt_yy = mem.yy.sqrt();
+        let qrrt_xx = sqrt_xx.sqrt();
+        let qrrt_yy = sqrt_yy.sqrt();
+        // Inter-channel correlation.
+        mem.xy = mem.xy.min(sqrt_xx * sqrt_yy);
+        let corr = mem.xy / (1e-15 + sqrt_xx * sqrt_yy);
+        // Approximate loudness difference.
+        let ldiff = (qrrt_xx - qrrt_yy).abs() / (1e-15 + qrrt_xx + qrrt_yy);
+        let width = (1.0 - corr * corr).sqrt().min(1.0) * ldiff;
+        // Smoothing over one second, and a peak follower.
+        mem.smoothed_width += (width - mem.smoothed_width) / frame_rate as f32;
+        mem.max_follower = (mem.max_follower - 0.02 / frame_rate as f32).max(mem.smoothed_width);
+    }
+    (20.0 * mem.max_follower).min(1.0)
+}
+
+/// The bitrate (equivalent 20 ms rate) from which libopus codes CELT-only
+/// rather than SILK or Hybrid (opus_encode_native): between music's and
+/// speech's threshold by the voice estimate (Q7), speech's between mono's
+/// and stereo's by the stereo width, raised for VoIP, with hysteresis.
 fn compute_mode_threshold(
     application: Application,
-    channels: usize,
-    prev_was_celt: bool,
-    has_prev_mode: bool,
+    stereo_width: f32,
+    prev_mode: Option<OpusMode>,
     voice_est: i32,
 ) -> i32 {
-    let mode_voice = if channels == 1 { 64000 } else { 44000 };
-    let mode_music = 10000;
-
-    let diff = mode_voice - mode_music;
-    let offset = (voice_est * voice_est * diff) >> 14;
-    let mut threshold = mode_music + offset;
-
+    // libopus `mode_thresholds`: speech 64000 (mono) and 44000 (stereo),
+    // music 10000 (whose stereo entry libopus uses for both).
+    let mode_voice = ((1.0 - stereo_width) * 64000.0 + stereo_width * 44000.0) as i32;
+    let mode_music = ((1.0 - stereo_width) * 10000.0 + stereo_width * 10000.0) as i32;
+    let mut threshold = mode_music + ((voice_est * voice_est * (mode_voice - mode_music)) >> 14);
+    // A bias towards SILK for VoIP, for its useful features.
     if application == Application::Voip {
         threshold += 8000;
     }
-
-    if has_prev_mode {
-        if prev_was_celt {
-            threshold -= 4000;
-        } else {
-            threshold += 4000;
-        }
+    match prev_mode {
+        Some(OpusMode::CeltOnly) => threshold -= 4000,
+        Some(_) => threshold += 4000,
+        None => {}
     }
-
-    if application == Application::RestrictedLowDelay {
-        threshold = 0;
-    }
-
     threshold
 }
 
@@ -1036,6 +1118,8 @@ impl OpusEncoder {
             mode: opus_mode,
             variable_hp_smth2_q15,
             hp_mem: FixedVec::from_value(0, channels * 2),
+            width_mem: StereoWidthState::default(),
+            signal: Signal::Auto,
 
             #[cfg(not(feature = "heap"))]
             buf_filtered: FixedVec::new(),
@@ -1165,6 +1249,18 @@ impl OpusEncoder {
         Ok(())
     }
 
+    /// The kind of signal to code, as libopus `OPUS_SET_SIGNAL` (`Auto` by
+    /// default). `Voice` and `Music` bias the choice between SILK or Hybrid
+    /// and CELT-only like a certain estimate of speech; `Auto` estimates it.
+    pub fn set_signal(&mut self, signal: Signal) {
+        self.signal = signal;
+    }
+
+    /// The kind of signal set (libopus `OPUS_GET_SIGNAL`).
+    pub fn signal(&self) -> Signal {
+        self.signal
+    }
+
     /// Constrained VBR, as libopus `OPUS_SET_VBR_CONSTRAINT` (on by
     /// default). It applies to VBR CELT-only frames: constrained, their
     /// sizes stay within what a one-frame buffer at the target bitrate
@@ -1250,6 +1346,14 @@ impl OpusEncoder {
         // VAD hint to SILK: none, unless the frame is digital silence.
         let activity = if is_silence { 0 } else { 1 };
 
+        // How far stereo input is from mono (libopus compute_stereo_width),
+        // once per packet.
+        let stereo_width = if self.channels == 2 && self.forced_mode.is_none() {
+            compute_stereo_width(input, frame_size, self.sampling_rate, &mut self.width_mem)
+        } else {
+            0.0
+        };
+
         // Mode selection: match C's opus_encode_native() behavior.
         // C reference auto-selects between SILK_ONLY and CELT_ONLY; Hybrid is
         // produced afterwards by bandwidth overrides (SILK-only + FB/SWB → Hybrid).
@@ -1267,29 +1371,36 @@ impl OpusEncoder {
                 self.complexity,
                 self.packet_loss_perc,
             );
-            let prev_was_celt = self.prev_enc_mode == Some(OpusMode::CeltOnly);
-            let has_prev_mode = self.prev_enc_mode.is_some();
-            let voice_est = match self.application {
-                Application::Voip => 115,
-                Application::Audio => 48,
-                Application::RestrictedLowDelay => 0,
+            // libopus `voice_est`, the probability of speech in Q7: from the
+            // signal type, else from the application.
+            let voice_est = match (self.signal, self.application) {
+                (Signal::Voice, _) => 127,
+                (Signal::Music, _) => 0,
+                (Signal::Auto, Application::Voip) => 115,
+                (Signal::Auto, _) => 48,
             };
             let threshold = compute_mode_threshold(
                 self.application,
-                self.channels,
-                prev_was_celt,
-                has_prev_mode,
+                stereo_width,
+                self.prev_enc_mode,
                 voice_est,
             );
-            if silk_use_dtx && voice_est > 100 {
-                // libopus: voice with DTX is coded in SILK, whose voice
-                // activity detection drives DTX.
-                OpusMode::SilkOnly
-            } else if equiv >= threshold && self.sampling_rate >= 24000 {
+            let mut mode = if equiv >= threshold {
                 OpusMode::CeltOnly
             } else {
                 OpusMode::SilkOnly
+            };
+            // With in-band FEC and enough expected loss, SILK, whose LBRR
+            // frames recover losses: above (128 - voice_est) / 16 percent.
+            if self.use_inband_fec && self.packet_loss_perc > (128 - voice_est) >> 4 {
+                mode = OpusMode::SilkOnly;
             }
+            // libopus: voice with DTX is coded in SILK, whose voice activity
+            // detection drives DTX.
+            if silk_use_dtx && voice_est > 100 {
+                mode = OpusMode::SilkOnly;
+            }
+            mode
         };
 
         // Per-frame packet budget (C computes this before the mode-dependent
