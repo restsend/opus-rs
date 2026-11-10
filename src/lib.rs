@@ -1295,8 +1295,11 @@ impl OpusEncoder {
             }
         }
 
-        if mode == OpusMode::Hybrid {
-            self.rc.encode_bit_logp(false, 12); // redundancy = 0
+        // No redundancy. The decoder reads the flag only when 37 bits are
+        // left after the SILK layer (opus_decode_frame), so it is written
+        // only then, as libopus does (opus_encode_frame_native).
+        if mode == OpusMode::Hybrid && self.rc.tell() + 37 <= 8 * (n_bytes as i32 - 1) {
+            self.rc.encode_bit_logp(false, 12);
         }
 
         if mode == OpusMode::Hybrid {
