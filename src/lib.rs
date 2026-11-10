@@ -1903,6 +1903,16 @@ impl OpusDecoder {
         // layer runs: when the frame carries a redundancy tail there is nothing
         // to bridge (libopus: `if (redundancy) transition = 0`), and without one
         // the old CELT state conceals forward from inside the branch below.
+        // A switch into CELT from SILK or Hybrid without redundancy is
+        // bridged with the start of a frame concealed in the old mode (5 ms,
+        // 2.5 ms when the new frame is that short: libopus's `pcm_transition`,
+        // opus_decode_frame), crossfaded into the new frame at the end. It is
+        // concealed before CELT is reset, so a Hybrid frame's CELT layer
+        // conceals from its own state, as in libopus.
+        if transition && mode == OpusMode::CeltOnly {
+            let f5 = self.sampling_rate as usize / 200;
+            self.conceal_bridge_into_celt(sub_frame_size.min(f5))?;
+        }
         // Only a switch into CELT resets CELT here (libopus's reset at
         // opus_decode_frame 551-553 sits inside `mode != MODE_SILK_ONLY`): a
         // Hybrid frame resets it after its CELT-to-SILK redundant frame is
@@ -1910,78 +1920,6 @@ impl OpusDecoder {
         // before its own redundant frame, if it carries one.
         if mode_transition && mode == OpusMode::CeltOnly {
             self.celt_dec.reset_state();
-        }
-
-        // Generate SILK PLC audio for the mode-transition bridge. libopus
-        // synthesizes 5ms (F5) of pitch-extrapolated audio in the OLD mode
-        // (opus_decoder.c:387-391) and crossfades it with the new frame. We
-        // reuse the F5-sized prev_pcm_tail buffer for this bridge.
-        let f5_bridge = self.sampling_rate as usize / 200; // F5 = Fs/200
-        if transition
-            && mode == OpusMode::CeltOnly
-            && f5_bridge > 0
-            && matches!(
-                self.prev_mode,
-                Some(OpusMode::SilkOnly) | Some(OpusMode::Hybrid)
-            )
-            && self.prev_internal_rate > 0
-        {
-            let internal_rate = self.prev_internal_rate;
-            let plc_internal_len = (10 * internal_rate / 1000) as usize;
-            let mut plc_rc = RangeCoder::new_decoder(&[]);
-            let mut plc_i16: FixedVec<i16, OPUS_PCM_I16> =
-                FixedVec::from_value(0i16, plc_internal_len * self.channels);
-            let n = self.silk_dec.decode(
-                &mut plc_rc,
-                &mut plc_i16,
-                silk::decode_frame::FLAG_PACKET_LOST,
-                true,
-                10,
-                internal_rate,
-            );
-            if n > 0 {
-                let bridge_ch = f5_bridge * self.channels;
-                let bridge_len = bridge_ch.min(self.prev_pcm_tail.len());
-                if internal_rate == self.sampling_rate {
-                    // No resampling: copy PLC samples directly (planar). A
-                    // mono stream fills both channels of a stereo decoder.
-                    let n_us = n as usize;
-                    let silk_channels = self
-                        .channels
-                        .min(self.silk_dec.n_channels_internal as usize);
-                    for ch in 0..self.channels {
-                        let src_base = ch.min(silk_channels - 1) * n_us;
-                        for i in 0..(bridge_len / self.channels).min(n_us) {
-                            let dst = i * self.channels + ch;
-                            if dst < bridge_len {
-                                self.prev_pcm_tail[dst] = plc_i16[src_base + i] as f32 / 32768.0;
-                            }
-                        }
-                    }
-                } else if self.silk_resampler.is_initialized() {
-                    // Resample channel 0 to the API rate for the bridge.
-                    // The resampler must receive an output buffer sized for the
-                    // FULL resampled length (issue #15): truncating the buffer to
-                    // `f5_bridge` caused out-of-bounds writes in the Up2HQ/Copy
-                    // paths. We size it fully, then copy only the bridge window.
-                    let ratio = self.sampling_rate as f64 / internal_rate as f64;
-                    let full_len = ((n as f64 * ratio) as usize).max(1);
-                    let out_len = full_len.min(f5_bridge);
-                    let n_us = n as usize;
-                    let mut resampled: FixedVec<i16, OPUS_MAX_FRAME> =
-                        FixedVec::from_value(0i16, full_len);
-                    self.silk_resampler
-                        .process(&mut resampled, &plc_i16[..n_us], n);
-                    for i in 0..out_len {
-                        if i < bridge_len / self.channels {
-                            for ch in 0..self.channels {
-                                self.prev_pcm_tail[i * self.channels + ch] =
-                                    resampled[i] as f32 / 32768.0;
-                            }
-                        }
-                    }
-                }
-            }
         }
 
         // Track whether this packet uses Hybrid redundancy.
@@ -2378,7 +2316,7 @@ impl OpusDecoder {
         // F5 = Fs/200, F2_5 = Fs/400.
         let f2_5 = self.sampling_rate as usize / 400;
         let f5 = f2_5 * 2;
-        if transition && f5 > 0 && decoded_total >= f5 {
+        if transition && f5 > 0 && sub_frame_size >= f5 {
             let window = modes::default_mode().window;
             let inc = (48000 / self.sampling_rate) as usize;
             let f2_5_ch = f2_5 * self.channels;
@@ -2392,6 +2330,22 @@ impl OpusDecoder {
                 &self.prev_pcm_tail[f2_5_ch..f5_ch],
                 &new_mid,
                 &mut output[f2_5_ch..f5_ch],
+                f2_5,
+                self.channels,
+                window,
+                inc,
+            );
+        } else if transition && f2_5 > 0 {
+            // A 2.5 ms first frame is too short for a clean transition: the
+            // 2.5 ms bridge fades into it anyway, as in libopus.
+            let window = modes::default_mode().window;
+            let inc = (48000 / self.sampling_rate) as usize;
+            let f2_5_ch = f2_5 * self.channels;
+            let new: FixedVec<f32, OPUS_PCM_TAIL> = FixedVec::from_slice(&output[..f2_5_ch]);
+            smooth_fade(
+                &self.prev_pcm_tail[..f2_5_ch],
+                &new,
+                &mut output[..f2_5_ch],
                 f2_5,
                 self.channels,
                 window,
@@ -2612,6 +2566,33 @@ impl OpusDecoder {
 
         self.save_pcm_tail(output, total);
         Ok(total)
+    }
+
+    /// The first `n` samples (5 or 2.5 ms) of a frame concealed in the old
+    /// mode, SILK or Hybrid, the bridge into CELT (libopus opus_decode_frame's
+    /// `pcm_transition`), into `prev_pcm_tail`. As libopus conceals less than
+    /// 10 ms, SILK conceals 10 ms and keeps the first `n` samples, and a
+    /// Hybrid frame's CELT layer conceals `n` samples above SILK's band.
+    fn conceal_bridge_into_celt(&mut self, n: usize) -> Result<(), &'static str> {
+        let hybrid = self.prev_mode == Some(OpusMode::Hybrid);
+        let rate = if hybrid {
+            16000
+        } else {
+            self.prev_internal_rate
+        };
+        let f10 = self.sampling_rate as usize / 100;
+        let mut rc = RangeCoder::new_decoder(&[]);
+        self.decode_silk_frames(&mut rc, silk::decode_frame::FLAG_PACKET_LOST, 10, rate, f10)?;
+        let len = n * self.channels;
+        if hybrid {
+            self.conceal_celt(n, 17)?;
+        } else {
+            self.w_celt_out[..len].fill(0.0);
+        }
+        for i in 0..len {
+            self.prev_pcm_tail[i] = (self.w_silk_out[i] + self.w_celt_out[i]).clamp(-1.0, 1.0);
+        }
+        Ok(())
     }
 
     /// 5 ms of the old CELT state concealed forward, the bridge out of CELT (libopus
