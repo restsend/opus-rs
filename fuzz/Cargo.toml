@@ -21,6 +21,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fuzz_encoder_sequences"
+path = "fuzz_targets/fuzz_encoder_sequences.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "fuzz_decoder"
 path = "fuzz_targets/fuzz_decoder.rs"
 test = false
