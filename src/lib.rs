@@ -1550,6 +1550,7 @@ impl OpusEncoder {
                 output[0] = toc;
                 let copy_len = silk_len.min(target_total - 1);
                 output[1..1 + copy_len].copy_from_slice(&self.rc.buf[..copy_len]);
+                self.prev_enc_mode = Some(mode);
                 return Ok((copy_len + 1).min(output.len()));
             }
 
