@@ -34,7 +34,7 @@
 
 use opus::{Channels as CCh, Decoder as CDec};
 use opus_rs::range_coder::RangeCoder;
-use opus_rs::{Application, OpusEncoder};
+use opus_rs::{Application, OpusEncoder, Signal};
 
 const SR: usize = 48000;
 const FRAME: usize = 960;
@@ -56,6 +56,13 @@ fn encode_chirp(app: Application, bitrate: i32) -> (Vec<f32>, Vec<Vec<u8>>) {
     let input = chirp(SR, 13);
     let mut enc = OpusEncoder::new(SR as i32, 1, app).unwrap();
     enc.bitrate_bps = bitrate;
+    // The modes these tests are about, whatever the signal analysis makes of
+    // the chirp: Hybrid for VoIP (as speech), CELT-only for Audio (music).
+    enc.set_signal(if app == Application::Voip {
+        Signal::Voice
+    } else {
+        Signal::Music
+    });
     let mut pkt = vec![0u8; 1500];
     let packets = input
         .chunks_exact(FRAME)

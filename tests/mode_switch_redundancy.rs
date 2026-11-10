@@ -17,7 +17,7 @@ use opus::{
 };
 use opus_rs::range_coder::RangeCoder;
 use opus_rs::silk::dec_api::SilkDecoder;
-use opus_rs::{Application, OpusEncoder};
+use opus_rs::{Application, OpusEncoder, Signal};
 
 const PHASE_MS: usize = 400;
 
@@ -97,6 +97,8 @@ fn encode(
     let frame = sr * ms / 1000;
     let frames = input.len() / (frame * channels);
     let mut rs = OpusEncoder::new(sr as i32, channels, Application::Voip).unwrap();
+    // As libopus below: speech.
+    rs.set_signal(Signal::Voice);
     rs.complexity = 9;
     rs.use_cbr = false;
     rs.use_inband_fec = fec;
@@ -361,6 +363,8 @@ fn silk_layer_follows_fixed_point_libopus_across_switches() {
         enc.complexity = 9;
         enc.use_cbr = false;
         enc.use_inband_fec = fec;
+        // As the libopus encodes of the hashes: speech.
+        enc.set_signal(Signal::Voice);
         let mut buffer = [0u8; 1500];
         let packets: Vec<Vec<u8>> = (0..input.len() / (frame * channels))
             .map(|p| {
@@ -399,6 +403,7 @@ fn switch_frames_signal_redundancy_and_restart_celt() {
         let mut enc = OpusEncoder::new(sr as i32, 1, Application::Voip).unwrap();
         enc.complexity = 9;
         enc.use_inband_fec = fec;
+        enc.set_signal(Signal::Voice);
         let mut buffer = [0u8; 1500];
         let packets: Vec<Vec<u8>> = (0..packets)
             .map(|p| {

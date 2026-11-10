@@ -7,7 +7,7 @@
 //! on, so the stream lost its quality for good: about 5 to 7 dB of SNR.
 
 use opus::{Channels, Decoder as CDec};
-use opus_rs::{Application, OpusEncoder};
+use opus_rs::{Application, OpusEncoder, Signal};
 use std::f32::consts::PI;
 
 fn signal(rate: usize, ch: usize, n: usize) -> Vec<f32> {
@@ -33,6 +33,8 @@ fn snr_after(ch: usize, celt_frame: Option<usize>) -> f64 {
     let pcm = signal(rate, ch, frame * 150);
     let mut enc = OpusEncoder::new(rate as i32, ch, Application::Voip).unwrap();
     enc.bitrate_bps = 24000;
+    // Speech, coded in SILK at this rate.
+    enc.set_signal(Signal::Voice);
     let lag = enc.lookahead();
     let channels = if ch == 2 {
         Channels::Stereo

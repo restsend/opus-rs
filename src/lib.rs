@@ -102,7 +102,8 @@ pub enum Bandwidth {
 /// The kind of signal the encoder codes, as libopus `OPUS_SET_SIGNAL`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
-    /// Estimated by the encoder (by default from the application).
+    /// Estimated by the encoder: by the signal analysis where it runs, else
+    /// from the application.
     Auto = -1000,
     /// Speech (`OPUS_SIGNAL_VOICE`).
     Voice = 3001,
@@ -192,6 +193,9 @@ pub struct OpusEncoder {
     frame_analysis: Option<(AnalysisInfo, bool)>,
     /// libopus `peak_signal_energy`, for the activity of quiet frames.
     peak_signal_energy: f32,
+    /// libopus `voice_ratio`: the percentage of speech the analysis found,
+    /// -1 when it gave none.
+    voice_ratio: i32,
 
     #[cfg(not(feature = "heap"))]
     buf_filtered: FixedVec<i16, OPUS_MAX_FRAME>,
@@ -1168,6 +1172,7 @@ impl OpusEncoder {
             analysis_read_bak: None,
             frame_analysis: None,
             peak_signal_energy: 0.0,
+            voice_ratio: -1,
 
             #[cfg(not(feature = "heap"))]
             buf_filtered: FixedVec::new(),
@@ -1300,7 +1305,9 @@ impl OpusEncoder {
 
     /// The kind of signal to code, as libopus `OPUS_SET_SIGNAL` (`Auto` by
     /// default). `Voice` and `Music` bias the choice between SILK or Hybrid
-    /// and CELT-only like a certain estimate of speech; `Auto` estimates it.
+    /// and CELT-only like a certain estimate of speech; `Auto` estimates it
+    /// from the signal analysis where it runs (complexity 7 and up, 16 kHz
+    /// and up), else from the application.
     pub fn set_signal(&mut self, signal: Signal) {
         self.signal = signal;
     }
@@ -1360,6 +1367,27 @@ impl OpusEncoder {
     /// entry points analyse their input at the float API's 24-bit depth, as
     /// `encode_i16` codes like `encode`.
     fn analyse(&mut self, input: PcmInput<'_>, frame_size: usize) -> (AnalysisInfo, bool) {
+        let (info, is_silence) = self.run_analysis(input, frame_size);
+        // The speech estimate of the mode decision: from the analysis's
+        // music probability, the one for staying in the previous mode; the
+        // last one is kept through digital silence.
+        if !is_silence {
+            self.voice_ratio = -1;
+        }
+        if info.valid && self.signal == Signal::Auto {
+            let prob = match self.prev_enc_mode {
+                None => info.music_prob,
+                Some(OpusMode::CeltOnly) => info.music_prob_max,
+                Some(_) => info.music_prob_min,
+            };
+            self.voice_ratio = (0.5 + f64::from(100.0 * (1.0 - prob))).floor() as i32;
+        }
+        (info, is_silence)
+    }
+
+    /// The analysis of a packet and its digital-silence flag (see
+    /// `analyse`).
+    fn run_analysis(&mut self, input: PcmInput<'_>, frame_size: usize) -> (AnalysisInfo, bool) {
         self.analysis_read_bak = None;
         if self.complexity >= 7 && self.sampling_rate >= 16000 {
             let n = frame_size * self.channels;
@@ -1472,10 +1500,15 @@ impl OpusEncoder {
                 self.packet_loss_perc,
             );
             // libopus `voice_est`, the probability of speech in Q7: from the
-            // signal type, else from the application.
+            // signal type, else from the analysis (never above 90% for
+            // Audio), else from the application.
             let voice_est = match (self.signal, self.application) {
                 (Signal::Voice, _) => 127,
                 (Signal::Music, _) => 0,
+                (Signal::Auto, Application::Audio) if self.voice_ratio >= 0 => {
+                    ((self.voice_ratio * 327) >> 8).min(115)
+                }
+                (Signal::Auto, _) if self.voice_ratio >= 0 => (self.voice_ratio * 327) >> 8,
                 (Signal::Auto, Application::Voip) => 115,
                 (Signal::Auto, _) => 48,
             };

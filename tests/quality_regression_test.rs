@@ -173,11 +173,14 @@ fn test_mode_voip_48k_is_hybrid_fb() {
 
 /// Audio + 16 kHz at 24 kbps → CeltOnly, as libopus: Audio's estimate of
 /// speech puts the CELT-only threshold near 17.6 kbps at any sampling rate.
+/// (Complexity 5: from complexity 7 the signal analysis estimates it, and
+/// takes this sine for speech, as libopus does.)
 #[test]
 fn test_mode_audio_16k_24k_is_celt_only() {
     let mut enc = OpusEncoder::new(16000, 1, Application::Audio).unwrap();
     enc.bitrate_bps = 24000;
     enc.use_cbr = true;
+    enc.complexity = 5;
 
     let input = make_sine(16000, 440.0, 320);
     let mut buf = vec![0u8; 512];

@@ -8,7 +8,7 @@
 //! and VBR frames stay within 510 kb/s, as libopus caps them.
 
 use opus::{Channels, Decoder as CDec};
-use opus_rs::{Application, OpusEncoder};
+use opus_rs::{Application, OpusEncoder, Signal};
 
 /// Noise bursts with sharp onsets over a steady tone: frames that want very
 /// different sizes.
@@ -27,6 +27,8 @@ fn signal(rate: usize, n: usize) -> Vec<f32> {
 fn sizes(constrained: bool, rate: usize, frame: usize, bitrate: i32) -> Vec<usize> {
     let pcm = signal(rate, frame * 200);
     let mut enc = OpusEncoder::new(rate as i32, 1, Application::Audio).unwrap();
+    // Music, coded in CELT-only at these rates.
+    enc.set_signal(Signal::Music);
     assert!(enc.vbr_constraint(), "constrained by default");
     enc.set_vbr_constraint(constrained);
     assert_eq!(enc.vbr_constraint(), constrained);

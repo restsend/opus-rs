@@ -24,7 +24,7 @@ mod vbr;
 
 use opus_rs::range_coder::RangeCoder;
 use opus_rs::silk::dec_api::SilkDecoder;
-use opus_rs::{Application, OpusEncoder};
+use opus_rs::{Application, OpusEncoder, Signal};
 
 fn fnv(hash: u64, bytes: &[u8]) -> u64 {
     bytes.iter().fold(hash, |hash, &b| {
@@ -176,6 +176,8 @@ fn encode_cbr(
     enc.use_cbr = true;
     enc.use_inband_fec = fec;
     enc.packet_loss_perc = if fec { 10 } else { 0 };
+    // As the libopus encodes of the hashes: speech.
+    enc.set_signal(Signal::Voice);
     let mut packet = [0u8; 1500];
     (0..mono.len() / frame)
         .map(|p| {

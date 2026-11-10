@@ -7,7 +7,7 @@
 //! CELT conceals in floating point (`celt_decode_lost`), and Hybrid adds it
 //! above SILK's band. Each lost frame, and the frame after it, must agree.
 
-use opus_rs::{Application, OpusDecoder, OpusEncoder};
+use opus_rs::{Application, OpusDecoder, OpusEncoder, Signal};
 use std::f32::consts::PI;
 
 /// libopus 1.6.1 decoder, via `opusic-sys`. The PLC this crate ports is
@@ -121,6 +121,9 @@ fn encode(
     enc.bitrate_bps = bitrate;
     if hybrid {
         enc.enable_hybrid_mode().unwrap();
+        // Speech, which this rate codes in SILK (here Hybrid) rather than
+        // CELT-only.
+        enc.set_signal(Signal::Voice);
     }
     let mut out = vec![0u8; 1500];
     vowel(sr, silent)

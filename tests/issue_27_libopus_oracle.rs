@@ -17,7 +17,7 @@ use opus::{
     Application as CApp, Bandwidth as CBw, Bitrate as CBitrate, Channels as CCh, Decoder as CDec,
     Encoder as CEnc, Signal as CSignal,
 };
-use opus_rs::{Application, OpusDecoder, OpusEncoder};
+use opus_rs::{Application, OpusDecoder, OpusEncoder, Signal};
 use std::f32::consts::PI;
 
 /// Largest Opus frame per channel: 120 ms at 48 kHz.
@@ -258,6 +258,9 @@ fn rust_enc_c_dec(ch: usize, ms: usize, fec: bool, cbr: bool) -> RustEncoded {
     let mut enc = OpusEncoder::new(sr as i32, ch, Application::Voip).unwrap();
     enc.bitrate_bps = 32000;
     enc.use_cbr = cbr;
+    // Speech: the signal analysis takes this harmonic series for music, and
+    // libopus codes it in CELT at this rate.
+    enc.set_signal(Signal::Voice);
     if fec {
         enc.use_inband_fec = true;
         enc.packet_loss_perc = 40;
