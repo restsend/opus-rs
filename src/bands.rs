@@ -1565,7 +1565,10 @@ fn quant_band_n1(
         }
     }
     if let Some(l_out) = lowband_out {
-        l_out[0] = x[0] / 16.0;
+        // Folding source, scaled like the other bands' (`sqrt(N) * X`, so
+        // 1 here). libopus's `SHR16(X[0], 4)` is the fixed-point build's
+        // scaling and a no-op in float.
+        l_out[0] = x[0];
     }
     1
 }
