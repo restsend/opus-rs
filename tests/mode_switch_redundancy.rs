@@ -17,9 +17,18 @@ use opus::{
 };
 use opus_rs::range_coder::RangeCoder;
 use opus_rs::silk::dec_api::SilkDecoder;
-use opus_rs::{Application, OpusEncoder, Signal};
+use opus_rs::{Application, Bandwidth, OpusEncoder, Signal};
 
 const PHASE_MS: usize = 400;
+
+/// The highest bandwidth of the API rate, which these tests code at.
+fn api_bandwidth(sr: usize) -> Bandwidth {
+    match sr {
+        16000 => Bandwidth::Wideband,
+        24000 => Bandwidth::Superwideband,
+        _ => Bandwidth::Fullband,
+    }
+}
 
 /// Rate (b/s) and loss (%) of the frame at `ms` milliseconds: the low phase
 /// first, then the high one.
@@ -97,8 +106,9 @@ fn encode(
     let frame = sr * ms / 1000;
     let frames = input.len() / (frame * channels);
     let mut rs = OpusEncoder::new(sr as i32, channels, Application::Voip).unwrap();
-    // As libopus below: speech.
+    // As libopus below: speech, at the API rate's bandwidth.
     rs.set_signal(Signal::Voice);
+    rs.set_bandwidth(api_bandwidth(sr));
     rs.complexity = 9;
     rs.use_cbr = false;
     rs.use_inband_fec = fec;
@@ -363,8 +373,10 @@ fn silk_layer_follows_fixed_point_libopus_across_switches() {
         enc.complexity = 9;
         enc.use_cbr = false;
         enc.use_inband_fec = fec;
-        // As the libopus encodes of the hashes: speech.
+        // As the libopus encodes of the hashes: speech, at the API rate's
+        // bandwidth.
         enc.set_signal(Signal::Voice);
+        enc.set_bandwidth(api_bandwidth(sr));
         let mut buffer = [0u8; 1500];
         let packets: Vec<Vec<u8>> = (0..input.len() / (frame * channels))
             .map(|p| {
@@ -404,6 +416,7 @@ fn switch_frames_signal_redundancy_and_restart_celt() {
         enc.complexity = 9;
         enc.use_inband_fec = fec;
         enc.set_signal(Signal::Voice);
+        enc.set_bandwidth(api_bandwidth(sr));
         let mut buffer = [0u8; 1500];
         let packets: Vec<Vec<u8>> = (0..packets)
             .map(|p| {

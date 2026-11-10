@@ -23,7 +23,7 @@ use opus_rs::silk::{
     resampler::silk_resampler_down2_3,
     structs::SilkEncoderState,
 };
-use opus_rs::{Application, OpusEncoder, Signal, range_coder::RangeCoder};
+use opus_rs::{Application, Bandwidth, OpusEncoder, Signal, range_coder::RangeCoder};
 
 fn fnv(hash: u64, bytes: &[u8]) -> u64 {
     bytes.iter().fold(hash, |hash, &b| {
@@ -221,8 +221,14 @@ fn encode_speech(sr: usize, ms: usize, rate: i32, channels: usize, fec: bool) ->
     enc.bitrate_bps = rate;
     enc.complexity = 9;
     enc.use_cbr = false;
-    // As the libopus encodes of the hashes: speech.
+    // As the libopus encodes of the hashes: speech, at the API rate's
+    // bandwidth.
     enc.set_signal(Signal::Voice);
+    enc.set_bandwidth(match sr {
+        16000 => Bandwidth::Wideband,
+        24000 => Bandwidth::Superwideband,
+        _ => Bandwidth::Fullband,
+    });
     enc.use_inband_fec = fec;
     enc.packet_loss_perc = if fec { 10 } else { 0 };
     let mut packet = [0u8; 1500];
@@ -401,6 +407,8 @@ fn silk_follows_a_change_of_frame_duration() {
         enc.bitrate_bps = 20000;
         enc.use_inband_fec = true;
         enc.complexity = 9;
+        // Super-wideband, which no loss codes as hybrid.
+        enc.set_bandwidth(Bandwidth::Superwideband);
         let c_channels = if channels == 1 {
             CCh::Mono
         } else {

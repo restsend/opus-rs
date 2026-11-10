@@ -196,6 +196,20 @@ pub struct OpusEncoder {
     /// libopus `voice_ratio`: the percentage of speech the analysis found,
     /// -1 when it gave none.
     voice_ratio: i32,
+    /// libopus `detected_bandwidth`: the input's bandwidth by the analysis.
+    detected_bandwidth: Option<Bandwidth>,
+    /// libopus `user_bandwidth` (`OPUS_SET_BANDWIDTH`), `Auto` by default.
+    user_bandwidth: Bandwidth,
+    /// libopus `max_bandwidth` (`OPUS_SET_MAX_BANDWIDTH`).
+    max_bandwidth: Bandwidth,
+    /// libopus `auto_bandwidth`: the last bandwidth the rate chose.
+    auto_bandwidth: Bandwidth,
+    /// libopus `first`: no frame coded yet.
+    first: bool,
+    /// libopus `silk_mode.allowBandwidthSwitch` and
+    /// `inWBmodeWithoutVariableLP`, as the last SILK call left them.
+    silk_allow_bandwidth_switch: bool,
+    silk_in_wb_without_variable_lp: bool,
 
     #[cfg(not(feature = "heap"))]
     buf_filtered: FixedVec<i16, OPUS_MAX_FRAME>,
@@ -486,6 +500,12 @@ fn compute_frame_energy(input: PcmInput<'_>, len: usize) -> f32 {
     };
     sum / len as f32
 }
+
+/// libopus `{mono,stereo}_{voice,music}_bandwidth_thresholds` (the mono and
+/// stereo tables are the same): the rate and hysteresis for NB<->MB,
+/// MB<->WB, WB<->SWB and SWB<->FB.
+const VOICE_BANDWIDTH_THRESHOLDS: [i32; 8] = [9000, 700, 9000, 700, 13500, 1000, 14000, 2000];
+const MUSIC_BANDWIDTH_THRESHOLDS: [i32; 8] = [9000, 700, 9000, 700, 11000, 1000, 12000, 2000];
 
 /// libopus `StereoWidthState`.
 #[derive(Clone, Copy, Default)]
@@ -1173,6 +1193,13 @@ impl OpusEncoder {
             frame_analysis: None,
             peak_signal_energy: 0.0,
             voice_ratio: -1,
+            detected_bandwidth: None,
+            user_bandwidth: Bandwidth::Auto,
+            max_bandwidth: Bandwidth::Fullband,
+            auto_bandwidth: Bandwidth::Fullband,
+            first: true,
+            silk_allow_bandwidth_switch: false,
+            silk_in_wb_without_variable_lp: false,
 
             #[cfg(not(feature = "heap"))]
             buf_filtered: FixedVec::new(),
@@ -1299,6 +1326,7 @@ impl OpusEncoder {
         };
         self.mode = OpusMode::Hybrid;
         self.bandwidth = bw;
+        self.user_bandwidth = bw;
         self.silk_initialized = false;
         Ok(())
     }
@@ -1315,6 +1343,35 @@ impl OpusEncoder {
     /// The kind of signal set (libopus `OPUS_GET_SIGNAL`).
     pub fn signal(&self) -> Signal {
         self.signal
+    }
+
+    /// The coded bandwidth, as libopus `OPUS_SET_BANDWIDTH`: `Auto` (the
+    /// default) chooses it from the bitrate, the maximum bandwidth and the
+    /// bandwidth the signal analysis detects; any other value is used at
+    /// any rate, within the sampling rate and the packet size.
+    pub fn set_bandwidth(&mut self, bandwidth: Bandwidth) {
+        self.user_bandwidth = bandwidth;
+    }
+
+    /// The bandwidth of the last frame, as libopus `OPUS_GET_BANDWIDTH`.
+    pub fn bandwidth(&self) -> Bandwidth {
+        self.bandwidth
+    }
+
+    /// The highest bandwidth `Auto` may choose, as libopus
+    /// `OPUS_SET_MAX_BANDWIDTH` (fullband by default; `Auto` means
+    /// fullband).
+    pub fn set_max_bandwidth(&mut self, bandwidth: Bandwidth) {
+        self.max_bandwidth = if bandwidth == Bandwidth::Auto {
+            Bandwidth::Fullband
+        } else {
+            bandwidth
+        };
+    }
+
+    /// The maximum bandwidth (libopus `OPUS_GET_MAX_BANDWIDTH`).
+    pub fn max_bandwidth(&self) -> Bandwidth {
+        self.max_bandwidth
     }
 
     /// Constrained VBR, as libopus `OPUS_SET_VBR_CONSTRAINT` (on by
@@ -1382,7 +1439,139 @@ impl OpusEncoder {
             };
             self.voice_ratio = (0.5 + f64::from(100.0 * (1.0 - prob))).floor() as i32;
         }
+        // The bandwidth of the input, by the highest analysis band with
+        // signal.
+        self.detected_bandwidth = info.valid.then_some(match info.bandwidth {
+            ..=12 => Bandwidth::Narrowband,
+            13..=14 => Bandwidth::Mediumband,
+            15..=16 => Bandwidth::Wideband,
+            17..=18 => Bandwidth::Superwideband,
+            _ => Bandwidth::Fullband,
+        });
         (info, is_silence)
+    }
+
+    /// libopus `voice_est`, the probability of speech in Q7: from the signal
+    /// type, else from the analysis (never above 90% for Audio), else from
+    /// the application.
+    fn voice_estimate(&self) -> i32 {
+        match (self.signal, self.application) {
+            (Signal::Voice, _) => 127,
+            (Signal::Music, _) => 0,
+            (Signal::Auto, Application::Audio) if self.voice_ratio >= 0 => {
+                ((self.voice_ratio * 327) >> 8).min(115)
+            }
+            (Signal::Auto, _) if self.voice_ratio >= 0 => (self.voice_ratio * 327) >> 8,
+            (Signal::Auto, Application::Voip) => 115,
+            (Signal::Auto, _) => 48,
+        }
+    }
+
+    /// libopus's bandwidth decision before FEC (opus_encode_native): from
+    /// the rate where SILK can switch (or in CELT, or at the start), with
+    /// thresholds between music's and speech's by the voice estimate and
+    /// hysteresis; then the maximum, the user's bandwidth, wideband for
+    /// SILK and Hybrid below 15 kb/s of packet, the sampling rate, and the
+    /// bandwidth the analysis detected, unless the user set one.
+    fn decide_bandwidth(
+        &mut self,
+        mode: OpusMode,
+        equiv_rate: i32,
+        voice_est: i32,
+        max_rate: i32,
+    ) -> Bandwidth {
+        use Bandwidth::*;
+        let rank = |bw: Bandwidth| bandwidth_fec_index(bw) as i32;
+        let mut bandwidth = self.bandwidth;
+        if mode == OpusMode::CeltOnly || self.first || self.silk_allow_bandwidth_switch {
+            let mut thresholds = [0i32; 8];
+            for (i, t) in thresholds.iter_mut().enumerate() {
+                let (voice, music) = (VOICE_BANDWIDTH_THRESHOLDS[i], MUSIC_BANDWIDTH_THRESHOLDS[i]);
+                *t = music + ((voice_est * voice_est * (voice - music)) >> 14);
+            }
+            // From fullband (4) down to narrowband (0).
+            let mut bw = 4;
+            loop {
+                let mut threshold = thresholds[2 * (bw - 1) as usize];
+                let hysteresis = thresholds[2 * (bw - 1) as usize + 1];
+                if !self.first {
+                    if rank(self.auto_bandwidth) >= bw {
+                        threshold -= hysteresis;
+                    } else {
+                        threshold += hysteresis;
+                    }
+                }
+                if equiv_rate >= threshold {
+                    break;
+                }
+                bw -= 1;
+                if bw == 0 {
+                    break;
+                }
+            }
+            // Mediumband only when asked for or in mode transitions.
+            if bw == 1 {
+                bw = 2;
+            }
+            bandwidth = bandwidth_from_fec_index(bw as usize);
+            self.auto_bandwidth = bandwidth;
+            // No switch to SWB/FB until SILK has fully switched to wideband
+            // and its variable low-pass is off.
+            if !self.first
+                && mode != OpusMode::CeltOnly
+                && !self.silk_in_wb_without_variable_lp
+                && rank(bandwidth) > rank(Wideband)
+            {
+                bandwidth = Wideband;
+            }
+        }
+        if rank(bandwidth) > rank(self.max_bandwidth) {
+            bandwidth = self.max_bandwidth;
+        }
+        if self.user_bandwidth != Auto {
+            bandwidth = self.user_bandwidth;
+        }
+        // No Hybrid at unsafe CBR or maximum rates.
+        if mode != OpusMode::CeltOnly && max_rate < 15000 && rank(bandwidth) > rank(Wideband) {
+            bandwidth = Wideband;
+        }
+        // Nothing above the input's Nyquist rate.
+        let top = match self.sampling_rate {
+            8000 => Narrowband,
+            12000 => Mediumband,
+            16000 => Wideband,
+            24000 => Superwideband,
+            _ => Fullband,
+        };
+        if rank(bandwidth) > rank(top) {
+            bandwidth = top;
+        }
+        // Down to the bandwidth the analysis detected, conservatively: never
+        // below wideband in SILK and Hybrid, whose switches would need
+        // redundancy.
+        if let (Some(detected), Auto) = (self.detected_bandwidth, self.user_bandwidth) {
+            let ch = self.channels as i32;
+            let min_detected = if equiv_rate <= 18000 * ch && mode == OpusMode::CeltOnly {
+                Narrowband
+            } else if equiv_rate <= 24000 * ch && mode == OpusMode::CeltOnly {
+                Mediumband
+            } else if equiv_rate <= 30000 * ch {
+                Wideband
+            } else if equiv_rate <= 44000 * ch {
+                Superwideband
+            } else {
+                Fullband
+            };
+            let detected = if rank(detected) > rank(min_detected) {
+                detected
+            } else {
+                min_detected
+            };
+            if rank(detected) < rank(bandwidth) {
+                bandwidth = detected;
+            }
+        }
+        bandwidth
     }
 
     /// The analysis of a packet and its digital-silence flag (see
@@ -1499,19 +1688,7 @@ impl OpusEncoder {
                 self.complexity,
                 self.packet_loss_perc,
             );
-            // libopus `voice_est`, the probability of speech in Q7: from the
-            // signal type, else from the analysis (never above 90% for
-            // Audio), else from the application.
-            let voice_est = match (self.signal, self.application) {
-                (Signal::Voice, _) => 127,
-                (Signal::Music, _) => 0,
-                (Signal::Auto, Application::Audio) if self.voice_ratio >= 0 => {
-                    ((self.voice_ratio * 327) >> 8).min(115)
-                }
-                (Signal::Auto, _) if self.voice_ratio >= 0 => (self.voice_ratio * 327) >> 8,
-                (Signal::Auto, Application::Voip) => 115,
-                (Signal::Auto, _) => 48,
-            };
+            let voice_est = self.voice_estimate();
             let threshold = compute_mode_threshold(
                 self.application,
                 stereo_width,
@@ -1615,16 +1792,14 @@ impl OpusEncoder {
             prefill: prefill_after_celt,
         } = transition;
 
-        // C opus_encoder.c: with the base mode selected, decide whether
-        // this packet codes in-band FEC (decide_fec()); it can lower the
-        // frame's bandwidth when a high loss rate demands FEC at any cost.
-        // The reduction is per-frame: `self.bandwidth` (the user/auto state)
-        // is left untouched, matching C where the bandwidth is re-derived
-        // every frame.
+        // The bandwidth and in-band FEC of the packet (opus_encode_native):
+        // the bandwidth from the rate, the user's settings, the packet size,
+        // the sampling rate and the analysis; then FEC, which can lower it
+        // when the loss rate demands FEC at any cost. Like libopus's
+        // `st->bandwidth` it carries over to the next packet.
         let (mut frame_bandwidth, lbrr_coded) = match self.frame_fec.take() {
             Some(decided) => decided,
             None => {
-                let mut frame_bandwidth = self.bandwidth;
                 let equiv_rate = compute_equiv_rate(
                     self.bitrate_bps,
                     self.channels,
@@ -1634,6 +1809,18 @@ impl OpusEncoder {
                     self.complexity,
                     self.packet_loss_perc,
                 );
+                let max_data_bytes = if self.use_cbr {
+                    let bits =
+                        self.bitrate_bps as i64 * frame_size as i64 / self.sampling_rate as i64;
+                    (((bits + 4) / 8) as usize).min(output.len()).max(1)
+                } else {
+                    output.len().min(6 * OPUS_MAX_PACKET_BYTES)
+                };
+                let max_rate =
+                    bits_to_bitrate(max_data_bytes as i32 * 8, self.sampling_rate, frame_size);
+                let voice_est = self.voice_estimate();
+                let mut frame_bandwidth =
+                    self.decide_bandwidth(mode, equiv_rate, voice_est, max_rate);
                 let lbrr_coded = decide_fec(
                     if self.use_inband_fec { 1 } else { 0 },
                     self.packet_loss_perc,
@@ -1642,6 +1829,11 @@ impl OpusEncoder {
                     &mut frame_bandwidth,
                     equiv_rate,
                 );
+                // CELT has no mediumband: libopus codes it as wideband.
+                if mode == OpusMode::CeltOnly && frame_bandwidth == Bandwidth::Mediumband {
+                    frame_bandwidth = Bandwidth::Wideband;
+                }
+                self.bandwidth = frame_bandwidth;
                 (frame_bandwidth, lbrr_coded)
             }
         };
@@ -2310,6 +2502,11 @@ impl OpusEncoder {
             if ret != 0 {
                 return Err("SILK encoding failed");
             }
+            // What the next bandwidth decision may do (libopus
+            // `silk_mode.allowBandwidthSwitch`, `inWBmodeWithoutVariableLP`).
+            self.silk_allow_bandwidth_switch = self.silk_enc.allow_bandwidth_switch != 0;
+            self.silk_in_wb_without_variable_lp =
+                self.silk_enc.s_cmn.fs_khz == 16 && self.silk_enc.s_cmn.s_lp.mode == 0;
             // The TOC signals the rate SILK coded at (opus_encoder.c:2221-2232).
             if mode == OpusMode::SilkOnly {
                 frame_bandwidth = match silk_fs_khz {
@@ -2644,6 +2841,7 @@ impl OpusEncoder {
 
         self.rc.done();
 
+        self.first = false;
         // libopus's own DTX (decide_dtx_mode), where its analysis ran or the
         // frame is digital silence: after 200 ms without activity the frame
         // is sent as its ToC alone, with one coded frame every 400 ms.

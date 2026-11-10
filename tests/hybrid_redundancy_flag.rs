@@ -8,7 +8,7 @@
 //! layer after it was decoded from a different range coder state.
 
 use opus::{Channels, Decoder as CDec};
-use opus_rs::{Application, OpusEncoder};
+use opus_rs::{Application, Bandwidth, OpusEncoder};
 use std::f32::consts::PI;
 
 fn signal(rate: usize, n: usize) -> Vec<f32> {
@@ -36,12 +36,19 @@ fn low_rate_hybrid_cbr_decodes_to_the_encoders_final_range() {
     let mut hybrid = 0;
     for rate in [48000usize, 24000] {
         for app in [Application::Voip, Application::Audio] {
-            for bitrate in [6000, 8000, 10000, 12000] {
+            // libopus codes no Hybrid below 15 kb/s of packet; just above,
+            // the redundancy flag does not always fit after SILK.
+            for bitrate in [15000, 16000, 18000, 20000] {
                 for frame in [rate / 100, rate / 50] {
                     let pcm = signal(rate, frame * 50);
                     let mut enc = OpusEncoder::new(rate as i32, 1, app).unwrap();
                     enc.bitrate_bps = bitrate;
                     enc.use_cbr = true;
+                    enc.set_bandwidth(if rate == 24000 {
+                        Bandwidth::Superwideband
+                    } else {
+                        Bandwidth::Fullband
+                    });
                     let mut dec = CDec::new(rate as u32, Channels::Mono).unwrap();
                     for (f, x) in pcm.chunks_exact(frame).enumerate() {
                         let n = enc.encode(x, frame, &mut pkt).unwrap();

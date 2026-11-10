@@ -7,7 +7,7 @@ use opus::{
     Application as CApp, Bandwidth as CBw, Bitrate as CBitrate, Channels as CCh, Decoder as CDec,
     Encoder as CEnc, Signal as CSignal,
 };
-use opus_rs::{Application, OpusEncoder};
+use opus_rs::{Application, Bandwidth, OpusEncoder, Signal};
 
 #[test]
 fn hybrid_speech_vbr_tracks_libopus_with_and_without_fec() {
@@ -31,6 +31,13 @@ fn hybrid_speech_vbr_tracks_libopus_with_and_without_fec() {
                         rs.use_cbr = false;
                         rs.use_inband_fec = fec;
                         rs.packet_loss_perc = if fec { 10 } else { 0 };
+                        // As libopus below.
+                        rs.set_bandwidth(if sr == 24000 {
+                            Bandwidth::Superwideband
+                        } else {
+                            Bandwidth::Fullband
+                        });
+                        rs.set_signal(Signal::Voice);
                         let mut c = CEnc::new(sr as u32, c_channels, CApp::Voip).unwrap();
                         c.set_bitrate(CBitrate::Bits(rate)).unwrap();
                         c.set_complexity(9).unwrap();
@@ -93,6 +100,12 @@ fn hybrid_vbr_celt_share_below_501_bps_keeps_an_unlimited_rate() {
         let frame = sr / 50;
         let mut enc = OpusEncoder::new(sr as i32, 1, Application::Voip).unwrap();
         enc.bitrate_bps = 2500;
+        // The rate alone would choose narrowband SILK.
+        enc.set_bandwidth(if sr == 24000 {
+            Bandwidth::Superwideband
+        } else {
+            Bandwidth::Fullband
+        });
         enc.complexity = 9;
         enc.use_cbr = false;
         let mut decoder = CDec::new(sr as u32, CCh::Mono).unwrap();
