@@ -1847,6 +1847,14 @@ impl OpusDecoder {
         self.frame_size = frame_size;
         self.bandwidth = bandwidth;
 
+        // libopus conceals a frame of 0 or 1 bytes (opus_decode_frame:
+        // "Payloads of 1 (2 including ToC) or 0 trigger the PLC/DTX"), in
+        // the mode of the frame before it. A packet with such a frame is
+        // decoded one frame at a time.
+        if frame_payloads.iter().any(|payload| payload.len() <= 1) {
+            return self.decode_frame_by_frame(toc, &frame_payloads[..], frame_size, output);
+        }
+
         // Derive the actual per-frame sample count from the TOC, not from the
         // caller's frame_size. This prevents panics in bands.rs/celt.rs when
         // the caller passes a mismatched frame_size (issue #7 sub-item 1):
@@ -2503,6 +2511,41 @@ impl OpusDecoder {
         self.prev_mode = Some(mode);
         self.prev_redundancy = false;
         Ok(frame_size)
+    }
+
+    /// Decode a packet one frame at a time: a frame of 0 or 1 bytes is
+    /// concealed in the mode of the frame before it, as libopus does, and
+    /// every other frame is decoded as a packet of its own.
+    fn decode_frame_by_frame(
+        &mut self,
+        toc: u8,
+        frames: &[&[u8]],
+        frame_size: usize,
+        output: &mut [f32],
+    ) -> Result<usize, &'static str> {
+        let per_frame = frame_samples_from_toc(toc, self.sampling_rate)
+            .ok_or("Invalid TOC for sampling rate")?;
+        let total = per_frame * frames.len();
+        if frame_size < total {
+            return Err("frame_size too small for packet");
+        }
+        let ch = self.channels;
+        if output.len() < total * ch {
+            return Err("Output buffer too small for packet");
+        }
+        let mut packet = [0u8; OPUS_MAX_PACKET_BYTES];
+        for (i, frame) in frames.iter().enumerate() {
+            let out = &mut output[i * per_frame * ch..];
+            if frame.len() <= 1 {
+                self.decode_lost(None, per_frame, out)?;
+            } else {
+                packet[0] = toc & 0xFC;
+                packet[1..1 + frame.len()].copy_from_slice(frame);
+                self.decode(&packet[..1 + frame.len()], per_frame, out)?;
+            }
+        }
+        output[total * ch..].fill(0.0);
+        Ok(total)
     }
 
     /// Conceal a lost frame (libopus `opus_decode_frame` with `data == NULL`).
