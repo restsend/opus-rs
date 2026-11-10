@@ -41,10 +41,11 @@ pub fn silk_hp_variable_cutoff(ps_enc: &mut SilkEncoderStateCommon) {
     }
 }
 
+// SILK_FIX_CONST rounds to nearest: SMTH_COEF1 0.1 is 6554 in Q16.
 fn fix_const_q16(x: impl Into<f64>) -> i32 {
-    (x.into() * 65536.0) as i32
+    (x.into() * 65536.0 + 0.5) as i32
 }
 
 fn fix_const_q7(x: impl Into<f64>) -> i32 {
-    (x.into() * 128.0) as i32
+    (x.into() * 128.0 + 0.5) as i32
 }

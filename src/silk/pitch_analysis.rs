@@ -92,13 +92,13 @@ pub fn silk_find_pitch_lags_fix(
     {
         let mut thrhld_q13: i32 = 4915;
 
-        thrhld_q13 = silk_smlabb(thrhld_q13, -33, pitch_lpc_order as i32);
+        thrhld_q13 = silk_smlabb(thrhld_q13, -32, pitch_lpc_order as i32);
 
-        thrhld_q13 = silk_smlawb(thrhld_q13, -209715, ps_enc.s_cmn.speech_activity_q8);
+        thrhld_q13 = silk_smlawb(thrhld_q13, -209714, ps_enc.s_cmn.speech_activity_q8);
 
-        thrhld_q13 = silk_smlabb(thrhld_q13, -1229, ps_enc.s_cmn.prev_signal_type >> 1);
+        thrhld_q13 = silk_smlabb(thrhld_q13, -1228, ps_enc.s_cmn.prev_signal_type >> 1);
 
-        thrhld_q13 = silk_smlawb(thrhld_q13, -1638, ps_enc.s_cmn.input_tilt_q15);
+        thrhld_q13 = silk_smlawb(thrhld_q13, -1637, ps_enc.s_cmn.input_tilt_q15);
         thrhld_q13 = silk_sat16(thrhld_q13);
 
         let mut ltp_corr_q15 = ps_enc.ltp_corr_q15;
@@ -154,7 +154,9 @@ pub fn silk_pitch_analysis_core(
     let frame_length_4khz = (PE_LTP_MEM_LENGTH_MS + nb_subfr * PE_SUBFR_LENGTH_MS) * 4;
     let sf_length = PE_SUBFR_LENGTH_MS * fs_khz as usize;
     let min_lag = PE_MIN_LAG_MS * fs_khz as usize;
-    let max_lag = PE_MAX_LAG_MS * fs_khz as usize;
+    // The last lag the stage-3 search may pick (pitch_analysis_core_FIX.c:140);
+    // only the contour may reach PE_MAX_LAG_MS * fs_khz.
+    let max_lag = PE_MAX_LAG_MS * fs_khz as usize - 1;
 
     let mut energy = 0i32;
     let mut shift = 0i32;
@@ -301,6 +303,19 @@ pub fn silk_pitch_analysis_core(
         d_comp[(d_srch[i] as isize - D_COMP_MIN) as usize] = 1;
     }
 
+    for i in (MIN_LAG_8KHZ..D_COMP_MAX as usize).rev() {
+        let idx = i - D_COMP_MIN as usize;
+        d_comp[idx] += d_comp[idx - 1] + d_comp[idx - 2];
+    }
+
+    length_d_srch = 0;
+    for i in MIN_LAG_8KHZ..=MAX_LAG_8KHZ {
+        if d_comp[i + 1 - D_COMP_MIN as usize] > 0 {
+            d_srch[length_d_srch] = i as i32;
+            length_d_srch += 1;
+        }
+    }
+
     for i in (3..D_COMP_STRIDE).rev() {
         d_comp[i] += d_comp[i - 1] + d_comp[i - 2] + d_comp[i - 3];
     }
@@ -439,7 +454,7 @@ pub fn silk_pitch_analysis_core(
 
         let lag_log2_q7 = silk_lin2log(d);
         let mut cc_max_new_b =
-            cc0_max_new - silk_rshift(silk_smulbb((nb_subfr * 410) as i32, lag_log2_q7), 7);
+            cc0_max_new - silk_rshift(silk_smulbb((nb_subfr * 1638) as i32, lag_log2_q7), 7);
 
         if prev_lag_8khz > 0 {
             let mut delta_lag_log2_sqr_q7 = lag_log2_q7 - prev_lag_log2_q7;
@@ -549,23 +564,22 @@ pub fn silk_pitch_analysis_core(
                 let mut cross_corr = 0i32;
                 let mut energy = energy_target;
                 for k in 0..nb_subfr {
-                    cross_corr = silk_add_sat32(cross_corr, cross_corr_st3[k][j][lag_counter]);
-                    energy = silk_add_sat32(energy, energies_st3[k][j][lag_counter]);
+                    cross_corr = silk_add32(cross_corr, cross_corr_st3[k][j][lag_counter]);
+                    energy = silk_add32(energy, energies_st3[k][j][lag_counter]);
                 }
-                if cross_corr > 0 {
-                    let mut cc_max_new = silk_div32_varq(cross_corr, energy, 14);
+                let cc_max_new = if cross_corr > 0 {
+                    let cc_max_new = silk_div32_varq(cross_corr, energy, 14);
                     let diff = i16::MAX as i32 - silk_mul(contour_bias_q15, j as i32);
-                    cc_max_new = silk_smulwb(cc_max_new, diff);
-                    let lag_cb_ptr_st3_0: &[i8] = if nb_subfr == PE_MAX_NB_SUBFR {
-                        &SILK_CB_LAGS_STAGE3[0]
-                    } else {
-                        &SILK_CB_LAGS_STAGE3_10_MS[0]
-                    };
-                    if cc_max_new > cc_max && (d + lag_cb_ptr_st3_0[j] as i32) <= max_lag as i32 {
-                        cc_max = cc_max_new;
-                        lag_new = d;
-                        cb_i_max = j;
-                    }
+                    silk_smulwb(cc_max_new, diff)
+                } else {
+                    0
+                };
+                // libopus bounds the contour with the 20 ms codebook's first
+                // row for 10 ms frames too (pitch_analysis_core_FIX.c:529).
+                if cc_max_new > cc_max && (d + SILK_CB_LAGS_STAGE3[0][j] as i32) <= max_lag as i32 {
+                    cc_max = cc_max_new;
+                    lag_new = d;
+                    cb_i_max = j;
                 }
             }
         }

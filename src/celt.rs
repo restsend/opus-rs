@@ -1,6 +1,6 @@
 use crate::bands::{
-    SPREAD_NONE, SPREAD_NORMAL, compute_band_energies, denormalise_bands, haar1, log2amp,
-    normalise_bands, quant_all_bands, spreading_decision,
+    SPREAD_AGGRESSIVE, SPREAD_NONE, SPREAD_NORMAL, compute_band_energies, denormalise_bands, haar1,
+    log2amp, normalise_bands, quant_all_bands, spreading_decision,
 };
 use crate::modes::{CeltMode, SPREAD_ICDF, TAPSET_ICDF, TF_SELECT_TABLE, TRIM_ICDF};
 use crate::quant_bands::{
@@ -9,6 +9,7 @@ use crate::quant_bands::{
 };
 use crate::range_coder::RangeCoder;
 use crate::rate::{BITRES, clt_compute_allocation};
+use crate::silk::define::TYPE_VOICED;
 use core::mem::MaybeUninit;
 
 #[cfg(not(feature = "std"))]
@@ -21,7 +22,7 @@ fn bitrate_to_bits(bitrate: i32, fs: i32, frame_size: i32) -> i32 {
     bitrate * 6 / (6 * fs / frame_size)
 }
 
-const OPUS_BITRATE_MAX: i32 = -1;
+pub(crate) const OPUS_BITRATE_MAX: i32 = -1;
 #[allow(clippy::too_many_arguments)]
 fn compute_vbr(
     mode: &CeltMode,
@@ -65,9 +66,9 @@ fn compute_vbr(
             mode.e_bands[coded_stereo_bands as usize] as i32 * (1 << lm) - coded_stereo_bands;
         let max_frac = (0.8 * coded_stereo_dof as f32) / coded_bins as f32;
         let ss = stereo_saving.min(1.0);
-        let adjust = ((ss - 0.1).max(0.0) * coded_stereo_dof as f32 * (1 << BITRES) as f32) as i32;
-        let save = (max_frac * target as f32) as i32;
-        target -= save.min(adjust);
+        let save = max_frac * target as f32;
+        let adjust = (ss - 0.1) * (coded_stereo_dof << BITRES) as f32;
+        target -= (if save < adjust { save } else { adjust }) as i32;
     }
     target += tot_boost - (19 << lm);
     // tf boost: libopus SHL32(MULT16_32_Q15(tf-0.044, target),1) collapses to (tf-0.044)*target in float
@@ -85,8 +86,8 @@ fn compute_vbr(
             target + (surround_masking * coded_bins as f32 * (1 << BITRES) as f32) as i32;
         target = (target / 4).max(surround_target);
     }
-    // floor depth: only clamp when max_depth is meaningful (>0); stub call passes 0 to avoid spurious 0.665*base
-    if max_depth > 0.0 {
+    // No more than the signal's depth above the noise floor allows.
+    {
         let bins = mode.e_bands[(nb_ebands - 2) as usize] as i32 * (1 << lm);
         let floor_depth = ((c * bins * (1 << BITRES)) as f32 * max_depth) as i32;
         let floor_depth = floor_depth.max(target >> 2);
@@ -296,6 +297,26 @@ pub struct AnalysisInfo {
     pub leak_boost: [u8; 19], // LEAK_BANDS = 19
 }
 
+impl AnalysisInfo {
+    /// The all-zero analysis of a new or reset libopus analysis state.
+    pub(crate) const fn zeroed() -> Self {
+        Self {
+            valid: false,
+            tonality: 0.0,
+            tonality_slope: 0.0,
+            noisiness: 0.0,
+            activity: 0.0,
+            music_prob: 0.0,
+            music_prob_min: 0.0,
+            music_prob_max: 0.0,
+            bandwidth: 0,
+            activity_probability: 0.0,
+            max_pitch_ratio: 0.0,
+            leak_boost: [0; 19],
+        }
+    }
+}
+
 impl Default for AnalysisInfo {
     fn default() -> Self {
         Self {
@@ -400,6 +421,11 @@ fn transient_analysis(
     if toneishness > 0.98 && _tone_freq < 0.026 {
         is_transient = false;
         mask_metric = 0.0;
+    }
+    // Weak transients at low hybrid rates (celt_encoder.c:453-456).
+    if allow_weak_transients && is_transient && mask_metric < 600.0 {
+        is_transient = false;
+        *weak_transient = true;
     }
 
     // C (celt_encoder.c:460-461): tf_max = max(0, sqrt(27*mask_metric) - 42);
@@ -1690,7 +1716,33 @@ pub struct CeltEncoder {
     w_transient_tmp2: FixedVec<f32, { MAX_TRANSIENT_LEN / 2 }>,
 
     analysis: AnalysisInfo,
+    /// libopus `stereo_saving`: the bits the stereo correlation saves, which
+    /// the trim analysis smooths across frames and the VBR target uses.
+    stereo_saving: f32,
+    /// libopus `spec_avg`: the average spectral level, for temporal VBR.
+    spec_avg: f32,
     loss_rate: i32,
+    /// libopus `SILKInfo`: the signal type and quantization offset of the
+    /// SILK layer, which steer the hybrid CELT layer.
+    silk_signal_type: i32,
+    silk_offset: i32,
+    /// libopus `CELT_SET_PREDICTION`: below 2 the pitch pre-filter is off,
+    /// at 0 the energy is coded intra.
+    disable_pf: bool,
+    force_intra: bool,
+    /// The last frame's allocation decisions, which unit tests inspect.
+    #[cfg(test)]
+    decisions: FrameDecisions,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Default)]
+struct FrameDecisions {
+    alloc_trim: i32,
+    tf_select: i32,
+    tf_res: [i32; MAX_NB_EBANDS],
+    is_transient: bool,
+    weak_transient: bool,
 }
 
 const INTEN_THRESHOLDS: [i32; 21] = [
@@ -1728,6 +1780,7 @@ fn alloc_trim_analysis(
     lm: i32,
     channels: usize,
     n0: usize,
+    analysis: &AnalysisInfo,
     stereo_saving: &mut f32,
     tf_estimate: f32,
     intensity: i32,
@@ -1738,8 +1791,8 @@ fn alloc_trim_analysis(
     if equiv_rate < 64000 {
         trim = 4.0;
     } else if equiv_rate < 80000 {
-        let frac = (equiv_rate - 64000) as f32 / 1024.0;
-        trim = 4.0 + (1.0 / 16.0) * frac;
+        let frac = (equiv_rate - 64000) >> 10;
+        trim = 4.0 + (1.0 / 16.0) * frac as f32;
     }
 
     if channels == 2 {
@@ -1783,6 +1836,10 @@ fn alloc_trim_analysis(
     trim -= (-2.0f32).max(2.0f32.min((diff + 1.0) / 6.0));
     trim -= surround_trim;
     trim -= 2.0 * tf_estimate;
+    // A tilt of the tonality towards high frequencies lowers the trim.
+    if analysis.valid {
+        trim -= (-2.0f32).max(2.0f32.min(2.0 * (analysis.tonality_slope + 0.05)));
+    }
 
     let trim_index = (trim + 0.5).floor() as i32;
     trim_index.clamp(0, 10)
@@ -2213,8 +2270,57 @@ impl CeltEncoder {
             consec_transient: 0,
 
             analysis: AnalysisInfo::default(),
+            stereo_saving: 0.0,
+            spec_avg: 0.0,
             loss_rate: 0,
+            silk_signal_type: 0,
+            silk_offset: 0,
+            disable_pf: false,
+            force_intra: false,
+            #[cfg(test)]
+            decisions: FrameDecisions::default(),
         }
+    }
+
+    /// libopus `OPUS_RESET_STATE`: forget the signal history and the rate
+    /// control, keeping the settings (complexity, bands, rate, VBR mode,
+    /// loss rate, prediction).
+    pub fn reset_state(&mut self) {
+        self.syn_mem.fill(0.0);
+        self.enc_decode_mem.fill(0.0);
+        self.old_band_e.fill(0.0);
+        self.preemph_mem.fill(0.0);
+        self.tonal_average = 256;
+        self.hf_average = 0;
+        self.tapset_decision = 0;
+        self.spread_decision = SPREAD_NORMAL;
+        self.intensity = 0;
+        self.last_coded_bands = 0;
+        self.prefilter_mem.fill(0.0);
+        self.prefilter_period = COMBFILTER_MINPERIOD;
+        self.prefilter_gain = 0.0;
+        self.prefilter_tapset = 0;
+        self.old_band_e2.fill(-28.0);
+        self.old_band_e3.fill(-28.0);
+        self.last_band_log_e.fill(0.0);
+        self.delayed_intra = 1.0;
+        self.overlap_max = 0.0;
+        self.vbr_reservoir = 0;
+        self.vbr_drift = 0;
+        self.vbr_offset = 0;
+        self.vbr_count = 0;
+        self.consec_transient = 0;
+        self.analysis = AnalysisInfo::default();
+        self.stereo_saving = 0.0;
+        self.spec_avg = 0.0;
+        self.silk_signal_type = 0;
+        self.silk_offset = 0;
+    }
+
+    /// libopus `CELT_SET_PREDICTION` (0, 1 or 2).
+    pub fn set_prediction(&mut self, prediction: i32) {
+        self.disable_pf = prediction <= 1;
+        self.force_intra = prediction == 0;
     }
 
     /// Set the highest coded band (`CELT_SET_END_BAND`). Must match the
@@ -2273,8 +2379,24 @@ impl CeltEncoder {
     pub fn set_vbr(&mut self, vbr: bool) {
         self.vbr = vbr;
     }
+    /// libopus `OPUS_SET_PACKET_LOSS_PERC` on the CELT encoder.
+    pub fn set_loss_rate(&mut self, loss_rate: i32) {
+        self.loss_rate = loss_rate.clamp(0, 100);
+    }
+    /// libopus `CELT_SET_SILK_INFO`: the hybrid SILK layer's signal type
+    /// and quantization offset (Q10).
+    pub fn set_silk_info(&mut self, signal_type: i32, offset: i32) {
+        self.silk_signal_type = signal_type;
+        self.silk_offset = offset;
+    }
     pub fn set_constrained_vbr(&mut self, cvbr: bool) {
         self.constrained_vbr = cvbr;
+    }
+    /// libopus `CELT_SET_ANALYSIS`: the encoder's signal analysis of the
+    /// frame, which steers the allocation, the trim, the VBR target and the
+    /// pitch pre-filter where it is valid.
+    pub fn set_analysis(&mut self, analysis: &AnalysisInfo) {
+        self.analysis = *analysis;
     }
 
     fn encode_impl(
@@ -2371,20 +2493,36 @@ impl CeltEncoder {
             );
         }
 
+        // libopus effectiveBytes (celt_encoder.c:1901-1923): under VBR the
+        // CELT share in bytes, also in unconstrained hybrid mode, where the
+        // range coder still holds the caller's full capacity; under CBR the
+        // bytes left in the packet.
+        let hybrid = start_band != 0;
+        let effective_bytes = if self.vbr && self.bitrate != OPUS_BITRATE_MAX {
+            (bitrate_to_bits(self.bitrate, mode.fs, frame_size as i32) / 8).max(1) as usize
+        } else {
+            let capacity = explicit_total_bits.unwrap_or_else(|| (rc.buf.len() * 8) as i32);
+            ((capacity / 8) as usize).saturating_sub(((rc.tell() + 4) >> 3).max(0) as usize)
+        }
+        .max(1);
+        // Low-rate hybrid frames code weak transients with long blocks.
+        let allow_weak_transients =
+            hybrid && effective_bytes < 15 && self.silk_signal_type != TYPE_VOICED;
+
         // Tone detection (C 2022): use channel-contiguous in_buf with N+overlap, float path
         let (tone_freq, mut toneishness) = tone_detect(&*in_buf, channels, buf_stride, mode.fs);
         let mut tf_estimate = 0.0f32;
         let mut tf_chan = 0;
         let mut weak_transient = false;
 
-        let is_transient = if self.complexity >= 1 {
+        let mut is_transient = if self.complexity >= 1 {
             transient_analysis(
                 in_buf,
                 buf_stride,
                 channels,
                 &mut tf_estimate,
                 &mut tf_chan,
-                false,
+                allow_weak_transients,
                 &mut weak_transient,
                 tone_freq,
                 toneishness,
@@ -2414,8 +2552,12 @@ impl CeltEncoder {
             0.0
         };
         // analysis_toneishness kept for prefilter gating; tone_freq/toneishness from tone_detect used for dynalloc
-        let pf_enabled =
-            start_band == 0 && self.complexity >= 5 && analysis_toneishness < 0.99 && channels == 1;
+        let pf_enabled = start_band == 0
+            && self.complexity >= 5
+            && analysis_toneishness < 0.99
+            && channels == 1
+            && !self.disable_pf;
+        let prefilter_tapset = self.tapset_decision;
         let (pf_on, gain1, pitch_index) = if pf_enabled {
             let tell = rc.tell();
             let nb_filled = ((tell + 4) >> 3).max(0) as usize;
@@ -2457,6 +2599,13 @@ impl CeltEncoder {
             }
             (false, 0.0f32, COMBFILTER_MINPERIOD)
         };
+
+        // A change of pitch (celt_encoder.c:2042-2044), which the VBR target
+        // pays for in tonal frames.
+        let pitch_change = (gain1 > 0.4 || self.prefilter_gain > 0.4)
+            && (!self.analysis.valid || f64::from(self.analysis.tonality) > 0.3)
+            && (pitch_index as f64 > 1.26 * self.prefilter_period as f64
+                || (pitch_index as f64) < 0.79 * self.prefilter_period as f64);
 
         // Save the prefiltered overlap for the next frame.
         // In libopus, st->in_mem stores the overlap separately and run_prefilter
@@ -2514,6 +2663,7 @@ impl CeltEncoder {
         let tell_initial_frac = rc.tell_frac();
         let nb_filled_bytes_initial = ((tell_initial + 4) >> 3).max(0) as usize;
         let mut nb_compressed_bytes = (total_bits / 8) as usize;
+        let nb_compressed_initial = nb_compressed_bytes;
         if tell_initial == 1 {
             rc.encode_bit_logp(silence, 15);
         } else {
@@ -2570,11 +2720,18 @@ impl CeltEncoder {
         }
 
         let mut short_blocks = false;
+        let mut transient_got_disabled = false;
         if lm > 0 && rc.tell() + 3 <= total_bits {
             rc.encode_bit_logp(is_transient, 3);
             if is_transient {
                 short_blocks = true;
             }
+        } else {
+            // No transient flag is coded (2.5 ms frames, or no room for it),
+            // so the decoder takes the frame as not transient: code it that
+            // way too, as libopus does.
+            is_transient = false;
+            transient_got_disabled = true;
         }
         let second_mdct = short_blocks && self.complexity >= 8;
         if second_mdct {
@@ -2658,6 +2815,25 @@ impl CeltEncoder {
             crate::bands::amp2log2(mode, start_band, end, band_e, band_log_e, channels);
         }
 
+        // Temporal VBR (celt_encoder.c:2187-2203): how far this frame's
+        // spectral level is above its running average.
+        let temporal_vbr = {
+            let mut follow = -10.0f32;
+            let mut frame_avg = 0.0f32;
+            let offset = if short_blocks { 0.5 * lm as f32 } else { 0.0 };
+            for i in start_band..end {
+                follow = (follow - 1.0).max(band_log_e[i] - offset);
+                if channels == 2 {
+                    follow = follow.max(band_log_e[i + nb_ebands] - offset);
+                }
+                frame_avg += follow;
+            }
+            frame_avg /= (end - start_band) as f32;
+            let temporal_vbr = (frame_avg - self.spec_avg).clamp(-1.5, 3.0);
+            self.spec_avg += 0.02 * temporal_vbr;
+            temporal_vbr
+        };
+
         // C uses st->force_intra (CTL flag, 0 by default) instead of the old
         // intra_ener heuristic, so no intra forcing happens here.
         quant_coarse_energy_advanced(
@@ -2673,15 +2849,14 @@ impl CeltEncoder {
             channels,
             lm,
             (total_bits / 8) as usize,
-            false, // force_intra: C st->force_intra (CTL flag, 0 by default)
+            self.force_intra,
             &mut self.delayed_intra,
             self.complexity >= 4,
-            0,
+            self.loss_rate,
             false,
         );
         self.w_tf_res[..nb_ebands].fill(0);
         let tf_res = &mut self.w_tf_res[..nb_ebands];
-        let effective_bytes = ((total_bits / 8) as usize).max(1);
         let lambda = 80.max(20480 / effective_bytes + 2) as i32;
 
         // C runs dynalloc_analysis before tf_analysis: it produces `importance`
@@ -2729,7 +2904,12 @@ impl CeltEncoder {
             &mut importance,
         );
 
-        let tf_select = if self.complexity >= 2 && effective_bytes >= 15 * channels {
+        // TF resolution (celt_encoder.c:2242-2277): analysed only for CELT
+        // frames with enough bytes; low-rate hybrid frames keep 5 ms
+        // resolution, weak transients use the long window.
+        let enable_tf_analysis =
+            effective_bytes >= 15 * channels && !hybrid && self.complexity >= 2;
+        let tf_select = if enable_tf_analysis {
             tf_analysis(
                 mode,
                 end,
@@ -2743,8 +2923,21 @@ impl CeltEncoder {
                 tf_chan,
                 &importance,
             )
-        } else {
+        } else if hybrid && weak_transient {
+            tf_res[..end].fill(1);
             0
+        } else if hybrid && effective_bytes < 15 && self.silk_signal_type != TYPE_VOICED {
+            tf_res[..end].fill(0);
+            is_transient as i32
+        } else {
+            tf_res[..end].fill(is_transient as i32);
+            0
+        };
+        #[cfg(test)]
+        let tf_raw = {
+            let mut raw = [0i32; MAX_NB_EBANDS];
+            raw[..end].copy_from_slice(&tf_res[..end]);
+            raw
         };
         tf_encode(
             start_band,
@@ -2762,8 +2955,14 @@ impl CeltEncoder {
             0
         };
 
-        let mut stereo_saving = 0.0f32;
-        let equiv_rate = (total_bits * 48000) / frame_size as i32;
+        // libopus equiv_rate (celt_encoder.c:1925-1927): the packet's rate,
+        // capped by the target bitrate, less the overhead of short frames.
+        let overhead = (40 * channels as i32 + 20) * ((400 >> lm) - 50);
+        let mut equiv_rate =
+            ((nb_compressed_initial.min(1275) as i32 * 8 * 50) << (3 - lm)) - overhead;
+        if self.bitrate != OPUS_BITRATE_MAX {
+            equiv_rate = equiv_rate.min(self.bitrate - overhead);
+        }
         if channels == 2 {
             self.intensity = hysteresis_decision(
                 equiv_rate / 1000,
@@ -2771,7 +2970,9 @@ impl CeltEncoder {
                 &INTEN_HYSTERESIS,
                 self.intensity,
             );
-            self.intensity = self.intensity.clamp(0, end as i32);
+            // libopus clamps to the coded bands: the band is coded relative
+            // to the start band, 17 in a Hybrid frame.
+            self.intensity = self.intensity.clamp(start_band as i32, end as i32);
         }
 
         if self.complexity == 0 {
@@ -2780,7 +2981,15 @@ impl CeltEncoder {
                 rc.encode_icdf(self.spread_decision, &SPREAD_ICDF, 5);
             }
         } else if rc.tell() + 4 <= total_bits {
-            if is_transient || self.complexity < 3 || effective_bytes < 10 * channels {
+            if hybrid {
+                // celt_encoder.c:2308-2314: hybrid frames spread aggressively
+                // unless transient.
+                self.spread_decision = if is_transient {
+                    SPREAD_NORMAL
+                } else {
+                    SPREAD_AGGRESSIVE
+                };
+            } else if is_transient || self.complexity < 3 || effective_bytes < 10 * channels {
                 self.spread_decision = SPREAD_NORMAL;
             } else {
                 let update_hf = lm == mode.max_lm;
@@ -2838,28 +3047,47 @@ impl CeltEncoder {
             offsets[i] = boost;
         }
 
-        let alloc_trim = alloc_trim_analysis(
-            mode,
-            x,
-            band_log_e,
-            end,
-            lm as i32,
-            channels,
-            frame_size,
-            &mut stereo_saving,
-            tf_estimate,
-            self.intensity,
-            0.0,
-            equiv_rate,
-        );
+        // C: the trim is only analysed and coded when it fits after the
+        // boosts; otherwise both sides allocate with the default of 5
+        // (celt_encoder.c:2397-2410).
+        let mut alloc_trim = 5;
         if rc.tell_frac() + (6 << BITRES) <= total_bits_bitres - total_boost {
+            // celt_encoder.c:2410-2413: no trim analysis without the low bands.
+            if hybrid {
+                self.stereo_saving = 0.0;
+            } else {
+                alloc_trim = alloc_trim_analysis(
+                    mode,
+                    x,
+                    band_log_e,
+                    end,
+                    lm as i32,
+                    channels,
+                    frame_size,
+                    &self.analysis,
+                    &mut self.stereo_saving,
+                    tf_estimate,
+                    self.intensity,
+                    0.0,
+                    equiv_rate,
+                );
+            }
             rc.encode_icdf(alloc_trim, &TRIM_ICDF, 7);
+        }
+        #[cfg(test)]
+        {
+            self.decisions = FrameDecisions {
+                alloc_trim,
+                tf_select,
+                tf_res: tf_raw,
+                is_transient,
+                weak_transient,
+            };
         }
         // Second VBR: compute target via simplified compute_vbr (libopus 2436-2534)
         // This makes packet size variable for VBR (beyond silence) while keeping reservoir in sync
         if self.vbr && self.bitrate != OPUS_BITRATE_MAX {
             let vbr_rate = bitrate_to_bits(self.bitrate, mode.fs, frame_size as i32) << BITRES;
-            let hybrid = start_band != 0;
             let lm_diff = mode.max_lm as i32 - lm as i32;
             let mut base_target = if !hybrid {
                 vbr_rate - ((40 * channels as i32 + 20) << BITRES)
@@ -2900,29 +3128,40 @@ impl CeltEncoder {
                     &self.analysis,
                     base_target,
                     lm as i32,
-                    self.bitrate,
+                    equiv_rate,
                     self.last_coded_bands,
                     channels as i32,
                     self.intensity,
                     self.constrained_vbr,
-                    stereo_saving,
+                    self.stereo_saving,
                     tot_boost,
                     tf_estimate,
-                    0, // pitch_change stub
+                    i32::from(pitch_change),
                     max_depth,
                     false,
                     false,
                     0.0,
-                    0.0, // temporal_vbr stub
+                    temporal_vbr,
                 )
             } else {
                 let mut t = base_target;
+                // Tonal frames (offset < 100) need more bits than noisy ones
+                // (celt_encoder.c:2466-2467).
+                if self.silk_offset < 100 {
+                    t += (12 << BITRES) >> (3 - lm);
+                }
+                if self.silk_offset > 100 {
+                    t -= (18 << BITRES) >> (3 - lm);
+                }
                 t += ((tf_estimate - 0.25) * 50.0 * (1 << BITRES) as f32) as i32;
                 if tf_estimate > 0.7 {
                     t = t.max(50 << BITRES);
                 }
                 t
             };
+            // libopus: "Don't attempt to use more than 510 kb/s, even for
+            // frames smaller than 20 ms." It bounds unconstrained VBR.
+            nb_compressed_bytes = nb_compressed_bytes.min(1275 >> (3 - lm));
             target += cur_tell_frac;
             let mut nb_available = ((target + (1 << (BITRES + 2))) >> (BITRES + 3)) as usize;
             nb_available = nb_available.max(min_allowed as usize);
@@ -2994,8 +3233,26 @@ impl CeltEncoder {
             0
         };
         alloc_bits -= anti_collapse_rsv;
+        // The highest band with signal (celt_encoder.c:2606-2625), by the
+        // analysis where it is valid, but not below what the rate supports.
+        let mut signal_bandwidth = end as i32 - 1;
+        if self.analysis.valid {
+            let c = channels as i32;
+            let min_bandwidth = if equiv_rate < 32000 * c {
+                13
+            } else if equiv_rate < 48000 * c {
+                16
+            } else if equiv_rate < 60000 * c {
+                18
+            } else if equiv_rate < 80000 * c {
+                19
+            } else {
+                20
+            };
+            signal_bandwidth = self.analysis.bandwidth.max(min_bandwidth);
+        }
 
-        self.last_coded_bands = clt_compute_allocation(
+        let coded_bands = clt_compute_allocation(
             mode,
             start_band,
             end,
@@ -3013,9 +3270,16 @@ impl CeltEncoder {
             lm as i32,
             rc,
             true,
-            0,
-            nb_ebands as i32 - 1,
+            self.last_coded_bands,
+            signal_bandwidth,
         );
+        // libopus keeps a slowly moving count of the coded bands for the
+        // allocator's hysteresis (celt_encoder.c:2629-2632).
+        self.last_coded_bands = if self.last_coded_bands != 0 {
+            (self.last_coded_bands + 1).min((self.last_coded_bands - 1).max(coded_bands))
+        } else {
+            coded_bands
+        };
 
         quant_fine_energy(
             mode,
@@ -3057,7 +3321,7 @@ impl CeltEncoder {
             &mut balance,
             rc,
             lm as i32,
-            self.last_coded_bands,
+            coded_bands,
             resynth,
             false,
             &mut 0u32,
@@ -3156,17 +3420,13 @@ impl CeltEncoder {
 
         rc.pad_to_bits(total_bits);
 
-        if pf_on {
-            self.prefilter_period = pitch_index;
-            self.prefilter_gain = gain1;
-            self.prefilter_tapset = self.tapset_decision;
-        } else {
-            self.prefilter_period = COMBFILTER_MINPERIOD;
-            self.prefilter_gain = 0.0;
-            self.prefilter_tapset = self.tapset_decision;
-        }
+        // libopus keeps the pitch found even when the pre-filter is off (its
+        // gain is then 0), and the tapset the frame started with.
+        self.prefilter_period = pitch_index;
+        self.prefilter_gain = gain1;
+        self.prefilter_tapset = prefilter_tapset;
 
-        if is_transient {
+        if is_transient || transient_got_disabled {
             self.consec_transient += 1;
         } else {
             self.consec_transient = 0;
@@ -4029,6 +4289,32 @@ mod tests {
     use super::*;
     use crate::{modes, range_coder::RangeCoder};
 
+    #[test]
+    fn frames_without_a_transient_flag_are_coded_as_not_transient() {
+        // A 2.5 ms frame codes no transient flag, so decoders take it as not
+        // transient. libopus codes it with long blocks and counts it as a
+        // transient frame (celt_encoder.c:1728-1735, 2805-2808): every frame
+        // of a 2.5 ms stream counts, whatever its transient analysis says.
+        let mut enc = CeltEncoder::new(modes::default_mode(), 1);
+        enc.set_end_band(21);
+        enc.complexity = 10;
+        let code = |enc: &mut CeltEncoder, pcm: &[f32]| {
+            let mut rc = RangeCoder::new_encoder(20);
+            enc.encode_with_budget_vbr(pcm, pcm.len(), &mut rc, 0, 160, false);
+            rc.done();
+        };
+        let tone: Vec<f32> = (0..120 * 8).map(|i| 0.1 * (i as f32 * 0.3).sin()).collect();
+        for f in 0..7 {
+            code(&mut enc, &tone[f * 120..(f + 1) * 120]);
+        }
+        let mut clicks = tone[840..].to_vec();
+        for (i, x) in clicks[60..90].iter_mut().enumerate() {
+            *x = if i % 2 == 0 { 0.9 } else { -0.9 };
+        }
+        code(&mut enc, &clicks);
+        assert_eq!(enc.consec_transient, 8);
+    }
+
     // Regression test: directly drive CeltEncoder with an invalid frame_size=48,
     // bypassing the OpusEncoder::encode() validation layer.
     //
@@ -4107,5 +4393,297 @@ mod tests {
             body[overlap..].iter().all(|&v| v == 0.0),
             "frame past the overlap must be the unfiltered input"
         );
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod mode_switch_tests {
+    use super::*;
+    use crate::{modes, range_coder::RangeCoder};
+
+    /// A 200 Hz harmonic series with a little noise, at 48 kHz from sample
+    /// `start`.
+    fn voiced(n: usize, start: usize, seed: &mut u32) -> Vec<f32> {
+        (start..start + n)
+            .map(|i| {
+                *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let t = i as f32 / 48000.0;
+                let harmonics: f32 = (1..8)
+                    .map(|k| (2.0 * core::f32::consts::PI * 200.0 * k as f32 * t).sin() / k as f32)
+                    .sum();
+                0.2 * harmonics + ((*seed >> 9) as f32 / (1 << 23) as f32 - 0.5) * 0.01
+            })
+            .collect()
+    }
+
+    fn encoder() -> CeltEncoder {
+        let mut enc = CeltEncoder::new(modes::default_mode(), 1);
+        enc.set_end_band(21);
+        enc.complexity = 10;
+        enc
+    }
+
+    /// A CBR frame of `bytes` bytes.
+    fn encode(enc: &mut CeltEncoder, pcm: &[f32], bytes: usize) -> Vec<u8> {
+        let mut rc = RangeCoder::new_encoder(bytes as u32);
+        enc.encode_with_budget_vbr(pcm, pcm.len(), &mut rc, 0, (bytes * 8) as i32, false);
+        rc.done();
+        rc.buf[..bytes].to_vec()
+    }
+
+    /// The post-filter and intra-energy flags of a 20 ms frame.
+    fn flags(frame: &[u8]) -> (bool, bool) {
+        let mut rc = RangeCoder::new_decoder(frame);
+        assert!(!rc.decode_bit_logp(15), "silence");
+        let postfilter = rc.decode_bit_logp(1);
+        if postfilter {
+            let octave = rc.dec_uint(6);
+            rc.dec_bits(4 + octave);
+            rc.dec_bits(3);
+            rc.decode_icdf(&TAPSET_ICDF, 2);
+        }
+        rc.decode_bit_logp(3); // transient
+        (postfilter, rc.decode_bit_logp(3))
+    }
+
+    #[test]
+    fn prediction_off_drops_the_prefilter_and_codes_energy_intra() {
+        // libopus CELT_SET_PREDICTION(0), which the first frame after a mode
+        // switch uses: no pitch pre-filter and intra-coded energy.
+        let (mut a, mut b) = (encoder(), encoder());
+        let (mut sa, mut sb) = (1, 1);
+        for f in 0..6 {
+            encode(&mut a, &voiced(960, f * 960, &mut sa), 160);
+            encode(&mut b, &voiced(960, f * 960, &mut sb), 160);
+        }
+        b.set_prediction(0);
+        let with = flags(&encode(&mut a, &voiced(960, 6 * 960, &mut sa), 160));
+        let without = flags(&encode(&mut b, &voiced(960, 6 * 960, &mut sb), 160));
+        assert_eq!(with, (true, false));
+        assert_eq!(without, (false, true));
+    }
+
+    #[test]
+    fn reset_state_restarts_like_a_new_encoder() {
+        // libopus OPUS_RESET_STATE, which a mode switch's redundancy frames
+        // and prefill rely on.
+        let mut used = encoder();
+        let mut seed = 3;
+        for f in 0..5 {
+            encode(&mut used, &voiced(960, f * 960, &mut seed), 120);
+        }
+        used.reset_state();
+        let frame = voiced(960, 0, &mut 9);
+        assert_eq!(
+            encode(&mut used, &frame, 120),
+            encode(&mut encoder(), &frame, 120)
+        );
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod hybrid_decision_tests {
+    use super::*;
+    use crate::{modes, range_coder::RangeCoder};
+
+    /// Deterministic noise, channel-major like the CELT input.
+    fn noise(n: usize, seed: &mut u32, amplitude: f32) -> Vec<f32> {
+        (0..n)
+            .map(|_| {
+                *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                ((*seed >> 9) as f32 / (1 << 23) as f32 - 0.5) * amplitude
+            })
+            .collect()
+    }
+
+    fn vbr_encoder(channels: usize, bitrate: i32) -> CeltEncoder {
+        let mut enc = CeltEncoder::new(modes::default_mode(), channels);
+        enc.set_end_band(21);
+        enc.set_bitrate(bitrate);
+        enc.set_vbr(true);
+        enc.set_constrained_vbr(false);
+        enc.complexity = 9;
+        enc
+    }
+
+    fn encode(enc: &mut CeltEncoder, pcm: &[f32], start_band: usize, bytes: usize) -> i32 {
+        let mut rc = RangeCoder::new_encoder(bytes as u32);
+        let vbr = enc.vbr;
+        enc.encode_with_budget_vbr(pcm, 960, &mut rc, start_band, (bytes * 8) as i32, vbr);
+        rc.tell()
+    }
+
+    #[test]
+    fn hybrid_frames_fix_the_trim_and_spread_aggressively() {
+        let mut enc = vbr_encoder(1, 8000);
+        enc.set_silk_info(1, 240);
+        let mut seed = 1;
+        let mut steady = 0;
+        for _ in 0..6 {
+            let pcm = noise(960, &mut seed, 0.2);
+            encode(&mut enc, &pcm, 17, 1499);
+            assert_eq!(enc.decisions.alloc_trim, 5);
+            let transient = enc.decisions.is_transient;
+            steady += usize::from(!transient);
+            let spread = if transient {
+                SPREAD_NORMAL
+            } else {
+                SPREAD_AGGRESSIVE
+            };
+            assert_eq!(enc.spread_decision, spread);
+        }
+        assert!(steady >= 3);
+    }
+
+    /// A quiet frame with a loud click in its second half.
+    fn click(seed: &mut u32) -> Vec<f32> {
+        let mut pcm = noise(960, seed, 0.001);
+        for (i, x) in pcm[700..760].iter_mut().enumerate() {
+            *x += if i % 2 == 0 { 0.8 } else { -0.8 };
+        }
+        pcm
+    }
+
+    #[test]
+    fn low_rate_hybrid_transients_keep_long_resolution() {
+        // Unvoiced SILK: a weak transient codes TF on the long window, a
+        // strong one keeps 5 ms resolution (celt_encoder.c:2261-2276).
+        let mut enc = vbr_encoder(1, 2000);
+        enc.set_silk_info(1, 240);
+        let mut seed = 7;
+        encode(&mut enc, &noise(960, &mut seed, 0.001), 17, 1499);
+        encode(&mut enc, &click(&mut seed), 17, 1499);
+        let d = enc.decisions;
+        assert!(d.is_transient || d.weak_transient);
+        if d.weak_transient {
+            assert!(!d.is_transient);
+            assert_eq!((d.tf_select, &d.tf_res[17..21]), (0, &[1; 4][..]));
+        } else {
+            assert_eq!((d.tf_select, &d.tf_res[17..21]), (1, &[0; 4][..]));
+        }
+        // Voiced SILK: no weak transients, TF follows the transient flag.
+        let mut enc = vbr_encoder(1, 2000);
+        enc.set_silk_info(2, 32);
+        let mut seed = 7;
+        encode(&mut enc, &noise(960, &mut seed, 0.001), 17, 1499);
+        encode(&mut enc, &click(&mut seed), 17, 1499);
+        let d = enc.decisions;
+        assert!(d.is_transient && !d.weak_transient);
+        assert_eq!((d.tf_select, &d.tf_res[17..21]), (0, &[1; 4][..]));
+    }
+
+    #[test]
+    fn celt_frames_without_tf_analysis_follow_the_transient_flag() {
+        // Too few bytes for TF analysis: tf_res is the transient flag.
+        let mut enc = CeltEncoder::new(modes::default_mode(), 1);
+        enc.set_end_band(21);
+        enc.complexity = 9;
+        let mut seed = 3;
+        encode(&mut enc, &noise(960, &mut seed, 0.001), 0, 12);
+        encode(&mut enc, &click(&mut seed), 0, 12);
+        let d = enc.decisions;
+        assert!(d.is_transient);
+        assert_eq!(d.tf_select, 0);
+        assert!(d.tf_res[..21].iter().all(|&tf| tf == 1));
+    }
+
+    #[test]
+    fn weak_transients_are_found_only_when_allowed() {
+        let mode = modes::default_mode();
+        let len = 960 + mode.overlap;
+        let mut tmp = vec![0.0f32; MAX_TRANSIENT_LEN];
+        let mut tmp2 = vec![0.0f32; MAX_TRANSIENT_LEN / 2];
+        let mut found = false;
+        for step in [1.5f32, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0] {
+            let mut seed = 11;
+            let mut x = noise(len, &mut seed, 1000.0);
+            for v in &mut x[len / 2..] {
+                *v *= step;
+            }
+            let analyse = |allow: bool, tmp: &mut [f32], tmp2: &mut [f32]| {
+                let (mut tf_estimate, mut tf_chan, mut weak) = (0.0, 0, false);
+                let transient = transient_analysis(
+                    &x,
+                    len,
+                    1,
+                    &mut tf_estimate,
+                    &mut tf_chan,
+                    allow,
+                    &mut weak,
+                    0.0,
+                    0.0,
+                    tmp,
+                    tmp2,
+                );
+                (transient, weak)
+            };
+            let (transient, weak) = analyse(false, &mut tmp, &mut tmp2);
+            assert!(!weak);
+            let (allowed_transient, allowed_weak) = analyse(true, &mut tmp, &mut tmp2);
+            assert!(!(allowed_transient && allowed_weak));
+            found |= transient && allowed_weak;
+        }
+        assert!(found, "no step gave a weak transient");
+    }
+
+    #[test]
+    fn stereo_intensity_follows_the_celt_rate() {
+        let mut seed = 5;
+        // Hybrid at a tiny CELT share: intensity stereo from the first band.
+        let mut enc = vbr_encoder(2, 4000);
+        enc.set_silk_info(1, 240);
+        encode(&mut enc, &noise(1920, &mut seed, 0.2), 17, 1499);
+        assert_eq!(enc.intensity, 17);
+        // CELT at 24 kb/s: the equivalent rate is the target, not the
+        // packet capacity, so intensity stereo starts at band 10.
+        let mut enc = vbr_encoder(2, 24000);
+        encode(&mut enc, &noise(1920, &mut seed, 0.2), 0, 1275);
+        assert_eq!(enc.intensity, 10);
+    }
+
+    #[test]
+    fn silk_offset_moves_the_hybrid_target() {
+        let mut seed = 9;
+        let pcm = noise(960, &mut seed, 0.2);
+        let mut bits = [0; 2];
+        for (bits, (signal_type, offset)) in bits.iter_mut().zip([(2, 32), (1, 240)]) {
+            let mut enc = vbr_encoder(1, 6000);
+            enc.set_silk_info(signal_type, offset);
+            *bits = encode(&mut enc, &pcm, 17, 1499);
+        }
+        // +12 bits for tonal, -18 for noisy 20 ms frames.
+        assert!(bits[0] > bits[1] + 16, "{bits:?}");
+    }
+
+    #[test]
+    fn loss_rate_reaches_the_coarse_energy() {
+        let mut out = [Vec::new(), Vec::new()];
+        for (out, loss) in out.iter_mut().zip([0, 25]) {
+            let mut enc = vbr_encoder(1, 32000);
+            enc.set_loss_rate(loss);
+            let mut seed = 13;
+            for frame in 0..30 {
+                let amplitude = if frame % 7 == 0 { 0.6 } else { 0.05 };
+                out.push(encode(&mut enc, &noise(960, &mut seed, amplitude), 0, 1275));
+            }
+        }
+        assert_ne!(out[0], out[1]);
+    }
+
+    #[test]
+    fn coded_band_count_moves_by_one_band_per_frame() {
+        let mut enc = CeltEncoder::new(modes::default_mode(), 1);
+        enc.set_end_band(21);
+        enc.complexity = 9;
+        let mut seed = 17;
+        let mut last: Option<i32> = None;
+        for frame in 0..12 {
+            let bytes = if frame % 2 == 0 { 1275 } else { 16 };
+            encode(&mut enc, &noise(960, &mut seed, 0.3), 0, bytes);
+            if let Some(last) = last {
+                assert!((enc.last_coded_bands - last).abs() <= 1);
+            }
+            last = Some(enc.last_coded_bands);
+        }
     }
 }

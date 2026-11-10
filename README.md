@@ -128,6 +128,22 @@ Measured on Apple Silicon M-series (aarch64), compiled with `--release` (opt-lev
 
 ### 0.1.41
 
+- **New: `OpusEncoder::lookahead()` returns the encoder's lookahead, like
+  libopus `OPUS_GET_LOOKAHEAD`.** The value is in samples at the encoder's
+  sampling rate and is the pre-skip an Ogg Opus `OpusHead` needs:
+  `Fs/400 + Fs/250` (312 samples at 48 kHz), only `Fs/400` for
+  `RestrictedLowDelay`. A test checks it against libopus for every rate,
+  channel count and application.
+- **Fix: the encoder allocates with the default trim when it is not
+  coded, like libopus.** When the dynalloc boosts left no room for the
+  allocation trim symbol, the encoder used to allocate with the analysed
+  trim it could not code, while every conforming decoder assumes the
+  default of 5, so those frames were decoded with a different allocation.
+  It now starts from 5 and only analyses and codes the trim when it fits
+  (`celt_encoder.c:2408-2421`). This shows at complexity 8 and up, where
+  the second MDCT makes dynalloc boost the top bands of short-block frames
+  until the trim no longer fits: short transients are no longer smeared,
+  and the worst-case click level now matches libopus 1.6.
 - **Fix: the encoder no longer panics with in-band FEC at 24/48 kHz and
   20-28 kb/s.** With a packet-loss rate above 5%, the FEC decision walks the
   frame's bandwidth down until FEC fits the rate, and the hybrid → SILK-only

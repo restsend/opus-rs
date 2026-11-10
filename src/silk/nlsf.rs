@@ -359,7 +359,8 @@ pub fn silk_nlsf_vq_weights_laroia(p_w_q5: &mut [i16], p_nlsf_q15: &[i16], d: us
         k += 2;
     }
 
-    tmp1_int = ((32767 - p_nlsf_q15[d - 1]) as i32).max(1);
+    // The distance to pi is measured from 1 << 15 (NLSF_VQ_weights_laroia.c:76).
+    tmp1_int = ((1 << 15) - p_nlsf_q15[d - 1] as i32).max(1);
     tmp1_int = silk_div32_16(NUMER, tmp1_int);
     p_w_q5[d - 1] = silk_limit(tmp2_int + tmp1_int, 0, i16::MAX as i32) as i16;
 }

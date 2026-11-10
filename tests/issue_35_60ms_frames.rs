@@ -232,8 +232,11 @@ fn hybrid_60ms_mono_and_stereo() {
 
 #[test]
 fn issue_repro_exact_config() {
-    // From the issue: OpusEncoder::new(16000, 2, Voip), 60 ms = 960 samples.
+    // From the issue: OpusEncoder::new(16000, 2, Voip), 60 ms = 960 samples,
+    // at a rate libopus codes in SILK (it codes the default 64 kb/s of this
+    // input as CELT).
     let mut enc = OpusEncoder::new(16000, 2, Application::Voip).unwrap();
+    enc.bitrate_bps = 32000;
     let pcm = vec![0.1f32; 960 * 2];
     let mut out = vec![0u8; 4000];
     let n = enc.encode(&pcm, 960, &mut out).expect("60 ms must encode");

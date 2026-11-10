@@ -56,6 +56,12 @@ impl MdctLookup {
         }
     }
 
+    /// The FFT of the MDCT at `shift` (libopus `mdct.kfft[shift]`), which the
+    /// encoder's signal analysis reuses.
+    pub fn fft(&self, shift: usize) -> &KissFftState {
+        self.kfft[shift].as_ref().expect("MDCT FFT plan")
+    }
+
     fn get_trig(&self, shift: usize) -> (&[f32], usize) {
         let mut offset = 0;
         let mut curr_n = self.n;

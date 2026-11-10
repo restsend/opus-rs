@@ -54,6 +54,8 @@ fn input(rate: usize, level: f64) -> Vec<f32> {
 fn opus_rs_packets(rate: usize, bitrate: i32, level: f64) -> Vec<Vec<u8>> {
     let mut enc = OpusEncoder::new(rate as i32, 1, Application::Audio).unwrap();
     enc.bitrate_bps = bitrate;
+    // As libopus below: complexity 6, without the signal analysis.
+    enc.complexity = 6;
     let frame = rate / 50;
     let mut pkt = [0u8; 4000];
     input(rate, level)
@@ -68,9 +70,10 @@ fn opus_rs_packets(rate: usize, bitrate: i32, level: f64) -> Vec<Vec<u8>> {
 fn libopus_packets(rate: usize, bitrate: i32, level: f64) -> Vec<Vec<u8>> {
     let mut enc = CEnc::new(rate as u32, CCh::Mono, CApp::Audio).unwrap();
     enc.set_bitrate(Bitrate::Bits(bitrate)).unwrap();
-    // Complexity 6 keeps libopus's tonality analysis off (opus_encoder.c:1252).
-    // opus-rs does not port it, and from 24 kHz its leakage boosts are worth
-    // another ~3 dB at 64 kbps; with it off the CELT paths compare like-for-like.
+    // Complexity 6 keeps the signal analysis off in both encoders (it runs
+    // from complexity 7, opus_encoder.c:1252), the conditions of the issue's
+    // measurements: with it, libopus itself rises only 2.2 dB from 64 to
+    // 128 kbps on this chirp. Without it the CELT paths compare like-for-like.
     enc.set_complexity(6).unwrap();
     // Same look-ahead as opus-rs, so the same pre-skip applies to both.
     assert_eq!(

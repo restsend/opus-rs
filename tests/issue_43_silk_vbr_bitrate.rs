@@ -18,7 +18,7 @@ use opus::{
     Application as CApp, Bandwidth as CBw, Bitrate as CBitrate, Channels as CCh, Encoder as CEnc,
     Signal as CSignal,
 };
-use opus_rs::{Application, OpusEncoder};
+use opus_rs::{Application, OpusEncoder, Signal};
 use std::f32::consts::PI;
 
 /// Packets per stream, and how many leading packets are warm-up.
@@ -98,6 +98,8 @@ fn rs_packets(setup: Setup, cbr: bool, buf_len: usize) -> Vec<Vec<u8>> {
     let mut enc = OpusEncoder::new(setup.sr as i32, 1, Application::Voip).unwrap();
     enc.bitrate_bps = setup.bitrate;
     enc.use_cbr = cbr;
+    // As libopus below: speech, which keeps 64 kb/s in SILK.
+    enc.set_signal(Signal::Voice);
     let mut out = vec![0u8; buf_len];
     (0..PACKETS)
         .map(|p| {

@@ -16,7 +16,7 @@ use opus::{
     Application as CApp, Bandwidth as CBw, Bitrate as CBitrate, Channels as CCh, Decoder as CDec,
     Encoder as CEnc, Signal as CSignal,
 };
-use opus_rs::{Application, OpusDecoder, OpusEncoder};
+use opus_rs::{Application, OpusDecoder, OpusEncoder, Signal};
 use std::f32::consts::PI;
 
 /// Largest Opus frame per channel: 120 ms at 48 kHz.
@@ -288,6 +288,8 @@ fn run(case: &Case) -> Measured {
     let input = (case.signal)(sr, frame * packets);
 
     let mut rs_enc = OpusEncoder::new(sr as i32, CH, Application::Voip).unwrap();
+    // As libopus below: speech.
+    rs_enc.set_signal(Signal::Voice);
     rs_enc.bitrate_bps = case.bitrate;
     rs_enc.use_cbr = case.cbr;
 

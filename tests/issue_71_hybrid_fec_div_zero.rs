@@ -100,6 +100,14 @@ fn rs_packets(sr: usize, frame: usize, ch: usize, bitrate: i32, fec: bool) -> Ve
     enc.bitrate_bps = bitrate;
     enc.use_inband_fec = fec;
     enc.packet_loss_perc = LOSS_PERC;
+    // The reference encoder is pinned to a bandwidth (see `c_packets`).
+    // Since set_bandwidth, the port no longer derives the bandwidth from
+    // the API rate, so force the same one here.
+    enc.set_bandwidth(if sr == 24000 {
+        opus_rs::Bandwidth::Superwideband
+    } else {
+        opus_rs::Bandwidth::Fullband
+    });
     let input = voiced(sr, frame * PACKETS, ch);
     let mut out = vec![0u8; 1500];
     (0..PACKETS)
