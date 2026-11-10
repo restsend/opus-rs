@@ -2778,7 +2778,9 @@ impl CeltEncoder {
                 &INTEN_HYSTERESIS,
                 self.intensity,
             );
-            self.intensity = self.intensity.clamp(0, end as i32);
+            // libopus clamps to the coded bands: the band is coded relative
+            // to the start band, 17 in a Hybrid frame.
+            self.intensity = self.intensity.clamp(start_band as i32, end as i32);
         }
 
         if self.complexity == 0 {
