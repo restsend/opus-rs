@@ -308,15 +308,26 @@ impl SilkResampler {
         }
 
         self.input_delay = DELAY_MATRIX_ENC[in_id][out_id] as i32;
-        let ret = self.init_common(fs_hz_in, fs_hz_out);
-        if ret != 0 {
-            return ret;
-        }
+        self.init_common(fs_hz_in, fs_hz_out)
+    }
 
-        // Downsample: private down-FIR with the per-ratio tables
-        // (resampler.c:117-150). The 3:4 ratio (16 -> 12 kHz) and integer
-        // down ratios 1:2 .. 1:6 are all reachable encoder combinations.
-        if fs_hz_out < fs_hz_in {
+    /// Shared init tail: batch size, mode selection for copy/up/IIR-FIR/down-FIR and
+    /// the inverse ratio in Q16.
+    fn init_common(&mut self, fs_hz_in: i32, fs_hz_out: i32) -> i32 {
+        self.fs_in_khz = fs_hz_in / 1000;
+        self.fs_out_khz = fs_hz_out / 1000;
+        self.batch_size = self.fs_in_khz * RESAMPLER_MAX_BATCH_SIZE_MS;
+
+        if fs_hz_out == fs_hz_in {
+            self.mode = ResamplerMode::Copy;
+        } else if fs_hz_out == fs_hz_in * 2 {
+            self.mode = ResamplerMode::Up2HQ;
+        } else if fs_hz_out > fs_hz_in {
+            self.mode = ResamplerMode::IirFir;
+        } else {
+            // Downsample, in the encoder and in a decoder whose API rate is
+            // below the SILK rate: private down-FIR with the per-ratio tables
+            // (resampler.c:117-150).
             let (fracs, order, coefs): (i32, usize, &'static [i16]) = if fs_hz_out * 4 == fs_hz_in * 3
             {
                 (3, RESAMPLER_DOWN_ORDER_FIR0, &SILK_RESAMPLER_3_4_COEFS)
@@ -337,34 +348,6 @@ impl SilkResampler {
             self.fir_fracs = fracs;
             self.down_order = order;
             self.down_coefs = coefs;
-            // Down-FIR runs without the 2x pre-upsampling: invRatio_Q16 uses
-            // up2x = 0 (resampler.c:152-158).
-            self.inv_ratio_q16 =
-                ((((fs_hz_in as i64) << 14) / fs_hz_out as i64) << 2) as i32;
-            while silk_smulww(self.inv_ratio_q16, fs_hz_out) < fs_hz_in {
-                self.inv_ratio_q16 += 1;
-            }
-        }
-
-        0
-    }
-
-    /// Shared init tail: batch size, mode selection for copy/up/IIR-FIR and
-    /// the inverse ratio in Q16.
-    fn init_common(&mut self, fs_hz_in: i32, fs_hz_out: i32) -> i32 {
-        self.fs_in_khz = fs_hz_in / 1000;
-        self.fs_out_khz = fs_hz_out / 1000;
-        self.batch_size = self.fs_in_khz * RESAMPLER_MAX_BATCH_SIZE_MS;
-
-        if fs_hz_out == fs_hz_in {
-            self.mode = ResamplerMode::Copy;
-        } else if fs_hz_out == fs_hz_in * 2 {
-            self.mode = ResamplerMode::Up2HQ;
-        } else {
-            // IirFir covers every other ratio (upsampling in the decoder;
-            // downsampling ratios get the concrete down-FIR table in
-            // init_for_enc).
-            self.mode = ResamplerMode::IirFir;
         }
 
         let up2x = if self.mode == ResamplerMode::IirFir {
