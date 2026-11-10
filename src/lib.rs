@@ -196,6 +196,9 @@ pub struct OpusEncoder {
     silk_resampler_enc_right: silk::resampler::SilkResampler,
 
     rc: RangeCoder,
+    /// Range encoder state after the last packet (libopus `rangeFinal`), 0
+    /// when no frame was coded.
+    range_final: u32,
 }
 
 /// Format-agnostic PCM input for `encode_impl` (issue #28): `F32` is the
@@ -630,6 +633,7 @@ impl OpusEncoder {
             silk_resampler_enc: silk::resampler::SilkResampler::default(),
             silk_resampler_enc_right: silk::resampler::SilkResampler::default(),
             rc: RangeCoder::new_encoder(1),
+            range_final: 0,
         })
     }
 
@@ -639,6 +643,15 @@ impl OpusEncoder {
     /// `RestrictedLowDelay`.
     pub fn lookahead(&self) -> usize {
         self.sampling_rate as usize / 400 + self.delay_compensation
+    }
+
+    /// The range encoder's final state after the last packet, like libopus
+    /// `OPUS_GET_FINAL_RANGE`. A decoder reports the same value after
+    /// decoding that packet, so the two can be compared to check that they
+    /// agree on every symbol. It is 0 for a packet that codes no frame (a
+    /// ToC-only packet, or the empty frame sent when a budget is exceeded).
+    pub fn final_range(&self) -> u32 {
+        self.range_final
     }
 
     pub fn enable_hybrid_mode(&mut self) -> Result<(), &'static str> {
@@ -692,6 +705,7 @@ impl OpusEncoder {
         if output.len() < 2 {
             return Err("Output buffer too small");
         }
+        self.range_final = 0;
 
         let frame_rate = frame_rate_from_params(self.sampling_rate, frame_size)
             .ok_or("Invalid frame size for sampling rate")?;
@@ -1512,6 +1526,7 @@ impl OpusEncoder {
             self.prev_enc_mode = Some(mode);
             return Ok(ret);
         }
+        self.range_final = self.rc.rng;
 
         if mode == OpusMode::SilkOnly {
             let mut ret = silk_ret_bytes.min(self.rc.storage as usize);
@@ -1706,6 +1721,10 @@ pub struct OpusDecoder {
 
     prev_internal_rate: i32,
 
+    /// Range decoder state after the last decoded frame (libopus
+    /// `OPUS_GET_FINAL_RANGE`), 0 after a concealed one.
+    range_final: u32,
+
     pub hybrid_skip_celt: bool,
 
     #[cfg(not(feature = "heap"))]
@@ -1784,6 +1803,7 @@ impl OpusDecoder {
             (&raw mut (*this).silk_resampler).write(silk::resampler::SilkResampler::default());
             (&raw mut (*this).silk_resampler_2).write(silk::resampler::SilkResampler::default());
             (&raw mut (*this).prev_internal_rate).write(0);
+            (&raw mut (*this).range_final).write(0);
             (&raw mut (*this).hybrid_skip_celt).write(false);
             #[cfg(feature = "heap")]
             {
@@ -1809,6 +1829,15 @@ impl OpusDecoder {
         decoder.silk_dec.init(sampling_rate.min(16000), channels as i32);
         decoder.silk_dec.channel_state[0].fs_api_hz = sampling_rate;
         Ok(decoder)
+    }
+
+    /// The range decoder's final state after the last frame decoded, like
+    /// libopus `OPUS_GET_FINAL_RANGE`: it equals the encoder's final range
+    /// for that frame (the value an Opus test vector stores with each
+    /// packet), XORed with the redundant frame's when the frame has one. It
+    /// is 0 after a frame that was concealed (lost, empty or a single byte).
+    pub fn final_range(&self) -> u32 {
+        self.range_final
     }
 
     /// Decode one Opus packet into interleaved `f32` PCM, returning the
@@ -2060,6 +2089,7 @@ impl OpusDecoder {
                     let mut redundancy_bytes = 0usize;
                     let mut celt_to_silk = false;
                     let mut redundant = [0.0f32; REDUNDANT_MAX];
+                    let mut redundant_rng = 0u32;
                     let has_tail = !payload.is_empty() && rc.tell() + 17 <= (8 * len) as i32;
                     if has_tail {
                         celt_to_silk = rc.decode_bit_logp(1);
@@ -2072,7 +2102,7 @@ impl OpusDecoder {
                         if celt_to_silk {
                             // From the old CELT state, before any reset — a
                             // CELT-to-SILK switch's bridge (532-541).
-                            self.decode_redundant(
+                            redundant_rng = self.decode_redundant(
                                 &payload[len - redundancy_bytes..],
                                 redundant_end_band,
                                 f5,
@@ -2100,7 +2130,7 @@ impl OpusDecoder {
                         // frame carries it on — and fade its second half into
                         // the frame's last 2.5 ms (595-603).
                         self.celt_dec.reset_state();
-                        self.decode_redundant(
+                        redundant_rng = self.decode_redundant(
                             &payload[len - redundancy_bytes..],
                             redundant_end_band,
                             f5,
@@ -2143,6 +2173,7 @@ impl OpusDecoder {
                         );
                     }
                     has_redundancy = has_tail && !celt_to_silk;
+                    self.range_final = if len <= 1 { 0 } else { rc.rng ^ redundant_rng };
                 }
                 decoded_total
             }
@@ -2190,6 +2221,7 @@ impl OpusDecoder {
                             }
                         }
                     }
+                    self.range_final = if payload.len() <= 1 { 0 } else { rc.rng };
                 }
                 decoded_total
             }
@@ -2261,6 +2293,7 @@ impl OpusDecoder {
                     let f5 = self.sampling_rate as usize / 200;
                     let f2_5 = f5 / 2;
                     let mut redundant = [0.0f32; REDUNDANT_MAX];
+                    let mut redundant_rng = 0u32;
                     if fi == 0 {
                         if redundancy {
                             transition = false;
@@ -2269,7 +2302,7 @@ impl OpusDecoder {
                         }
                     }
                     if redundancy && celt_to_silk {
-                        self.decode_redundant(
+                        redundant_rng = self.decode_redundant(
                             &payload[len..len + redundancy_bytes],
                             celt_end_band,
                             f5,
@@ -2332,7 +2365,7 @@ impl OpusDecoder {
                         let inc = (48000 / self.sampling_rate) as usize;
                         if !celt_to_silk {
                             self.celt_dec.reset_state();
-                            self.decode_redundant(
+                            redundant_rng = self.decode_redundant(
                                 &payload[len..len + redundancy_bytes],
                                 celt_end_band,
                                 f5,
@@ -2367,6 +2400,7 @@ impl OpusDecoder {
                             );
                         }
                     }
+                    self.range_final = if len <= 1 { 0 } else { rc.rng ^ redundant_rng };
                 }
                 decoded_total
             }
@@ -2482,6 +2516,7 @@ impl OpusDecoder {
             internal_rate,
             packet_frame,
         )?;
+        self.range_final = rc.rng;
         let len = packet_frame * channels;
         if mode == OpusMode::Hybrid {
             // FEC never reads the CELT layer: conceal it above SILK's band,
@@ -2612,6 +2647,7 @@ impl OpusDecoder {
         }
 
         self.save_pcm_tail(output, total);
+        self.range_final = 0;
         Ok(total)
     }
 
@@ -3111,11 +3147,17 @@ const REDUNDANT_MAX: usize = 480;
 impl OpusDecoder {
     /// A mode switch's 5 ms redundant CELT frame (libopus opus_decode_frame:
     /// all bands from 0, its own range coder over its bytes), interleaved into
-    /// `out`.
-    fn decode_redundant(&mut self, data: &[u8], end_band: usize, f5: usize, out: &mut [f32]) {
+    /// `out`, returning its final range.
+    fn decode_redundant(
+        &mut self,
+        data: &[u8],
+        end_band: usize,
+        f5: usize,
+        out: &mut [f32],
+    ) -> u32 {
         let n = f5 * self.channels;
         if data.is_empty() || n > REDUNDANT_MAX {
-            return;
+            return 0;
         }
         let mut planar = [0.0f32; REDUNDANT_MAX];
         let mut rrc = RangeCoder::new_decoder(data);
@@ -3136,6 +3178,7 @@ impl OpusDecoder {
                 }
             }
         }
+        rrc.rng
     }
 }
 
