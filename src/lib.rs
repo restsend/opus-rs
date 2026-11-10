@@ -1641,6 +1641,11 @@ impl OpusEncoder {
         let mut silk_bitrate = 0;
         let mut hb_gain = 1.0;
         let mut silk_switch_ready = false;
+        // How often a channel's rate state machine found the switch ready in
+        // this packet's control calls: each makes room for the redundancy in
+        // the control struct the channels share (enc_API.c:260-268,
+        // control_audio_bandwidth.c:86-90, 114-118).
+        let mut silk_switch_room = 0;
         let mut silk_prefilled = false;
         if mode == OpusMode::SilkOnly || mode == OpusMode::Hybrid {
             let frame_ms = (frame_size as i32 * 1000) / self.sampling_rate;
@@ -1728,16 +1733,17 @@ impl OpusEncoder {
             } else {
                 let (fs, ready) =
                     rate_control(state_mut(&mut self.silk_enc), self.silk_opus_can_switch);
-                if self.channels == 2 {
-                    // The side follows the mid's rate (force_fs_kHz) but
-                    // keeps its own low-pass state machine.
-                    rate_control(
+                // The side follows the mid's rate (force_fs_kHz) but keeps
+                // its own low-pass state machine, which can be ready too.
+                let side_ready = self.channels == 2
+                    && rate_control(
                         state_mut(&mut self.silk_enc_side),
                         self.silk_opus_can_switch,
-                    );
-                }
+                    )
+                    .1;
+                silk_switch_room += u32::from(ready) + u32::from(side_ready);
                 if !silk_switch_prefill {
-                    silk_switch_ready = ready;
+                    silk_switch_ready = ready || side_ready;
                 }
                 fs
             };
@@ -1788,7 +1794,6 @@ impl OpusEncoder {
                     total_bitrate,
                     self.complexity,
                 );
-                self.silk_enc.s_cmn.use_cbr = if self.use_cbr { 1 } else { 0 };
 
                 self.silk_enc.s_cmn.n_channels = self.channels as i32;
                 self.silk_initialized = true;
@@ -1821,10 +1826,17 @@ impl OpusEncoder {
                         total_bitrate,
                         self.complexity,
                     );
-                    side.s_cmn.use_cbr = self.silk_enc.s_cmn.use_cbr;
                     side.s_cmn.n_channels = 2;
                 }
             }
+
+            // SILK codes CBR only in SILK-only frames: in hybrid CBR it runs
+            // as VBR under a cap, and CELT takes up the rest of the packet
+            // (opus_encoder.c:2150, 2163-2178). Like libopus's
+            // silk_control_encoder (control_codec.c:76), the encoder states
+            // take the flag for every packet, since the noise shaping reads
+            // it.
+            let silk_use_cbr = self.use_cbr && mode != OpusMode::Hybrid;
 
             // C silk_setup_LBRR (control_codec.c): per-packet FEC state and
             // LBRR gain increase (7 on the first FEC packet, then
@@ -1833,6 +1845,7 @@ impl OpusEncoder {
                 .into_iter()
                 .take(self.channels)
             {
+                enc.s_cmn.use_cbr = silk_use_cbr as i32;
                 enc.s_cmn.use_in_band_fec = if self.use_inband_fec { 1 } else { 0 };
                 enc.s_cmn.use_dtx = silk_use_dtx as i32;
                 enc.s_cmn.packet_loss_perc = self.packet_loss_perc.clamp(0, 100);
@@ -1924,10 +1937,10 @@ impl OpusEncoder {
                 // repeats the LBRR setup of the prefill call, which counts
                 // as a packet with LBRR.
                 let (_, ready) = rate_control(state_mut(&mut self.silk_enc), false);
-                if self.channels == 2 {
-                    rate_control(state_mut(&mut self.silk_enc_side), false);
-                }
-                silk_switch_ready = ready;
+                let side_ready =
+                    self.channels == 2 && rate_control(state_mut(&mut self.silk_enc_side), false).1;
+                silk_switch_room += u32::from(ready) + u32::from(side_ready);
+                silk_switch_ready = ready || side_ready;
                 for enc in [&mut self.silk_enc, &mut self.silk_enc_side]
                     .into_iter()
                     .take(self.channels)
@@ -2018,17 +2031,11 @@ impl OpusEncoder {
             } else {
                 packet_max_bits
             };
-            if silk_switch_ready {
-                // Room for the redundant frame of the coming switch.
+            // Room for the redundant frame of the coming switch.
+            for _ in 0..silk_switch_room {
                 silk_max_bits -= silk_max_bits * 5 / (frame_ms + 5);
             }
-            let silk_use_cbr = if mode == OpusMode::Hybrid && self.use_cbr {
-                0
-            } else if self.use_cbr {
-                1
-            } else {
-                0
-            };
+            let silk_use_cbr = silk_use_cbr as i32;
             let ret = if self.channels == 2 {
                 silk_encode_stereo_packet(
                     state_mut(&mut self.silk_enc),
@@ -2404,35 +2411,38 @@ impl OpusEncoder {
             self.nb_no_activity_ms_q1 = 0;
         }
 
-        // C opus_encoder.c:2170-2179: "In the unlikely case that the SILK
-        // encoder busted its target, tell the decoder to call the PLC" — emit
-        // a minimal packet with an EMPTY frame instead of failing hard. The
-        // zero-length frame makes the decoder conceal (libopus pads the same
-        // 2-byte packet with opus_packet_pad under CBR). With FEC the LBRR
-        // section can squeeze the main frame below what even the
-        // damage-control re-encode fits, which is exactly the case this
-        // fallback exists for.
+        // C opus_encoder.c:2578-2589 (1.6.1): "In the unlikely case that the
+        // SILK encoder busted its target, tell the decoder to call the PLC":
+        // the packet is the ToC and a zero byte, a 1-byte frame that decoders
+        // conceal. With FEC the LBRR section can squeeze the main frame below
+        // what even the damage-control re-encode fits, which is exactly the
+        // case this fallback exists for.
         if self.rc.error != 0 || self.rc.tell() > (n_bytes as i32 - 1) * 8 {
             if output.len() < 2 {
                 return Err("Output buffer too small");
             }
             let mut ret = 2usize;
             if self.use_cbr && n_bytes >= 2 {
-                // CBR: pad to the nominal size as a code-3 packet holding a
-                // single EMPTY frame (opus_packet_pad of the 2-byte packet).
+                // CBR: libopus pads that 2-byte packet, the ToC and a zero
+                // byte, to the nominal size (opus_packet_pad): a code-3
+                // packet of the 1-byte frame.
                 let target_total = n_bytes.min(output.len());
                 if target_total > 2 {
+                    let pad_amount = target_total - 3;
                     output[0] = toc | 0x03;
-                    output[1] = 0x41; // 1 frame, padding present, CBR
-                    let pad_amount = target_total - 2;
-                    let nb_255s = (pad_amount - 1) / 255;
+                    // 1 frame, CBR, and the padding flag if there is any.
+                    output[1] = if pad_amount > 0 { 0x41 } else { 0x01 };
                     let mut ptr = 2;
-                    for _ in 0..nb_255s {
-                        output[ptr] = 255;
+                    if pad_amount > 0 {
+                        let nb_255s = (pad_amount - 1) / 255;
+                        for _ in 0..nb_255s {
+                            output[ptr] = 255;
+                            ptr += 1;
+                        }
+                        output[ptr] = (pad_amount - 255 * nb_255s - 1) as u8;
                         ptr += 1;
                     }
-                    output[ptr] = (pad_amount - 255 * nb_255s - 1) as u8;
-                    ptr += 1;
+                    // The frame's zero byte, then the zero padding.
                     for b in &mut output[ptr..target_total] {
                         *b = 0;
                     }
@@ -2441,7 +2451,7 @@ impl OpusEncoder {
                 }
                 ret = target_total.max(1);
             }
-            // VBR: a 2-byte code-0 packet whose frame length byte is 0.
+            // VBR: the 2-byte code-0 packet.
             output[0] = toc;
             output[1] = 0;
             self.prev_enc_mode = Some(next_prev_mode);

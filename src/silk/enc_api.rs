@@ -901,25 +901,12 @@ pub fn silk_encode(
             rc.encode_icdf(0, &icdf, 8);
 
             if lbrr_symbol > 0 {
-                // Trial-encode the LBRR section on a scratch range coder. If
-                // the packet budget cannot hold the LBRR data plus a minimal
-                // main frame, drop LBRR entirely (the decoder sees
-                // lbrr_flag = 0 and skips nothing) instead of overflowing the
-                // encoder buffer.
-                let capacity_bits = (rc.storage as i32) * 8 - 8;
-                let saved_ec_prev_signal_type = ps_enc.s_cmn.ec_prev_signal_type;
-                let saved_ec_prev_lag_index = ps_enc.s_cmn.ec_prev_lag_index;
-                let mut trial = rc.clone();
-                let _trial_bits =
-                    encode_lbrr_section(&mut trial, ps_enc, lbrr_symbol, n_frames_per_packet);
-                ps_enc.s_cmn.ec_prev_signal_type = saved_ec_prev_signal_type;
-                ps_enc.s_cmn.ec_prev_lag_index = saved_ec_prev_lag_index;
-                if trial.tell() + 64 <= capacity_bits {
-                    lbrr_bits = encode_lbrr_section(rc, ps_enc, lbrr_symbol, n_frames_per_packet);
-                } else {
-                    ps_enc.s_cmn.lbrr_flag = 0;
-                    lbrr_symbol = 0;
-                }
+                // The LBRR section is coded however little room it leaves
+                // (enc_API.c:354-407): its bits come out of the frame target,
+                // the rate control squeezes the frame into the rest, and a
+                // frame that still busts the packet makes it a PLC packet
+                // (opus_encoder.c:2578-2589).
+                lbrr_bits = encode_lbrr_section(rc, ps_enc, lbrr_symbol, n_frames_per_packet);
             }
 
             // Reset the LBRR flags for the next packet (enc_API.c:379-382);
@@ -1085,34 +1072,9 @@ pub fn silk_encode_stereo_packet(
             rc.encode_icdf(0, &icdf, 8);
 
             if lbrr_symbols != [0, 0] {
-                // Write the LBRR section only if the packet can hold it plus
-                // a minimal frame, as the mono path does.
-                let capacity_bits = (rc.storage as i32) * 8 - 8;
-                let saved = [&*mid, &*side]
-                    .map(|ch| (ch.s_cmn.ec_prev_signal_type, ch.s_cmn.ec_prev_lag_index));
-                let mut trial = rc.clone();
-                encode_lbrr_section_stereo(
-                    &mut trial,
-                    mid,
-                    side,
-                    lbrr_symbols,
-                    n_frames_per_packet,
-                );
-                for (ch, saved) in [&mut *mid, &mut *side].into_iter().zip(saved) {
-                    (ch.s_cmn.ec_prev_signal_type, ch.s_cmn.ec_prev_lag_index) = saved;
-                }
-                if trial.tell() + 64 <= capacity_bits {
-                    lbrr_bits = encode_lbrr_section_stereo(
-                        rc,
-                        mid,
-                        side,
-                        lbrr_symbols,
-                        n_frames_per_packet,
-                    );
-                } else {
-                    mid.s_cmn.lbrr_flag = 0;
-                    side.s_cmn.lbrr_flag = 0;
-                }
+                // Coded however little room it leaves, as in the mono path.
+                lbrr_bits =
+                    encode_lbrr_section_stereo(rc, mid, side, lbrr_symbols, n_frames_per_packet);
             }
             mid.s_cmn.lbrr_flags = [0; MAX_FRAMES_PER_PACKET];
             side.s_cmn.lbrr_flags = [0; MAX_FRAMES_PER_PACKET];
