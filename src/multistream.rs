@@ -138,6 +138,7 @@ pub fn split_self_delimited<'a>(
         }
     }
 
+    crate::frame_payloads(scratch)?;
     Ok((scratch.as_slice(), cursor))
 }
 

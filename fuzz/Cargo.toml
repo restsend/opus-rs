@@ -111,5 +111,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "fuzz_decoder_sequences"
+path = "fuzz_targets/fuzz_decoder_sequences.rs"
+test = false
+doc = false
+bench = false
+
 [profile.release]
 debug = 1
