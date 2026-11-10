@@ -175,7 +175,16 @@ impl RangeCoder {
                 let fs = self.decode(ft);
                 self.update(fs, fs.wrapping_add(1), ft);
                 let r = self.dec_bits(s as u32);
-                (fs << s) | r
+                let t = (fs << s) | r;
+                // The raw bits can take the value past ft - 1 in a packet no
+                // encoder produced: libopus flags the error and returns
+                // ft - 1 (entdec.c, ec_dec_uint).
+                if t <= ft_minus_1 {
+                    t
+                } else {
+                    self.error = 1;
+                    ft_minus_1
+                }
             } else {
                 let fs = self.decode(ft);
                 self.update(fs, fs.wrapping_add(1), ft);
