@@ -487,6 +487,9 @@ const DTX_ACTIVITY_THRESHOLD: f32 = 0.1;
 /// libopus `PSEUDO_SNR_THRESHOLD` (25 dB): an inactive frame this close to
 /// the loudest active one still counts as active.
 const PSEUDO_SNR_THRESHOLD: f32 = 316.23;
+/// libopus `VAD_NO_DECISION`: the analysis is off and the mode is not
+/// CELT-only, so SILK's own voice activity decides (opus_encoder.c:2235).
+const VAD_NO_DECISION: i32 = -1;
 
 /// libopus `compute_frame_energy` (float build): the mean square of the
 /// input, at the float API's scale.
@@ -1420,9 +1423,10 @@ impl OpusEncoder {
     /// opus_encode_native, float build): the analysis, and whether the
     /// packet is digital silence. It runs for complexity 7 and up at 16 kHz
     /// and up, where libopus also detects digital silence and tracks the
-    /// energy of active frames, and is reset when it stops running. Both
-    /// entry points analyse their input at the float API's 24-bit depth, as
-    /// `encode_i16` codes like `encode`.
+    /// energy of active frames, and is reset when it stops running. The
+    /// analysis sees the input's actual depth: 16 for `encode_i16`'s PCM16
+    /// and 24 for `encode`'s float, like libopus's two entry points
+    /// (opus_encoder.c passes 16 and MAX_ENCODING_DEPTH).
     fn analyse(&mut self, input: PcmInput<'_>, frame_size: usize) -> (AnalysisInfo, bool) {
         let (info, is_silence) = self.run_analysis(input, frame_size);
         // The speech estimate of the mode decision: from the analysis's
@@ -1578,34 +1582,41 @@ impl OpusEncoder {
     /// `analyse`).
     fn run_analysis(&mut self, input: PcmInput<'_>, frame_size: usize) -> (AnalysisInfo, bool) {
         self.analysis_read_bak = None;
-        if self.complexity >= 7 && self.sampling_rate >= 16000 {
-            let n = frame_size * self.channels;
-            let is_silence = is_digital_silence(input, n);
+        let n = frame_size * self.channels;
+        // Digital silence is detected for every frame, at every complexity
+        // and rate (opus_encoder.c:1246); the gate below only runs the
+        // analysis itself (opus_encoder.c:1252).
+        let is_silence = is_digital_silence(input, n);
+        let info = if self.complexity >= 7 && self.sampling_rate >= 16000 {
             self.analysis_read_bak = Some(self.analysis.read_position());
             let pcm = match input {
                 PcmInput::F32(s) => analysis::AnalysisPcm::F32(&s[..n]),
                 PcmInput::I16(s) => analysis::AnalysisPcm::I16(&s[..n]),
             };
-            let info = self.analysis.run(
+            self.analysis.run(
                 modes::default_mode().mdct.fft(0),
                 pcm,
                 frame_size,
                 self.channels,
-                24,
-            );
-            // The peak energy of active frames.
-            if !is_silence && info.activity_probability > DTX_ACTIVITY_THRESHOLD {
-                let energy = compute_frame_energy(input, n);
-                let decayed = 0.999 * self.peak_signal_energy;
-                self.peak_signal_energy = if decayed > energy { decayed } else { energy };
-            }
-            (info, is_silence)
+                match input {
+                    PcmInput::F32(_) => 24,
+                    PcmInput::I16(_) => 16,
+                },
+            )
         } else {
             if self.analysis.initialized() {
                 self.analysis.reset();
             }
-            (AnalysisInfo::zeroed(), false)
+            AnalysisInfo::zeroed()
+        };
+        // Track the peak signal energy of active frames, wherever the
+        // analysis ran or not (opus_encoder.c:1311-1321).
+        if (!info.valid || info.activity_probability > DTX_ACTIVITY_THRESHOLD) && !is_silence {
+            let energy = compute_frame_energy(input, n);
+            let decayed = 0.999 * self.peak_signal_energy;
+            self.peak_signal_energy = if decayed > energy { decayed } else { energy };
         }
+        (info, is_silence)
     }
 
     fn encode_impl(
@@ -1648,20 +1659,6 @@ impl OpusEncoder {
         // digital silence; SILK's DTX on the other frames.
         let silk_use_dtx = self.use_dtx && !(analysis_info.valid || is_silence);
         self.silk_use_dtx = silk_use_dtx;
-        // The frame's voice activity (opus_encode_frame_native): none in
-        // digital silence; from the analysis where it ran, an inactive frame
-        // loud enough against the loudest active one counting as active;
-        // otherwise SILK's own detector decides (1).
-        let activity = if is_silence {
-            0
-        } else if analysis_info.valid {
-            let active = analysis_info.activity_probability >= DTX_ACTIVITY_THRESHOLD
-                || self.peak_signal_energy
-                    < PSEUDO_SNR_THRESHOLD * compute_frame_energy(input, frame_size * self.channels);
-            i32::from(active)
-        } else {
-            1
-        };
 
         // How far stereo input is from mono (libopus compute_stereo_width),
         // once per packet.
@@ -1791,6 +1788,34 @@ impl OpusEncoder {
             to_celt,
             prefill: prefill_after_celt,
         } = transition;
+
+        // The frame's voice activity (opus_encode_frame_native:1916-1931).
+        // None (0) in digital silence; from the analysis where it ran, with
+        // an inactive frame counting as active when it is loud enough
+        // against the loudest active frame; in CELT-only without an
+        // analysis, the same comparison at half the noise energy; SILK and
+        // Hybrid without an analysis leave the decision to SILK's own VAD
+        // (`VAD_NO_DECISION`, resolved from `signalType` after the SILK
+        // encoding, opus_encoder.c:2235-2241).
+        let mut activity = VAD_NO_DECISION;
+        if is_silence {
+            activity = 0;
+        } else if analysis_info.valid {
+            activity = i32::from(analysis_info.activity_probability >= DTX_ACTIVITY_THRESHOLD);
+            if activity == 0 {
+                let noise_energy = compute_frame_energy(input, frame_size * self.channels);
+                activity =
+                    i32::from(self.peak_signal_energy < PSEUDO_SNR_THRESHOLD * noise_energy);
+            }
+        } else if mode == OpusMode::CeltOnly {
+            // Boosting peak energy a bit because we didn't just average the
+            // active frames (C's HALF32).
+            let noise_energy = compute_frame_energy(input, frame_size * self.channels);
+            activity = i32::from(
+                f64::from(self.peak_signal_energy)
+                    < f64::from(PSEUDO_SNR_THRESHOLD) * f64::from(0.5f32 * noise_energy),
+            );
+        }
 
         // The bandwidth and in-band FEC of the packet (opus_encode_native):
         // the bandwidth from the rate, the user's settings, the packet size,
@@ -2243,7 +2268,7 @@ impl OpusEncoder {
                 if rate_change && !moved {
                     let ret = self
                         .silk_resampler_enc
-                        .init_for_enc(self.sampling_rate as i32, silk_fs_khz * 1000);
+                        .init_for_enc(self.sampling_rate, silk_fs_khz * 1000);
                     if ret != 0 {
                         return Err("Unsupported SILK resampling ratio");
                     }
@@ -2501,6 +2526,14 @@ impl OpusEncoder {
             };
             if ret != 0 {
                 return Err("SILK encoding failed");
+            }
+            // SILK's own VAD decides when Opus left no activity decision
+            // (opus_encoder.c:2235-2241, from `silk_mode.signalType`).
+            if activity == VAD_NO_DECISION {
+                activity = i32::from(
+                    i32::from(self.silk_enc.s_cmn.indices.signal_type)
+                        != silk::define::TYPE_NO_VOICE_ACTIVITY,
+                );
             }
             // What the next bandwidth decision may do (libopus
             // `silk_mode.allowBandwidthSwitch`, `inWBmodeWithoutVariableLP`).
@@ -3157,26 +3190,41 @@ impl OpusEncoder {
                 *pos += 1;
                 Ok(())
             };
-        // Use explicit per-frame lengths (code 2 / code 3 VBR) for every
-        // sub-frame packet: it is always valid, and avoids the code-3 CBR
-        // assumption that all frames are byte-identical in size. Under CBR
-        // a packet short of the CBR size becomes code 3 with padding, as
-        // libopus's opus_repacketizer_out_range_impl pads it.
-        let length_bytes: usize = lens[..nb - 1]
-            .iter()
-            .map(|&len| if len < 252 { 1 } else { 2 })
-            .sum();
-        let code3_len = 2 + length_bytes + lens[..nb].iter().sum::<usize>();
-        let target = cbr_total.unwrap_or(0);
-        let mut pad_amount = 0;
-        if nb == 2 && target < code3_len {
-            push(output, &mut pos, toc | 0x02)?;
-            put_size(output, &mut pos, lens[0])?;
+        // The packet layout is libopus's repacketizer
+        // (opus_repacketizer_out_range_impl, repacketizer.c:194-318): code 1
+        // for two equal frames, code 2 for two different ones, code 3 for
+        // more — and code 3 carries the VBR flag and per-frame size bytes
+        // only when the frames differ in size. Under CBR the packet pads to
+        // its nominal size, which turns any layout into padded code 3
+        // (opus_encoder.c:1831).
+        let vbr = lens[..nb].iter().any(|&len| len != lens[0]);
+        let length_bytes: usize = if vbr {
+            lens[..nb - 1]
+                .iter()
+                .map(|&len| if len < 252 { 1 } else { 2 })
+                .sum()
         } else {
-            pad_amount = target.saturating_sub(code3_len);
+            0
+        };
+        let sum = lens[..nb].iter().sum::<usize>();
+        let code3_tot = if vbr { 2 + length_bytes + sum } else { 2 + nb * lens[0] };
+        let maxlen = cbr_total.unwrap_or(0);
+        let pad = cbr_total.is_some();
+        // Code 3 runs for more than two frames, and under CBR whenever the
+        // frames leave room to pad up to the nominal size. The total for
+        // code 1/2 matches C (repacketizer.c:194-224).
+        let tot_size = match nb {
+            2 if vbr => lens[0] + lens[1] + 2 + usize::from(lens[0] >= 252),
+            2 => 2 * lens[0] + 1,
+            _ => code3_tot,
+        };
+        let code3 = nb > 2 || (pad && tot_size < maxlen);
+        let mut pad_amount = 0;
+        if code3 {
+            pad_amount = maxlen.saturating_sub(code3_tot);
             let pad_flag = if pad_amount > 0 { 0x40 } else { 0 };
             push(output, &mut pos, toc | 0x03)?;
-            push(output, &mut pos, nb as u8 | 0x80 | pad_flag)?;
+            push(output, &mut pos, nb as u8 | if vbr { 0x80 } else { 0 } | pad_flag)?;
             if pad_amount > 0 {
                 let nb_255s = (pad_amount - 1) / 255;
                 for _ in 0..nb_255s {
@@ -3186,9 +3234,16 @@ impl OpusEncoder {
                 // The length bytes are part of the padding.
                 pad_amount -= nb_255s + 1;
             }
-            for i in 0..nb - 1 {
-                put_size(output, &mut pos, lens[i])?;
+            if vbr {
+                for i in 0..nb - 1 {
+                    put_size(output, &mut pos, lens[i])?;
+                }
             }
+        } else if vbr {
+            push(output, &mut pos, toc | 0x02)?;
+            put_size(output, &mut pos, lens[0])?;
+        } else {
+            push(output, &mut pos, toc | 0x01)?;
         }
 
         for i in 0..nb {

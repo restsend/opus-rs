@@ -73,7 +73,7 @@ pub fn silk_vad_get_sa_q8(ps_enc: &mut SilkEncoderState, p_in: &[i16], _n_in: us
     // so frame_length is always a multiple of 8 — the three-stage band split
     // below relies on that. Anything else is an encoder-side misuse; bail out
     // instead of splitting a short tail (fuzz hardening).
-    if frame_length < 8 * fs_khz || frame_length % 8 != 0 {
+    if frame_length < 8 * fs_khz || !frame_length.is_multiple_of(8) {
         return 0;
     }
 

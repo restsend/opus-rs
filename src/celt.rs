@@ -2906,9 +2906,12 @@ impl CeltEncoder {
 
         // TF resolution (celt_encoder.c:2242-2277): analysed only for CELT
         // frames with enough bytes; low-rate hybrid frames keep 5 ms
-        // resolution, weak transients use the long window.
+        // resolution, weak transients use the long window. Strongly tonal
+        // frames skip the analysis and keep `is_transient` (C 2242's
+        // `toneishness < QCONST32(.98f, 29)`; float build, post-clamp
+        // toneishness from C 2034).
         let enable_tf_analysis =
-            effective_bytes >= 15 * channels && !hybrid && self.complexity >= 2;
+            effective_bytes >= 15 * channels && !hybrid && self.complexity >= 2 && toneishness < 0.98;
         let tf_select = if enable_tf_analysis {
             tf_analysis(
                 mode,

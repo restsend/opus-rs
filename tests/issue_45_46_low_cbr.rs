@@ -32,7 +32,7 @@ fn issue45_starved_cbr() {
         enc.bitrate_bps = bps;
         enc.use_cbr = true;
         let input: Vec<f32> = (0..frame)
-            .map(|i| (0.3 * (2.0 * std::f32::consts::PI * 150.0 * i as f32 / sr as f32).sin()))
+            .map(|i| 0.3 * (2.0 * std::f32::consts::PI * 150.0 * i as f32 / sr as f32).sin())
             .collect();
         let mut pkt = vec![0u8; 1500];
         match enc.encode(&input, frame, &mut pkt) {
@@ -60,9 +60,8 @@ fn issue46_low_cbr() {
         enc.use_cbr = true;
         let input: Vec<f32> = (0..frame)
             .map(|i| {
-                (0.3
-                    * (2.0 * std::f32::consts::PI * 150.0 * i as f32 / sr as f32).sin()
-                    + 0.1 * (i % 7) as f32 / 7.0)
+                0.3 * (2.0 * std::f32::consts::PI * 150.0 * i as f32 / sr as f32).sin()
+                    + 0.1 * (i % 7) as f32 / 7.0
             })
             .collect();
         let mut pkt = vec![0u8; 1500];
@@ -121,12 +120,13 @@ fn issue46_low_cbr_decodes_as_celt() {
             let mut best = f64::NEG_INFINITY;
             for lag in -400i64..=400 {
                 let (mut sig, mut err) = (0f64, 0f64);
-                for i in frame..input.len() - frame {
+                for (i, &xi) in input.iter().enumerate().skip(frame).take(input.len() - 2 * frame)
+                {
                     let j = i as i64 + lag;
                     if j < 0 || j as usize >= pcm.len() {
                         continue;
                     }
-                    let x = input[i] as f64;
+                    let x = xi as f64;
                     err += (x - pcm[j as usize] as f64).powi(2);
                     sig += x * x;
                 }
