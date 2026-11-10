@@ -66,9 +66,9 @@ fn compute_vbr(
             mode.e_bands[coded_stereo_bands as usize] as i32 * (1 << lm) - coded_stereo_bands;
         let max_frac = (0.8 * coded_stereo_dof as f32) / coded_bins as f32;
         let ss = stereo_saving.min(1.0);
-        let adjust = ((ss - 0.1).max(0.0) * coded_stereo_dof as f32 * (1 << BITRES) as f32) as i32;
-        let save = (max_frac * target as f32) as i32;
-        target -= save.min(adjust);
+        let save = max_frac * target as f32;
+        let adjust = (ss - 0.1) * (coded_stereo_dof << BITRES) as f32;
+        target -= (if save < adjust { save } else { adjust }) as i32;
     }
     target += tot_boost - (19 << lm);
     // tf boost: libopus SHL32(MULT16_32_Q15(tf-0.044, target),1) collapses to (tf-0.044)*target in float
@@ -86,8 +86,8 @@ fn compute_vbr(
             target + (surround_masking * coded_bins as f32 * (1 << BITRES) as f32) as i32;
         target = (target / 4).max(surround_target);
     }
-    // floor depth: only clamp when max_depth is meaningful (>0); stub call passes 0 to avoid spurious 0.665*base
-    if max_depth > 0.0 {
+    // No more than the signal's depth above the noise floor allows.
+    {
         let bins = mode.e_bands[(nb_ebands - 2) as usize] as i32 * (1 << lm);
         let floor_depth = ((c * bins * (1 << BITRES)) as f32 * max_depth) as i32;
         let floor_depth = floor_depth.max(target >> 2);
@@ -1716,6 +1716,11 @@ pub struct CeltEncoder {
     w_transient_tmp2: FixedVec<f32, { MAX_TRANSIENT_LEN / 2 }>,
 
     analysis: AnalysisInfo,
+    /// libopus `stereo_saving`: the bits the stereo correlation saves, which
+    /// the trim analysis smooths across frames and the VBR target uses.
+    stereo_saving: f32,
+    /// libopus `spec_avg`: the average spectral level, for temporal VBR.
+    spec_avg: f32,
     loss_rate: i32,
     /// libopus `SILKInfo`: the signal type and quantization offset of the
     /// SILK layer, which steer the hybrid CELT layer.
@@ -1786,8 +1791,8 @@ fn alloc_trim_analysis(
     if equiv_rate < 64000 {
         trim = 4.0;
     } else if equiv_rate < 80000 {
-        let frac = (equiv_rate - 64000) as f32 / 1024.0;
-        trim = 4.0 + (1.0 / 16.0) * frac;
+        let frac = (equiv_rate - 64000) >> 10;
+        trim = 4.0 + (1.0 / 16.0) * frac as f32;
     }
 
     if channels == 2 {
@@ -2265,6 +2270,8 @@ impl CeltEncoder {
             consec_transient: 0,
 
             analysis: AnalysisInfo::default(),
+            stereo_saving: 0.0,
+            spec_avg: 0.0,
             loss_rate: 0,
             silk_signal_type: 0,
             silk_offset: 0,
@@ -2304,6 +2311,8 @@ impl CeltEncoder {
         self.vbr_count = 0;
         self.consec_transient = 0;
         self.analysis = AnalysisInfo::default();
+        self.stereo_saving = 0.0;
+        self.spec_avg = 0.0;
         self.silk_signal_type = 0;
         self.silk_offset = 0;
     }
@@ -2548,6 +2557,7 @@ impl CeltEncoder {
             && analysis_toneishness < 0.99
             && channels == 1
             && !self.disable_pf;
+        let prefilter_tapset = self.tapset_decision;
         let (pf_on, gain1, pitch_index) = if pf_enabled {
             let tell = rc.tell();
             let nb_filled = ((tell + 4) >> 3).max(0) as usize;
@@ -2589,6 +2599,13 @@ impl CeltEncoder {
             }
             (false, 0.0f32, COMBFILTER_MINPERIOD)
         };
+
+        // A change of pitch (celt_encoder.c:2042-2044), which the VBR target
+        // pays for in tonal frames.
+        let pitch_change = (gain1 > 0.4 || self.prefilter_gain > 0.4)
+            && (!self.analysis.valid || f64::from(self.analysis.tonality) > 0.3)
+            && (pitch_index as f64 > 1.26 * self.prefilter_period as f64
+                || (pitch_index as f64) < 0.79 * self.prefilter_period as f64);
 
         // Save the prefiltered overlap for the next frame.
         // In libopus, st->in_mem stores the overlap separately and run_prefilter
@@ -2798,6 +2815,25 @@ impl CeltEncoder {
             crate::bands::amp2log2(mode, start_band, end, band_e, band_log_e, channels);
         }
 
+        // Temporal VBR (celt_encoder.c:2187-2203): how far this frame's
+        // spectral level is above its running average.
+        let temporal_vbr = {
+            let mut follow = -10.0f32;
+            let mut frame_avg = 0.0f32;
+            let offset = if short_blocks { 0.5 * lm as f32 } else { 0.0 };
+            for i in start_band..end {
+                follow = (follow - 1.0).max(band_log_e[i] - offset);
+                if channels == 2 {
+                    follow = follow.max(band_log_e[i + nb_ebands] - offset);
+                }
+                frame_avg += follow;
+            }
+            frame_avg /= (end - start_band) as f32;
+            let temporal_vbr = (frame_avg - self.spec_avg).clamp(-1.5, 3.0);
+            self.spec_avg += 0.02 * temporal_vbr;
+            temporal_vbr
+        };
+
         // C uses st->force_intra (CTL flag, 0 by default) instead of the old
         // intra_ener heuristic, so no intra forcing happens here.
         quant_coarse_energy_advanced(
@@ -2919,7 +2955,6 @@ impl CeltEncoder {
             0
         };
 
-        let mut stereo_saving = 0.0f32;
         // libopus equiv_rate (celt_encoder.c:1925-1927): the packet's rate,
         // capped by the target bitrate, less the overhead of short frames.
         let overhead = (40 * channels as i32 + 20) * ((400 >> lm) - 50);
@@ -3018,7 +3053,9 @@ impl CeltEncoder {
         let mut alloc_trim = 5;
         if rc.tell_frac() + (6 << BITRES) <= total_bits_bitres - total_boost {
             // celt_encoder.c:2410-2413: no trim analysis without the low bands.
-            if !hybrid {
+            if hybrid {
+                self.stereo_saving = 0.0;
+            } else {
                 alloc_trim = alloc_trim_analysis(
                     mode,
                     x,
@@ -3028,7 +3065,7 @@ impl CeltEncoder {
                     channels,
                     frame_size,
                     &self.analysis,
-                    &mut stereo_saving,
+                    &mut self.stereo_saving,
                     tf_estimate,
                     self.intensity,
                     0.0,
@@ -3091,20 +3128,20 @@ impl CeltEncoder {
                     &self.analysis,
                     base_target,
                     lm as i32,
-                    self.bitrate,
+                    equiv_rate,
                     self.last_coded_bands,
                     channels as i32,
                     self.intensity,
                     self.constrained_vbr,
-                    stereo_saving,
+                    self.stereo_saving,
                     tot_boost,
                     tf_estimate,
-                    0, // pitch_change stub
+                    i32::from(pitch_change),
                     max_depth,
                     false,
                     false,
                     0.0,
-                    0.0, // temporal_vbr stub
+                    temporal_vbr,
                 )
             } else {
                 let mut t = base_target;
@@ -3383,15 +3420,11 @@ impl CeltEncoder {
 
         rc.pad_to_bits(total_bits);
 
-        if pf_on {
-            self.prefilter_period = pitch_index;
-            self.prefilter_gain = gain1;
-            self.prefilter_tapset = self.tapset_decision;
-        } else {
-            self.prefilter_period = COMBFILTER_MINPERIOD;
-            self.prefilter_gain = 0.0;
-            self.prefilter_tapset = self.tapset_decision;
-        }
+        // libopus keeps the pitch found even when the pre-filter is off (its
+        // gain is then 0), and the tapset the frame started with.
+        self.prefilter_period = pitch_index;
+        self.prefilter_gain = gain1;
+        self.prefilter_tapset = prefilter_tapset;
 
         if is_transient || transient_got_disabled {
             self.consec_transient += 1;
