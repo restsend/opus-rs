@@ -860,13 +860,13 @@ fn pitch_downsample_neon(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, o
 
             let mut i = 1;
             while i + 4 <= len {
-                let idx_m = 2 * i - offset;
-                let idx_p = 2 * i + offset;
-                let idx_c = 2 * i;
-
-                let vm = vld1q_f32(x0.as_ptr().add(idx_m));
-                let vp = vld1q_f32(x0.as_ptr().add(idx_p));
-                let vc = vld1q_f32(x0.as_ptr().add(idx_c));
+                // Lane j is x_lp[i + j], from x0[2(i + j) - 1], x0[2(i + j)]
+                // and x0[2(i + j) + 1]: each source moves two samples from
+                // lane to lane. `vld2q_f32` splits eight samples into the
+                // even and odd ones, which are exactly those lanes.
+                let m = vld2q_f32(x0.as_ptr().add(2 * i - offset));
+                let p = vld2q_f32(x0.as_ptr().add(2 * i + offset));
+                let (vm, vc, vp) = (m.0, m.1, p.0);
 
                 // Separate multiply and add, matching the C scalar loop's
                 // rounding (libopus pitch.c has no FMA here): an `vfmaq`
