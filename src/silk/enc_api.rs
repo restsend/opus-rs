@@ -833,22 +833,17 @@ pub fn silk_encode(
 
     let tot_blocks = packet_blocks(n_samples_in, ps_enc.s_cmn.fs_khz);
 
-    let lbrr_possible = ps_enc.s_cmn.use_in_band_fec != 0
-        && ps_enc.s_cmn.packet_loss_perc > 0
-        && ps_enc.s_cmn.lbrr_enabled != 0;
-
     // The LBRR flags persisted from the previous packet's frames describe the
     // LBRR payload written at the start of this packet (enc_API.c builds
-    // LBRR_symbol from LBRR_flags). A reset drops them (enc_API.c:255-259).
+    // LBRR_symbol from LBRR_flags), even when this packet codes no FEC of its
+    // own. A reset drops them (enc_API.c:268-272).
     if ps_enc.s_cmn.first_frame_after_reset != 0 {
         ps_enc.s_cmn.lbrr_flags = [0; MAX_FRAMES_PER_PACKET];
     }
 
     let mut lbrr_symbol: i32 = 0;
-    if lbrr_possible {
-        for i in 0..n_frames_per_packet as usize {
-            lbrr_symbol |= ps_enc.s_cmn.lbrr_flags[i] << i;
-        }
+    for i in 0..n_frames_per_packet as usize {
+        lbrr_symbol |= ps_enc.s_cmn.lbrr_flags[i] << i;
     }
 
     ps_enc.s_cmn.lbrr_flag = if lbrr_symbol > 0 { 1 } else { 0 };
@@ -1046,20 +1041,15 @@ pub fn silk_encode_stereo_packet(
     side.s_cmn.n_frames_encoded = 0;
     let tot_blocks = packet_blocks(n_samples_in, fs_khz);
 
-    // Each channel's LBRR flags left by the previous packet; a reset drops
-    // them.
-    let lbrr_possible = mid.s_cmn.use_in_band_fec != 0
-        && mid.s_cmn.packet_loss_perc > 0
-        && mid.s_cmn.lbrr_enabled != 0;
+    // Each channel's LBRR flags left by the previous packet, coded even when
+    // this packet codes no FEC of its own; a reset drops them.
     let mut lbrr_symbols = [0i32; 2];
     for (symbol, ch) in lbrr_symbols.iter_mut().zip([&mut *mid, &mut *side]) {
         if ch.s_cmn.first_frame_after_reset != 0 {
             ch.s_cmn.lbrr_flags = [0; MAX_FRAMES_PER_PACKET];
         }
-        if lbrr_possible {
-            for i in 0..n_frames_per_packet as usize {
-                *symbol |= ch.s_cmn.lbrr_flags[i] << i;
-            }
+        for i in 0..n_frames_per_packet as usize {
+            *symbol |= ch.s_cmn.lbrr_flags[i] << i;
         }
         ch.s_cmn.lbrr_flag = (*symbol > 0) as i8;
     }

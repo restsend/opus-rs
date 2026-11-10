@@ -28,8 +28,16 @@ pub fn silk_setup_fs(ps_enc: &mut SilkEncoderState, fs_khz: i32, packet_size_ms:
     cmn.packet_size_ms = packet_size_ms;
 
     if cmn.fs_khz != fs_khz {
+        // Reset part of the state (control_codec.c:243-259), the noise
+        // shaping smoothers and the low-pass filter state included: a
+        // running encoder changes its rate here when SILK-only frames at 8
+        // or 12 kHz turn hybrid.
+        ps_enc.s_shape = SilkShapeState::default();
         ps_enc.s_nsq = SilkNSQState::default();
         cmn.prev_nlsf_q15 = [0; MAX_LPC_ORDER];
+        cmn.s_lp.in_lp_state = [0; 2];
+        cmn.input_buf_ix = 0;
+        cmn.n_frames_encoded = 0;
 
         cmn.prev_lag = 100;
         cmn.first_frame_after_reset = 1;

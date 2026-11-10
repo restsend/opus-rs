@@ -1701,6 +1701,10 @@ pub struct CeltEncoder {
     /// SILK layer, which steer the hybrid CELT layer.
     silk_signal_type: i32,
     silk_offset: i32,
+    /// libopus `CELT_SET_PREDICTION`: below 2 the pitch pre-filter is off,
+    /// at 0 the energy is coded intra.
+    disable_pf: bool,
+    force_intra: bool,
     /// The last frame's allocation decisions, which unit tests inspect.
     #[cfg(test)]
     decisions: FrameDecisions,
@@ -2239,9 +2243,50 @@ impl CeltEncoder {
             loss_rate: 0,
             silk_signal_type: 0,
             silk_offset: 0,
+            disable_pf: false,
+            force_intra: false,
             #[cfg(test)]
             decisions: FrameDecisions::default(),
         }
+    }
+
+    /// libopus `OPUS_RESET_STATE`: forget the signal history and the rate
+    /// control, keeping the settings (complexity, bands, rate, VBR mode,
+    /// loss rate, prediction).
+    pub fn reset_state(&mut self) {
+        self.syn_mem.fill(0.0);
+        self.enc_decode_mem.fill(0.0);
+        self.old_band_e.fill(0.0);
+        self.preemph_mem.fill(0.0);
+        self.tonal_average = 256;
+        self.hf_average = 0;
+        self.tapset_decision = 0;
+        self.spread_decision = SPREAD_NORMAL;
+        self.intensity = 0;
+        self.last_coded_bands = 0;
+        self.prefilter_mem.fill(0.0);
+        self.prefilter_period = COMBFILTER_MINPERIOD;
+        self.prefilter_gain = 0.0;
+        self.prefilter_tapset = 0;
+        self.old_band_e2.fill(-28.0);
+        self.old_band_e3.fill(-28.0);
+        self.last_band_log_e.fill(0.0);
+        self.delayed_intra = 1.0;
+        self.overlap_max = 0.0;
+        self.vbr_reservoir = 0;
+        self.vbr_drift = 0;
+        self.vbr_offset = 0;
+        self.vbr_count = 0;
+        self.consec_transient = 0;
+        self.analysis = AnalysisInfo::default();
+        self.silk_signal_type = 0;
+        self.silk_offset = 0;
+    }
+
+    /// libopus `CELT_SET_PREDICTION` (0, 1 or 2).
+    pub fn set_prediction(&mut self, prediction: i32) {
+        self.disable_pf = prediction <= 1;
+        self.force_intra = prediction == 0;
     }
 
     /// Set the highest coded band (`CELT_SET_END_BAND`). Must match the
@@ -2467,8 +2512,11 @@ impl CeltEncoder {
             0.0
         };
         // analysis_toneishness kept for prefilter gating; tone_freq/toneishness from tone_detect used for dynalloc
-        let pf_enabled =
-            start_band == 0 && self.complexity >= 5 && analysis_toneishness < 0.99 && channels == 1;
+        let pf_enabled = start_band == 0
+            && self.complexity >= 5
+            && analysis_toneishness < 0.99
+            && channels == 1
+            && !self.disable_pf;
         let (pf_on, gain1, pitch_index) = if pf_enabled {
             let tell = rc.tell();
             let nb_filled = ((tell + 4) >> 3).max(0) as usize;
@@ -2734,7 +2782,7 @@ impl CeltEncoder {
             channels,
             lm,
             (total_bits / 8) as usize,
-            false, // force_intra: C st->force_intra (CTL flag, 0 by default)
+            self.force_intra,
             &mut self.delayed_intra,
             self.complexity >= 4,
             self.loss_rate,
@@ -4258,6 +4306,91 @@ mod tests {
         assert!(
             body[overlap..].iter().all(|&v| v == 0.0),
             "frame past the overlap must be the unfiltered input"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod mode_switch_tests {
+    use super::*;
+    use crate::{modes, range_coder::RangeCoder};
+
+    /// A 200 Hz harmonic series with a little noise, at 48 kHz from sample
+    /// `start`.
+    fn voiced(n: usize, start: usize, seed: &mut u32) -> Vec<f32> {
+        (start..start + n)
+            .map(|i| {
+                *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let t = i as f32 / 48000.0;
+                let harmonics: f32 = (1..8)
+                    .map(|k| (2.0 * core::f32::consts::PI * 200.0 * k as f32 * t).sin() / k as f32)
+                    .sum();
+                0.2 * harmonics + ((*seed >> 9) as f32 / (1 << 23) as f32 - 0.5) * 0.01
+            })
+            .collect()
+    }
+
+    fn encoder() -> CeltEncoder {
+        let mut enc = CeltEncoder::new(modes::default_mode(), 1);
+        enc.set_end_band(21);
+        enc.complexity = 10;
+        enc
+    }
+
+    /// A CBR frame of `bytes` bytes.
+    fn encode(enc: &mut CeltEncoder, pcm: &[f32], bytes: usize) -> Vec<u8> {
+        let mut rc = RangeCoder::new_encoder(bytes as u32);
+        enc.encode_with_budget_vbr(pcm, pcm.len(), &mut rc, 0, (bytes * 8) as i32, false);
+        rc.done();
+        rc.buf[..bytes].to_vec()
+    }
+
+    /// The post-filter and intra-energy flags of a 20 ms frame.
+    fn flags(frame: &[u8]) -> (bool, bool) {
+        let mut rc = RangeCoder::new_decoder(frame);
+        assert!(!rc.decode_bit_logp(15), "silence");
+        let postfilter = rc.decode_bit_logp(1);
+        if postfilter {
+            let octave = rc.dec_uint(6);
+            rc.dec_bits(4 + octave);
+            rc.dec_bits(3);
+            rc.decode_icdf(&TAPSET_ICDF, 2);
+        }
+        rc.decode_bit_logp(3); // transient
+        (postfilter, rc.decode_bit_logp(3))
+    }
+
+    #[test]
+    fn prediction_off_drops_the_prefilter_and_codes_energy_intra() {
+        // libopus CELT_SET_PREDICTION(0), which the first frame after a mode
+        // switch uses: no pitch pre-filter and intra-coded energy.
+        let (mut a, mut b) = (encoder(), encoder());
+        let (mut sa, mut sb) = (1, 1);
+        for f in 0..6 {
+            encode(&mut a, &voiced(960, f * 960, &mut sa), 160);
+            encode(&mut b, &voiced(960, f * 960, &mut sb), 160);
+        }
+        b.set_prediction(0);
+        let with = flags(&encode(&mut a, &voiced(960, 6 * 960, &mut sa), 160));
+        let without = flags(&encode(&mut b, &voiced(960, 6 * 960, &mut sb), 160));
+        assert_eq!(with, (true, false));
+        assert_eq!(without, (false, true));
+    }
+
+    #[test]
+    fn reset_state_restarts_like_a_new_encoder() {
+        // libopus OPUS_RESET_STATE, which a mode switch's redundancy frames
+        // and prefill rely on.
+        let mut used = encoder();
+        let mut seed = 3;
+        for f in 0..5 {
+            encode(&mut used, &voiced(960, f * 960, &mut seed), 120);
+        }
+        used.reset_state();
+        let frame = voiced(960, 0, &mut 9);
+        assert_eq!(
+            encode(&mut used, &frame, 120),
+            encode(&mut encoder(), &frame, 120)
         );
     }
 }

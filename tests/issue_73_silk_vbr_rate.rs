@@ -260,9 +260,9 @@ fn silk_packets_match_fixed_point_libopus() {
 #[test]
 fn fec_bandwidth_switch_waits_like_libopus() {
     // 10% loss makes FEC narrow the bandwidth: libopus starts SILK at 8 kHz,
-    // keeps it there until a switch is allowed, then moves to 12 kHz. Only
-    // the two packets around the switch differ, as libopus adds 5 ms CELT
-    // redundancy to them.
+    // keeps it there until a switch is allowed, then moves to 12 kHz. The
+    // two packets around the switch end with 27 bytes of 5 ms CELT
+    // redundancy, which libopus codes in fixed point; all else matches.
     let packets = encode_speech(16000, 20, 20000, 1, true);
     let configs: Vec<u8> = packets.iter().map(|p| p[0] >> 3).collect();
     assert!(
@@ -275,12 +275,15 @@ fn fec_bandwidth_switch_waits_like_libopus() {
         "{:?}",
         &configs[..30]
     );
-    let hash = packets
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| !(24..=25).contains(i))
-        .fold(FNV_OFFSET, |h, (_, p)| packet_hash(h, p));
-    assert_eq!(hash, 0xd5688ffcc47785c8);
+    assert_eq!((packets[24].len(), packets[25].len()), (77, 69));
+    let hash = packets.iter().enumerate().fold(FNV_OFFSET, |h, (i, p)| {
+        if (24..=25).contains(&i) {
+            fnv(fnv(h, &(p.len() as u32).to_le_bytes()), &p[..p.len() - 27])
+        } else {
+            packet_hash(h, p)
+        }
+    });
+    assert_eq!(hash, 0x63147ec8ca3250f8);
 }
 
 #[test]
