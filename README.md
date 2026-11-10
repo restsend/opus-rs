@@ -126,6 +126,77 @@ Measured on Apple Silicon M-series (aarch64), compiled with `--release` (opt-lev
 
 ## Release Notes
 
+### 0.1.42
+
+This release merges the libopus-parity encoder series (28 PRs: signal
+analysis, mode/bandwidth/DTX decisions, frame sizes, VBR control, PLC and
+framing fixes) and four parity fixes from a pre-merge review of the whole
+series. Every merged path is covered against the libopus 1.6.1 oracle
+(`opusic-sys`): per-frame final-range equality, whole-packet byte hashes
+against fixed-point libopus for SILK CBR, mode-sequence equality against the
+C encoder, and packet framing against the C repacketizer.
+
+- **New: signal analysis, ported from libopus's `src/analysis.c`** — the
+  480-point tonality FFT, the MLP music/speech probabilities (weights
+  bit-identical to `mlp_data.c`), the bandwidth estimate, and `fast_atan2f`.
+  CELT now adds libopus's trim slope, `signalBandwidth` and temporal VBR
+  terms, and the encoder's noise floor follows the input's real depth (16
+  for `encode_i16`, 24 for float), as the two libopus entry points do. The
+  analysis runs at complexity 7 and up, like libopus.
+- **New: `set_bandwidth` / `set_max_bandwidth`** — forced or capped coded
+  bandwidth with `OPUS_SET_BANDWIDTH`/`OPUS_SET_MAX_BANDWIDTH` semantics,
+  plus libopus's automatic bandwidth decision (the threshold tables, the
+  detected-bandwidth floor and the SILK switch gating).
+- **Fix: the SILK/Hybrid/CELT mode decision matches libopus term for term**
+  — the voice-activity threshold interpolation, the `voice_est` estimate
+  (`set_signal` added), the ±4000 hysteresis, and the width-aware stereo
+  threshold (`compute_stereo_width` ported in exact float order).
+- **New: discontinuous transmission** — `set_dtx` / `dtx` / `in_dtx`,
+  ported from libopus: SILK VAD DTX with its 20-frame cadence, and the
+  ms-based digital-silence DTX (200 ms lead-in, one coded frame per 400 ms).
+  Digital silence and the peak-energy tracking are now detected at every
+  complexity and rate, and where no analysis runs, SILK's own VAD decides
+  activity (`VAD_NO_DECISION`, resolved from `signalType`), like
+  `opus_encoder.c:1246,1311,1916-2241`.
+- **New: 2.5/5 ms frames in every application** (as CELT), **40/60 ms
+  CELT/Hybrid packets** built from their frames, and **80/100/120 ms
+  frames**, with the bandwidth and FEC decided once per packet, like
+  libopus's multiframe path.
+- **Fix: multiframe packets are framed exactly like libopus's repacketizer**
+  — code 1 for two equal frames, code 2 for two different ones, code 3 for
+  more, with the VBR flag and per-frame size bytes only when the frames
+  differ in size, and CBR padding up to the nominal size. Previously every
+  CBR 40/60 ms packet carried a code 3 VBR header; it decoded fine but was
+  not byte-exact. A new test pins the framing against the libopus encoder.
+- **New: `set_vbr_constraint`, and unconstrained VBR capped at 510 kb/s**;
+  the CELT VBR target now carries libopus's stereo saving, floor depth,
+  temporal VBR, trim-rate and prefilter terms, and hybrid VBR splits its
+  rate between SILK and CELT through `compute_silk_rate_for_hybrid`.
+- **Fix: mode switches carry libopus's 5 ms CELT redundancy** — written
+  only where decoders read the flag, coded and faded like `opus_encoder.c`,
+  with CELT and SILK restarted on switches, a SILK rate switch waiting for
+  `opusCanSwitch`, and a switch into CELT bridged from the old state
+  without redundancy. `final_range()` reports `rangeFinal` (encoder and
+  decoder), matching `OPUS_GET_FINAL_RANGE` including the redundant-frame
+  XOR.
+- **Fix: SILK parity** — CBR's rate control (the LBRR budget, the switch
+  room, byte-exact busted-packet padding), hybrid's CELT VBR share, NLSFs
+  weighted before stabilization, and the SILK VBR rate split of hybrid
+  packets matching libopus.
+- **Fix: CELT and decoder edge cases** — CELT frames coded without a
+  transient flag read as not transient, the intensity band clamps to the
+  coded bands, the hybrid redundancy flag is written only where decoders
+  read it, the mode of SILK-only VBR packets is recorded, and 12 kHz CELT
+  frames code as wideband.
+- **Fix: the CELT tf analysis skips strongly tonal frames** (`toneishness <
+  0.98`, `celt_encoder.c:2242`), like libopus — it coded a different
+  `tf_select`/`tf_res` on tonal input and paid the analysis cost where
+  libopus skips it.
+- **Tests:** a fuzz target for encoder call sequences (frame sizes
+  2.5-120 ms, bitrate/complexity/CBR/DTX/FEC churn, `final_range`
+  round-trip); packet framing comparisons against libopus for multiframe
+  packets; `final_range` equality tests for the merged paths.
+
 ### 0.1.41
 
 - **New: `OpusEncoder::lookahead()` returns the encoder's lookahead, like
