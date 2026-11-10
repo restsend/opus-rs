@@ -124,6 +124,8 @@ pub struct OpusEncoder {
     bandwidth: Bandwidth,
     pub bitrate_bps: i32,
     pub complexity: i32,
+    /// Constrained VBR (see [`OpusEncoder::set_vbr_constraint`]).
+    vbr_constraint: bool,
     pub use_cbr: bool,
 
     pub use_inband_fec: bool,
@@ -979,6 +981,7 @@ impl OpusEncoder {
             bandwidth: bw,
             bitrate_bps: 64000,
             complexity: 9,
+            vbr_constraint: true,
             use_cbr: false,
             use_inband_fec: false,
             packet_loss_perc: 0,
@@ -1077,6 +1080,21 @@ impl OpusEncoder {
         self.bandwidth = bw;
         self.silk_initialized = false;
         Ok(())
+    }
+
+    /// Constrained VBR, as libopus `OPUS_SET_VBR_CONSTRAINT` (on by
+    /// default). It applies to VBR CELT-only frames: constrained, their
+    /// sizes stay within what a one-frame buffer at the target bitrate
+    /// allows; unconstrained, they vary freely around the target. SILK and
+    /// Hybrid frames are unconstrained either way, and CBR (`use_cbr`) is
+    /// unaffected.
+    pub fn set_vbr_constraint(&mut self, constrained: bool) {
+        self.vbr_constraint = constrained;
+    }
+
+    /// Whether VBR is constrained (libopus `OPUS_GET_VBR_CONSTRAINT`).
+    pub fn vbr_constraint(&self) -> bool {
+        self.vbr_constraint
     }
 
     /// Encode a frame of interleaved f32 PCM (scale ±1.0; C `opus_encode_float`
@@ -2153,9 +2171,10 @@ impl OpusEncoder {
             let celt_vbr = !self.use_cbr && celt_rate != celt::OPUS_BITRATE_MAX;
             self.celt_enc.set_bitrate(celt_rate);
             self.celt_enc.set_vbr(!self.use_cbr);
-            // libopus: Hybrid VBR is unconstrained (can steal from SILK), CELT-only constrained
+            // libopus: Hybrid VBR is unconstrained (can steal from SILK);
+            // CELT-only VBR follows OPUS_SET_VBR_CONSTRAINT.
             self.celt_enc
-                .set_constrained_vbr(mode == OpusMode::CeltOnly);
+                .set_constrained_vbr(mode == OpusMode::CeltOnly && self.vbr_constraint);
             if celt_prefill {
                 self.celt_enc.reset_state();
                 let mut dummy = [0u8; 2];

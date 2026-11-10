@@ -3090,6 +3090,9 @@ impl CeltEncoder {
                 }
                 t
             };
+            // libopus: "Don't attempt to use more than 510 kb/s, even for
+            // frames smaller than 20 ms." It bounds unconstrained VBR.
+            nb_compressed_bytes = nb_compressed_bytes.min(1275 >> (3 - lm));
             target += cur_tell_frac;
             let mut nb_available = ((target + (1 << (BITRES + 2))) >> (BITRES + 3)) as usize;
             nb_available = nb_available.max(min_allowed as usize);
