@@ -27,9 +27,11 @@ pub mod silk;
 
 pub use silk::{SilkResampler, SilkResamplerDown1_3, SilkResamplerDown1_6};
 
+#[cfg(not(feature = "std"))]
+use crate::compat::Math;
 use crate::fixedvec::FixedVec;
-use core::mem::MaybeUninit;
 pub use celt::{CeltDecoder, CeltEncoder};
+use core::mem::MaybeUninit;
 use hp_cutoff::{dc_reject_float, hp_cutoff, hp_cutoff_float, hp_cutoff_i16};
 use range_coder::RangeCoder;
 use silk::control_codec::{
@@ -189,6 +191,7 @@ pub struct OpusEncoder {
     /// Float filter state for `dc_reject_float` / `hp_cutoff_float`
     /// (C `st->hp_mem[4]`, opus_val32 in the float build).
     hp_mem_float: [f32; 4],
+    prev_hb_gain: f32,
     /// libopus `silk_mode.opusCanSwitch` and `silk_bw_switch`: SILK asked to
     /// change its internal rate, which the next packet does.
     silk_opus_can_switch: bool,
@@ -411,51 +414,75 @@ fn bitrate_to_bits(bitrate: i32, fs: i32, frame_size: usize) -> i32 {
     (bitrate as i64 * 6 / (6 * fs as i64 / frame_size as i64)) as i32
 }
 
-/// SILK's share of a Hybrid packet's `rate_bps` (libopus
-/// `compute_silk_rate_for_hybrid`), allocated per channel: stereo codes the
-/// side with SILK too. Not ported: the FEC column, the CBR boost and the SWB
-/// boost.
-fn compute_silk_rate_for_hybrid(rate_bps: i32, frame20ms: bool, channels: usize) -> i32 {
+/// SILK's share of a hybrid packet, following libopus's per-channel table.
+fn compute_silk_rate_for_hybrid(
+    rate_bps: i32,
+    bandwidth: Bandwidth,
+    frame20ms: bool,
+    vbr: bool,
+    fec: bool,
+    channels: usize,
+) -> i32 {
+    const RATE_TABLE: [[i32; 5]; 7] = [
+        [0, 0, 0, 0, 0],
+        [12000, 10000, 10000, 11000, 11000],
+        [16000, 13500, 13500, 15000, 15000],
+        [20000, 16000, 16000, 18000, 18000],
+        [24000, 18000, 18000, 21000, 21000],
+        [32000, 22000, 22000, 28000, 28000],
+        [64000, 38000, 38000, 50000, 50000],
+    ];
     let channels = channels as i32;
     let rate_bps = rate_bps / channels;
-    let silk_rate = silk_rate_for_hybrid_per_channel(rate_bps, frame20ms) * channels;
-    // Small adjustment for stereo (libopus: "calibrated for 32 kb/s").
-    if channels == 2 && rate_bps >= 12000 {
-        silk_rate - 1000
+    let entry = 1 + usize::from(frame20ms) + 2 * usize::from(fec);
+    let n = RATE_TABLE.len();
+    let mut i = 1;
+    while i < n && RATE_TABLE[i][0] <= rate_bps {
+        i += 1;
+    }
+    let mut silk_rate = if i == n {
+        RATE_TABLE[n - 1][entry] + (rate_bps - RATE_TABLE[n - 1][0]) / 2
     } else {
-        silk_rate
+        let [x0, ..] = RATE_TABLE[i - 1];
+        let [x1, ..] = RATE_TABLE[i];
+        let lo = RATE_TABLE[i - 1][entry];
+        let hi = RATE_TABLE[i][entry];
+        (lo * (x1 - rate_bps) + hi * (rate_bps - x0)) / (x1 - x0)
+    };
+    if !vbr {
+        silk_rate += 100;
+    }
+    if bandwidth == Bandwidth::Superwideband {
+        silk_rate += 300;
+    }
+    silk_rate *= channels;
+    if channels == 2 && rate_bps >= 12000 {
+        silk_rate -= 1000;
+    }
+    silk_rate
+}
+
+/// The CELT encoder's bitrate for a frame. libopus sets it to
+/// `OPUS_BITRATE_MAX` for every frame and, under VBR only, to the requested
+/// rate, which in hybrid mode is what the SILK share leaves
+/// (opus_encoder.c:2286, 2448-2464). CELT's `OPUS_SET_BITRATE` refuses rates
+/// of 500 b/s or less, so CELT then keeps the unlimited rate, and caps the
+/// rate at 750 kb/s per channel (celt_encoder.c:3001-3009).
+fn celt_bitrate(mode: OpusMode, vbr: bool, bitrate: i32, silk_rate: i32, channels: usize) -> i32 {
+    let requested = if mode == OpusMode::Hybrid {
+        bitrate - silk_rate
+    } else {
+        bitrate
+    };
+    if !vbr || requested <= 500 {
+        celt::OPUS_BITRATE_MAX
+    } else {
+        requested.min(750000 * channels as i32)
     }
 }
 
-fn silk_rate_for_hybrid_per_channel(rate_bps: i32, frame20ms: bool) -> i32 {
-    const RATE_TABLE: &[(i32, i32, i32)] = &[
-        (0, 0, 0),
-        (12000, 10000, 10000),
-        (16000, 13500, 13500),
-        (20000, 16000, 16000),
-        (24000, 18000, 18000),
-        (32000, 22000, 22000),
-        (64000, 38000, 38000),
-    ];
-    let n = RATE_TABLE.len();
-    let mut i = 1;
-    while i < n && RATE_TABLE[i].0 <= rate_bps {
-        i += 1;
-    }
-    if i == n {
-        let (x_last, r10_last, r20_last) = RATE_TABLE[n - 1];
-        let base = if frame20ms { r20_last } else { r10_last };
-        base + (rate_bps - x_last) / 2
-    } else {
-        let (x0, lo10, lo20) = RATE_TABLE[i - 1];
-        let (x1, hi10, hi20) = RATE_TABLE[i];
-        let (lo, hi) = if frame20ms {
-            (lo20, hi20)
-        } else {
-            (lo10, hi10)
-        };
-        (lo * (x1 - rate_bps) + hi * (rate_bps - x0)) / (x1 - x0)
-    }
+fn hybrid_hb_gain(celt_rate: i32) -> f32 {
+    1.0 - 0.5 * (-(celt_rate as f32) / 1024.0).exp2()
 }
 
 /// libopus `pcm_buf` and `delay_buffer` (opus_encoder.c:1966-2028,
@@ -538,34 +565,72 @@ fn float_to_i16(x: f32) -> i16 {
     r as i16
 }
 
+fn gain_fade(pcm: &mut [f32], previous: f32, gain: f32, channels: usize, fs: i32) {
+    let window = modes::default_mode().window;
+    let inc = 48000 / fs as usize;
+    let overlap = window.len() / inc;
+    for (i, samples) in pcm.chunks_exact_mut(channels).enumerate() {
+        let g = if i < overlap {
+            let w = window[i * inc] * window[i * inc];
+            w * gain + (1.0 - w) * previous
+        } else {
+            gain
+        };
+        for sample in samples {
+            *sample *= g;
+        }
+    }
+}
+
 #[cfg(all(test, feature = "std"))]
 mod silk_rate_tests {
-    use super::compute_silk_rate_for_hybrid;
+    use super::{Bandwidth, compute_silk_rate_for_hybrid, gain_fade, hybrid_hb_gain};
 
     #[test]
     fn test_reference_table_exact_entries() {
-        assert_eq!(compute_silk_rate_for_hybrid(12000, true, 1), 10000);
-        assert_eq!(compute_silk_rate_for_hybrid(16000, true, 1), 13500);
-        assert_eq!(compute_silk_rate_for_hybrid(20000, true, 1), 16000);
-        assert_eq!(compute_silk_rate_for_hybrid(24000, true, 1), 18000);
-        assert_eq!(compute_silk_rate_for_hybrid(32000, true, 1), 22000);
-        assert_eq!(compute_silk_rate_for_hybrid(64000, true, 1), 38000);
+        assert_eq!(
+            compute_silk_rate_for_hybrid(12000, Bandwidth::Wideband, true, true, false, 1),
+            10000
+        );
+        assert_eq!(
+            compute_silk_rate_for_hybrid(16000, Bandwidth::Wideband, true, true, false, 1),
+            13500
+        );
+        assert_eq!(
+            compute_silk_rate_for_hybrid(20000, Bandwidth::Wideband, true, true, false, 1),
+            16000
+        );
+        assert_eq!(
+            compute_silk_rate_for_hybrid(24000, Bandwidth::Wideband, true, true, false, 1),
+            18000
+        );
+        assert_eq!(
+            compute_silk_rate_for_hybrid(32000, Bandwidth::Wideband, true, true, false, 1),
+            22000
+        );
+        assert_eq!(
+            compute_silk_rate_for_hybrid(64000, Bandwidth::Wideband, true, true, false, 1),
+            38000
+        );
     }
 
     #[test]
     fn test_32kbps_gives_22kbps_silk() {
-        assert_eq!(compute_silk_rate_for_hybrid(32000, true, 1), 22000);
+        assert_eq!(
+            compute_silk_rate_for_hybrid(32000, Bandwidth::Wideband, true, true, false, 1),
+            22000
+        );
     }
 
     #[test]
     fn test_interpolation_between_table_entries() {
-        let r = compute_silk_rate_for_hybrid(18000, true, 1);
+        let r = compute_silk_rate_for_hybrid(18000, Bandwidth::Wideband, true, true, false, 1);
         assert_eq!(r, 14750);
     }
 
     #[test]
     fn test_above_table_max_gives_half_extra() {
-        let r = compute_silk_rate_for_hybrid(72000, true, 1);
+        let r = compute_silk_rate_for_hybrid(72000, Bandwidth::Wideband, true, true, false, 1);
         assert_eq!(r, 38000 + (72000 - 64000) / 2);
     }
 
@@ -573,11 +638,97 @@ mod silk_rate_tests {
     /// channel, takes 1 kb/s off (libopus opus_encoder.c).
     #[test]
     fn test_stereo_allocates_per_channel() {
-        let stereo = |rate| compute_silk_rate_for_hybrid(rate, true, 2);
+        let stereo =
+            |rate| compute_silk_rate_for_hybrid(rate, Bandwidth::Wideband, true, true, false, 2);
         assert_eq!(stereo(32000), 2 * 13500 - 1000);
         assert_eq!(stereo(24000), 2 * 10000 - 1000);
         assert_eq!(stereo(20000), 2 * 8333);
         assert_eq!(stereo(64000), 2 * 22000 - 1000);
+    }
+
+    #[test]
+    fn fec_columns_and_rate_boosts_match_libopus() {
+        for frame20ms in [false, true] {
+            for (rate, expected) in [
+                (12000, 11000),
+                (16000, 15000),
+                (18000, 16500),
+                (20000, 18000),
+                (24000, 21000),
+                (32000, 28000),
+                (64000, 50000),
+                (72000, 54000),
+            ] {
+                for vbr in [false, true] {
+                    for bandwidth in [Bandwidth::Fullband, Bandwidth::Superwideband] {
+                        let boost = i32::from(!vbr) * 100
+                            + i32::from(bandwidth == Bandwidth::Superwideband) * 300;
+                        assert_eq!(
+                            compute_silk_rate_for_hybrid(rate, bandwidth, frame20ms, vbr, true, 1),
+                            expected + boost,
+                        );
+                        assert_eq!(
+                            compute_silk_rate_for_hybrid(
+                                rate * 2,
+                                bandwidth,
+                                frame20ms,
+                                vbr,
+                                true,
+                                2
+                            ),
+                            (expected + boost) * 2 - 1000,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn celt_rate_follows_libopus_bitrate_ctl() {
+        use super::{OpusMode, celt_bitrate};
+        let max = crate::celt::OPUS_BITRATE_MAX;
+        assert_eq!(celt_bitrate(OpusMode::Hybrid, true, 12000, 9966, 1), 2034);
+        // At or below 500 b/s CELT keeps the unlimited rate.
+        assert_eq!(celt_bitrate(OpusMode::Hybrid, true, 2500, 2050, 1), max);
+        assert_eq!(celt_bitrate(OpusMode::Hybrid, true, 2500, 2000, 1), max);
+        assert_eq!(celt_bitrate(OpusMode::Hybrid, true, 2501, 2000, 1), 501);
+        // CBR never sets a CELT rate.
+        assert_eq!(celt_bitrate(OpusMode::Hybrid, false, 32000, 22000, 1), max);
+        assert_eq!(celt_bitrate(OpusMode::CeltOnly, false, 64000, 0, 1), max);
+        assert_eq!(celt_bitrate(OpusMode::CeltOnly, true, 64000, 0, 2), 64000);
+        assert_eq!(
+            celt_bitrate(OpusMode::CeltOnly, true, 2_000_000, 0, 2),
+            1_500_000
+        );
+        assert_eq!(celt_bitrate(OpusMode::CeltOnly, true, 500, 0, 1), max);
+    }
+
+    #[test]
+    fn high_band_gain_follows_the_celt_share() {
+        assert_eq!(hybrid_hb_gain(0), 0.5);
+        assert_eq!(hybrid_hb_gain(1024), 0.75);
+        assert_eq!(hybrid_hb_gain(2048), 0.875);
+        assert!(hybrid_hb_gain(8000) > 0.997);
+    }
+
+    #[test]
+    fn high_band_gain_fades_over_the_overlap_at_each_api_rate() {
+        for fs in [24000, 48000] {
+            let overlap = fs as usize / 400;
+            for channels in [1, 2] {
+                let mut pcm = vec![1.0; fs as usize / 100 * channels];
+                gain_fade(&mut pcm, 1.0, 0.75, channels, fs);
+                assert!(pcm[0] > 0.999);
+                assert_eq!(pcm[overlap * channels], 0.75);
+                for samples in pcm.chunks_exact(channels) {
+                    assert!(samples.iter().all(|&sample| sample == samples[0]));
+                }
+                assert!(pcm.windows(channels + 1).all(|w| w[0] >= w[channels]));
+                gain_fade(&mut pcm, 0.75, 1.0, channels, fs);
+                assert_eq!(pcm[overlap * channels], 0.75);
+            }
+        }
     }
 }
 
@@ -757,6 +908,7 @@ impl OpusEncoder {
                 (sampling_rate / 250) as usize
             },
             hp_mem_float: [0.0; 4],
+            prev_hb_gain: 1.0,
             silk_opus_can_switch: false,
             silk_bw_switch: false,
             #[cfg(not(feature = "heap"))]
@@ -1116,6 +1268,8 @@ impl OpusEncoder {
 
         let cutoff_hz = silk_log2lin(silk_rshift(self.variable_hp_smth2_q15, 8));
 
+        let mut silk_bitrate = 0;
+        let mut hb_gain = 1.0;
         let mut silk_switch_ready = false;
         if mode == OpusMode::SilkOnly || mode == OpusMode::Hybrid {
             let frame_ms = (frame_size as i32 * 1000) / self.sampling_rate;
@@ -1303,14 +1457,24 @@ impl OpusEncoder {
 
             let silk_frame_len_samples =
                 frame_size * silk_fs_khz as usize / (self.sampling_rate.max(1000) / 1000) as usize;
-            let silk_bitrate = if mode == OpusMode::Hybrid {
+            silk_bitrate = if mode == OpusMode::Hybrid {
                 let frame_duration_ms = frame_size as i32 * 1000 / self.sampling_rate;
                 let frame20ms = frame_duration_ms >= 20;
-                compute_silk_rate_for_hybrid(self.bitrate_bps, frame20ms, self.channels)
+                compute_silk_rate_for_hybrid(
+                    total_bitrate,
+                    frame_bandwidth,
+                    frame20ms,
+                    !self.use_cbr,
+                    lbrr_coded != 0,
+                    self.channels,
+                )
             } else {
                 // C: SILK gets all bits, at the requested rate (issue #43).
                 total_bitrate
             };
+            if mode == OpusMode::Hybrid {
+                hb_gain = hybrid_hb_gain(total_bitrate - silk_bitrate);
+            }
 
             // C opus_encoder.c:1806-1826: prefill the fresh SILK encoder with
             // the tail of the delay buffer, zeroed before a 2.5 ms fade-in,
@@ -1491,7 +1655,10 @@ impl OpusEncoder {
                     let frame20ms = frame_duration_ms >= 20;
                     let max_bit_rate = compute_silk_rate_for_hybrid(
                         total_max_bits * self.sampling_rate / frame_size as i32,
+                        frame_bandwidth,
                         frame20ms,
+                        true,
+                        lbrr_coded != 0,
                         self.channels,
                     );
                     max_bit_rate * frame_size as i32 / self.sampling_rate
@@ -1605,6 +1772,8 @@ impl OpusEncoder {
                 }
             }
         }
+        let previous_hb_gain = self.prev_hb_gain;
+        self.prev_hb_gain = hb_gain;
         // libopus moves its delay line on in every frame, so the CELT input
         // after a SILK-only stretch starts from recent history.
         if mode == OpusMode::SilkOnly && self.delay_compensation > 0 {
@@ -1647,18 +1816,26 @@ impl OpusEncoder {
                 Bandwidth::Fullband | Bandwidth::Auto => 21,
             };
             self.celt_enc.set_end_band(end_band);
+            // libopus forwards the loss rate to CELT (OPUS_SET_PACKET_LOSS_PERC)
+            // and, in hybrid mode, the SILK layer's signal type and offset
+            // (CELT_SET_SILK_INFO, opus_encoder.c:2420-2424).
+            self.celt_enc.set_loss_rate(self.packet_loss_perc);
+            if mode == OpusMode::Hybrid {
+                let ix = &self.silk_enc.s_cmn.indices;
+                let offset = silk::tables::SILK_QUANTIZATION_OFFSETS_Q10
+                    [(ix.signal_type >> 1) as usize][ix.quant_offset_type as usize];
+                self.celt_enc
+                    .set_silk_info(i32::from(ix.signal_type), i32::from(offset));
+            }
             let total_packet_bits = ((n_bytes - 1) * 8) as i32;
-            // Propagate bitrate/VBR to CeltEncoder for accurate VBR handling (libopus parity)
-            let celt_bitrate = if mode == OpusMode::Hybrid {
-                let frame_ms = frame_size as i32 * 1000 / self.sampling_rate;
-                let frame20ms = frame_ms >= 20;
-                let silk_rate =
-                    compute_silk_rate_for_hybrid(self.bitrate_bps, frame20ms, self.channels);
-                (self.bitrate_bps - silk_rate).max(8000)
-            } else {
-                self.bitrate_bps
-            };
-            self.celt_enc.set_bitrate(celt_bitrate);
+            let celt_rate = celt_bitrate(
+                mode,
+                !self.use_cbr,
+                self.bitrate_bps,
+                silk_bitrate,
+                self.channels,
+            );
+            self.celt_enc.set_bitrate(celt_rate);
             self.celt_enc.set_vbr(!self.use_cbr);
             // libopus: Hybrid VBR is unconstrained (can steal from SILK), CELT-only constrained
             self.celt_enc
@@ -1714,6 +1891,16 @@ impl OpusEncoder {
                         *h = float_to_i16(x);
                     }
                 }
+                // Fade after saving unscaled history, so SILK is unaffected.
+                if previous_hb_gain < 1.0 || hb_gain < 1.0 {
+                    gain_fade(
+                        &mut self.buf_celt_pcm[..frame_size * ch],
+                        previous_hb_gain,
+                        hb_gain,
+                        ch,
+                        self.sampling_rate,
+                    );
+                }
                 // 5. deinterleave pcm_buf[0..frame_size*ch] (interleaved) to
                 //    channel-major for the Rust CELT encoder.
                 let n = frame_size * ch;
@@ -1739,7 +1926,8 @@ impl OpusEncoder {
             };
 
             if self.rc.tell() <= total_packet_bits {
-                let is_vbr = !self.use_cbr;
+                // CELT codes VBR only with a rate (celt_encoder.c `vbr_rate`).
+                let is_vbr = !self.use_cbr && celt_rate != celt::OPUS_BITRATE_MAX;
                 self.celt_enc.encode_with_budget_vbr(
                     celt_input,
                     frame_size,
