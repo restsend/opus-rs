@@ -31,6 +31,13 @@ pub fn silk_encode_pulses(
     let mut abs_pulses = [0i32; MAX_FRAME_LENGTH + SHELL_CODEC_FRAME_LENGTH];
 
     let iter = frame_length.div_ceil(SHELL_CODEC_FRAME_LENGTH);
+    // A 10 ms frame at 12 kHz is 7.5 shell blocks. libopus zeroes the rest
+    // of the last block (silk_encode_pulses): the caller's buffer can still
+    // hold an earlier, longer frame's pulses there, and their LSBs and signs
+    // would be coded although the shell code says the frame has none.
+    let mut padded = [0i8; MAX_FRAME_LENGTH + SHELL_CODEC_FRAME_LENGTH];
+    padded[..frame_length].copy_from_slice(&pulses[..frame_length]);
+    let pulses = &padded[..];
 
     for i in 0..frame_length {
         abs_pulses[i] = pulses[i].abs() as i32;
