@@ -353,30 +353,12 @@ impl CeltDecoder {
             self.channels,
             2,
         );
-        // TEMP bit-exactness trace.
-        #[cfg(feature = "std")]
-        let trace_n = {
-            use std::sync::atomic::{AtomicUsize, Ordering};
-            static N: AtomicUsize = AtomicUsize::new(0);
-            if let Ok(dir) = std::env::var("OPUS_TRACE_PLC") {
-                let n = N.fetch_add(1, Ordering::SeqCst);
-                let bytes: Vec<u8> = lp.iter().flat_map(|v| v.to_le_bytes()).collect();
-                let _ = std::fs::write(format!("{dir}/rs_lp_{n}.f32"), &bytes);
-                n
-            } else {
-                usize::MAX
-            }
-        };
         let pitch = pitch_search(
             &lp[PLC_PITCH_LAG_MAX >> 1..],
             &lp,
             DECODE_BUFFER_SIZE - PLC_PITCH_LAG_MAX,
             PLC_PITCH_LAG_MAX - PLC_PITCH_LAG_MIN,
         );
-        #[cfg(feature = "std")]
-        if trace_n != usize::MAX {
-            eprintln!("RS plc search {trace_n}: lag {}", PLC_PITCH_LAG_MAX - pitch);
-        }
         PLC_PITCH_LAG_MAX - pitch
     }
 
