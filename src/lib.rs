@@ -3280,6 +3280,10 @@ pub struct OpusDecoder {
     /// Whether the previous frame had redundancy (mode transition marker).
     prev_redundancy: bool,
     frame_size: usize,
+    /// Samples per frame of the last packet decoded (libopus `st->frame_size`,
+    /// 2.5 ms before the first packet). A loss is concealed in pieces of at
+    /// most this size.
+    last_packet_frame: usize,
 
     bandwidth: Bandwidth,
 
@@ -3369,6 +3373,7 @@ impl OpusDecoder {
             (&raw mut (*this).prev_mode).write(None);
             (&raw mut (*this).prev_redundancy).write(false);
             (&raw mut (*this).frame_size).write(0);
+            (&raw mut (*this).last_packet_frame).write(sampling_rate as usize / 400);
             (&raw mut (*this).bandwidth).write(Bandwidth::Auto);
             (&raw mut (*this).stream_channels).write(channels);
             (&raw mut (*this).silk_resampler).write(silk::resampler::SilkResampler::default());
@@ -4007,6 +4012,9 @@ impl OpusDecoder {
 
         self.save_pcm_tail(output, decoded_total);
         self.prev_mode = Some(mode);
+        if let Some(per_frame) = frame_samples_from_toc(toc, self.sampling_rate) {
+            self.last_packet_frame = per_frame;
+        }
         self.prev_redundancy = has_redundancy;
         Ok(decoded_total)
     }
@@ -4109,6 +4117,7 @@ impl OpusDecoder {
         self.save_pcm_tail(output, frame_size);
         self.prev_mode = Some(mode);
         self.prev_redundancy = false;
+        self.last_packet_frame = packet_frame;
         Ok(frame_size)
     }
 
@@ -4159,8 +4168,12 @@ impl OpusDecoder {
         output[total * channels..].fill(0.0);
 
         let mut pos = 0usize;
+        // libopus conceals at most the last packet's frame per
+        // opus_decode_frame call ("don't conceal more than what the ToC
+        // says"), so a 20 ms loss after 10 ms packets is two 10 ms pieces.
+        let piece = self.last_packet_frame.max(f2_5);
         while pos < total {
-            let remaining = total - pos;
+            let remaining = (total - pos).min(piece);
             let dst = &mut output[pos * channels..total * channels];
             let produced = match self.prev_mode {
                 None => {

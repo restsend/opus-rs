@@ -254,3 +254,60 @@ fn concealment_after_silence_stays_silent() {
         );
     }
 }
+
+fn snr_of(got: &[f32], want: &[f32]) -> f64 {
+    let (mut sig, mut err) = (1e-20f64, 1e-20f64);
+    for (&g, &w) in got.iter().zip(want) {
+        sig += (w as f64).powi(2);
+        err += (g as f64 - w as f64).powi(2);
+    }
+    10.0 * (sig / err).log10()
+}
+
+/// A loss longer than the last packet's frame is concealed in pieces of that
+/// frame, as libopus does (opus_decode_frame: "don't conceal more than what
+/// the ToC says"): 20 and 60 ms gaps, each asked for in one call, after 10 ms
+/// SILK packets. SILK concealment is fixed-point, so both decoders agree to
+/// the last bit; concealing a gap in one piece of its own length did not.
+#[test]
+fn concealment_follows_the_last_packet_frame_size() {
+    let sr = 16_000;
+    let mut enc = OpusEncoder::new(sr as i32, 1, Application::Voip).unwrap();
+    enc.bitrate_bps = 20_000;
+    let mut out = vec![0u8; 1500];
+    let packets: Vec<Vec<u8>> = vowel(sr, 0..0)
+        .chunks_exact(sr / 100)
+        .take(120)
+        .map(|frame| {
+            let n = enc.encode(frame, sr / 100, &mut out).unwrap();
+            out[..n].to_vec()
+        })
+        .collect();
+    let mut rs = OpusDecoder::new(RATE as i32, 1).unwrap();
+    let mut c = CDec::new(RATE as u32, 1).unwrap();
+    let mut got = vec![0f32; 5760];
+    let mut want = vec![0f32; 5760];
+    let mut after_gap = false;
+    for (k, packet) in packets.iter().enumerate() {
+        if let Some(n) = match k {
+            40 => Some(960),
+            80 => Some(2880),
+            _ => None,
+        } {
+            let g = rs.decode(&[], n, &mut got[..n]).unwrap();
+            let w = c.decode_float(&[], &mut want[..n], false).unwrap();
+            assert_eq!(g, w);
+            let s = snr_of(&got[..g], &want[..w]);
+            assert!(s >= 60.0, "{} ms gap before packet {k}: {s:.1} dB", n / 48);
+            after_gap = true;
+        }
+        let g = rs.decode(packet, 5760, &mut got).unwrap();
+        let w = c.decode_float(packet, &mut want, false).unwrap();
+        assert_eq!(g, w);
+        if after_gap {
+            let s = snr_of(&got[..g], &want[..w]);
+            assert!(s >= 60.0, "packet {k} after a gap: {s:.1} dB");
+            after_gap = false;
+        }
+    }
+}
