@@ -1,0 +1,21 @@
+[package]
+name = "opus-rs-capi"
+version = "0.1.0"
+edition = "2024"
+description = "libopus-compatible C API over opus-rs: a drop-in libopus.so / libopus.a"
+license = "BSD-3-Clause"
+publish = false
+
+[lib]
+# `opus` so the artifacts are libopus.so / libopus.a, linkable with -lopus.
+name = "opus"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+# Without `heap` the codec state is one flat block, like libopus's: C callers
+# size it with opus_*_get_size(), place it in their own memory, and may
+# memcpy it.
+opus-rs = { path = "..", default-features = false, features = ["std"] }
+
+[profile.release]
+debug = 1
