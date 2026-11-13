@@ -21,3 +21,4 @@ libopus/
 fuzz/bin
 fuzz/survey
 .direnv/
+capi/target
