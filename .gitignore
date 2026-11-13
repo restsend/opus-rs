@@ -17,3 +17,4 @@ tests/c_ref_gen
 fixtures/ref_c_*.wav
 tests/*.c
 opus-1.6.1/
+capi/target
