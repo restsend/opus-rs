@@ -2007,8 +2007,44 @@ fn dynalloc_analysis_simple(
     tone_freq: f32,
     toneishness: f32,
     importance: &mut [i32],
+    spread_weight: &mut [i32],
 ) {
     offsets.fill(0);
+    let nb = mode.nb_ebands;
+    // celt_encoder.c:1063-1117: the noise floor, the deepest band above it,
+    // and from a simple masking model the weights of the spreading decision.
+    let mut noise_floor = [0.0f32; CELT_NB_EBANDS];
+    let mut max_depth = -31.9f32;
+    for i in 0..end {
+        noise_floor[i] = 0.0625 * mode.log_n[i] as f32 + 0.5 + (9 - lsb_depth) as f32
+            - mode.e_means[i]
+            + 0.0062 * (i + 5) as f32 * (i + 5) as f32;
+    }
+    for c in 0..channels {
+        for i in 0..end {
+            max_depth = max_depth.max(band_log_e[c * nb + i] - noise_floor[i]);
+        }
+    }
+    let mut mask = [0.0f32; CELT_NB_EBANDS];
+    for i in 0..end {
+        mask[i] = band_log_e[i] - noise_floor[i];
+        if channels == 2 {
+            mask[i] = mask[i].max(band_log_e[nb + i] - noise_floor[i]);
+        }
+    }
+    let sig = mask;
+    for i in 1..end {
+        mask[i] = mask[i].max(mask[i - 1] - 2.0);
+    }
+    for i in (0..end.saturating_sub(1)).rev() {
+        mask[i] = mask[i].max(mask[i + 1] - 3.0);
+    }
+    for i in 0..end {
+        let smr = sig[i] - (max_depth - 12.0).max(0.0).max(mask[i]);
+        let shift = (-((0.5 + smr).floor() as i32)).clamp(0, 5);
+        spread_weight[i] = 32 >> shift;
+    }
+
     if effective_bytes < (30 + 5 * lm) {
         for v in importance.iter_mut() {
             *v = 13;
@@ -2016,7 +2052,6 @@ fn dynalloc_analysis_simple(
         return;
     }
 
-    let nb = mode.nb_ebands;
     let mut follower: FixedVec<f32, CELT_NB_X_CH> = FixedVec::from_value(0.0f32, nb * channels);
     for c in 0..channels {
         let base = c * nb;
@@ -2069,19 +2104,7 @@ fn dynalloc_analysis_simple(
         }
         // Clamp to noise floor (float C: GCONST etc are no-ops)
         for i in 0..end {
-            let log_n = if i < mode.log_n.len() {
-                mode.log_n[i] as f32
-            } else {
-                0.0
-            };
-            let e_mean = if i < mode.e_means.len() {
-                mode.e_means[i]
-            } else {
-                0.0
-            };
-            let noise_floor = 0.0625 * log_n + 0.5 + (9 - lsb_depth) as f32 - e_mean
-                + 0.0062 * ((i + 5) * (i + 5)) as f32;
-            follower[base + i] = follower[base + i].max(noise_floor);
+            follower[base + i] = follower[base + i].max(noise_floor[i]);
         }
     }
     if channels == 2 {
@@ -2892,6 +2915,7 @@ impl CeltEncoder {
         };
         let surround_dynalloc = [0.0f32; 21];
         let mut importance = [13i32; MAX_NB_EBANDS];
+        let mut spread_weight = [32i32; MAX_NB_EBANDS];
         dynalloc_analysis_simple(
             mode,
             band_log_e,
@@ -2913,6 +2937,7 @@ impl CeltEncoder {
             tone_freq,
             toneishness,
             &mut importance,
+            &mut spread_weight,
         );
 
         // TF resolution (celt_encoder.c:2242-2277): analysed only for CELT
@@ -3003,11 +3028,12 @@ impl CeltEncoder {
                 } else {
                     SPREAD_AGGRESSIVE
                 };
-            } else if is_transient || self.complexity < 3 || effective_bytes < 10 * channels {
+            } else if is_transient || self.complexity < 3 || nb_available < 10 * channels {
                 self.spread_decision = SPREAD_NORMAL;
             } else {
-                let update_hf = lm == mode.max_lm;
-                let spread_weights = [32i32; 21];
+                // celt_encoder.c:2338-2340.
+                let update_hf = pf_on && !is_transient;
+                let eff_end = end.min(mode.eff_ebands);
                 self.spread_decision = spreading_decision(
                     mode,
                     x,
@@ -3016,10 +3042,10 @@ impl CeltEncoder {
                     &mut self.hf_average,
                     &mut self.tapset_decision,
                     update_hf,
-                    end,
+                    eff_end,
                     channels,
                     (1 << lm) as usize,
-                    &spread_weights,
+                    &spread_weight,
                 );
             }
             rc.encode_icdf(self.spread_decision, &SPREAD_ICDF, 5);
