@@ -14,6 +14,7 @@
 //! - `bytes` (`OFZ_STRICT_BYTES=1`, scalar only): byte-identical packets in
 //!   CELT-only streams (`RestrictedLowDelay`), where opus-rs and libopus run
 //!   the same float algorithm. The first differing packet is reported.
+//! - `silk-input`: the 16-bit samples handed to SILK are identical.
 //! - `fidelity`: per-frame SNR against the input, both streams decoded by
 //!   libopus. Flags frames where opus-rs is below 3 dB while libopus is at
 //!   least 6 dB better.
@@ -213,6 +214,17 @@ fn run(inp: Input) -> Result<(), Finding> {
             let r_ref = re.encode(&pcm, frame, &mut p_ref);
             set_simd(false);
             let r_sc = e_sc.encode(&pcm, frame, &mut p_sc);
+            // `silk-input`: both encoders hand SILK the same 16-bit samples
+            // (after the high-pass or DC filter and the conversion).
+            let (si_rs, si_ref) = (opus_rs::fuzzing::take_silk_input(), c::take_silk_input());
+            if !si_rs.is_empty() && !si_ref.is_empty() {
+                if let Some(i) = (0..si_rs.len().min(si_ref.len())).find(|&i| si_rs[i] != si_ref[i]) {
+                    let worst = si_rs.iter().zip(&si_ref).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
+                    fail!("silk-input", format!("app{capp} {}", if worst <= 1 { "lsb" } else { "large" }),
+                          "frame {total}: sample {i} opus-rs {}, libopus {} (largest difference {worst}) fs{fs} ch{ch} gen {:?}",
+                          si_rs[i], si_ref[i], seg.signal);
+                }
+            }
             // `OFZ_SUPPRESS=simd` skips the SIMD encoder (see fuzz/DIFFERENTIAL.md).
             let r_si = if suppressed("simd") {
                 p_si = p_sc;

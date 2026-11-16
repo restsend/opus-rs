@@ -1,0 +1,25 @@
+# id	target	env	pattern (present = bug reproduces)	description
+01a	api_args	-	rate.rs", line: 33	bits2pulses indexes its table unchecked
+01b	api_args	-	rate.rs", line: 76	pulses2bits indexes its table unchecked
+01c	api_args	-	range_coder.rs", line: 434	encode_icdf reads past the table
+01d	api_args	OFZ_SUPPRESS=rate	range_coder.rs", line: 585	shrink accepts a size larger than the buffer
+02	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	hybrid->silk first-2.5ms	no CELT fade-out on Hybrid->SILK
+03	diff_kernels	-	kernel] silk_lshift_sat32	silk_lshift_sat32 saturates after shifting
+04	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	clamp	float output clamped to +-1
+05	diff_kernels	-	comb_filter/scalar exact	comb-filter tap constants
+06	diff_encoder	OFZ_SUPPRESS=toc,simd	silk-input] app2049	SILK input skips dc_reject / truncates
+07	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	celt_decoder.c:1401	spreading_decision weights
+08	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	celt_decoder.c:1426	band-0 boost above 320 bytes
+09	diff_encoder	OFZ_SUPPRESS=toc,simd	>750k/ch	bitrate clamped at 3 Mb/s
+10	diff_kernels	-	haar1/simd exact	AVX2 haar1 rounding
+11	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	bytes] celt length	silent VBR frame budget
+12	diff_kernels@aarch64	-	pvq_search/scalar objective	NEON pulse search objective
+13	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	decode_fec dtx->silk	decode_fec mode after DTX
+14	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	range] decode_fec ->hybrid	decode_fec final range on Hybrid
+15a	diff_kernels	-	silk_sum_sqr_shift/simd	silk_sum_sqr_shift AVX2
+15b	diff_kernels@aarch64	-	silk_sum_sqr_shift/scalar	silk_sum_sqr_shift NEON
+16	diff_kernels@aarch64	-	celt_fir/scalar tol	celt_fir_neon
+17a	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	multiply with overflow	decode with an absurd frame_size
+17b	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	multiply with overflow	decode_fec with an absurd frame_size
+n1	diff_encoder	OFZ_SUPPRESS=toc	stack-buffer-overflow	AVX2 xcorr kernel reads past its input
+n2	diff_encoder	OFZ_SUPPRESS=toc,simd	silk-input] app2048	VoIP high-pass output differs from libopus

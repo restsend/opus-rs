@@ -39,8 +39,9 @@ fn main() {
         ("opus_sources.mk", "OPUS_SOURCES"),
         ("opus_sources.mk", "OPUS_SOURCES_FLOAT"),
     ] {
-        // Decoder files that read symbols are compiled through `wrap/`,
-        // which traces each range-decoder call (see trace.h).
+        // Files compiled through `wrap/`: the decoder files trace each
+        // range-decoder call (trace.h); opus_encoder.c records the samples it
+        // hands to SILK (silk_hook.h).
         let wrapped = [
             "celt_decoder.c",
             "bands.c",
@@ -48,6 +49,7 @@ fn main() {
             "rate.c",
             "cwrs.c",
             "opus_decoder.c",
+            "opus_encoder.c",
         ];
         for f in list(&src, mk, var) {
             let name = f.file_name().unwrap().to_str().unwrap().to_owned();
@@ -61,6 +63,7 @@ fn main() {
     println!("cargo:rerun-if-changed=wrap");
     println!("cargo:rerun-if-changed=trace.c");
     println!("cargo:rerun-if-changed=trace.h");
+    println!("cargo:rerun-if-changed=silk_hook.h");
     b.file("trace.c")
         .include(&src)
         .include(env!("CARGO_MANIFEST_DIR"))

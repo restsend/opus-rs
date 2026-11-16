@@ -131,6 +131,18 @@ pub struct Symbol {
     pub val: i32,
 }
 
+unsafe extern "C" {
+    fn ofz_take_silk_input(p: *mut *const i16) -> c_int;
+}
+
+/// The 16-bit samples the reference encoder handed to SILK in its last coded
+/// SILK call, interleaved; empty if SILK did not run since the last call.
+pub fn take_silk_input() -> Vec<i16> {
+    let mut p = core::ptr::null();
+    let n = unsafe { ofz_take_silk_input(&mut p) };
+    unsafe { core::slice::from_raw_parts(p, n as usize) }.to_vec()
+}
+
 /// Runs `f` and returns the symbols the reference decoder read meanwhile.
 pub fn trace<T>(f: impl FnOnce() -> T) -> (T, Vec<Symbol>) {
     unsafe {
