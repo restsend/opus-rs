@@ -4,12 +4,17 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
+[workspace]
+members = [".", "opusref"]
+
 [package.metadata]
 cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-opus-rs = { path = ".." }
+arbitrary = { version = "1", features = ["derive"] }
+opus-rs = { path = "..", features = ["fuzzing"] }
+opusref = { path = "opusref" }
 
 [dev-dependencies]
 
@@ -107,6 +112,34 @@ bench = false
 [[bin]]
 name = "fuzz_packet_parsing"
 path = "fuzz_targets/fuzz_packet_parsing.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "diff_decoder"
+path = "fuzz_targets/diff_decoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "diff_encoder"
+path = "fuzz_targets/diff_encoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "diff_kernels"
+path = "fuzz_targets/diff_kernels.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "api_args"
+path = "fuzz_targets/api_args.rs"
 test = false
 doc = false
 bench = false
