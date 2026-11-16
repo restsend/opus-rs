@@ -1656,11 +1656,12 @@ impl OpusEncoder {
             .ok_or("Invalid frame size for sampling rate")?;
 
         // Clamp caller-provided control fields the way libopus's ctl
-        // interface does (OPUS_SET_BITRATE clamps to [500, 3000000];
-        // complexity to [0, 10]). Unclamped extremes overflow the bitrate
-        // arithmetic downstream (bitrate*6 in celt, `equiv*(90+complexity)`
-        // in the mode selection) — issue #27 deep scan.
-        self.bitrate_bps = self.bitrate_bps.clamp(500, 3_000_000);
+        // interface does (OPUS_SET_BITRATE clamps to [500, 750000 per
+        // channel], opus_encoder.c:2820-2828; complexity to [0, 10]).
+        // Unclamped extremes overflow the bitrate arithmetic downstream
+        // (bitrate*6 in celt, `equiv*(90+complexity)` in the mode
+        // selection) — issue #27 deep scan.
+        self.bitrate_bps = self.bitrate_bps.clamp(500, 750_000 * self.channels as i32);
         self.complexity = self.complexity.clamp(0, 10);
         self.packet_loss_perc = self.packet_loss_perc.clamp(0, 100);
 
