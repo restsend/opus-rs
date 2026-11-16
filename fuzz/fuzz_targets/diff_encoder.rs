@@ -337,6 +337,9 @@ fn run(inp: Input) -> Result<(), Finding> {
                             )
                         })
                         .unwrap_or_default();
+                    if std::env::var("OFZ_DEBUG").is_ok() {
+                        eprintln!("opus-rs {pkt:02x?}\nlibopus {:02x?}", &p_ref[..n_ref]);
+                    }
                     fail!(
                         "bytes",
                         format!("{} {site}", mode_name(p_ref[0])),

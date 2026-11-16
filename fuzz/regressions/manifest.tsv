@@ -12,7 +12,6 @@
 08	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	celt_decoder.c:1426	band-0 boost above 320 bytes
 09	diff_encoder	OFZ_SUPPRESS=toc,simd	>750k/ch	bitrate clamped at 3 Mb/s
 10	diff_kernels	-	haar1/simd exact	AVX2 haar1 rounding
-11	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	bytes] celt length	silent VBR frame budget
 12	diff_kernels@aarch64	-	pvq_search/scalar objective	NEON pulse search objective
 13	test:fec_after_dtx	-	FAILED	decode_fec mode after DTX
 14	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	range] decode_fec ->hybrid	decode_fec final range on Hybrid
@@ -25,3 +24,4 @@ n1	diff_encoder	OFZ_SUPPRESS=toc	stack-buffer-overflow	AVX2 xcorr kernel reads p
 n2	diff_encoder	OFZ_SUPPRESS=toc,simd	silk-input] app2048	VoIP high-pass output differs from libopus
 n3	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	decode_fec dtx->silk	FEC frame after long concealment differs
 n4	diff_encoder	OFZ_SUPPRESS=toc,simd	silk-input] app2048	VoIP SILK input differs after a few frames (variable cutoff?)
+n5	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	bytes] celt length	no DTX inside multi-frame CELT packets
