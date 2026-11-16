@@ -177,16 +177,12 @@ pub fn silk_pitch_analysis_core(
     let frame_8khz: &[i16];
     if fs_khz == 16 {
         filt_state[0..2].fill(0);
-        let output = unsafe {
-            core::slice::from_raw_parts_mut(frame_8khz_buf.as_mut_ptr(), frame_length_8khz)
-        };
+        let output = &mut frame_8khz_buf[..frame_length_8khz];
         silk_resampler_down2(&mut filt_state[..2], output, frame, frame_length as i32);
         frame_8khz = output;
     } else if fs_khz == 12 {
         filt_state[0..6].fill(0);
-        let output = unsafe {
-            core::slice::from_raw_parts_mut(frame_8khz_buf.as_mut_ptr(), frame_length_8khz)
-        };
+        let output = &mut frame_8khz_buf[..frame_length_8khz];
         silk_resampler_down2_3(&mut filt_state[..6], output, frame, frame_length as i32);
         frame_8khz = output;
     } else {
@@ -194,11 +190,9 @@ pub fn silk_pitch_analysis_core(
     }
 
     filt_state[0..2].fill(0);
-    let frame_4khz_sub =
-        unsafe { core::slice::from_raw_parts_mut(frame_4khz.as_mut_ptr(), frame_length_4khz) };
     silk_resampler_down2(
         &mut filt_state[..2],
-        frame_4khz_sub,
+        &mut frame_4khz[..frame_length_4khz],
         frame_8khz,
         frame_length_8khz as i32,
     );
