@@ -2,8 +2,6 @@
 
 A pure-Rust implementation of the [Opus audio codec](https://opus-codec.org/) (RFC 6716), ported from the reference C implementation (libopus 1.6).
 
-> **Production-ready**
-
 ## Features
 
 - **Pure Rust** — no C dependencies
