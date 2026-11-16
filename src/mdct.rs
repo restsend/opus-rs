@@ -3,10 +3,10 @@ use core::f32::consts::PI;
 
 #[cfg(not(feature = "std"))]
 use crate::compat::Math;
+use crate::compat::with_scratch;
 use crate::fixedvec::FixedVec;
 
 const MAX_N2: usize = 960;
-const MAX_N4: usize = 480;
 /// Maximum number of MDCT levels (`max_lm`). The default 48 kHz / 960 mode uses 3;
 /// 4 leaves headroom for hybrid modes.
 const MDCT_MAX_LM: usize = 4;
@@ -165,7 +165,7 @@ impl MdctLookup {
             output.len()
         );
 
-        with_scratch(n4, |f2| {
+        with_scratch(n4, |f2: &mut [KissCpx]| {
             let (t0, t1) = trig.split_at(n4);
             let bitrev = &st.bitrev[..n4];
             // Window, shuffle and pre-rotate: the i-th folded pair (re, im)
@@ -281,7 +281,7 @@ impl MdctLookup {
         let (trig, _) = self.get_trig(shift);
         let (t0, t1) = trig.split_at(n4);
 
-        with_scratch(n4, |f2| {
+        with_scratch(n4, |f2: &mut [KissCpx]| {
             for (i, &rev) in st.bitrev[..n4].iter().enumerate() {
                 let x1 = input[2 * i * stride];
                 let x2 = input[stride * (n2 - 1 - 2 * i)];
@@ -324,19 +324,6 @@ impl MdctLookup {
             *x2 = a * wp2 - b * wp1;
             *x1 = a * wp1 + b * wp2;
         }
-    }
-}
-
-/// Runs `f` on a zeroed FFT buffer of `n4` values, zeroing no more than the
-/// next of the mode's FFT sizes.
-#[inline(always)]
-fn with_scratch(n4: usize, f: impl FnOnce(&mut [KissCpx])) {
-    const Z: KissCpx = KissCpx::new(0.0, 0.0);
-    match n4 {
-        0..=60 => f(&mut [Z; 60][..n4]),
-        61..=120 => f(&mut [Z; 120][..n4]),
-        121..=240 => f(&mut [Z; 240][..n4]),
-        _ => f(&mut [Z; MAX_N4][..n4]),
     }
 }
 

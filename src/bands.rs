@@ -1,3 +1,4 @@
+use crate::compat::with_scratch;
 use crate::modes::CeltMode;
 use crate::pvq::*;
 use crate::range_coder::RangeCoder;
@@ -1116,18 +1117,6 @@ pub fn quant_partition(
     }
 }
 
-/// Runs `f` on a zeroed buffer of `n <= MAX_PVQ_N` values, zeroing no more
-/// than the next power of two from 32.
-#[inline(always)]
-fn with_scratch<R>(n: usize, f: impl FnOnce(&mut [f32]) -> R) -> R {
-    match n {
-        0..=32 => f(&mut [0.0; 32][..n]),
-        33..=64 => f(&mut [0.0; 64][..n]),
-        65..=128 => f(&mut [0.0; 128][..n]),
-        _ => f(&mut [0.0; MAX_PVQ_N][..n]),
-    }
-}
-
 /// The libopus Hadamard ordering of `stride` blocks.
 fn ordery(stride: usize) -> &'static [i32] {
     let offset = match stride {
@@ -1142,7 +1131,7 @@ fn ordery(stride: usize) -> &'static [i32] {
 
 pub fn deinterleave_hadamard(x: &mut [f32], n0: usize, stride: usize, hadamard: bool) {
     let n = n0 * stride;
-    with_scratch(n, |tmp| {
+    with_scratch(n, |tmp: &mut [f32]| {
         if hadamard {
             for (i, &o) in ordery(stride).iter().enumerate() {
                 for j in 0..n0 {
@@ -1162,7 +1151,7 @@ pub fn deinterleave_hadamard(x: &mut [f32], n0: usize, stride: usize, hadamard: 
 
 pub fn interleave_hadamard(x: &mut [f32], n0: usize, stride: usize, hadamard: bool) {
     let n = n0 * stride;
-    with_scratch(n, |tmp| {
+    with_scratch(n, |tmp: &mut [f32]| {
         if hadamard {
             for (i, &o) in ordery(stride).iter().enumerate() {
                 for j in 0..n0 {

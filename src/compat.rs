@@ -33,6 +33,24 @@ pub fn sort<T: Ord>(slice: &mut [T]) {
 }
 
 // ---------------------------------------------------------------------------
+// Zeroed scratch buffers
+// ---------------------------------------------------------------------------
+
+/// Runs `f` on a zeroed stack buffer of `n <= 512` elements, zeroing only the
+/// next power of two from 32, so short buffers cost little to initialize.
+#[inline(always)]
+pub fn with_scratch<T: Copy + Default, R>(n: usize, f: impl FnOnce(&mut [T]) -> R) -> R {
+    let z = T::default();
+    match n {
+        0..=32 => f(&mut [z; 32][..n]),
+        33..=64 => f(&mut [z; 64][..n]),
+        65..=128 => f(&mut [z; 128][..n]),
+        129..=256 => f(&mut [z; 256][..n]),
+        _ => f(&mut [z; 512][..n]),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // x86 SIMD feature detection
 // ---------------------------------------------------------------------------
 
