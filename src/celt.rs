@@ -396,7 +396,9 @@ fn transient_analysis(
             }
         }
 
-        mean = (mean * max_e * 0.5 * (len2 as f32)).sqrt();
+        // C promotes to double here (`.5` is a double literal) and takes a
+        // double sqrt: `celt_sqrt(mean * maxE*.5*len2)`.
+        mean = ((mean * max_e) as f64 * 0.5 * len2 as f64).sqrt() as f32;
         // C (float build): norm = len2 / (EPSILON + mean)  [EPSILON = 1e-15f]
         let norm = (len2 as f32) / (1e-15 + mean);
 
@@ -1433,6 +1435,7 @@ fn run_prefilter(
     analysis: &AnalysisInfo,
     loss_rate: i32,
     tf_estimate: f32,
+    enabled: bool,
     nb_available_bytes: usize,
     tone_freq: f32,
     toneishness: f32,
@@ -1451,7 +1454,6 @@ fn run_prefilter(
         );
     }
 
-    let enabled = true;
     let mut pitch_index: usize;
     let mut gain1: f32;
     if enabled && toneishness > 0.99 {
@@ -2516,7 +2518,7 @@ impl CeltEncoder {
         // range coder still holds the caller's full capacity; under CBR the
         // bytes left in the packet.
         let hybrid = start_band != 0;
-        let effective_bytes = if self.vbr && self.bitrate != OPUS_BITRATE_MAX {
+        let mut effective_bytes = if self.vbr && self.bitrate != OPUS_BITRATE_MAX {
             (bitrate_to_bits(self.bitrate, mode.fs, frame_size as i32) / 8).max(1) as usize
         } else {
             let capacity = explicit_total_bits.unwrap_or_else(|| (rc.buf.len() * 8) as i32);
@@ -2562,90 +2564,7 @@ impl CeltEncoder {
         // For float, tf_estimate is log-domain; clamp to [0,1]
         toneishness = toneishness.min((1.0 - tf_estimate).clamp(0.0, 1.0));
 
-        // Check for pure tone: if tonality is very high, bypass pitch search
-        // Keep original analysis.tonality check for prefilter gating, but dynalloc uses tone_detect result
-        let analysis_toneishness = if self.analysis.valid {
-            self.analysis.tonality
-        } else {
-            0.0
-        };
-        // analysis_toneishness kept for prefilter gating; tone_freq/toneishness from tone_detect used for dynalloc
-        let pf_enabled = start_band == 0
-            && self.complexity >= 5
-            && analysis_toneishness < 0.99
-            && channels == 1
-            && !self.disable_pf;
-        let prefilter_tapset = self.tapset_decision;
-        let (pf_on, gain1, pitch_index) = if pf_enabled {
-            let tell = rc.tell();
-            let nb_filled = ((tell + 4) >> 3).max(0) as usize;
-            let total = explicit_total_bits.unwrap_or_else(|| (rc.buf.len() * 8) as i32);
-            let nb_available = ((total / 8) as usize).saturating_sub(nb_filled);
-            run_prefilter(
-                in_buf,
-                &mut self.prefilter_mem,
-                self.prefilter_period,
-                self.prefilter_gain,
-                self.prefilter_tapset,
-                self.tapset_decision,
-                mode.window,
-                channels,
-                frame_size,
-                overlap,
-                &mut self.w_prefilter_pre,
-                &mut self.w_prefilter_pitch_buf,
-                &mut self.w_prefilter_before,
-                &mut self.w_prefilter_after,
-                &self.analysis,
-                self.loss_rate,
-                tf_estimate,
-                nb_available,
-                tone_freq,
-                toneishness,
-                self.complexity,
-            )
-        } else {
-            // libopus runs run_prefilter (disabled) every frame, so its
-            // history stays current for the analysis head above and for the
-            // pitch search when the comb filter turns back on.
-            for c in 0..channels {
-                let body = c * buf_stride + overlap;
-                push_prefilter_history(
-                    &mut self.prefilter_mem[c * max_period..(c + 1) * max_period],
-                    &in_buf[body..body + frame_size],
-                );
-            }
-            (false, 0.0f32, COMBFILTER_MINPERIOD)
-        };
-
-        // A change of pitch (celt_encoder.c:2042-2044), which the VBR target
-        // pays for in tonal frames.
-        let pitch_change = (gain1 > 0.4 || self.prefilter_gain > 0.4)
-            && (!self.analysis.valid || f64::from(self.analysis.tonality) > 0.3)
-            && (pitch_index as f64 > 1.26 * self.prefilter_period as f64
-                || (pitch_index as f64) < 0.79 * self.prefilter_period as f64);
-
-        // Save the prefiltered overlap for the next frame.
-        // In libopus, st->in_mem stores the overlap separately and run_prefilter
-        // copies it to/from in[]. Here we emulate that by updating syn_mem with
-        // the last overlap samples of in_buf (which were prefiltered in place).
-        let syn_mem_size = 2048 + overlap;
-        for c in 0..channels {
-            let channel_offset = c * syn_mem_size;
-            let in_buf_offset = c * buf_stride;
-            self.syn_mem[channel_offset + syn_mem_size - overlap..channel_offset + syn_mem_size]
-                .copy_from_slice(&in_buf[in_buf_offset + frame_size..in_buf_offset + buf_stride]);
-        }
-        let freq = &mut self.w_freq[..frame_size * channels];
-        let band_e = &mut self.w_band_e[..nb_ebands * channels];
-        let band_log_e = &mut self.w_band_log_e[..nb_ebands * channels];
-        let x_pad_end = (frame_size * channels + STRIDE_ACCESS_PAD).min(self.w_x.len());
-        let x = &mut self.w_x[..x_pad_end];
-
         let mut total_bits = explicit_total_bits.unwrap_or_else(|| (rc.buf.len() * 8) as i32);
-        self.w_error[..nb_ebands * channels].fill(0.0);
-        let error = &mut self.w_error[..nb_ebands * channels];
-
         // --- Silence detection (port of libopus celt_encoder.c: sample_max / overlap_max / lsb_depth) ---
         // libopus measures sample/overlap maxima on the API-rate `pcm`:
         // `(N-overlap)/upsample` and `overlap/upsample` samples.
@@ -2721,6 +2640,80 @@ impl CeltEncoder {
             }
             // effectiveBytes would be vbr_rate>>(3+BITRES) for later lambda, but total_bits already reflects bound
         }
+
+        // libopus nbAvailableBytes after the VBR bound, two in a silent VBR
+        // frame (celt_encoder.c:1924-1993); effectiveBytes follows the
+        // silent frame's budget too.
+        let silent_vbr = silence && is_vbr;
+        let nb_available = if silent_vbr {
+            2
+        } else {
+            nb_compressed_bytes.saturating_sub(nb_filled_bytes_initial)
+        };
+        if silent_vbr {
+            effective_bytes = nb_compressed_bytes;
+        }
+        // The pre-filter runs every frame; `enabled` as celt_encoder.c:2038.
+        // Stereo stays off: the stereo pre-filter is not ported yet.
+        let tell = if silence { total_bits } else { rc.tell() };
+        let enabled = (nb_available > 12 * channels)
+            && start_band == 0
+            && !silence
+            && tell + 16 <= total_bits
+            && channels == 1
+            && !self.disable_pf;
+        let prefilter_tapset = self.tapset_decision;
+        let (pf_on, gain1, pitch_index) = run_prefilter(
+            in_buf,
+            &mut self.prefilter_mem,
+            self.prefilter_period,
+            self.prefilter_gain,
+            self.prefilter_tapset,
+            self.tapset_decision,
+            mode.window,
+            channels,
+            frame_size,
+            overlap,
+            &mut self.w_prefilter_pre,
+            &mut self.w_prefilter_pitch_buf,
+            &mut self.w_prefilter_before,
+            &mut self.w_prefilter_after,
+            &self.analysis,
+            self.loss_rate,
+            tf_estimate,
+            enabled,
+            nb_available,
+            tone_freq,
+            toneishness,
+            self.complexity,
+        );
+
+        // A change of pitch (celt_encoder.c:2042-2044), which the VBR target
+        // pays for in tonal frames.
+        let pitch_change = (gain1 > 0.4 || self.prefilter_gain > 0.4)
+            && (!self.analysis.valid || f64::from(self.analysis.tonality) > 0.3)
+            && (pitch_index as f64 > 1.26 * self.prefilter_period as f64
+                || (pitch_index as f64) < 0.79 * self.prefilter_period as f64);
+
+        // Save the prefiltered overlap for the next frame.
+        // In libopus, st->in_mem stores the overlap separately and run_prefilter
+        // copies it to/from in[]. Here we emulate that by updating syn_mem with
+        // the last overlap samples of in_buf (which were prefiltered in place).
+        let syn_mem_size = 2048 + overlap;
+        for c in 0..channels {
+            let channel_offset = c * syn_mem_size;
+            let in_buf_offset = c * buf_stride;
+            self.syn_mem[channel_offset + syn_mem_size - overlap..channel_offset + syn_mem_size]
+                .copy_from_slice(&in_buf[in_buf_offset + frame_size..in_buf_offset + buf_stride]);
+        }
+        let freq = &mut self.w_freq[..frame_size * channels];
+        let band_e = &mut self.w_band_e[..nb_ebands * channels];
+        let band_log_e = &mut self.w_band_log_e[..nb_ebands * channels];
+        let x_pad_end = (frame_size * channels + STRIDE_ACCESS_PAD).min(self.w_x.len());
+        let x = &mut self.w_x[..x_pad_end];
+
+        self.w_error[..nb_ebands * channels].fill(0.0);
+        let error = &mut self.w_error[..nb_ebands * channels];
 
         if start_band == 0 && !silence && rc.tell() + 16 <= total_bits {
             rc.encode_bit_logp(pf_on, 1);
@@ -4411,6 +4404,7 @@ mod tests {
             &AnalysisInfo::default(),
             0,
             0.0,
+            true,
             100,
             -1.0,
             0.0,
