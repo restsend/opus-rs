@@ -210,6 +210,8 @@ pub fn silk_nsq_scale_states(
     nsq.prev_sig_type = signal_type as i8;
 }
 
+/// Shifts `data0_val` into the delay line `data1` and returns the filter
+/// output (libopus `silk_NSQ_noise_shape_feedback_loop_c`).
 #[inline(always)]
 fn silk_nsq_noise_shape_feedback_loop(
     data0_val: i32,
@@ -217,86 +219,30 @@ fn silk_nsq_noise_shape_feedback_loop(
     coef: &[i16],
     order: usize,
 ) -> i32 {
-    if order == 12 {
-        return silk_nsq_noise_shape_feedback_loop_order12(data0_val, data1, coef);
-    }
-
-    unsafe {
-        let mut tmp2 = data0_val;
-        let mut tmp1 = *data1.get_unchecked(0);
-        *data1.get_unchecked_mut(0) = tmp2;
-
-        let mut out = (order as i32) >> 1;
-        out = silk_smlawb(out, tmp2, *coef.get_unchecked(0) as i32);
-
-        let mut j = 2;
-        while j < order {
-            tmp2 = *data1.get_unchecked(j - 1);
-            *data1.get_unchecked_mut(j - 1) = tmp1;
-            out = silk_smlawb(out, tmp1, *coef.get_unchecked(j - 1) as i32);
-            tmp1 = *data1.get_unchecked(j);
-            *data1.get_unchecked_mut(j) = tmp2;
-            out = silk_smlawb(out, tmp2, *coef.get_unchecked(j) as i32);
-            j += 2;
-        }
-        *data1.get_unchecked_mut(order - 1) = tmp1;
-        out = silk_smlawb(out, tmp1, *coef.get_unchecked(order - 1) as i32);
-
-        out <<= 1;
-        out
+    match order {
+        12 => feedback_loop::<12>(data0_val, data1, coef),
+        16 => feedback_loop::<16>(data0_val, data1, coef),
+        24 => feedback_loop::<24>(data0_val, data1, coef),
+        _ => feedback_loop_slices(data0_val, &mut data1[..order], &coef[..order]),
     }
 }
 
 #[inline(always)]
-fn silk_nsq_noise_shape_feedback_loop_order12(
-    data0_val: i32,
-    data1: &mut [i32],
-    coef: &[i16],
-) -> i32 {
-    unsafe {
-        let d0 = data0_val;
-        let d1 = *data1.get_unchecked(0);
-        let d2 = *data1.get_unchecked(1);
-        let d3 = *data1.get_unchecked(2);
-        let d4 = *data1.get_unchecked(3);
-        let d5 = *data1.get_unchecked(4);
-        let d6 = *data1.get_unchecked(5);
-        let d7 = *data1.get_unchecked(6);
-        let d8 = *data1.get_unchecked(7);
-        let d9 = *data1.get_unchecked(8);
-        let d10 = *data1.get_unchecked(9);
-        let d11 = *data1.get_unchecked(10);
+fn feedback_loop<const ORDER: usize>(data0_val: i32, data1: &mut [i32], coef: &[i16]) -> i32 {
+    let data1: &mut [i32; ORDER] = (&mut data1[..ORDER]).try_into().unwrap();
+    let coef: &[i16; ORDER] = coef[..ORDER].try_into().unwrap();
+    feedback_loop_slices(data0_val, data1, coef)
+}
 
-        *data1.get_unchecked_mut(0) = d0;
-        *data1.get_unchecked_mut(1) = d1;
-        *data1.get_unchecked_mut(2) = d2;
-        *data1.get_unchecked_mut(3) = d3;
-        *data1.get_unchecked_mut(4) = d4;
-        *data1.get_unchecked_mut(5) = d5;
-        *data1.get_unchecked_mut(6) = d6;
-        *data1.get_unchecked_mut(7) = d7;
-        *data1.get_unchecked_mut(8) = d8;
-        *data1.get_unchecked_mut(9) = d9;
-        *data1.get_unchecked_mut(10) = d10;
-        *data1.get_unchecked_mut(11) = d11;
-
-        let mut out = 6i32;
-        out = silk_smlawb(out, d0, *coef.get_unchecked(0) as i32);
-        out = silk_smlawb(out, d1, *coef.get_unchecked(1) as i32);
-        out = silk_smlawb(out, d2, *coef.get_unchecked(2) as i32);
-        out = silk_smlawb(out, d3, *coef.get_unchecked(3) as i32);
-        out = silk_smlawb(out, d4, *coef.get_unchecked(4) as i32);
-        out = silk_smlawb(out, d5, *coef.get_unchecked(5) as i32);
-        out = silk_smlawb(out, d6, *coef.get_unchecked(6) as i32);
-        out = silk_smlawb(out, d7, *coef.get_unchecked(7) as i32);
-        out = silk_smlawb(out, d8, *coef.get_unchecked(8) as i32);
-        out = silk_smlawb(out, d9, *coef.get_unchecked(9) as i32);
-        out = silk_smlawb(out, d10, *coef.get_unchecked(10) as i32);
-        out = silk_smlawb(out, d11, *coef.get_unchecked(11) as i32);
-
-        out <<= 1;
-        out
+#[inline(always)]
+fn feedback_loop_slices(data0_val: i32, data1: &mut [i32], coef: &[i16]) -> i32 {
+    let mut out = (data1.len() as i32) >> 1;
+    let mut prev = data0_val;
+    for (d, &c) in data1.iter_mut().zip(coef) {
+        out = silk_smlawb(out, prev, c as i32);
+        prev = core::mem::replace(d, prev);
     }
+    out << 1
 }
 
 fn silk_noise_shape_quantizer(
@@ -373,189 +319,14 @@ fn silk_noise_shape_quantizer(
         .copy_within(subfr_length..subfr_length + NSQ_LPC_BUF_LENGTH, 0);
 }
 
+/// Short-term prediction from the `ORDER` states ending at `s_lpc[idx]`.
 #[inline(always)]
-fn lpc_pred_order6(s_lpc: &[i32], a_q12: &[i16], idx: usize) -> i32 {
-    let mut pred = 3i32;
-
-    unsafe {
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx),
-            *a_q12.get_unchecked(0) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 1),
-            *a_q12.get_unchecked(1) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 2),
-            *a_q12.get_unchecked(2) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 3),
-            *a_q12.get_unchecked(3) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 4),
-            *a_q12.get_unchecked(4) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 5),
-            *a_q12.get_unchecked(5) as i32,
-        );
-    }
-    pred
-}
-
-#[inline(always)]
-fn lpc_pred_order10(s_lpc: &[i32], a_q12: &[i16], idx: usize) -> i32 {
-    let mut pred = 5i32;
-
-    unsafe {
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx),
-            *a_q12.get_unchecked(0) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 1),
-            *a_q12.get_unchecked(1) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 2),
-            *a_q12.get_unchecked(2) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 3),
-            *a_q12.get_unchecked(3) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 4),
-            *a_q12.get_unchecked(4) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 5),
-            *a_q12.get_unchecked(5) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 6),
-            *a_q12.get_unchecked(6) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 7),
-            *a_q12.get_unchecked(7) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 8),
-            *a_q12.get_unchecked(8) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 9),
-            *a_q12.get_unchecked(9) as i32,
-        );
-    }
-    pred
-}
-
-#[inline(always)]
-fn lpc_pred_order16(s_lpc: &[i32], a_q12: &[i16], idx: usize) -> i32 {
-    let mut pred = 8i32;
-
-    unsafe {
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx),
-            *a_q12.get_unchecked(0) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 1),
-            *a_q12.get_unchecked(1) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 2),
-            *a_q12.get_unchecked(2) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 3),
-            *a_q12.get_unchecked(3) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 4),
-            *a_q12.get_unchecked(4) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 5),
-            *a_q12.get_unchecked(5) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 6),
-            *a_q12.get_unchecked(6) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 7),
-            *a_q12.get_unchecked(7) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 8),
-            *a_q12.get_unchecked(8) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 9),
-            *a_q12.get_unchecked(9) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 10),
-            *a_q12.get_unchecked(10) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 11),
-            *a_q12.get_unchecked(11) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 12),
-            *a_q12.get_unchecked(12) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 13),
-            *a_q12.get_unchecked(13) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 14),
-            *a_q12.get_unchecked(14) as i32,
-        );
-        pred = silk_smlawb(
-            pred,
-            *s_lpc.get_unchecked(idx - 15),
-            *a_q12.get_unchecked(15) as i32,
-        );
+fn lpc_pred<const ORDER: usize>(s_lpc: &[i32], a_q12: &[i16], idx: usize) -> i32 {
+    let s: &[i32; ORDER] = s_lpc[idx + 1 - ORDER..=idx].try_into().unwrap();
+    let a: &[i16; ORDER] = a_q12[..ORDER].try_into().unwrap();
+    let mut pred = (ORDER as i32) >> 1;
+    for j in 0..ORDER {
+        pred = silk_smlawb(pred, s[ORDER - 1 - j], a[j] as i32);
     }
     pred
 }
@@ -564,13 +335,7 @@ fn lpc_pred_order16(s_lpc: &[i32], a_q12: &[i16], idx: usize) -> i32 {
 fn lpc_pred_generic(s_lpc: &[i32], a_q12: &[i16], idx: usize, order: usize) -> i32 {
     let mut pred = (order as i32) >> 1;
     for j in 0..order {
-        pred = unsafe {
-            silk_smlawb(
-                pred,
-                *s_lpc.get_unchecked(idx - j),
-                *a_q12.get_unchecked(j) as i32,
-            )
-        };
+        pred = silk_smlawb(pred, s_lpc[idx - j], a_q12[j] as i32);
     }
     pred
 }
@@ -628,11 +393,11 @@ fn silk_noise_shape_quantizer_voiced(
 
         let ps_lpc_idx = NSQ_LPC_BUF_LENGTH - 1 + i;
         lpc_pred_q10 = if predict_lpc_order == 16 {
-            lpc_pred_order16(&nsq.s_lpc_q14, a_q12, ps_lpc_idx)
+            lpc_pred::<16>(&nsq.s_lpc_q14, a_q12, ps_lpc_idx)
         } else if predict_lpc_order == 10 {
-            lpc_pred_order10(&nsq.s_lpc_q14, a_q12, ps_lpc_idx)
+            lpc_pred::<10>(&nsq.s_lpc_q14, a_q12, ps_lpc_idx)
         } else if predict_lpc_order == 6 {
-            lpc_pred_order6(&nsq.s_lpc_q14, a_q12, ps_lpc_idx)
+            lpc_pred::<6>(&nsq.s_lpc_q14, a_q12, ps_lpc_idx)
         } else {
             lpc_pred_generic(&nsq.s_lpc_q14, a_q12, ps_lpc_idx, predict_lpc_order)
         };
@@ -820,11 +585,11 @@ fn silk_noise_shape_quantizer_unvoiced(
 
         let ps_lpc_idx = NSQ_LPC_BUF_LENGTH - 1 + i;
         lpc_pred_q10 = if predict_lpc_order == 16 {
-            lpc_pred_order16(&nsq.s_lpc_q14, a_q12, ps_lpc_idx)
+            lpc_pred::<16>(&nsq.s_lpc_q14, a_q12, ps_lpc_idx)
         } else if predict_lpc_order == 10 {
-            lpc_pred_order10(&nsq.s_lpc_q14, a_q12, ps_lpc_idx)
+            lpc_pred::<10>(&nsq.s_lpc_q14, a_q12, ps_lpc_idx)
         } else if predict_lpc_order == 6 {
-            lpc_pred_order6(&nsq.s_lpc_q14, a_q12, ps_lpc_idx)
+            lpc_pred::<6>(&nsq.s_lpc_q14, a_q12, ps_lpc_idx)
         } else {
             lpc_pred_generic(&nsq.s_lpc_q14, a_q12, ps_lpc_idx, predict_lpc_order)
         };
