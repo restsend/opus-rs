@@ -3797,9 +3797,6 @@ impl OpusDecoder {
                             0,
                             celt_end_band,
                         );
-                        for sample in &mut output[out_start..out_end] {
-                            *sample = sample.clamp(-1.0, 1.0);
-                        }
                     } else {
                         self.celt_dec.decode_from_range_coder_with_band_range(
                             &mut rc,
@@ -3813,7 +3810,7 @@ impl OpusDecoder {
                             for ch in 0..self.channels {
                                 let idx = out_start + i * self.channels + ch;
                                 output[idx] =
-                                    self.w_celt_planar[ch * sub_frame_size + i].clamp(-1.0, 1.0);
+                                    self.w_celt_planar[ch * sub_frame_size + i];
                             }
                         }
                     }
@@ -3943,7 +3940,7 @@ impl OpusDecoder {
                     let total = silk_out_len.min(output.len() - out_start);
                     for j in 0..total {
                         output[out_start + j] =
-                            (self.w_silk_out[j] + self.w_celt_out[j]).clamp(-1.0, 1.0);
+                            self.w_silk_out[j] + self.w_celt_out[j];
                     }
 
                     // The redundant frame crossfaded in (libopus
@@ -4128,7 +4125,7 @@ impl OpusDecoder {
         }
         let tail = &mut output[head * channels..frame_size * channels];
         for (i, d) in tail.iter_mut().enumerate() {
-            *d = (self.w_silk_out[i] + self.w_celt_out[i]).clamp(-1.0, 1.0);
+            *d = self.w_silk_out[i] + self.w_celt_out[i];
         }
         output[frame_size * channels..].fill(0.0);
 
@@ -4203,7 +4200,7 @@ impl OpusDecoder {
                         .unwrap_or(f2_5);
                     self.conceal_celt(n, 0)?;
                     for (d, s) in dst.iter_mut().zip(&self.w_celt_out[..n * channels]) {
-                        *d = s.clamp(-1.0, 1.0);
+                        *d = *s;
                     }
                     n
                 }
@@ -4236,7 +4233,7 @@ impl OpusDecoder {
                     }
                     let take = n.min(remaining);
                     for (i, d) in dst[..take * channels].iter_mut().enumerate() {
-                        *d = (self.w_silk_out[i] + self.w_celt_out[i]).clamp(-1.0, 1.0);
+                        *d = self.w_silk_out[i] + self.w_celt_out[i];
                     }
                     take
                 }
@@ -4259,7 +4256,7 @@ impl OpusDecoder {
         self.conceal_celt(f5, 0)?;
         let n = (f5 * self.channels).min(self.prev_pcm_tail.len());
         for i in 0..n {
-            self.prev_pcm_tail[i] = self.w_celt_out[i].clamp(-1.0, 1.0);
+            self.prev_pcm_tail[i] = self.w_celt_out[i];
         }
         Ok(())
     }
