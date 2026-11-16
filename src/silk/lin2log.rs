@@ -1,10 +1,6 @@
 use crate::silk::macros::{silk_mul, silk_smlawb};
 
 pub fn silk_lin2log(in_lin: i32) -> i32 {
-    if in_lin <= 0 {
-        return 0;
-    }
-
     let lz = in_lin.leading_zeros() as i32;
 
     let rot = 24 - lz;

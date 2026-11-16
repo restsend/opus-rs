@@ -35,7 +35,7 @@ pub fn silk_rshift_round(a: i32, shift: i32) -> i32 {
     if shift <= 0 {
         return a << -shift;
     }
-    if shift >= 31 {
+    if shift > 31 {
         return 0;
     }
     (a >> shift) + ((a >> (shift - 1)) & 1)
@@ -359,11 +359,13 @@ pub fn silk_sub_lshift32(a: i32, b: i32, shift: i32) -> i32 {
 }
 
 #[inline(always)]
-pub fn silk_limit_32(a: i32, low: i32, high: i32) -> i32 {
-    if a < low {
-        low
-    } else if a > high {
+pub fn silk_limit_32(a: i32, limit1: i32, limit2: i32) -> i32 {
+    // silk_LIMIT (SigProc_FIX.h:577) accepts the limits in either order.
+    let (low, high) = if limit1 > limit2 { (limit2, limit1) } else { (limit1, limit2) };
+    if a > high {
         high
+    } else if a < low {
+        low
     } else {
         a
     }
@@ -386,9 +388,6 @@ pub fn silk_add_rshift32(a: i32, b: i32, shift: i32) -> i32 {
 
 #[inline(always)]
 pub fn silk_lin2log(gain_q16: i32) -> i32 {
-    if gain_q16 <= 0 {
-        return 0;
-    }
     let mut lz = 0;
     let mut frac_q7 = 0;
     silk_clz_frac(gain_q16, &mut lz, &mut frac_q7);
