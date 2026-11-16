@@ -754,15 +754,17 @@ pub fn renormalise_vector(x: &mut [f32], n: usize, gain: f32) {
 #[inline(always)]
 fn alg_quant_resynth(y: &[i32], x: &mut [f32], n: usize, gain: f32) {
     let (y, x) = (&y[..n], &mut x[..n]);
-    let mut ryy = 0.0f32;
-    for (xv, &v) in x.iter_mut().zip(y) {
-        let v = v as f32;
-        *xv = v;
-        ryy += v * v;
-    }
+    // Below 2^24 every partial sum of the integer squares is exact in f32,
+    // so the in-order float sum equals the integer sum.
+    let isum = y.iter().fold(0i64, |s, &v| s + v as i64 * v as i64);
+    let ryy = if isum < 1 << 24 {
+        isum as f32
+    } else {
+        y.iter().fold(0.0f32, |s, &v| s + v as f32 * v as f32)
+    };
     let g = gain / (1e-15 + ryy).sqrt();
-    for xv in x.iter_mut() {
-        *xv *= g;
+    for (xv, &v) in x.iter_mut().zip(y) {
+        *xv = v as f32 * g;
     }
 }
 
