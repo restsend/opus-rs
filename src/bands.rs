@@ -246,8 +246,11 @@ unsafe fn haar1_avx2(x: &mut [f32], n0: usize) {
         let even = _mm256_permutevar8x32_ps(_mm256_unpacklo_ps(t0, t1), fixup);
         let odd = _mm256_permutevar8x32_ps(_mm256_unpackhi_ps(t0, t1), fixup);
 
-        let sum = _mm256_mul_ps(_mm256_add_ps(even, odd), scale);
-        let diff = _mm256_mul_ps(_mm256_sub_ps(even, odd), scale);
+        // Scale before adding, like bands.c haar1 and the scalar path.
+        let even = _mm256_mul_ps(even, scale);
+        let odd = _mm256_mul_ps(odd, scale);
+        let sum = _mm256_add_ps(even, odd);
+        let diff = _mm256_sub_ps(even, odd);
 
         let r0 = _mm256_unpacklo_ps(sum, diff);
         let r1 = _mm256_unpackhi_ps(sum, diff);
