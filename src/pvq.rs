@@ -572,26 +572,59 @@ pub fn pvq_search(x: &[f32], y: &mut [i32], k: i32, n: usize) {
     if n == 0 {
         return;
     }
+    if n <= 4 {
+        let (mut abs_x, mut y2) = ([0.0; 4], [0.0; 4]);
+        op_pvq_search(&x[..n], &mut y[..n], k, &mut abs_x[..n], &mut y2[..n], |a, y, xy, yy| {
+            best_pulse_position_in_order(a, y, xy, yy)
+        });
+        return;
+    }
     // Padded to whole blocks for best_pulse_position.
     let padded = n.next_multiple_of(8);
     with_scratch(padded, |abs_x: &mut [f32]| {
         with_scratch(padded, |y2: &mut [f32]| {
             y2[n..].fill(f32::INFINITY);
-            op_pvq_search(&x[..n], &mut y[..n], k, abs_x, y2)
+            op_pvq_search(&x[..n], &mut y[..n], k, abs_x, y2, best_pulse_position)
         })
     });
 }
 
+/// [`best_pulse_position`] one position at a time, for short bands.
+#[inline(always)]
+fn best_pulse_position_in_order(abs_x: &[f32], y2: &[f32], xy: f32, yy: f32) -> usize {
+    let rxy = xy + abs_x[0];
+    let mut best = (rxy * rxy, yy + y2[0], 0);
+    for (j, (&a, &y)) in abs_x.iter().zip(y2).enumerate().skip(1) {
+        scan_position(&mut best, j, a, y, xy, yy);
+    }
+    best.2
+}
+
+/// One step of the scan: position `j` replaces `best` (numerator,
+/// denominator, position) when its score beats it.
+#[inline(always)]
+fn scan_position(best: &mut (f32, f32, usize), j: usize, a: f32, y: f32, xy: f32, yy: f32) {
+    let rxy = xy + a;
+    let ryy = yy + y;
+    let rxy = rxy * rxy;
+    if best.1 * rxy > ryy * best.0 {
+        *best = (rxy, ryy, j);
+    }
+}
+
 /// libopus `op_pvq_search_c` (float build): the `k` pulses `iy` whose
 /// direction best matches `x`, returning their squared norm. `abs_x` and
-/// `y2` are scratch buffers padded as [`best_pulse_position`] needs, with
-/// zeros in `abs_x`.
+/// `y2` are zeroed scratch buffers of at least `x.len()` values, padded as
+/// `best_position` needs (`abs_x_padded[..n]` and `y2_padded[..n]` hold
+/// the values, the rest stays as it is).
+#[inline(always)]
 fn op_pvq_search(
     x: &[f32],
     iy: &mut [i32],
     k: i32,
     abs_x_padded: &mut [f32],
     y2_padded: &mut [f32],
+    best_position: impl Fn(&[f32], &[f32], f32, f32) -> usize,
 ) -> f32 {
     const EPSILON: f32 = 1e-15;
     let n = x.len();
@@ -648,7 +681,7 @@ fn op_pvq_search(
     for _ in 0..pulses_left {
         // The squared magnitude term gets added anyway, so add it outside the loop.
         yy += 1.0;
-        let best_id = best_pulse_position(abs_x_padded, y2_padded, xy, yy);
+        let best_id = best_position(abs_x_padded, y2_padded, xy, yy);
         let (abs_x, y2) = (&abs_x_padded[..n], &mut y2_padded[..n]);
         xy += abs_x[best_id];
         yy += y2[best_id];
