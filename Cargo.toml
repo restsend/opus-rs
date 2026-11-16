@@ -14,8 +14,8 @@ exclude = [
 
 [features]
 default = ["std", "heap"]
-# `std` enables OS-backed runtime x86 SIMD detection (CPUID); without it, x86
-# SIMD falls back to compile-time `target_feature` detection.
+# `std` links the standard library for float math; without it the crate is
+# `#![no_std]` and needs the `libm` feature.
 std = []
 # With `heap` (default), the large codec state (`OpusEncoder`/`OpusDecoder`
 # working buffers) lives on the heap behind `Box`, so the public structs are tiny

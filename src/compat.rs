@@ -1,13 +1,4 @@
 //! no_std / std compatibility shims — zero external dependencies.
-//!
-//! Provides:
-//! * [`x86_has_avx`] / [`x86_has_avx2`] / [`x86_has_avx_fma`] / [`x86_has_avx2_fma`]
-//!   — x86 SIMD availability probes. Under the
-//!   `std` feature these use the OS-backed `is_x86_feature_detected!`; without `std`
-//!   they fall back to compile-time `cfg!(target_feature = ...)`.
-
-#[cfg(feature = "fuzzing")]
-use core::sync::atomic::Ordering;
 
 // ---------------------------------------------------------------------------
 // No-std slice sorting (`alloc` provides `[T]::sort*` as inherent methods; since
@@ -51,79 +42,13 @@ pub fn with_scratch<T: Copy + Default, R>(n: usize, f: impl FnOnce(&mut [T]) -> 
 }
 
 // ---------------------------------------------------------------------------
-// x86 SIMD feature detection
+// Fuzzing switch
 // ---------------------------------------------------------------------------
 
-/// Runtime switch for the x86 AVX/FMA kernels, so the `fuzzing` harnesses can
-/// compare them with the scalar paths in one process.
+/// Switch the `fuzzing` harnesses flip to compare SIMD and scalar paths.
+/// opus-rs has no target-specific kernels, so it has no effect.
 #[cfg(feature = "fuzzing")]
 pub static SIMD_ENABLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
-
-#[inline]
-#[allow(dead_code)]
-fn simd_enabled() -> bool {
-    #[cfg(feature = "fuzzing")]
-    return SIMD_ENABLED.load(Ordering::Relaxed);
-    #[cfg(not(feature = "fuzzing"))]
-    true
-}
-
-/// Whether the `avx` x86 feature is usable.
-///
-/// * With the `std` feature: OS-backed runtime detection via CPUID.
-/// * Without `std`: compile-time detection (`cfg!(target_feature = "avx")`); build
-///   with e.g. `RUSTFLAGS="-C target-feature=+avx"` to enable it.
-#[cfg(all(feature = "std", target_arch = "x86_64"))]
-pub fn x86_has_avx() -> bool {
-    simd_enabled() && std::arch::is_x86_feature_detected!("avx")
-}
-#[cfg(not(all(feature = "std", target_arch = "x86_64")))]
-#[allow(dead_code)]
-pub fn x86_has_avx() -> bool {
-    cfg!(target_feature = "avx")
-}
-
-/// Whether the `avx2` x86 feature is usable. See [`x86_has_avx`].
-#[cfg(all(feature = "std", target_arch = "x86_64"))]
-pub fn x86_has_avx2() -> bool {
-    simd_enabled() && std::arch::is_x86_feature_detected!("avx2")
-}
-#[cfg(not(all(feature = "std", target_arch = "x86_64")))]
-#[allow(dead_code)]
-pub fn x86_has_avx2() -> bool {
-    cfg!(target_feature = "avx2")
-}
-
-/// Whether both `avx` and `fma` are usable. Gates kernels compiled with
-/// `#[target_feature(enable = "avx,fma")]`: AVX alone is not enough, since
-/// Sandy Bridge / Ivy Bridge (and some VMs) have AVX without FMA and would fault
-/// with SIGILL on the first `vfmadd`. See [`x86_has_avx`].
-#[cfg(all(feature = "std", target_arch = "x86_64"))]
-pub fn x86_has_avx_fma() -> bool {
-    simd_enabled()
-        && std::arch::is_x86_feature_detected!("avx")
-        && std::arch::is_x86_feature_detected!("fma")
-}
-#[cfg(not(all(feature = "std", target_arch = "x86_64")))]
-#[allow(dead_code)]
-pub fn x86_has_avx_fma() -> bool {
-    cfg!(all(target_feature = "avx", target_feature = "fma"))
-}
-
-/// Whether both `avx2` and `fma` are usable. Gates kernels compiled with
-/// `#[target_feature(enable = "avx2,fma")]`; AVX2 does not architecturally imply
-/// FMA. See [`x86_has_avx_fma`].
-#[cfg(all(feature = "std", target_arch = "x86_64"))]
-pub fn x86_has_avx2_fma() -> bool {
-    simd_enabled()
-        && std::arch::is_x86_feature_detected!("avx2")
-        && std::arch::is_x86_feature_detected!("fma")
-}
-#[cfg(not(all(feature = "std", target_arch = "x86_64")))]
-#[allow(dead_code)]
-pub fn x86_has_avx2_fma() -> bool {
-    cfg!(all(target_feature = "avx2", target_feature = "fma"))
-}
 
 // ---------------------------------------------------------------------------
 // Float math (no_std needs libm for transcendentals / rounding)
@@ -348,17 +273,5 @@ impl Math for f64 {
     }
     fn mul_add(self, a: Self, b: Self) -> Self {
         libm::fma(self, a, b)
-    }
-}
-
-#[cfg(all(test, feature = "std", target_arch = "x86_64"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fma_probes_require_both_features() {
-        let fma = std::arch::is_x86_feature_detected!("fma");
-        assert_eq!(x86_has_avx_fma(), x86_has_avx() && fma);
-        assert_eq!(x86_has_avx2_fma(), x86_has_avx2() && fma);
     }
 }

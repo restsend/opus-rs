@@ -1,5 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std)]
-#![allow(unsafe_op_in_unsafe_fn)]
+#![forbid(unsafe_code)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::needless_range_loop)]
 
