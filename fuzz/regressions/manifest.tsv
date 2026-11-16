@@ -15,6 +15,9 @@
 12	diff_kernels@aarch64	-	pvq_search/scalar objective	NEON pulse search objective
 13	test:fec_after_dtx	-	FAILED	decode_fec mode after DTX
 14	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	range] decode_fec ->hybrid	decode_fec final range on Hybrid
+14b	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	range] decode_fec	decode_fec range after concealing part of a Hybrid frame
+14c	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	range] decode_fec	decode_fec range after a SILK-to-CELT redundant frame
+14d	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	rs-err	partial Hybrid concealment at a length CELT supports
 15a	diff_kernels	-	silk_sum_sqr_shift/simd	silk_sum_sqr_shift AVX2
 15b	diff_kernels@aarch64	-	silk_sum_sqr_shift/scalar	silk_sum_sqr_shift NEON
 16	diff_kernels@aarch64	-	celt_fir/scalar tol	celt_fir_neon
@@ -25,7 +28,7 @@ n2	diff_encoder	OFZ_SUPPRESS=toc,simd	silk-input] app2048	VoIP SILK input follow
 n3	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	decode_fec dtx->silk	FEC frame after long concealment differs
 n4	diff_encoder	OFZ_SUPPRESS=toc,simd	silk-input] app2048	VoIP SILK input follows fixed-point libopus (by design)
 n5	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	bytes] celt length	no DTX inside multi-frame CELT packets
-n7	diff_encoder	OFZ_SUPPRESS=toc,simd	cbr] scalar 20ms	CBR packets stop at 1276 bytes; libopus pads to the CBR size
+n7	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	cbr] scalar 20ms	CBR packets stop at 1276 bytes; libopus pads to the CBR size
 n8	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	lost silk->	SILK concealment differs (libopus output beyond full scale)
 n9	diff_encoder	OFZ_SUPPRESS=toc,simd	range celt	encoder final range differs from the decoder's for its own packet
 n10	diff_encoder	OFZ_SUPPRESS=toc,simd	returns -4	encoder emits a 2-byte packet libopus rejects
