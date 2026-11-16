@@ -2154,14 +2154,6 @@ fn dynalloc_analysis_simple(
             follower[i] += (1.0 / 64.0) * analysis.leak_boost[i] as f32;
         }
     }
-    // effBytes>320 boost (C 1232) — trivial, kept
-    if effective_bytes > 320 {
-        let add = (1.5f32).min(1e-3 * (effective_bytes as f32 - 320.0));
-        if start < end {
-            follower[start] += add;
-        }
-    }
-
     let mut tot_boost = 0i32;
     for i in start..end {
         let f = follower[i].min(4.0);
