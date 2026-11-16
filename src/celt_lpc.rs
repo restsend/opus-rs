@@ -74,21 +74,14 @@ pub fn autocorr(
 }
 
 pub fn celt_fir(x: &[f32], num: &[f32], y: &mut [f32], n: usize, ord: usize) {
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        celt_fir_neon(x, num, y, n, ord);
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        for i in 0..n {
-            let mut sum = x[i];
-            for j in 0..ord {
-                if i > j {
-                    sum += num[j] * x[i - j - 1];
-                }
+    for i in 0..n {
+        let mut sum = x[i];
+        for j in 0..ord {
+            if i > j {
+                sum += num[j] * x[i - j - 1];
             }
-            y[i] = sum;
         }
+        y[i] = sum;
     }
 }
 
@@ -110,54 +103,6 @@ pub fn celt_iir(x: &[f32], den: &[f32], y: &mut [f32], n: usize, ord: usize, mem
             mem[0] = sum;
             y[i] = sum;
         }
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn celt_fir_neon(x: &[f32], num: &[f32], y: &mut [f32], n: usize, ord: usize) {
-    use core::arch::aarch64::*;
-
-    if ord < 4 {
-        for i in 0..n {
-            let mut sum = x[i];
-            for j in 0..ord {
-                if i > j {
-                    sum += num[j] * x[i - j - 1];
-                }
-            }
-            y[i] = sum;
-        }
-        return;
-    }
-
-    for i in 0..n {
-        let mut sum = vdupq_n_f32(x[i]);
-
-        let mut j = 0;
-        while j + 4 <= ord && i > j + 3 {
-            let coeff = vld1q_f32(num.as_ptr().add(j));
-            let x_vals = vld1q_f32(x.as_ptr().add(i - j - 4));
-            let x_reversed = vrev64q_f32(x_vals);
-            let x_reversed = vextq_f32(x_reversed, x_reversed, 2);
-            sum = vfmaq_f32(sum, coeff, x_reversed);
-            j += 4;
-        }
-
-        let sum_low = vget_low_f32(sum);
-        let sum_high = vget_high_f32(sum);
-        let sum_pair = vadd_f32(sum_low, sum_high);
-        let mut result = vget_lane_f32(sum_pair, 0) + vget_lane_f32(sum_pair, 1);
-
-        while j < ord {
-            if i > j {
-                result += num[j] * x[i - j - 1];
-            }
-            j += 1;
-        }
-
-        y[i] = result;
     }
 }
 
