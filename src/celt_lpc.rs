@@ -86,77 +86,11 @@ pub fn celt_fir(x: &[f32], num: &[f32], y: &mut [f32], n: usize, ord: usize) {
 }
 
 pub fn celt_iir(x: &[f32], den: &[f32], y: &mut [f32], n: usize, ord: usize, mem: &mut [f32]) {
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        celt_iir_neon(x, den, y, n, ord, mem);
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        for i in 0..n {
-            let mut sum = x[i];
-            for j in 0..ord {
-                sum -= den[j] * mem[j];
-            }
-            for j in (1..ord).rev() {
-                mem[j] = mem[j - 1];
-            }
-            mem[0] = sum;
-            y[i] = sum;
-        }
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn celt_iir_neon(
-    x: &[f32],
-    den: &[f32],
-    y: &mut [f32],
-    n: usize,
-    ord: usize,
-    mem: &mut [f32],
-) {
-    use core::arch::aarch64::*;
-
-    if ord < 4 {
-        for i in 0..n {
-            let mut sum = x[i];
-            for j in 0..ord {
-                sum -= den[j] * mem[j];
-            }
-            for j in (1..ord).rev() {
-                mem[j] = mem[j - 1];
-            }
-            mem[0] = sum;
-            y[i] = sum;
-        }
-        return;
-    }
-
     for i in 0..n {
-        let mut feedback = vdupq_n_f32(0.0);
-
-        let mut j = 0;
-        while j + 4 <= ord {
-            let coeff = vld1q_f32(den.as_ptr().add(j));
-            let mem_vals = vld1q_f32(mem.as_ptr().add(j));
-            feedback = vfmaq_f32(feedback, coeff, mem_vals);
-            j += 4;
+        let mut sum = x[i];
+        for j in 0..ord {
+            sum -= den[j] * mem[j];
         }
-
-        let fb_low = vget_low_f32(feedback);
-        let fb_high = vget_high_f32(feedback);
-        let fb_pair = vadd_f32(fb_low, fb_high);
-        let mut fb_sum = vget_lane_f32(fb_pair, 0) + vget_lane_f32(fb_pair, 1);
-
-        while j < ord {
-            fb_sum += den[j] * mem[j];
-            j += 1;
-        }
-
-        let sum = x[i] - fb_sum;
-
         for j in (1..ord).rev() {
             mem[j] = mem[j - 1];
         }
