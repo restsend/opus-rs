@@ -3727,6 +3727,21 @@ impl OpusDecoder {
                             // 5 ms, which already played.
                             self.conceal_celt_bridge()?;
                         }
+                        // Hybrid to SILK: decoding a 2-byte silence frame lets
+                        // the CELT MDCT fade out its last overlap, added to the
+                        // first 2.5 ms (opus_decode_frame, celt_accum).
+                        if self.prev_mode == Some(OpusMode::Hybrid)
+                            && !(has_tail && celt_to_silk && self.prev_redundancy)
+                        {
+                            let mut fade = [0.0f32; REDUNDANT_MAX];
+                            let silence = [0xFF, 0xFF];
+                            self.decode_redundant(&silence, redundant_end_band, f2_5, &mut fade);
+                            let n = f2_5 * self.channels;
+                            let head = &mut output[out_start..out_start + n];
+                            for (o, f) in head.iter_mut().zip(&fade[..n]) {
+                                *o += f;
+                            }
+                        }
                     }
                     let ch = self.channels;
                     if has_tail && !celt_to_silk && f5 > 0 && sub_output_len >= f5 * ch {
