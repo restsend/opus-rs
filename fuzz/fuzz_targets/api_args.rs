@@ -18,7 +18,7 @@ enum Op {
     EncBits(u32, u32),
     Encode(u32, u32, u32),
     EncodeBitLogp(bool, u32),
-    EncodeIcdf(i32, Vec<u8>, u32),
+    EncodeIcdf(i32, Vec<u8>),
     Laplace(i32, u32, i32),
     PadToBits(i32),
     PatchInitialBits(u32, u32),
@@ -29,7 +29,7 @@ enum Op {
     Decode(u32),
     Update(u32, u32, u32),
     DecodeBitLogp(u32),
-    DecodeIcdf(Vec<u8>, u32),
+    DecodeIcdf(Vec<u8>),
     LaplaceDecode(u32, i32),
     Tell,
     Bits2Pulses(u8, i32, i32),
@@ -42,6 +42,18 @@ struct Input {
     size: u8,
     data: [u8; 32],
     ops: Vec<Op>,
+}
+
+/// A valid 8-bit iCDF table (strictly decreasing, ending in 0) from fuzz
+/// bytes; a non-decreasing table zeroes the range and renormalizing never
+/// ends (n6). The symbol index stays arbitrary.
+fn icdf(t: &[u8]) -> Vec<u8> {
+    let mut t = t.to_vec();
+    t.sort_unstable_by(|a, b| b.cmp(a));
+    t.dedup();
+    t.retain(|&v| v > 0);
+    t.push(0);
+    t
 }
 
 fuzz_target!(|inp: Input| {
@@ -65,43 +77,58 @@ fuzz_target!(|inp: Input| {
             continue;
         }
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match op {
-            Op::EncUint(a, b) => enc.enc_uint(*a, *b),
-            Op::EncBits(a, b) => enc.enc_bits(*a, *b),
+            // Outside libopus's argument domain (fl < fh <= ft <= 2^16 for
+            // encode/update/decode, fl < ft and ft >= 2 for the uint calls)
+            // the range can reach zero and renormalizing never ends (n6).
+            Op::EncUint(a, b) if *b >= 2 && a < b => enc.enc_uint(*a, *b),
+            Op::EncUint(..) => {}
+            Op::EncBits(a, b) if *b <= 25 => enc.enc_bits(*a, *b),
+            Op::EncBits(..) => {}
             // An empty interval (fl >= fh) zeroes the range, and renormalizing
             // never ends; skip it, as libopus's callers never pass one.
-            Op::Encode(a, b, c) if a < b => enc.encode(*a, *b, *c),
+            Op::Encode(a, b, c) if a < b && b <= c && *c <= 1 << 16 => enc.encode(*a, *b, *c),
             Op::Encode(..) => {}
-            Op::EncodeBitLogp(a, b) => enc.encode_bit_logp(*a, *b),
-            Op::EncodeIcdf(s, t, f) => enc.encode_icdf(*s, t, *f),
+            // logp 0 or above 23 can zero the range, and renormalizing never ends;
+            // libopus's callers pass at most 15.
+            Op::EncodeBitLogp(a, b) if (1..=23).contains(b) => enc.encode_bit_logp(*a, *b),
+            Op::EncodeBitLogp(..) => {}
+            Op::EncodeIcdf(s, t) => enc.encode_icdf(*s, &icdf(t), 8),
             Op::Laplace(v, f, d) => {
-                // Outside fs <= 32768 and 0 <= decay < 16384 the loop does not end.
+                // Outside 0 < fs <= 32768 and 0 < decay < 16384 the loop can run forever.
                 let mut v = *v % 1024;
-                enc.laplace_encode(&mut v, *f % 32769, d.rem_euclid(16384))
+                enc.laplace_encode(&mut v, 1 + *f % 32768, 1 + d.rem_euclid(16383))
             }
             // Unbounded targets loop for minutes; keep them near the buffer size.
             Op::PadToBits(b) => enc.pad_to_bits(*b % 4096),
             Op::PatchInitialBits(v, n) => enc.patch_initial_bits(*v, *n),
             Op::Shrink(n) => enc.shrink(*n),
-            Op::Done => enc.done(),
+            // Coding after done() leaves the range at zero (n6); start over.
+            Op::Done => {
+                enc.done();
+                enc = RangeCoder::new_encoder(inp.size as u32);
+            }
+            Op::DecUint(a) if *a < 2 => {}
             Op::DecUint(a) => {
                 std::hint::black_box(dec.dec_uint(*a));
             }
+            Op::DecBits(a) if *a > 25 => {}
             Op::DecBits(a) => {
                 std::hint::black_box(dec.dec_bits(*a));
             }
+            Op::Decode(a) if *a == 0 || *a > 1 << 16 => {}
             Op::Decode(a) => {
                 std::hint::black_box(dec.decode(*a));
             }
-            Op::Update(a, b, c) if a < b => dec.update(*a, *b, *c),
+            Op::Update(a, b, c) if a < b && b <= c && *c <= 1 << 16 => dec.update(*a, *b, *c),
             Op::Update(..) => {}
             Op::DecodeBitLogp(a) => {
                 std::hint::black_box(dec.decode_bit_logp(*a));
             }
-            Op::DecodeIcdf(t, f) => {
-                std::hint::black_box(dec.decode_icdf(t, *f));
+            Op::DecodeIcdf(t) => {
+                std::hint::black_box(dec.decode_icdf(&icdf(t), 8));
             }
             Op::LaplaceDecode(f, d) => {
-                std::hint::black_box(dec.laplace_decode(*f % 32769, d.rem_euclid(16384)));
+                std::hint::black_box(dec.laplace_decode(1 + *f % 32768, 1 + d.rem_euclid(16383)));
             }
             Op::Tell => {
                 std::hint::black_box((enc.tell_frac(), dec.tell_frac()));
