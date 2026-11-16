@@ -8,724 +8,88 @@ const PITCH_BUF_MAX: usize = 1024;
 
 use crate::celt_lpc::{autocorr, lpc};
 
+/// libopus `celt_inner_prod`: the products summed in order.
 pub fn inner_prod(x: &[f32], y: &[f32], n: usize) -> f32 {
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    unsafe {
-        if crate::compat::x86_has_avx_fma() {
-            return inner_prod_avx(x, y, n);
-        }
+    let mut sum = 0.0f32;
+    for (&a, &b) in x[..n].iter().zip(&y[..n]) {
+        sum += a * b;
     }
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        inner_prod_neon(x, y, n)
-    }
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
-    unsafe {
-        inner_prod_sse(x, y, n)
-    }
-    #[cfg(not(any(
-        target_arch = "aarch64",
-        all(target_arch = "x86_64", target_feature = "sse")
-    )))]
-    {
-        let mut sum = 0.0f32;
-        for i in 0..n {
-            sum += x[i] * y[i];
-        }
-        sum
-    }
+    sum
 }
 
+/// libopus `dual_inner_prod`: two inner products with `x`, each summed in order.
 pub fn dual_inner_prod(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32) {
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    unsafe {
-        if crate::compat::x86_has_avx_fma() {
-            return dual_inner_prod_avx(x, y1, y2, n);
-        }
+    let mut xy1 = 0.0f32;
+    let mut xy2 = 0.0f32;
+    for ((&a, &b1), &b2) in x[..n].iter().zip(&y1[..n]).zip(&y2[..n]) {
+        xy1 += a * b1;
+        xy2 += a * b2;
     }
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        dual_inner_prod_neon(x, y1, y2, n)
-    }
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
-    unsafe {
-        dual_inner_prod_sse(x, y1, y2, n)
-    }
-    #[cfg(not(any(
-        target_arch = "aarch64",
-        all(target_arch = "x86_64", target_feature = "sse")
-    )))]
-    {
-        let mut xy1 = 0.0f32;
-        let mut xy2 = 0.0f32;
-        for i in 0..n {
-            xy1 += x[i] * y1[i];
-            xy2 += x[i] * y2[i];
-        }
-        (xy1, xy2)
-    }
+    (xy1, xy2)
 }
 
+/// libopus `celt_pitch_xcorr`: `xcorr[i]` is the inner product of `x[..len]`
+/// and `y[i..i + len]`.
 pub fn pitch_xcorr(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitch: usize) {
-    // Every lag window reads y[i..i+len]; the SIMD kernels peek up to 3
-    // elements past the window. The combined contract is
+    // Every lag window reads y[i..i+len], so the contract is
     // y.len() >= len + max_pitch - 1; clamp so that direct callers with a
-    // short `y` degrade gracefully instead of reading past the slice
-    // (issue #27 deep scan). In-repo callers always satisfy the contract and
-    // are unaffected.
+    // short `y` degrade gracefully (issue #27 deep scan). In-repo callers
+    // always satisfy the contract and are unaffected.
     let max_pitch = if len > 0 {
         max_pitch.min(y.len() + 1 - len)
     } else {
         0
     };
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    unsafe {
-        if crate::compat::x86_has_avx_fma() {
-            return pitch_xcorr_avx(x, y, xcorr, len, max_pitch);
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        if max_pitch >= 32 {
-            unsafe {
-                return pitch_xcorr_neon(x, y, xcorr, len, max_pitch);
-            }
-        }
-        for i in 0..max_pitch {
-            xcorr[i] = unsafe { inner_prod_neon(x, &y[i..], len) };
-        }
-    }
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
-    unsafe {
-        pitch_xcorr_sse(x, y, xcorr, len, max_pitch)
-    }
-    #[cfg(not(any(
-        target_arch = "aarch64",
-        all(target_arch = "x86_64", target_feature = "sse")
-    )))]
-    {
-        for i in 0..max_pitch {
-            xcorr[i] = inner_prod(x, &y[i..], len);
-        }
-    }
+    xcorr_lags(&x[..len], y, &mut xcorr[..max_pitch]);
 }
 
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn inner_prod_neon(x: &[f32], y: &[f32], n: usize) -> f32 {
-    use core::arch::aarch64::*;
-
-    let mut xy = vdupq_n_f32(0.0);
+/// `out[i]` = the inner product of `x` and `y[i..i + x.len()]`, each summed
+/// in order as [`inner_prod`] does. The kernels give each lag a vector lane
+/// (libopus `xcorr_kernel_c`, with up to 8 lags).
+fn xcorr_lags(x: &[f32], y: &[f32], out: &mut [f32]) {
+    let len = x.len();
     let mut i = 0;
-
-    while i + 8 <= n {
-        let x0 = vld1q_f32(x.as_ptr().add(i));
-        let y0 = vld1q_f32(y.as_ptr().add(i));
-        xy = vfmaq_f32(xy, x0, y0);
-
-        let x1 = vld1q_f32(x.as_ptr().add(i + 4));
-        let y1 = vld1q_f32(y.as_ptr().add(i + 4));
-        xy = vfmaq_f32(xy, x1, y1);
-
+    let mut eights = out.chunks_exact_mut(8);
+    for o in &mut eights {
+        xcorr_kernel::<8>(x, &y[i..i + len + 7], o);
         i += 8;
     }
-
-    if i + 4 <= n {
-        let x0 = vld1q_f32(x.as_ptr().add(i));
-        let y0 = vld1q_f32(y.as_ptr().add(i));
-        xy = vfmaq_f32(xy, x0, y0);
+    let mut fours = eights.into_remainder().chunks_exact_mut(4);
+    for o in &mut fours {
+        xcorr_kernel::<4>(x, &y[i..i + len + 3], o);
         i += 4;
     }
-
-    let mut sum = {
-        // Reduce exactly like libopus's float `celt_inner_prod_neon`
-        // (pitch_neon_intr.c): pairwise low+high, then a pairwise add of
-        // that — not `vaddvq_f32`, whose grouping differs in the last bits.
-        let lo = vget_low_f32(xy);
-        let hi = vget_high_f32(xy);
-        let paired = vadd_f32(lo, hi);
-        let halved = vpadd_f32(paired, paired);
-        vget_lane_f32::<0>(halved)
-    };
-
-    for j in i..n {
-        sum += x[j] * y[j];
-    }
-
-    sum
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn dual_inner_prod_neon(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32) {
-    use core::arch::aarch64::*;
-
-    let mut xy1 = vdupq_n_f32(0.0);
-    let mut xy2 = vdupq_n_f32(0.0);
-    let mut i = 0;
-
-    while i + 8 <= n {
-        let x0 = vld1q_f32(x.as_ptr().add(i));
-        let x4 = vld1q_f32(x.as_ptr().add(i + 4));
-
-        let y1_0 = vld1q_f32(y1.as_ptr().add(i));
-        let y1_4 = vld1q_f32(y1.as_ptr().add(i + 4));
-        let y2_0 = vld1q_f32(y2.as_ptr().add(i));
-        let y2_4 = vld1q_f32(y2.as_ptr().add(i + 4));
-
-        xy1 = vfmaq_f32(xy1, x0, y1_0);
-        xy2 = vfmaq_f32(xy2, x0, y2_0);
-        xy1 = vfmaq_f32(xy1, x4, y1_4);
-        xy2 = vfmaq_f32(xy2, x4, y2_4);
-
-        i += 8;
-    }
-
-    if i + 4 <= n {
-        let x0 = vld1q_f32(x.as_ptr().add(i));
-        let y1_0 = vld1q_f32(y1.as_ptr().add(i));
-        let y2_0 = vld1q_f32(y2.as_ptr().add(i));
-        xy1 = vfmaq_f32(xy1, x0, y1_0);
-        xy2 = vfmaq_f32(xy2, x0, y2_0);
-        i += 4;
-    }
-
-    let sum1 = vaddvq_f32(xy1);
-    let sum2 = vaddvq_f32(xy2);
-
-    let mut s1 = sum1;
-    let mut s2 = sum2;
-    for j in i..n {
-        s1 += x[j] * y1[j];
-        s2 += x[j] * y2[j];
-    }
-
-    (s1, s2)
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn xcorr_kernel_neon(x: &[f32], y: &[f32], sum: &mut [f32; 4], mut len: usize) {
-    use core::arch::aarch64::*;
-
-    debug_assert!(x.len() >= len, "xcorr_kernel_neon: x too short");
-    debug_assert!(
-        y.len() >= len + 3,
-        "xcorr_kernel_neon: y too short (need len+3 for vextq)"
-    );
-
-    let mut summ = vdupq_n_f32(0.0);
-    let mut xi = x.as_ptr();
-    let mut yi = y.as_ptr();
-
-    let mut yy = vld1q_f32(yi);
-
-    while len > 8 {
-        yi = yi.add(4);
-        let yy1 = vld1q_f32(yi);
-        yi = yi.add(4);
-        let yy2 = vld1q_f32(yi);
-
-        let xx0 = vld1q_f32(xi);
-        xi = xi.add(4);
-        let xx1 = vld1q_f32(xi);
-        xi = xi.add(4);
-
-        summ = vfmaq_lane_f32(summ, yy, vget_low_f32(xx0), 0);
-        let yext = vextq_f32(yy, yy1, 1);
-        summ = vfmaq_lane_f32(summ, yext, vget_low_f32(xx0), 1);
-        let yext = vextq_f32(yy, yy1, 2);
-        summ = vfmaq_lane_f32(summ, yext, vget_high_f32(xx0), 0);
-        let yext = vextq_f32(yy, yy1, 3);
-        summ = vfmaq_lane_f32(summ, yext, vget_high_f32(xx0), 1);
-
-        summ = vfmaq_lane_f32(summ, yy1, vget_low_f32(xx1), 0);
-        let yext = vextq_f32(yy1, yy2, 1);
-        summ = vfmaq_lane_f32(summ, yext, vget_low_f32(xx1), 1);
-        let yext = vextq_f32(yy1, yy2, 2);
-        summ = vfmaq_lane_f32(summ, yext, vget_high_f32(xx1), 0);
-        let yext = vextq_f32(yy1, yy2, 3);
-        summ = vfmaq_lane_f32(summ, yext, vget_high_f32(xx1), 1);
-
-        yy = yy2;
-        len -= 8;
-    }
-
-    if len > 4 {
-        yi = yi.add(4);
-        let yy1 = vld1q_f32(yi);
-
-        let xx0 = vld1q_f32(xi);
-        xi = xi.add(4);
-
-        summ = vfmaq_lane_f32(summ, yy, vget_low_f32(xx0), 0);
-        let yext = vextq_f32(yy, yy1, 1);
-        summ = vfmaq_lane_f32(summ, yext, vget_low_f32(xx0), 1);
-        let yext = vextq_f32(yy, yy1, 2);
-        summ = vfmaq_lane_f32(summ, yext, vget_high_f32(xx0), 0);
-        let yext = vextq_f32(yy, yy1, 3);
-        summ = vfmaq_lane_f32(summ, yext, vget_high_f32(xx0), 1);
-
-        yy = yy1;
-        len -= 4;
-    }
-
-    while len > 1 {
-        let xx = vld1_dup_f32(xi);
-        xi = xi.add(1);
-        summ = vfmaq_lane_f32(summ, yy, xx, 0);
-        yi = yi.add(1);
-        yy = vld1q_f32(yi);
-        len -= 1;
-    }
-
-    let xx = vld1_dup_f32(xi);
-    summ = vfmaq_lane_f32(summ, yy, xx, 0);
-
-    vst1q_f32(sum.as_mut_ptr(), summ);
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn pitch_xcorr_neon(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitch: usize) {
-    debug_assert!(x.len() >= len, "pitch_xcorr_neon: x too short");
-    debug_assert!(
-        y.len() >= max_pitch + len - 1,
-        "pitch_xcorr_neon: y too short"
-    );
-    debug_assert!(
-        xcorr.len() >= max_pitch,
-        "pitch_xcorr_neon: xcorr too short"
-    );
-
-    let mut i = 0;
-
-    while i + 4 <= max_pitch {
-        let mut sum = [0.0f32; 4];
-        unsafe { xcorr_kernel_neon(x, &y[i..], &mut sum, len) };
-        xcorr[i] = sum[0];
-        xcorr[i + 1] = sum[1];
-        xcorr[i + 2] = sum[2];
-        xcorr[i + 3] = sum[3];
-        i += 4;
-    }
-
-    for j in i..max_pitch {
-        xcorr[j] = unsafe { inner_prod_neon(x, &y[j..], len) };
-    }
-}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
-#[inline(always)]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn inner_prod_sse(x: &[f32], y: &[f32], n: usize) -> f32 {
-    #[cfg(target_arch = "x86")]
-    use core::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
-
-    let mut sum0 = _mm_setzero_ps();
-    let mut sum1 = _mm_setzero_ps();
-    let mut i = 0;
-
-    while i + 8 <= n {
-        let x0 = _mm_loadu_ps(x.as_ptr().add(i));
-        let y0 = _mm_loadu_ps(y.as_ptr().add(i));
-        sum0 = _mm_add_ps(sum0, _mm_mul_ps(x0, y0));
-        let x1 = _mm_loadu_ps(x.as_ptr().add(i + 4));
-        let y1 = _mm_loadu_ps(y.as_ptr().add(i + 4));
-        sum1 = _mm_add_ps(sum1, _mm_mul_ps(x1, y1));
-        i += 8;
-    }
-
-    if i + 4 <= n {
-        let x0 = _mm_loadu_ps(x.as_ptr().add(i));
-        let y0 = _mm_loadu_ps(y.as_ptr().add(i));
-        sum0 = _mm_add_ps(sum0, _mm_mul_ps(x0, y0));
-        i += 4;
-    }
-
-    let sum = _mm_add_ps(sum0, sum1);
-    let tmp = _mm_movehl_ps(sum, sum);
-    let sum = _mm_add_ps(sum, tmp);
-    let tmp2 = _mm_shuffle_ps(sum, sum, 0x55);
-    let sum = _mm_add_ss(sum, tmp2);
-    let mut result = _mm_cvtss_f32(sum);
-
-    while i < n {
-        result += x[i] * y[i];
+    for o in fours.into_remainder() {
+        *o = inner_prod(x, &y[i..], len);
         i += 1;
     }
-
-    result
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
 #[inline(always)]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn dual_inner_prod_sse(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32) {
-    #[cfg(target_arch = "x86")]
-    use core::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
-
-    let mut xy1 = _mm_setzero_ps();
-    let mut xy2 = _mm_setzero_ps();
-    let mut i = 0;
-
-    while i + 4 <= n {
-        let xi = _mm_loadu_ps(x.as_ptr().add(i));
-        let y1i = _mm_loadu_ps(y1.as_ptr().add(i));
-        let y2i = _mm_loadu_ps(y2.as_ptr().add(i));
-        xy1 = _mm_add_ps(xy1, _mm_mul_ps(xi, y1i));
-        xy2 = _mm_add_ps(xy2, _mm_mul_ps(xi, y2i));
-        i += 4;
-    }
-
-    let tmp = _mm_movehl_ps(xy1, xy1);
-    let xy1 = _mm_add_ps(xy1, tmp);
-    let tmp2 = _mm_shuffle_ps(xy1, xy1, 0x55);
-    let xy1 = _mm_add_ss(xy1, tmp2);
-    let mut s1 = _mm_cvtss_f32(xy1);
-
-    let tmp = _mm_movehl_ps(xy2, xy2);
-    let xy2 = _mm_add_ps(xy2, tmp);
-    let tmp2 = _mm_shuffle_ps(xy2, xy2, 0x55);
-    let xy2 = _mm_add_ss(xy2, tmp2);
-    let mut s2 = _mm_cvtss_f32(xy2);
-
-    while i < n {
-        s1 += x[i] * y1[i];
-        s2 += x[i] * y2[i];
-        i += 1;
-    }
-
-    (s1, s2)
-}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
-#[inline(always)]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn xcorr_kernel_sse(x: &[f32], y: &[f32], sum: &mut [f32; 4], len: usize) {
-    #[cfg(target_arch = "x86")]
-    use core::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
-
-    let mut xsum1 = _mm_loadu_ps(sum.as_ptr());
-    let mut xsum2 = _mm_setzero_ps();
-
-    let mut j = 0;
-
-    while j + 4 <= len {
-        let x0 = _mm_loadu_ps(x.as_ptr().add(j));
-        let yj = _mm_loadu_ps(y.as_ptr().add(j));
-        let y3 = _mm_loadu_ps(y.as_ptr().add(j + 3));
-
-        xsum1 = _mm_add_ps(xsum1, _mm_mul_ps(_mm_shuffle_ps(x0, x0, 0x00), yj));
-
-        xsum2 = _mm_add_ps(
-            xsum2,
-            _mm_mul_ps(_mm_shuffle_ps(x0, x0, 0x55), _mm_shuffle_ps(yj, y3, 0x49)),
-        );
-
-        xsum1 = _mm_add_ps(
-            xsum1,
-            _mm_mul_ps(_mm_shuffle_ps(x0, x0, 0xaa), _mm_shuffle_ps(yj, y3, 0x9e)),
-        );
-
-        xsum2 = _mm_add_ps(xsum2, _mm_mul_ps(_mm_shuffle_ps(x0, x0, 0xff), y3));
-
-        j += 4;
-    }
-
-    if j < len {
-        xsum1 = _mm_add_ps(
-            xsum1,
-            _mm_mul_ps(
-                _mm_set1_ps(*x.as_ptr().add(j)),
-                _mm_loadu_ps(y.as_ptr().add(j)),
-            ),
-        );
-        j += 1;
-        if j < len {
-            xsum2 = _mm_add_ps(
-                xsum2,
-                _mm_mul_ps(
-                    _mm_set1_ps(*x.as_ptr().add(j)),
-                    _mm_loadu_ps(y.as_ptr().add(j)),
-                ),
-            );
-            j += 1;
-            if j < len {
-                xsum1 = _mm_add_ps(
-                    xsum1,
-                    _mm_mul_ps(
-                        _mm_set1_ps(*x.as_ptr().add(j)),
-                        _mm_loadu_ps(y.as_ptr().add(j)),
-                    ),
-                );
-            }
+fn xcorr_kernel<const L: usize>(x: &[f32], y: &[f32], out: &mut [f32]) {
+    let mut acc = [0.0f32; L];
+    for (&xj, w) in x.iter().zip(y.windows(L)) {
+        let w: &[f32; L] = w.try_into().unwrap();
+        for k in 0..L {
+            acc[k] += xj * w[k];
         }
     }
-
-    _mm_storeu_ps(sum.as_mut_ptr(), _mm_add_ps(xsum1, xsum2));
+    out.copy_from_slice(&acc);
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
+/// `K` inner products of `x[..n]` with the `ys`, each summed in order as
+/// [`inner_prod`] does, interleaved so they run in parallel.
 #[inline(always)]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn pitch_xcorr_sse(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitch: usize) {
-    let mut i = 0;
-
-    while i + 4 <= max_pitch {
-        let mut sum = [0.0f32; 4];
-        xcorr_kernel_sse(x, &y[i..], &mut sum, len);
-        xcorr[i] = sum[0];
-        xcorr[i + 1] = sum[1];
-        xcorr[i + 2] = sum[2];
-        xcorr[i + 3] = sum[3];
-        i += 4;
-    }
-
-    for j in i..max_pitch {
-        xcorr[j] = inner_prod_sse(x, &y[j..], len);
-    }
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[target_feature(enable = "avx,fma")]
-unsafe fn inner_prod_avx(x: &[f32], y: &[f32], n: usize) -> f32 {
-    #[cfg(target_arch = "x86")]
-    use core::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
-
-    let mut acc0 = _mm256_setzero_ps();
-    let mut acc1 = _mm256_setzero_ps();
-    let mut i = 0usize;
-
-    while i + 16 <= n {
-        let x0 = _mm256_loadu_ps(x.as_ptr().add(i));
-        let y0 = _mm256_loadu_ps(y.as_ptr().add(i));
-        acc0 = _mm256_fmadd_ps(x0, y0, acc0);
-
-        let x1 = _mm256_loadu_ps(x.as_ptr().add(i + 8));
-        let y1 = _mm256_loadu_ps(y.as_ptr().add(i + 8));
-        acc1 = _mm256_fmadd_ps(x1, y1, acc1);
-        i += 16;
-    }
-
-    while i + 8 <= n {
-        let x0 = _mm256_loadu_ps(x.as_ptr().add(i));
-        let y0 = _mm256_loadu_ps(y.as_ptr().add(i));
-        acc0 = _mm256_fmadd_ps(x0, y0, acc0);
-        i += 8;
-    }
-
-    let acc = _mm256_add_ps(acc0, acc1);
-    let hi = _mm256_extractf128_ps(acc, 1);
-    let lo = _mm256_castps256_ps128(acc);
-    let sum4 = _mm_add_ps(lo, hi);
-    let tmp = _mm_movehl_ps(sum4, sum4);
-    let sum2 = _mm_add_ps(sum4, tmp);
-    let tmp2 = _mm_shuffle_ps(sum2, sum2, 0x55);
-    let mut result = _mm_cvtss_f32(_mm_add_ss(sum2, tmp2));
-
-    while i < n {
-        result += x[i] * y[i];
-        i += 1;
-    }
-
-    result
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[target_feature(enable = "avx,fma")]
-unsafe fn dual_inner_prod_avx(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32) {
-    #[cfg(target_arch = "x86")]
-    use core::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
-
-    let mut acc1 = _mm256_setzero_ps();
-    let mut acc2 = _mm256_setzero_ps();
-    let mut acc1b = _mm256_setzero_ps();
-    let mut acc2b = _mm256_setzero_ps();
-    let mut i = 0usize;
-
-    while i + 16 <= n {
-        let xv0 = _mm256_loadu_ps(x.as_ptr().add(i));
-        let xv1 = _mm256_loadu_ps(x.as_ptr().add(i + 8));
-        let y1v0 = _mm256_loadu_ps(y1.as_ptr().add(i));
-        let y2v0 = _mm256_loadu_ps(y2.as_ptr().add(i));
-        let y1v1 = _mm256_loadu_ps(y1.as_ptr().add(i + 8));
-        let y2v1 = _mm256_loadu_ps(y2.as_ptr().add(i + 8));
-        acc1 = _mm256_fmadd_ps(xv0, y1v0, acc1);
-        acc2 = _mm256_fmadd_ps(xv0, y2v0, acc2);
-        acc1b = _mm256_fmadd_ps(xv1, y1v1, acc1b);
-        acc2b = _mm256_fmadd_ps(xv1, y2v1, acc2b);
-        i += 16;
-    }
-
-    while i + 8 <= n {
-        let xv = _mm256_loadu_ps(x.as_ptr().add(i));
-        let y1v = _mm256_loadu_ps(y1.as_ptr().add(i));
-        let y2v = _mm256_loadu_ps(y2.as_ptr().add(i));
-        acc1 = _mm256_fmadd_ps(xv, y1v, acc1);
-        acc2 = _mm256_fmadd_ps(xv, y2v, acc2);
-        i += 8;
-    }
-
-    let acc1 = _mm256_add_ps(acc1, acc1b);
-    let acc2 = _mm256_add_ps(acc2, acc2b);
-
-    let hi1 = _mm256_extractf128_ps(acc1, 1);
-    let lo1 = _mm256_castps256_ps128(acc1);
-    let sum41 = _mm_add_ps(lo1, hi1);
-    let t11 = _mm_movehl_ps(sum41, sum41);
-    let s21 = _mm_add_ps(sum41, t11);
-    let t12 = _mm_shuffle_ps(s21, s21, 0x55);
-    let mut s1 = _mm_cvtss_f32(_mm_add_ss(s21, t12));
-
-    let hi2 = _mm256_extractf128_ps(acc2, 1);
-    let lo2 = _mm256_castps256_ps128(acc2);
-    let sum42 = _mm_add_ps(lo2, hi2);
-    let t21 = _mm_movehl_ps(sum42, sum42);
-    let s22 = _mm_add_ps(sum42, t21);
-    let t22 = _mm_shuffle_ps(s22, s22, 0x55);
-    let mut s2 = _mm_cvtss_f32(_mm_add_ss(s22, t22));
-
-    while i < n {
-        s1 += x[i] * y1[i];
-        s2 += x[i] * y2[i];
-        i += 1;
-    }
-
-    (s1, s2)
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[target_feature(enable = "avx,fma")]
-unsafe fn pitch_xcorr_avx(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitch: usize) {
-    let mut i = 0;
-
-    while i + 4 <= max_pitch {
-        let mut sum = [0.0f32; 4];
-        xcorr_kernel_avx(x, &y[i..], &mut sum, len);
-        xcorr[i] = sum[0];
-        xcorr[i + 1] = sum[1];
-        xcorr[i + 2] = sum[2];
-        xcorr[i + 3] = sum[3];
-        i += 4;
-    }
-
-    for j in i..max_pitch {
-        xcorr[j] = inner_prod_avx(x, &y[j..], len);
-    }
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[target_feature(enable = "avx,fma")]
-unsafe fn xcorr_kernel_avx(x: &[f32], y: &[f32], sum: &mut [f32; 4], len: usize) {
-    #[cfg(target_arch = "x86")]
-    use core::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
-
-    let mut xsum1 = _mm_loadu_ps(sum.as_ptr());
-    let mut xsum2 = _mm_setzero_ps();
-
-    let mut j = 0;
-
-    while j + 8 <= len {
-        let x0 = _mm_loadu_ps(x.as_ptr().add(j));
-        let yj = _mm_loadu_ps(y.as_ptr().add(j));
-        let y3 = _mm_loadu_ps(y.as_ptr().add(j + 3));
-
-        xsum1 = _mm_fmadd_ps(_mm_shuffle_ps(x0, x0, 0x00), yj, xsum1);
-        xsum2 = _mm_fmadd_ps(
-            _mm_shuffle_ps(x0, x0, 0x55),
-            _mm_shuffle_ps(yj, y3, 0x49),
-            xsum2,
-        );
-        xsum1 = _mm_fmadd_ps(
-            _mm_shuffle_ps(x0, x0, 0xaa),
-            _mm_shuffle_ps(yj, y3, 0x9e),
-            xsum1,
-        );
-        xsum2 = _mm_fmadd_ps(_mm_shuffle_ps(x0, x0, 0xff), y3, xsum2);
-
-        let x1 = _mm_loadu_ps(x.as_ptr().add(j + 4));
-        let yj4 = _mm_loadu_ps(y.as_ptr().add(j + 4));
-        let y7 = _mm_loadu_ps(y.as_ptr().add(j + 7));
-
-        xsum1 = _mm_fmadd_ps(_mm_shuffle_ps(x1, x1, 0x00), yj4, xsum1);
-        xsum2 = _mm_fmadd_ps(
-            _mm_shuffle_ps(x1, x1, 0x55),
-            _mm_shuffle_ps(yj4, y7, 0x49),
-            xsum2,
-        );
-        xsum1 = _mm_fmadd_ps(
-            _mm_shuffle_ps(x1, x1, 0xaa),
-            _mm_shuffle_ps(yj4, y7, 0x9e),
-            xsum1,
-        );
-        xsum2 = _mm_fmadd_ps(_mm_shuffle_ps(x1, x1, 0xff), y7, xsum2);
-
-        j += 8;
-    }
-
-    if j + 4 <= len {
-        let x0 = _mm_loadu_ps(x.as_ptr().add(j));
-        let yj = _mm_loadu_ps(y.as_ptr().add(j));
-        let y3 = _mm_loadu_ps(y.as_ptr().add(j + 3));
-
-        xsum1 = _mm_fmadd_ps(_mm_shuffle_ps(x0, x0, 0x00), yj, xsum1);
-        xsum2 = _mm_fmadd_ps(
-            _mm_shuffle_ps(x0, x0, 0x55),
-            _mm_shuffle_ps(yj, y3, 0x49),
-            xsum2,
-        );
-        xsum1 = _mm_fmadd_ps(
-            _mm_shuffle_ps(x0, x0, 0xaa),
-            _mm_shuffle_ps(yj, y3, 0x9e),
-            xsum1,
-        );
-        xsum2 = _mm_fmadd_ps(_mm_shuffle_ps(x0, x0, 0xff), y3, xsum2);
-
-        j += 4;
-    }
-
-    if j < len {
-        xsum1 = _mm_fmadd_ps(
-            _mm_set1_ps(*x.as_ptr().add(j)),
-            _mm_loadu_ps(y.as_ptr().add(j)),
-            xsum1,
-        );
-        j += 1;
-        if j < len {
-            xsum2 = _mm_fmadd_ps(
-                _mm_set1_ps(*x.as_ptr().add(j)),
-                _mm_loadu_ps(y.as_ptr().add(j)),
-                xsum2,
-            );
-            j += 1;
-            if j < len {
-                xsum1 = _mm_fmadd_ps(
-                    _mm_set1_ps(*x.as_ptr().add(j)),
-                    _mm_loadu_ps(y.as_ptr().add(j)),
-                    xsum1,
-                );
-            }
+fn inner_prods<const K: usize>(x: &[f32], ys: [&[f32]; K], n: usize) -> [f32; K] {
+    let x = &x[..n];
+    let ys = ys.map(|y| &y[..n]);
+    let mut acc = [0.0f32; K];
+    for j in 0..n {
+        for k in 0..K {
+            acc[k] += x[j] * ys[k][j];
         }
     }
-
-    _mm_storeu_ps(sum.as_mut_ptr(), _mm_add_ps(xsum1, xsum2));
+    acc
 }
 
 fn celt_fir5(x: &mut [f32], num: &[f32], n: usize) {
@@ -759,17 +123,6 @@ pub fn pitch_downsample(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, fa
     let offset = factor / 2;
 
     if x_lp.len() < len {
-        return;
-    }
-
-    // The NEON path reads through raw pointers up to factor*len+offset source
-    // samples per channel; only take it when every channel actually provides
-    // them (the scalar loop below bounds-checks per sample instead)
-    // (issue #27 deep scan).
-    #[cfg(target_arch = "aarch64")]
-    if factor == 2 && c <= 2 && x.iter().take(c).all(|s| s.len() >= factor * len + offset) {
-        pitch_downsample_neon(x, x_lp, len, c, offset);
-        whiten_downsampled(x_lp, len);
         return;
     }
 
@@ -848,69 +201,6 @@ fn pitch_downsample_boundary(x: &[&[f32]], x_lp: &mut [f32], c: usize, offset: u
         }
         x_lp[0] = val;
     }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn pitch_downsample_neon(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, offset: usize) {
-    use core::arch::aarch64::*;
-
-    unsafe {
-        if c == 1 {
-            let x0 = x[0];
-
-            let mut i = 1;
-            while i + 4 <= len {
-                let idx_m = 2 * i - offset;
-                let idx_p = 2 * i + offset;
-                let idx_c = 2 * i;
-
-                let vm = vld1q_f32(x0.as_ptr().add(idx_m));
-                let vp = vld1q_f32(x0.as_ptr().add(idx_p));
-                let vc = vld1q_f32(x0.as_ptr().add(idx_c));
-
-                // Separate multiply and add, matching the C scalar loop's
-                // rounding (libopus pitch.c has no FMA here): an `vfmaq`
-                // fuses the product into the add and changes the last bits,
-                // which flips near-tied pitch choices downstream.
-                let val = vaddq_f32(
-                    vaddq_f32(vmulq_n_f32(vm, 0.25), vmulq_n_f32(vp, 0.25)),
-                    vmulq_n_f32(vc, 0.5),
-                );
-
-                vst1q_f32(x_lp.as_mut_ptr().add(i), val);
-                i += 4;
-            }
-
-            while i < len {
-                let idx_m = 2 * i - offset;
-                let idx_p = 2 * i + offset;
-                let idx_c = 2 * i;
-
-                if idx_p < x0.len() {
-                    x_lp[i] = 0.25 * x0[idx_m] + 0.25 * x0[idx_p] + 0.5 * x0[idx_c];
-                }
-                i += 1;
-            }
-        } else {
-            let x0 = x[0];
-            let x1 = x[1];
-            let mut i = 1;
-            while i < len {
-                let idx_m = 2 * i - offset;
-                let idx_p = 2 * i + offset;
-                let idx_c = 2 * i;
-
-                if idx_p < x0.len() {
-                    let v0 = 0.25 * x0[idx_m] + 0.25 * x0[idx_p] + 0.5 * x0[idx_c];
-                    let v1 = 0.25 * x1[idx_m] + 0.25 * x1[idx_p] + 0.5 * x1[idx_c];
-                    x_lp[i] = v0 + v1;
-                }
-                i += 1;
-            }
-        }
-    }
-
-    pitch_downsample_boundary(x, x_lp, c, offset);
 }
 
 #[inline(always)]
@@ -1006,18 +296,7 @@ pub fn pitch_search(x_lp: &[f32], y: &[f32], mut len: usize, mut max_pitch: usiz
 
     find_best_pitch(xcorr, y_lp4, len >> 1, max_pitch >> 1, &mut best_pitch);
 
-    for i in 0..max_pitch {
-        xcorr[i] = -1.0;
-        if (i as i32 - 2 * best_pitch[0] as i32).abs() > 2
-            && (i as i32 - 2 * best_pitch[1] as i32).abs() > 2
-        {
-            continue;
-        }
-        xcorr[i] = inner_prod(x_lp, &y[i..], len);
-        if xcorr[i] < -1.0 {
-            xcorr[i] = -1.0;
-        }
-    }
+    fine_xcorr(x_lp, y, &mut xcorr[..max_pitch], len, best_pitch);
 
     find_best_pitch(xcorr, y, len, max_pitch, &mut best_pitch);
 
@@ -1058,18 +337,7 @@ fn pitch_search_heap(x_lp: &[f32], y: &[f32], mut len: usize, mut max_pitch: usi
 
     find_best_pitch(&xcorr, &y_lp4, len >> 1, max_pitch >> 1, &mut best_pitch);
 
-    for i in 0..max_pitch {
-        xcorr[i] = -1.0;
-        if (i as i32 - 2 * best_pitch[0] as i32).abs() > 2
-            && (i as i32 - 2 * best_pitch[1] as i32).abs() > 2
-        {
-            continue;
-        }
-        xcorr[i] = inner_prod(x_lp, &y[i..], len);
-        if xcorr[i] < -1.0 {
-            xcorr[i] = -1.0;
-        }
-    }
+    fine_xcorr(x_lp, y, &mut xcorr[..max_pitch], len, best_pitch);
 
     find_best_pitch(&xcorr, y, len, max_pitch, &mut best_pitch);
 
@@ -1088,6 +356,22 @@ fn pitch_search_heap(x_lp: &[f32], y: &[f32], mut len: usize, mut max_pitch: usi
     ((2 * best_pitch[0]) as isize).wrapping_sub(offset as isize) as usize
 }
 
+/// The full-rate correlations within 2 lags of the two coarse candidates,
+/// -1 elsewhere and floored at -1.
+fn fine_xcorr(x_lp: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, best_pitch: [usize; 2]) {
+    xcorr.fill(-1.0);
+    for b in best_pitch {
+        let lo = (2 * b).saturating_sub(2).min(xcorr.len());
+        let hi = (2 * b + 3).min(xcorr.len());
+        xcorr_lags(&x_lp[..len], &y[lo..], &mut xcorr[lo..hi]);
+    }
+    for v in xcorr.iter_mut() {
+        if *v < -1.0 {
+            *v = -1.0;
+        }
+    }
+}
+
 fn compute_pitch_gain(xy: f32, xx: f32, yy: f32) -> f32 {
     if xy <= 0.0 || xx <= 0.0 || yy <= 0.0 {
         return 0.0;
@@ -1096,22 +380,6 @@ fn compute_pitch_gain(xy: f32, xx: f32, yy: f32) -> f32 {
 }
 
 static SECOND_CHECK: [usize; 16] = [0, 0, 3, 2, 3, 2, 5, 2, 3, 2, 3, 2, 5, 2, 3, 2];
-
-#[inline(always)]
-fn sum_squares(x: &[f32], n: usize) -> f32 {
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        inner_prod_neon(x, x, n)
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        let mut sum = 0.0f32;
-        for i in 0..n {
-            sum += x[i] * x[i];
-        }
-        sum
-    }
-}
 
 pub fn remove_doubling(
     x: &[f32],
@@ -1142,8 +410,7 @@ pub fn remove_doubling(
     let mut yy_lookup_buf = [0.0f32; MAX_YY_SIZE];
     let yy_lookup = &mut yy_lookup_buf[..=max_period];
 
-    let xx = sum_squares(x_target, n);
-    let xy = inner_prod(x_target, &x[max_period - t0..], n);
+    let [xx, xy] = inner_prods(x_target, [x_target, &x[max_period - t0..]], n);
 
     yy_lookup[0] = xx;
     let mut yy_curr = xx;
@@ -1161,25 +428,37 @@ pub fn remove_doubling(
     let mut g = compute_pitch_gain(best_xy, xx, best_yy);
     let g0 = g;
 
+    // The candidate periods do not depend on the decisions, so their
+    // correlations are computed first, four candidates at a time.
+    let mut periods = [(0usize, 0usize); 14];
+    let mut count = 0;
     for k in 2..=15 {
         let t1 = (2 * t0 + k) / (2 * k);
         if t1 < min_period {
             break;
         }
-
-        let t1b;
-        if k == 2 {
-            if t1 + t0 > max_period {
-                t1b = t0;
-            } else {
-                t1b = t0 + t1;
-            }
+        let t1b = if k == 2 {
+            if t1 + t0 > max_period { t0 } else { t0 + t1 }
         } else {
-            t1b = (2 * SECOND_CHECK[k] * t0 + k) / (2 * k);
+            (2 * SECOND_CHECK[k] * t0 + k) / (2 * k)
+        };
+        periods[count] = (t1, t1b);
+        count += 1;
+    }
+    let mut xys = [(0.0f32, 0.0f32); 14];
+    for start in (0..count).step_by(4) {
+        let lag = |c: usize| {
+            let (t1, t1b) = periods[(start + c / 2).min(count - 1)];
+            &x[max_period - if c % 2 == 0 { t1 } else { t1b }..]
+        };
+        let r = inner_prods(x_target, core::array::from_fn::<_, 8, _>(lag), n);
+        for c in 0..4.min(count - start) {
+            xys[start + c] = (r[2 * c], r[2 * c + 1]);
         }
+    }
 
-        let (xy_a, xy_b) =
-            dual_inner_prod(x_target, &x[max_period - t1..], &x[max_period - t1b..], n);
+    for (i, (&(t1, t1b), &(xy_a, xy_b))) in periods[..count].iter().zip(&xys).enumerate() {
+        let k = i + 2;
         let xy_new = 0.5 * (xy_a + xy_b);
         let yy_new = 0.5 * (yy_lookup[t1] + yy_lookup[t1b]);
         let g1 = compute_pitch_gain(xy_new, xx, yy_new);
@@ -1213,11 +492,11 @@ pub fn remove_doubling(
         best_xy / (best_yy + 1.0)
     };
 
-    let mut xcorr_res = [0.0f32; 3];
-    for k_idx in 0..3 {
-        let lag = (t as i32 + k_idx as i32 - 1) as usize;
-        xcorr_res[k_idx] = inner_prod(x_target, &x[max_period - lag..], n);
-    }
+    let xcorr_res = inner_prods(
+        x_target,
+        core::array::from_fn::<_, 3, _>(|k| &x[max_period + 1 - t - k..]),
+        n,
+    );
 
     let mut offset = 0;
     if (xcorr_res[2] - xcorr_res[0]) > 0.7 * (xcorr_res[1] - xcorr_res[0]) {
