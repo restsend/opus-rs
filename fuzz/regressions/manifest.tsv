@@ -24,3 +24,4 @@
 n1	diff_encoder	OFZ_SUPPRESS=toc	stack-buffer-overflow	AVX2 xcorr kernel reads past its input
 n2	diff_encoder	OFZ_SUPPRESS=toc,simd	silk-input] app2048	VoIP high-pass output differs from libopus
 n3	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	decode_fec dtx->silk	FEC frame after long concealment differs
+n4	diff_encoder	OFZ_SUPPRESS=toc,simd	silk-input] app2048	VoIP SILK input differs after a few frames (variable cutoff?)
