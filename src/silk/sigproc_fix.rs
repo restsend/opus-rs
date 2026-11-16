@@ -396,37 +396,7 @@ pub fn silk_autocorr(
 }
 
 pub fn silk_sum_sqr_shift(energy: &mut i32, shift: &mut i32, x: &[i16], len: usize) {
-    let mut nrg: i32;
-
-    let mut shft = 31 - silk_clz32(len as i32);
-    nrg = sum_sqr_pairs_shifted(x, len, len as i32, shft);
-    shft = (shft + 3 - silk_clz32(nrg)).max(0);
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        nrg = unsafe { silk_sum_sqr_shift_neon(x, len, shft) };
-    }
-    #[cfg(target_arch = "x86_64")]
-    if crate::compat::x86_has_avx2() {
-        nrg = unsafe { silk_sum_sqr_shift_avx2(x, len, shft) };
-    } else {
-        nrg = sum_sqr_pairs_shifted(x, len, 0, shft);
-    }
-    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-    {
-        nrg = sum_sqr_pairs_shifted(x, len, 0, shft);
-    }
-
-    *shift = shft;
-    *energy = nrg;
-}
-
-/// `silk_sum_sqr_shift` exactly as libopus computes it (sum_sqr_shift.c), on
-/// every target. The SIMD second passes of [`silk_sum_sqr_shift`] are not
-/// bit-exact with it: the AVX2 tail shifts each square on its own instead of
-/// each pair's sum, and NEON shifts every square before adding. Code that must
-/// match libopus to the bit, such as the stereo predictor estimate, uses this.
-pub(crate) fn silk_sum_sqr_shift_exact(energy: &mut i32, shift: &mut i32, x: &[i16], len: usize) {
+    // sum_sqr_shift.c: a first pass finds the shift, a second sums with it.
     let mut shft = 31 - silk_clz32(len as i32);
     let nrg = sum_sqr_pairs_shifted(x, len, len as i32, shft);
     shft = (shft + 3 - silk_clz32(nrg)).max(0);
@@ -449,42 +419,6 @@ fn sum_sqr_pairs_shifted(x: &[i16], len: usize, init: i32, shft: i32) -> i32 {
     if i < len {
         let nrg_tmp = silk_smulbb(x[i] as i32, x[i] as i32) as u32;
         nrg = nrg.wrapping_add((nrg_tmp >> shft) as i32);
-    }
-    nrg
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn silk_sum_sqr_shift_neon(x: &[i16], len: usize, shft: i32) -> i32 {
-    use core::arch::aarch64::*;
-
-    let mut acc = vdupq_n_s64(0i64);
-    let mut i = 0;
-
-    while i + 8 <= len {
-        let v = vld1q_s16(x.as_ptr().add(i));
-
-        let lo = vget_low_s16(v);
-        let hi = vget_high_s16(v);
-        let sq_lo = vmull_s16(lo, lo);
-        let sq_hi = vmull_s16(hi, hi);
-
-        let shift_vec = vdupq_n_s32(-shft);
-        let sq_lo_sh = vshlq_s32(sq_lo, shift_vec);
-        let sq_hi_sh = vshlq_s32(sq_hi, shift_vec);
-        acc = vaddq_s64(acc, vpaddlq_s32(sq_lo_sh));
-        acc = vaddq_s64(acc, vpaddlq_s32(sq_hi_sh));
-        i += 8;
-    }
-
-    let mut nrg = vaddvq_s64(acc) as i32;
-
-    while i < len {
-        let v = x[i] as i32;
-        let sq = (v * v) as u32;
-        nrg = nrg.wrapping_add((sq >> shft) as i32);
-        i += 1;
     }
     nrg
 }
@@ -1176,45 +1110,6 @@ unsafe fn xcorr_kernel_avx2(x: &[i16], y: &[i16], sum: &mut [i32; 4], len: usize
         y_1 = y_2;
         y_2 = y_3;
     }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-#[inline]
-unsafe fn silk_sum_sqr_shift_avx2(x: &[i16], len: usize, shft: i32) -> i32 {
-    let mut acc = _mm256_setzero_si256();
-    let mut i = 0;
-
-    while i + 16 <= len {
-        let v = _mm256_loadu_si256(x.as_ptr().add(i) as *const __m256i);
-
-        let sq = _mm256_madd_epi16(v, v);
-
-        let vshift = _mm256_set1_epi32(shft);
-        let shifted = if shft > 0 {
-            _mm256_srlv_epi32(sq, vshift)
-        } else {
-            sq
-        };
-        acc = _mm256_add_epi32(acc, shifted);
-        i += 16;
-    }
-
-    let hi = _mm256_extracti128_si256(acc, 1);
-    let lo = _mm256_castsi256_si128(acc);
-    let sum4 = _mm_add_epi32(lo, hi);
-    let sum2 = _mm_add_epi32(sum4, _mm_srli_si128(sum4, 8));
-    let sum1 = _mm_add_epi32(sum2, _mm_srli_si128(sum2, 4));
-    let mut nrg = _mm_cvtsi128_si32(sum1);
-
-    while i < len {
-        let v = x[i] as i32;
-        let sq = (v * v) as u32;
-        nrg = nrg.wrapping_add((sq >> shft) as i32);
-        i += 1;
-    }
-
-    nrg
 }
 
 #[cfg(target_arch = "x86_64")]

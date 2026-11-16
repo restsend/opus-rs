@@ -8,7 +8,7 @@ use crate::silk::define::*;
 use crate::silk::lpc_analysis::silk_lpc_inverse_pred_gain;
 use crate::silk::macros::*;
 use crate::silk::sigproc_fix::{
-    silk_bwexpander, silk_lpc_analysis_filter, silk_sum_sqr_shift_exact as silk_sum_sqr_shift,
+    silk_bwexpander, silk_lpc_analysis_filter, silk_sum_sqr_shift,
 };
 
 /// Reset PLC state (silk_PLC_Reset).
