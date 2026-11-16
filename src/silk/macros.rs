@@ -5,14 +5,8 @@ pub fn silk_rshift64(a: i64, shift: i32) -> i64 {
 
 #[inline(always)]
 pub fn silk_lshift_sat32(a: i32, shift: i32) -> i32 {
-    let result = (a as i64) << shift;
-    if result > i32::MAX as i64 {
-        i32::MAX
-    } else if result < i32::MIN as i64 {
-        i32::MIN
-    } else {
-        result as i32
-    }
+    // Limits before shifting, like SigProc_FIX.h silk_LSHIFT_SAT32.
+    silk_limit_32(a, i32::MIN >> shift, i32::MAX >> shift) << shift
 }
 
 #[inline(always)]
