@@ -727,8 +727,11 @@ pub fn exp_rotation(x: &mut [f32], length: usize, dir: i32, stride: usize, k: i3
     let factor = SPREAD_FACTOR[spread as usize - 1];
     let gain = (length as f32) / (length as f32 + factor as f32 * k as f32);
     let theta = 0.5 * gain * gain;
-    let c = (0.5 * core::f32::consts::PI * theta).cos();
-    let s = (0.5 * core::f32::consts::PI * theta).sin();
+    // libopus's float celt_cos_norm, cos((pi/2) x) in double precision; s is
+    // the cosine of 1 - theta.
+    let cos_norm = |x: f32| (0.5 * core::f64::consts::PI * x as f64).cos() as f32;
+    let c = cos_norm(theta);
+    let s = cos_norm(1.0 - theta);
 
     let mut stride2 = 0;
     if length >= 8 * stride {
