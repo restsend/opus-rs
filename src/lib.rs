@@ -4119,7 +4119,12 @@ impl OpusDecoder {
             if self.prev_mode.is_some_and(|m| m != OpusMode::Hybrid) && !self.prev_redundancy {
                 self.celt_dec.reset_state();
             }
+            // The packet's bandwidth sets the CELT end band (opus_decode_frame).
+            let end_band = self.celt_end_band_from_toc(toc);
+            self.celt_dec.set_end_band(end_band);
             self.conceal_celt(packet_frame, 17)?;
+            // The final range is the CELT concealment's (opus_decode_frame).
+            self.range_final = self.celt_dec.rng();
         } else {
             self.w_celt_out[..len].fill(0.0);
         }

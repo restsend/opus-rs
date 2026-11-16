@@ -3511,6 +3511,18 @@ pub struct CeltDecoder {
 }
 
 impl CeltDecoder {
+    /// The decoder's RNG state, which libopus reports as the final range
+    /// after concealment.
+    pub(crate) fn rng(&self) -> u32 {
+        self.rng
+    }
+
+    /// Sets the end band that concealment synthesizes up to (libopus
+    /// `CELT_SET_END_BAND`).
+    pub(crate) fn set_end_band(&mut self, end: usize) {
+        self.end_band = end;
+    }
+
     /// Create a CELT decoder. `sampling_rate` is the API sampling rate
     /// (8000–48000); the decoder always operates at 48 kHz internally and
     /// decimates by `resampling_factor(sampling_rate)` on output.
