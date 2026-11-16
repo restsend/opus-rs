@@ -16,6 +16,10 @@ pub struct KissCpx {
     pub i: f32,
 }
 
+impl crate::fixedvec::ConstDefault for KissCpx {
+    const DEFAULT: Self = Self::new(0.0, 0.0);
+}
+
 impl KissCpx {
     #[inline(always)]
     pub const fn new(r: f32, i: f32) -> Self {
@@ -201,6 +205,38 @@ impl KissFftState {
             bitrev,
             twiddles: base.twiddles.clone(),
         })
+    }
+
+    /// A plan of the static mode, from tables built by the functions above
+    /// (see `static_modes`).
+    pub(crate) const fn from_tables(
+        nfft: usize,
+        shift: i32,
+        factors: [i16; 2 * MAXFACTORS],
+        bitrev: [i16; KISS_MAX_N],
+        twiddles: [KissCpx; KISS_MAX_N],
+    ) -> Self {
+        Self {
+            nfft,
+            scale: 1.0 / nfft as f32,
+            shift,
+            factors,
+            bitrev: FixedVec::from_array(bitrev, nfft),
+            twiddles: FixedVec::from_array(twiddles, KISS_MAX_N),
+        }
+    }
+
+    /// Every field, with floats as bits, for comparing plans in tests.
+    #[cfg(all(test, feature = "std"))]
+    pub(crate) fn fingerprint(&self) -> impl PartialEq + core::fmt::Debug + use<> {
+        (
+            (self.nfft, self.scale.to_bits(), self.shift, self.factors),
+            self.bitrev.iter().copied().collect::<std::vec::Vec<_>>(),
+            self.twiddles
+                .iter()
+                .map(|c| (c.r.to_bits(), c.i.to_bits()))
+                .collect::<std::vec::Vec<_>>(),
+        )
     }
 
     #[inline]

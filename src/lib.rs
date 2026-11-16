@@ -7,6 +7,8 @@ mod compat;
 mod fixedvec;
 mod mlp;
 mod mlp_data;
+#[rustfmt::skip]
+mod static_modes;
 
 pub mod analysis;
 pub mod bands;
@@ -3388,9 +3390,10 @@ pub struct OpusDecoder {
 
 impl OpusDecoder {
     pub fn new(sampling_rate: i32, channels: usize) -> Result<Self, &'static str> {
-        let mut decoder = MaybeUninit::uninit();
-        Self::init(&mut decoder, sampling_rate, channels)?;
-        Ok(unsafe { decoder.assume_init() })
+        Self::check_settings(sampling_rate, channels)?;
+        let mut decoder = Self::empty();
+        decoder.setup(sampling_rate, channels);
+        Ok(decoder)
     }
 
     /// Builds a decoder in `slot` instead of returning it.
@@ -3403,63 +3406,102 @@ impl OpusDecoder {
         sampling_rate: i32,
         channels: usize,
     ) -> Result<&mut Self, &'static str> {
+        Self::check_settings(sampling_rate, channels)?;
+        let decoder = slot.write(Self::empty());
+        decoder.setup(sampling_rate, channels);
+        Ok(decoder)
+    }
+
+    fn check_settings(sampling_rate: i32, channels: usize) -> Result<(), &'static str> {
         if ![8000, 12000, 16000, 24000, 48000].contains(&sampling_rate) {
             return Err("Invalid sampling rate");
         }
         if ![1, 2].contains(&channels) {
             return Err("Invalid number of channels");
         }
+        Ok(())
+    }
 
-        let mode = modes::default_mode();
-        let this = slot.as_mut_ptr();
-        unsafe {
-            #[cfg(feature = "heap")]
-            {
-                (&raw mut (*this).celt_dec).write(Box::new(CeltDecoder::new(mode, channels, sampling_rate)));
-                (&raw mut (*this).silk_dec).write(Box::new(silk::dec_api::SilkDecoder::new()));
-            }
-            #[cfg(not(feature = "heap"))]
-            {
-                CeltDecoder::write_new(&raw mut (*this).celt_dec, mode, channels, sampling_rate);
-                silk::dec_api::SilkDecoder::write_new(&raw mut (*this).silk_dec);
-            }
-            (&raw mut (*this).sampling_rate).write(sampling_rate);
-            (&raw mut (*this).channels).write(channels);
-            (&raw mut (*this).prev_mode).write(None);
-            (&raw mut (*this).packet_mode).write(None);
-            (&raw mut (*this).prev_redundancy).write(false);
-            (&raw mut (*this).frame_size).write(0);
-            (&raw mut (*this).bandwidth).write(Bandwidth::Auto);
-            (&raw mut (*this).stream_channels).write(channels);
-            (&raw mut (*this).silk_resampler).write(silk::resampler::SilkResampler::default());
-            (&raw mut (*this).silk_resampler_2).write(silk::resampler::SilkResampler::default());
-            (&raw mut (*this).prev_internal_rate).write(0);
-            (&raw mut (*this).range_final).write(0);
-            (&raw mut (*this).hybrid_skip_celt).write(false);
-            #[cfg(feature = "heap")]
-            {
-                (&raw mut (*this).w_pcm_i16).write(Box::new(FixedVec::from_value(0i16, 960 * channels)));
-                (&raw mut (*this).w_silk_out).write(Box::new(FixedVec::from_value(0.0f32, OPUS_MAX_SUBFRAME * channels)));
-                (&raw mut (*this).w_pcm_resampled).write(Box::new(FixedVec::from_value(0i16, OPUS_MAX_SUBFRAME * channels)));
-                (&raw mut (*this).w_celt_planar).write(Box::new(FixedVec::from_value(0.0f32, OPUS_MAX_SUBFRAME * channels)));
-                (&raw mut (*this).w_celt_out).write(Box::new(FixedVec::from_value(0.0f32, OPUS_MAX_SUBFRAME * channels)));
-                (&raw mut (*this).prev_pcm_tail).write(Box::new(FixedVec::from_value(0.0f32, 240 * channels)));
-            }
-            #[cfg(not(feature = "heap"))]
-            {
-                FixedVec::write_from_value(&raw mut (*this).w_pcm_i16, 0i16, 960 * channels);
-                FixedVec::write_from_value(&raw mut (*this).w_silk_out, 0.0f32, OPUS_MAX_SUBFRAME * channels);
-                FixedVec::write_from_value(&raw mut (*this).w_pcm_resampled, 0i16, OPUS_MAX_SUBFRAME * channels);
-                FixedVec::write_from_value(&raw mut (*this).w_celt_planar, 0.0f32, OPUS_MAX_SUBFRAME * channels);
-                FixedVec::write_from_value(&raw mut (*this).w_celt_out, 0.0f32, OPUS_MAX_SUBFRAME * channels);
-                FixedVec::write_from_value(&raw mut (*this).prev_pcm_tail, 0.0f32, 240 * channels);
-            }
+    /// A decoder with empty buffers for [`Self::setup`]. Without the `heap`
+    /// feature it is a constant, which the compiler copies straight into the
+    /// destination, so `init` needs no stack for it.
+    #[cfg(not(feature = "heap"))]
+    #[inline(always)]
+    fn empty() -> Self {
+        Self::EMPTY
+    }
+
+    #[cfg(not(feature = "heap"))]
+    const EMPTY: Self = Self {
+        celt_dec: CeltDecoder::EMPTY,
+        silk_dec: silk::dec_api::SilkDecoder::EMPTY,
+        sampling_rate: 0,
+        channels: 0,
+        prev_mode: None,
+        packet_mode: None,
+        prev_redundancy: false,
+        frame_size: 0,
+        bandwidth: Bandwidth::Auto,
+        stream_channels: 0,
+        silk_resampler: silk::resampler::SilkResampler::DEFAULT,
+        silk_resampler_2: silk::resampler::SilkResampler::DEFAULT,
+        prev_internal_rate: 0,
+        range_final: 0,
+        hybrid_skip_celt: false,
+        w_pcm_i16: FixedVec::new(),
+        w_silk_out: FixedVec::new(),
+        w_pcm_resampled: FixedVec::new(),
+        w_celt_planar: FixedVec::new(),
+        w_celt_out: FixedVec::new(),
+        prev_pcm_tail: FixedVec::new(),
+    };
+
+    #[cfg(feature = "heap")]
+    fn empty() -> Self {
+        Self {
+            celt_dec: Box::new(CeltDecoder::EMPTY),
+            silk_dec: Box::new(silk::dec_api::SilkDecoder::EMPTY),
+            sampling_rate: 0,
+            channels: 0,
+            prev_mode: None,
+            packet_mode: None,
+            prev_redundancy: false,
+            frame_size: 0,
+            bandwidth: Bandwidth::Auto,
+            stream_channels: 0,
+            silk_resampler: silk::resampler::SilkResampler::DEFAULT,
+            silk_resampler_2: silk::resampler::SilkResampler::DEFAULT,
+            prev_internal_rate: 0,
+            range_final: 0,
+            hybrid_skip_celt: false,
+            w_pcm_i16: Box::new(FixedVec::new()),
+            w_silk_out: Box::new(FixedVec::new()),
+            w_pcm_resampled: Box::new(FixedVec::new()),
+            w_celt_planar: Box::new(FixedVec::new()),
+            w_celt_out: Box::new(FixedVec::new()),
+            prev_pcm_tail: Box::new(FixedVec::new()),
         }
+    }
 
-        let decoder = unsafe { slot.assume_init_mut() };
-        decoder.silk_dec.init(sampling_rate.min(16000), channels as i32);
-        decoder.silk_dec.channel_state[0].fs_api_hz = sampling_rate;
-        Ok(decoder)
+    /// Sets an [`Self::empty`] decoder up for valid settings, in place.
+    fn setup(&mut self, sampling_rate: i32, channels: usize) {
+        self.celt_dec
+            .init(modes::default_mode(), channels, sampling_rate);
+        self.silk_dec.init_states();
+        self.sampling_rate = sampling_rate;
+        self.channels = channels;
+        self.stream_channels = channels;
+        self.w_pcm_i16.fill_to(960 * channels, 0);
+        self.w_silk_out.fill_to(OPUS_MAX_SUBFRAME * channels, 0.0);
+        self.w_pcm_resampled
+            .fill_to(OPUS_MAX_SUBFRAME * channels, 0);
+        self.w_celt_planar
+            .fill_to(OPUS_MAX_SUBFRAME * channels, 0.0);
+        self.w_celt_out.fill_to(OPUS_MAX_SUBFRAME * channels, 0.0);
+        self.prev_pcm_tail.fill_to(240 * channels, 0.0);
+        self.silk_dec
+            .init(sampling_rate.min(16000), channels as i32);
+        self.silk_dec.channel_state[0].fs_api_hz = sampling_rate;
     }
 
     /// The range decoder's final state after the last frame decoded, like

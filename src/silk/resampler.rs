@@ -243,23 +243,27 @@ pub struct SilkResampler {
     down_coefs: &'static [i16],
 }
 
+impl SilkResampler {
+    pub(crate) const DEFAULT: Self = Self {
+        s_iir: [0; 6],
+        s_fir: [0; RESAMPLER_ORDER_FIR_12],
+        s_down_fir: [0; RESAMPLER_DOWN_ORDER_FIR2],
+        delay_buf: [0; 48],
+        input_delay: 0,
+        fs_in_khz: 0,
+        fs_out_khz: 0,
+        batch_size: 0,
+        inv_ratio_q16: 0,
+        mode: ResamplerMode::Copy,
+        fir_fracs: 0,
+        down_order: 0,
+        down_coefs: &[],
+    };
+}
+
 impl Default for SilkResampler {
     fn default() -> Self {
-        Self {
-            s_iir: [0; 6],
-            s_fir: [0; RESAMPLER_ORDER_FIR_12],
-            s_down_fir: [0; RESAMPLER_DOWN_ORDER_FIR2],
-            delay_buf: [0; 48],
-            input_delay: 0,
-            fs_in_khz: 0,
-            fs_out_khz: 0,
-            batch_size: 0,
-            inv_ratio_q16: 0,
-            mode: ResamplerMode::Copy,
-            fir_fracs: 0,
-            down_order: 0,
-            down_coefs: &[],
-        }
+        Self::DEFAULT
     }
 }
 

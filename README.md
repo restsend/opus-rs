@@ -70,7 +70,7 @@ The public API (`OpusEncoder`/`OpusDecoder` with `encode`/`decode` writing into 
 | `std`    | yes     | Enables OS-backed runtime x86 SIMD detection (CPUID). Without it the crate is `#![no_std]`. |
 | `heap`   | yes     | Allocates the large codec state on the heap (`Box`), shrinking `OpusEncoder`/`OpusDecoder` to ~1 KB so they can live on ordinary stacks. Requires `std`. |
 | `libm`   | no      | Required for `#![no_std]` builds — provides float math via a pure-Rust port of musl `libm`. Not needed when `std` is on. |
-| `portable-atomic` | no | Uses the [`portable-atomic`](https://crates.io/crates/portable-atomic) crate for the lazily built mode table, so the crate builds on targets without compare-and-swap like `thumbv6m-none-eabi` (Cortex-M0/M0+) or `riscv32imc-unknown-none-elf` (ESP32-C3). There you also need its `critical-section` feature, or `--cfg portable_atomic_unsafe_assume_single_core` on single-core chips. |
+| `portable-atomic` | no | No effect; kept for compatibility. The mode table is a compile-time `static`, so the crate uses no atomics and builds on targets without compare-and-swap like `thumbv6m-none-eabi` (Cortex-M0/M0+) or `riscv32imc-unknown-none-elf` (ESP32-C3). |
 
 > Runtime dependency footprint: `std` build → **0 deps**; `no_std` build → **1 dep** (`libm`, pure Rust).
 
@@ -88,10 +88,13 @@ The public API (`OpusEncoder`/`OpusDecoder` with `encode`/`decode` writing into 
   let decoder = OpusDecoder::init(unsafe { &mut *(&raw mut DECODER) }, 48000, 2)?;
   ```
 
+  `init` copies a constant image of an empty decoder into the slot, so the
+  image (~175 KB) is part of the binary's read-only data.
+
   Test threads use a 16 MB stack (see `.cargo/config.toml`).
 - **x86 SIMD:** without `std`, AVX/AVX2 dispatch falls back to compile-time detection. Build with `RUSTFLAGS="-C target-feature=+avx2"` to enable it. aarch64 NEON is unconditional.
 - **Packets are capped** at the RFC 6716 maximum of 1276 bytes (the heap-free range-coder buffer is sized accordingly); standalone `RangeCoder`/CELT use supports up to 2048 bytes.
-- **Verified targets:** `thumbv7em-none-eabi` (Cortex-M), `wasm32-unknown-unknown`, and any Linux no_std target. With `portable-atomic`, also `thumbv6m-none-eabi` and `riscv32imc-unknown-none-elf`. Check with `scripts/check_no_std.sh`.
+- **Verified targets:** `thumbv7em-none-eabi` (Cortex-M), `wasm32-unknown-unknown`, and any Linux no_std target, and targets without compare-and-swap such as `thumbv6m-none-eabi` and `riscv32imc-unknown-none-elf`. Check with `scripts/check_no_std.sh`.
 
 ## Performance
 

@@ -10,7 +10,6 @@ use crate::quant_bands::{
 use crate::range_coder::RangeCoder;
 use crate::rate::{BITRES, clt_compute_allocation};
 use crate::silk::define::TYPE_VOICED;
-use core::mem::MaybeUninit;
 
 #[cfg(not(feature = "std"))]
 use crate::compat::Math;
@@ -3553,19 +3552,56 @@ impl CeltDecoder {
     /// (8000–48000); the decoder always operates at 48 kHz internally and
     /// decimates by `resampling_factor(sampling_rate)` on output.
     pub fn new(mode: &'static CeltMode, channels: usize, sampling_rate: i32) -> Self {
-        let mut decoder = MaybeUninit::uninit();
-        unsafe {
-            Self::write_new(decoder.as_mut_ptr(), mode, channels, sampling_rate);
-            decoder.assume_init()
-        }
+        let mut decoder = Self::EMPTY;
+        decoder.init(mode, channels, sampling_rate);
+        decoder
     }
 
-    pub(crate) unsafe fn write_new(
-        this: *mut Self,
-        mode: &'static CeltMode,
-        channels: usize,
-        sampling_rate: i32,
-    ) {
+    /// A decoder with empty buffers for [`Self::init`] to set up. It is a
+    /// constant so that it can be written straight into its final memory.
+    pub(crate) const EMPTY: Self = Self {
+        mode: crate::modes::default_mode(),
+        channels: 0,
+        stream_channels: 0,
+        downsample: 1,
+        decode_mem: FixedVec::new(),
+        old_band_e: FixedVec::new(),
+        preemph_mem: FixedVec::new(),
+        prefilter_mem: FixedVec::new(),
+        prefilter_period: 0,
+        prefilter_period_old: 0,
+        prefilter_gain: 0.0,
+        prefilter_gain_old: 0.0,
+        prefilter_tapset: 0,
+        prefilter_tapset_old: 0,
+        old_band_e2: FixedVec::new(),
+        old_band_e3: FixedVec::new(),
+        rng: 0,
+        background_log_e: FixedVec::new(),
+        loss_duration: 0,
+        plc_duration: 0,
+        skip_plc: true,
+        last_frame_type: plc::FRAME_NONE,
+        last_pitch_index: 0,
+        prefilter_and_fold: false,
+        plc_lpc: [0.0; plc::LPC_ORDER * CELT_MAX_CHANNELS],
+        end_band: 0,
+        w_tf_res: FixedVec::new(),
+        w_cap: FixedVec::new(),
+        w_offsets: FixedVec::new(),
+        w_pulses: FixedVec::new(),
+        w_ebits: FixedVec::new(),
+        w_fine_priority: FixedVec::new(),
+        w_x: FixedVec::new(),
+        w_collapse_masks: FixedVec::new(),
+        w_freq: FixedVec::new(),
+        w_band_amp: FixedVec::new(),
+        w_pcm_frame: FixedVec::new(),
+        w_post: FixedVec::new(),
+    };
+
+    /// Sets the decoder up as [`Self::new`] does, in place.
+    pub(crate) fn init(&mut self, mode: &'static CeltMode, channels: usize, sampling_rate: i32) {
         // All internal buffers are sized for at most 2 channels
         // (issue #27 deep scan).
         assert!(
@@ -3579,63 +3615,49 @@ impl CeltDecoder {
         // may be handed one. Capacity is fixed, so this costs no memory.
         let nb_x_ch = nb_ebands * CELT_MAX_CHANNELS;
         let dec_frame_x_ch = DECODE_BUFFER_SIZE * CELT_MAX_CHANNELS;
-        unsafe {
-            (&raw mut (*this).mode).write(mode);
-            (&raw mut (*this).channels).write(channels);
-            (&raw mut (*this).stream_channels).write(channels);
-            (&raw mut (*this).downsample).write(resampling_factor(sampling_rate));
-            FixedVec::write_from_value(
-                &raw mut (*this).decode_mem,
-                0.0,
-                channels * (DECODE_BUFFER_SIZE + overlap),
-            );
-            FixedVec::write_from_value(&raw mut (*this).old_band_e, 0.0, nb_x_ch);
-            FixedVec::write_from_value(&raw mut (*this).preemph_mem, 0.0, channels);
-            FixedVec::write_from_value(
-                &raw mut (*this).prefilter_mem,
-                0.0,
-                channels * COMBFILTER_MAXPERIOD,
-            );
-            (&raw mut (*this).prefilter_period).write(COMBFILTER_MINPERIOD);
-            (&raw mut (*this).prefilter_period_old).write(COMBFILTER_MINPERIOD);
-            (&raw mut (*this).prefilter_gain).write(0.0);
-            (&raw mut (*this).prefilter_gain_old).write(0.0);
-            (&raw mut (*this).prefilter_tapset).write(0);
-            (&raw mut (*this).prefilter_tapset_old).write(0);
-            // oldLogE and oldLogE2 start at -28 dB, as libopus's reset (run at init) sets them.
-            FixedVec::write_from_value(&raw mut (*this).old_band_e2, -28.0, nb_x_ch);
-            FixedVec::write_from_value(&raw mut (*this).old_band_e3, -28.0, nb_x_ch);
-            (&raw mut (*this).rng).write(0);
-            FixedVec::write_from_value(&raw mut (*this).background_log_e, 0.0, nb_x_ch);
-            (&raw mut (*this).loss_duration).write(0);
-            (&raw mut (*this).plc_duration).write(0);
-            (&raw mut (*this).skip_plc).write(true);
-            (&raw mut (*this).last_frame_type).write(plc::FRAME_NONE);
-            (&raw mut (*this).last_pitch_index).write(0);
-            (&raw mut (*this).prefilter_and_fold).write(false);
-            (&raw mut (*this).plc_lpc).write([0.0; plc::LPC_ORDER * CELT_MAX_CHANNELS]);
-            (&raw mut (*this).end_band).write(mode.eff_ebands);
-            FixedVec::write_from_value(&raw mut (*this).w_tf_res, 0, nb_ebands);
-            FixedVec::write_from_value(&raw mut (*this).w_cap, 0, nb_ebands);
-            FixedVec::write_from_value(&raw mut (*this).w_offsets, 0, nb_ebands);
-            FixedVec::write_from_value(&raw mut (*this).w_pulses, 0, nb_ebands);
-            FixedVec::write_from_value(&raw mut (*this).w_ebits, 0, nb_x_ch);
-            FixedVec::write_from_value(&raw mut (*this).w_fine_priority, 0, nb_x_ch);
-            FixedVec::write_from_value(
-                &raw mut (*this).w_x,
-                0.0,
-                dec_frame_x_ch + STRIDE_ACCESS_PAD,
-            );
-            FixedVec::write_from_value(&raw mut (*this).w_collapse_masks, 0, nb_x_ch);
-            FixedVec::write_from_value(&raw mut (*this).w_freq, 0.0, dec_frame_x_ch + 4); // +4: NEON backward pre-rotation reads up to 3 elements past n2
-            FixedVec::write_from_value(&raw mut (*this).w_band_amp, 0.0, nb_x_ch);
-            FixedVec::write_from_value(&raw mut (*this).w_pcm_frame, 0.0, DECODE_BUFFER_SIZE);
-            FixedVec::write_from_value(
-                &raw mut (*this).w_post,
-                0.0,
-                DECODE_BUFFER_SIZE + COMBFILTER_MAXPERIOD,
-            );
-        }
+        // Field by field: a whole `Self` value would need a large stack frame.
+        self.mode = mode;
+        self.channels = channels;
+        self.stream_channels = channels;
+        self.downsample = resampling_factor(sampling_rate);
+        self.decode_mem
+            .fill_to(channels * (DECODE_BUFFER_SIZE + overlap), 0.0);
+        self.old_band_e.fill_to(nb_x_ch, 0.0);
+        self.preemph_mem.fill_to(channels, 0.0);
+        self.prefilter_mem
+            .fill_to(channels * COMBFILTER_MAXPERIOD, 0.0);
+        self.prefilter_period = COMBFILTER_MINPERIOD;
+        self.prefilter_period_old = COMBFILTER_MINPERIOD;
+        self.prefilter_gain = 0.0;
+        self.prefilter_gain_old = 0.0;
+        self.prefilter_tapset = 0;
+        self.prefilter_tapset_old = 0;
+        // oldLogE and oldLogE2 start at -28 dB, as libopus's reset (run at init) sets them.
+        self.old_band_e2.fill_to(nb_x_ch, -28.0);
+        self.old_band_e3.fill_to(nb_x_ch, -28.0);
+        self.rng = 0;
+        self.background_log_e.fill_to(nb_x_ch, 0.0);
+        self.loss_duration = 0;
+        self.plc_duration = 0;
+        self.skip_plc = true;
+        self.last_frame_type = plc::FRAME_NONE;
+        self.last_pitch_index = 0;
+        self.prefilter_and_fold = false;
+        self.plc_lpc = [0.0; plc::LPC_ORDER * CELT_MAX_CHANNELS];
+        self.end_band = mode.eff_ebands;
+        self.w_tf_res.fill_to(nb_ebands, 0);
+        self.w_cap.fill_to(nb_ebands, 0);
+        self.w_offsets.fill_to(nb_ebands, 0);
+        self.w_pulses.fill_to(nb_ebands, 0);
+        self.w_ebits.fill_to(nb_x_ch, 0);
+        self.w_fine_priority.fill_to(nb_x_ch, 0);
+        self.w_x.fill_to(dec_frame_x_ch + STRIDE_ACCESS_PAD, 0.0);
+        self.w_collapse_masks.fill_to(nb_x_ch, 0);
+        self.w_freq.fill_to(dec_frame_x_ch + 4, 0.0); // +4: NEON backward pre-rotation reads up to 3 elements past n2
+        self.w_band_amp.fill_to(nb_x_ch, 0.0);
+        self.w_pcm_frame.fill_to(DECODE_BUFFER_SIZE, 0.0);
+        self.w_post
+            .fill_to(DECODE_BUFFER_SIZE + COMBFILTER_MAXPERIOD, 0.0);
     }
 
     pub fn decode(&mut self, compressed: &[u8], frame_size: usize, pcm: &mut [f32]) -> usize {

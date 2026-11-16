@@ -11,7 +11,6 @@ use crate::silk::define::*;
 use crate::silk::init_decoder::{silk_decoder_set_fs, silk_init_decoder};
 use crate::silk::stereo_ms_to_lr::{StereoDecState, silk_stereo_ms_to_lr};
 use crate::silk::tables::{SILK_LBRR_FLAGS_2_ICDF, SILK_LBRR_FLAGS_3_ICDF};
-use core::mem::MaybeUninit;
 
 pub struct SilkDecoder {
     pub channel_state: [SilkDecoderState; 2],
@@ -37,25 +36,26 @@ impl Default for SilkDecoder {
 
 impl SilkDecoder {
     pub fn new() -> Self {
-        let mut decoder = MaybeUninit::uninit();
-        unsafe {
-            Self::write_new(decoder.as_mut_ptr());
-            decoder.assume_init()
-        }
+        let mut decoder = Self::EMPTY;
+        decoder.init_states();
+        decoder
     }
 
-    pub(crate) unsafe fn write_new(this: *mut Self) {
-        unsafe {
-            let states = (&raw mut (*this).channel_state).cast::<SilkDecoderState>();
-            for i in 0..2 {
-                states.add(i).write(SilkDecoderState::default());
-                silk_init_decoder(&mut *states.add(i));
-            }
-            (&raw mut (*this).n_channels_api).write(1);
-            (&raw mut (*this).n_channels_internal).write(1);
-            (&raw mut (*this).prev_decode_only_middle).write(0);
-            (&raw mut (*this).s_stereo).write(StereoDecState::default());
-            (&raw mut (*this).w_silk_buf).write_bytes(0, 1);
+    /// A decoder for [`Self::init_states`] to set up. It is a constant so that
+    /// it can be written straight into its final memory.
+    pub(crate) const EMPTY: Self = Self {
+        channel_state: [SilkDecoderState::DEFAULT, SilkDecoderState::DEFAULT],
+        n_channels_api: 1,
+        n_channels_internal: 1,
+        prev_decode_only_middle: 0,
+        s_stereo: StereoDecState::DEFAULT,
+        w_silk_buf: [[0; MAX_FRAME_LENGTH + 2]; 2],
+    };
+
+    /// Runs libopus `silk_init_decoder` on both channel states.
+    pub(crate) fn init_states(&mut self) {
+        for state in &mut self.channel_state {
+            silk_init_decoder(state);
         }
     }
 

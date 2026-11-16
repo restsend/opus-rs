@@ -12,7 +12,7 @@ const MAX_N4: usize = 480;
 /// 4 leaves headroom for hybrid modes.
 const MDCT_MAX_LM: usize = 4;
 /// Bounded by the geometric sum of `n2` across all levels: `n/2 + n/4 + ... <= n`.
-const MDCT_TRIG_MAX: usize = 2 * MAX_N2;
+pub(crate) const MDCT_TRIG_MAX: usize = 2 * MAX_N2;
 
 pub struct MdctLookup {
     pub n: usize,
@@ -55,6 +55,52 @@ impl MdctLookup {
             trig,
         }
     }
+
+    /// The MDCT of the static 48 kHz / 960-sample mode: `new(1920, 3)` from
+    /// precomputed tables.
+    pub(crate) const STATIC_1920: Self = {
+        use crate::static_modes::*;
+        let tw = FFT_TWIDDLES_480;
+        Self {
+            n: 1920,
+            max_lm: 3,
+            kfft: FixedVec::from_array(
+                [
+                    Some(KissFftState::from_tables(
+                        480,
+                        FFT_SHIFT_480,
+                        FFT_FACTORS_480,
+                        FFT_BITREV_480,
+                        tw,
+                    )),
+                    Some(KissFftState::from_tables(
+                        240,
+                        FFT_SHIFT_240,
+                        FFT_FACTORS_240,
+                        FFT_BITREV_240,
+                        tw,
+                    )),
+                    Some(KissFftState::from_tables(
+                        120,
+                        FFT_SHIFT_120,
+                        FFT_FACTORS_120,
+                        FFT_BITREV_120,
+                        tw,
+                    )),
+                    Some(KissFftState::from_tables(
+                        60,
+                        FFT_SHIFT_60,
+                        FFT_FACTORS_60,
+                        FFT_BITREV_60,
+                        tw,
+                    )),
+                    None,
+                ],
+                4,
+            ),
+            trig: FixedVec::from_array(MDCT_TRIG_1920, 1800),
+        }
+    };
 
     /// The FFT of the MDCT at `shift` (libopus `mdct.kfft[shift]`), which the
     /// encoder's signal analysis reuses.
@@ -994,6 +1040,26 @@ fn mdct_tdac_neon(output: &mut [f32], window: &[f32], overlap: usize) {
 
 #[cfg(all(test, feature = "std"))]
 mod mdct_tests {
+    use super::MdctLookup;
+
+    #[test]
+    // Miri perturbs the results of cos, as libm implementations may differ.
+    #[cfg_attr(miri, ignore)]
+    fn static_mode_matches_computed() {
+        let computed = MdctLookup::new(1920, 3);
+        let table = &crate::modes::default_mode().mdct;
+        assert_eq!((table.n, table.max_lm), (computed.n, computed.max_lm));
+        let bits = |t: &[f32]| t.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&table.trig), bits(&computed.trig));
+        assert_eq!(table.kfft.len(), computed.kfft.len());
+        for (a, b) in table.kfft.iter().zip(computed.kfft.iter()) {
+            assert_eq!(
+                a.as_ref().unwrap().fingerprint(),
+                b.as_ref().unwrap().fingerprint()
+            );
+        }
+    }
+
     #[test]
     fn test_mdct_backward_transient_no_blowup() {
         let mode = crate::modes::default_mode();

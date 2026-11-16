@@ -114,25 +114,29 @@ pub struct SideInfoIndices {
     pub only_middle: i8,
 }
 
+impl SideInfoIndices {
+    pub(crate) const DEFAULT: Self = Self {
+        gains_indices: [0; MAX_NB_SUBFR],
+        ltp_index: [0; MAX_NB_SUBFR],
+        nlsf_indices: [0; MAX_LPC_ORDER + 1],
+        lag_index: 0,
+        contour_index: 0,
+        signal_type: 0,
+        voicing_idx: 0,
+        quant_offset_type: 0,
+        nlsf_interp_coef_q2: 4,
+        per_index: 0,
+        ltp_scale_index: 0,
+        seed: 0,
+        pred_idx: 0,
+        side_idx: 0,
+        only_middle: 0,
+    };
+}
+
 impl Default for SideInfoIndices {
     fn default() -> Self {
-        Self {
-            gains_indices: [0; MAX_NB_SUBFR],
-            ltp_index: [0; MAX_NB_SUBFR],
-            nlsf_indices: [0; MAX_LPC_ORDER + 1],
-            lag_index: 0,
-            contour_index: 0,
-            signal_type: 0,
-            voicing_idx: 0,
-            quant_offset_type: 0,
-            nlsf_interp_coef_q2: 4,
-            per_index: 0,
-            ltp_scale_index: 0,
-            seed: 0,
-            pred_idx: 0,
-            side_idx: 0,
-            only_middle: 0,
-        }
+        Self::DEFAULT
     }
 }
 

@@ -1,106 +1,13 @@
 //! no_std / std compatibility shims — zero external dependencies.
 //!
 //! Provides:
-//! * [`OnceCell`] — a dependency-free, **heap-free** lazy cell backed by a 3-state
-//!   atomic and inline `UnsafeCell<MaybeUninit<T>>` storage. The value is
-//!   constructed exactly once into the inline storage, so no global allocator is
-//!   required. Replaces `std::sync::LazyLock`.
 //! * [`x86_has_avx`] / [`x86_has_avx2`] / [`x86_has_avx_fma`] / [`x86_has_avx2_fma`]
 //!   — x86 SIMD availability probes. Under the
 //!   `std` feature these use the OS-backed `is_x86_feature_detected!`; without `std`
 //!   they fall back to compile-time `cfg!(target_feature = ...)`.
 
-use core::cell::UnsafeCell;
-use core::hint;
-use core::mem::MaybeUninit;
-#[cfg(not(feature = "portable-atomic"))]
-use core::sync::atomic::AtomicU8;
+#[cfg(feature = "fuzzing")]
 use core::sync::atomic::Ordering;
-#[cfg(feature = "portable-atomic")]
-use portable_atomic::AtomicU8;
-
-// ---------------------------------------------------------------------------
-// OnceCell (heap-free lazy initialization)
-// ---------------------------------------------------------------------------
-
-/// Lazily-initialized value stored in inline (non-heap) storage.
-///
-/// State machine encoded in [`AtomicU8`]:
-/// * `0` — uninitialized, idle
-/// * `1` — a thread is currently initializing
-/// * `2` — initialization complete; the value is live
-///
-/// The stored value is constructed exactly once into the embedded
-/// `MaybeUninit<T>` and never mutated afterwards. Publication uses `Release`
-/// ordering so all field writes are visible to any reader that observes state `2`
-/// with `Acquire` ordering.
-pub struct OnceCell<T: Sync> {
-    state: AtomicU8,
-    storage: UnsafeCell<MaybeUninit<T>>,
-}
-
-// SAFETY: `OnceCell` hands out shared `&T` references to a value that is
-// constructed once and never mutated. `T: Sync` makes shared access sound. The
-// `UnsafeCell` is only ever written by the single initializer before publication.
-unsafe impl<T: Sync> Sync for OnceCell<T> {}
-
-impl<T: Sync> OnceCell<T> {
-    /// Create a new, uninitialized cell. `const`-constructible so it can live in a
-    /// `static`.
-    pub const fn new() -> Self {
-        Self {
-            state: AtomicU8::new(0),
-            storage: UnsafeCell::new(MaybeUninit::uninit()),
-        }
-    }
-
-    /// Return a shared reference to the value, initializing it on first access.
-    ///
-    /// `init` is invoked at most once across all threads. It must not panic: a
-    /// panic would leave the cell in the `initializing` (1) state and subsequent
-    /// callers would spin indefinitely. In practice the only initializer used by
-    /// this crate (`CeltMode::new_48000_960_120`) is infallible.
-    pub fn get(&self, init: impl FnOnce() -> T) -> &T {
-        if self.state.load(Ordering::Acquire) == 2 {
-            // SAFETY: initialization is complete; storage holds a valid `T`.
-            return unsafe { (*self.storage.get()).assume_init_ref() };
-        }
-        self.get_slow(init)
-    }
-
-    #[cold]
-    fn get_slow(&self, init: impl FnOnce() -> T) -> &T {
-        // Spin until we either claim the initializer slot (0 -> 1) or observe a
-        // finished initialization.
-        while self
-            .state
-            .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            if self.state.load(Ordering::Acquire) == 2 {
-                // SAFETY: another thread finished initialization.
-                return unsafe { (*self.storage.get()).assume_init_ref() };
-            }
-            hint::spin_loop();
-        }
-
-        // We claimed the slot; construct into the inline storage and publish.
-        // SAFETY: we are the sole writer (state == 1); no reader can observe the
-        // storage until we publish state == 2 with Release ordering.
-        unsafe {
-            (*self.storage.get()).write(init());
-        }
-        self.state.store(2, Ordering::Release);
-        // SAFETY: initialization is complete and published.
-        unsafe { (*self.storage.get()).assume_init_ref() }
-    }
-}
-
-impl<T: Sync> Default for OnceCell<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 // ---------------------------------------------------------------------------
 // No-std slice sorting (`alloc` provides `[T]::sort*` as inherent methods; since
