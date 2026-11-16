@@ -4075,7 +4075,8 @@ impl OpusDecoder {
             return self.decode_lost(None, frame_size, output);
         }
         let channels = self.channels;
-        if output.len() < frame_size * channels {
+        // checked_mul: frame_size is caller-chosen and may be absurd.
+        if frame_size.checked_mul(channels).is_none_or(|n| output.len() < n) {
             return Err("Output buffer too small for packet");
         }
         // Conceal everything but the duration the packet's FEC covers.
@@ -4178,7 +4179,8 @@ impl OpusDecoder {
             }
         };
         let channels = self.channels;
-        if output.len() < total * channels {
+        // checked_mul: frame_size is caller-chosen and may be absurd.
+        if total.checked_mul(channels).is_none_or(|n| output.len() < n) {
             return Err("Output buffer too small for packet");
         }
         output[total * channels..].fill(0.0);
