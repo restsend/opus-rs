@@ -1236,6 +1236,30 @@ unsafe fn comb_filter_const_sse_fma(
     }
 }
 
+/// [`comb_filter`] for the differential fuzz harnesses.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn fuzz_comb_filter(
+    y: &mut [f32],
+    x: &[f32],
+    y_idx: usize,
+    x_idx: usize,
+    t0: usize,
+    t1: usize,
+    n: usize,
+    g0: f32,
+    g1: f32,
+    tapset0: i32,
+    tapset1: i32,
+    window: &[f32],
+    overlap: usize,
+) {
+    comb_filter(
+        y, x, y_idx, x_idx, t0, t1, n, g0, g1, tapset0, tapset1, window, overlap,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn comb_filter(
     y: &mut [f32],

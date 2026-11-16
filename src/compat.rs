@@ -129,6 +129,20 @@ pub fn sort<T: Ord>(slice: &mut [T]) {
 // x86 SIMD feature detection
 // ---------------------------------------------------------------------------
 
+/// Runtime switch for the x86 AVX/FMA kernels, so the `fuzzing` harnesses can
+/// compare them with the scalar paths in one process.
+#[cfg(feature = "fuzzing")]
+pub static SIMD_ENABLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+
+#[inline]
+#[allow(dead_code)]
+fn simd_enabled() -> bool {
+    #[cfg(feature = "fuzzing")]
+    return SIMD_ENABLED.load(Ordering::Relaxed);
+    #[cfg(not(feature = "fuzzing"))]
+    true
+}
+
 /// Whether the `avx` x86 feature is usable.
 ///
 /// * With the `std` feature: OS-backed runtime detection via CPUID.
@@ -136,7 +150,7 @@ pub fn sort<T: Ord>(slice: &mut [T]) {
 ///   with e.g. `RUSTFLAGS="-C target-feature=+avx"` to enable it.
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
 pub fn x86_has_avx() -> bool {
-    std::arch::is_x86_feature_detected!("avx")
+    simd_enabled() && std::arch::is_x86_feature_detected!("avx")
 }
 #[cfg(not(all(feature = "std", target_arch = "x86_64")))]
 #[allow(dead_code)]
@@ -147,7 +161,7 @@ pub fn x86_has_avx() -> bool {
 /// Whether the `avx2` x86 feature is usable. See [`x86_has_avx`].
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
 pub fn x86_has_avx2() -> bool {
-    std::arch::is_x86_feature_detected!("avx2")
+    simd_enabled() && std::arch::is_x86_feature_detected!("avx2")
 }
 #[cfg(not(all(feature = "std", target_arch = "x86_64")))]
 #[allow(dead_code)]
@@ -161,7 +175,9 @@ pub fn x86_has_avx2() -> bool {
 /// with SIGILL on the first `vfmadd`. See [`x86_has_avx`].
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
 pub fn x86_has_avx_fma() -> bool {
-    std::arch::is_x86_feature_detected!("avx") && std::arch::is_x86_feature_detected!("fma")
+    simd_enabled()
+        && std::arch::is_x86_feature_detected!("avx")
+        && std::arch::is_x86_feature_detected!("fma")
 }
 #[cfg(not(all(feature = "std", target_arch = "x86_64")))]
 #[allow(dead_code)]
@@ -174,7 +190,9 @@ pub fn x86_has_avx_fma() -> bool {
 /// FMA. See [`x86_has_avx_fma`].
 #[cfg(all(feature = "std", target_arch = "x86_64"))]
 pub fn x86_has_avx2_fma() -> bool {
-    std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
+    simd_enabled()
+        && std::arch::is_x86_feature_detected!("avx2")
+        && std::arch::is_x86_feature_detected!("fma")
 }
 #[cfg(not(all(feature = "std", target_arch = "x86_64")))]
 #[allow(dead_code)]

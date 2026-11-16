@@ -33,6 +33,8 @@ heap = ["std"]
 #   opus-rs = { version = "...", default-features = false, features = ["libm"] }
 libm = ["dep:libm"]
 portable-atomic = ["dep:portable-atomic"]
+# Exposes internals to the differential fuzz harnesses in `fuzz/`.
+fuzzing = ["std"]
 
 [dependencies]
 libm = { version = "0.2", optional = true, default-features = false }

@@ -26,6 +26,28 @@ pub mod pvq;
 pub mod quant_bands;
 pub mod range_coder;
 pub mod rate;
+
+/// Internals for the differential fuzz harnesses in `fuzz/`. Not a stable API.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing {
+    pub use crate::celt::fuzz_comb_filter as comb_filter;
+    pub use crate::compat::SIMD_ENABLED;
+    use std::cell::RefCell;
+    use std::vec::Vec;
+
+    std::thread_local!(static SILK_INPUT: RefCell<Vec<i16>> = const { RefCell::new(Vec::new()) });
+
+    /// Records the 16-bit API-rate samples handed to SILK this frame.
+    pub(crate) fn record_silk_input(x: &[i16]) {
+        SILK_INPUT.with(|b| b.replace(x.to_vec()));
+    }
+
+    /// The samples SILK received in the last frame that ran SILK.
+    pub fn take_silk_input() -> Vec<i16> {
+        SILK_INPUT.with(|b| b.take())
+    }
+}
 pub mod silk;
 
 pub use silk::{SilkResampler, SilkResamplerDown1_3, SilkResamplerDown1_6};
@@ -2497,6 +2519,8 @@ impl OpusEncoder {
                 silk_max_bits -= silk_max_bits * 5 / (frame_ms + 5);
             }
             let silk_use_cbr = silk_use_cbr as i32;
+            #[cfg(feature = "fuzzing")]
+            fuzzing::record_silk_input(&state_ref(&self.buf_filtered)[..frame_size * self.channels]);
             let ret = if self.channels == 2 {
                 silk_encode_stereo_packet(
                     state_mut(&mut self.silk_enc),
