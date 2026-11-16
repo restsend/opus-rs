@@ -1318,12 +1318,14 @@ fn comb_filter(
     while i < inner_overlap && i < n {
         let x0 = x[x_idx + i - t1 + 2];
         let f = window[i] * window[i];
+        // celt.c:283-289: each gain is scaled by the window before use.
         y[y_idx + i] = x[x_idx + i]
-            + (1.0 - f)
-                * (g00 * x[x_idx + i - t0]
-                    + g01 * (x[x_idx + i - t0 + 1] + x[x_idx + i - t0 - 1])
-                    + g02 * (x[x_idx + i - t0 + 2] + x[x_idx + i - t0 - 2]))
-            + f * (g10 * x2 + g11 * (x1 + x3) + g12 * (x0 + x4));
+            + ((1.0 - f) * g00) * x[x_idx + i - t0]
+            + ((1.0 - f) * g01) * (x[x_idx + i - t0 + 1] + x[x_idx + i - t0 - 1])
+            + ((1.0 - f) * g02) * (x[x_idx + i - t0 + 2] + x[x_idx + i - t0 - 2])
+            + (f * g10) * x2
+            + (f * g11) * (x1 + x3)
+            + (f * g12) * (x0 + x4);
 
         x4 = x3;
         x3 = x2;
@@ -1393,9 +1395,14 @@ fn comb_filter_inplace(
         let r1m1 = buf[idx - t1 - 1];
         let r1p2 = buf[idx - t1 + 2];
         let r1m2 = buf[idx - t1 - 2];
+        // celt.c:283-289: each gain is scaled by the window before use.
         buf[idx] = s
-            + (1.0 - f) * (g00 * r0 + g01 * (r0p1 + r0m1) + g02 * (r0p2 + r0m2))
-            + f * (g10 * r1 + g11 * (r1p1 + r1m1) + g12 * (r1p2 + r1m2));
+            + ((1.0 - f) * g00) * r0
+            + ((1.0 - f) * g01) * (r0p1 + r0m1)
+            + ((1.0 - f) * g02) * (r0p2 + r0m2)
+            + (f * g10) * r1
+            + (f * g11) * (r1p1 + r1m1)
+            + (f * g12) * (r1p2 + r1m2);
         i += 1;
     }
 
