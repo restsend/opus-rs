@@ -345,7 +345,7 @@ fn run(inp: Input) -> Result<(), Finding> {
             fail!(
                 "pcm",
                 sig(
-                    if o_ref[at].abs() > 1.0 && (o_sc[at].abs() - 1.0).abs() < 1e-4 {
+                    if o_ref[at].abs() > 1.0 && o_sc[at].abs() == 1.0 && o_sc[at].signum() == o_ref[at].signum() {
                         "clamp"
                     } else if head {
                         "first-2.5ms"
