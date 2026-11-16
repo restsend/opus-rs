@@ -197,7 +197,6 @@ pub struct OpusEncoder {
     nonfinal_frame: bool,
 
     variable_hp_smth2_q15: i32,
-    hp_mem: FixedVec<i32, OPUS_HP_MEM>,
     /// libopus `width_mem`, the state of `compute_stereo_width`.
     width_mem: StereoWidthState,
     /// libopus `signal_type` (`OPUS_SET_SIGNAL`).
@@ -281,6 +280,9 @@ pub struct OpusEncoder {
     /// C `delay_compensation` (= Fs/250): 4 ms lookahead prefix prepended to
     /// each CELT frame (0 for restricted-latency applications).
     delay_compensation: usize,
+    /// State of the integer high-pass of SILK's input for VoIP at 8 to
+    /// 24 kHz.
+    hp_mem: FixedVec<i32, OPUS_HP_MEM>,
     /// Float filter state for `dc_reject_float` / `hp_cutoff_float`
     /// (C `st->hp_mem[4]`, opus_val32 in the float build).
     hp_mem_float: [f32; 4],
@@ -777,9 +779,20 @@ fn hybrid_hb_gain(celt_rate: i32) -> f32 {
 /// 2297-2312): `pcm` receives the delayed history, then the high-passed
 /// frame, and the delay line moves on by the frame.
 #[allow(clippy::too_many_arguments)]
-fn push_delay_history(
-    delay_buffer: &mut [f32],
-    pcm: &mut [f32],
+/// libopus FLOAT2INT16 (float_cast.h): scale, saturate, round to nearest
+/// with ties to even (`lrintf`). Adding and removing 1.5 * 2^23 rounds an
+/// f32 below 2^22 in magnitude to an integer in the current (nearest-even)
+/// rounding mode.
+fn float2int16(x: f32) -> i16 {
+    let x = (x * 32768.0).clamp(-32768.0, 32767.0);
+    ((x + 12_582_912.0) - 12_582_912.0) as i16
+}
+
+/// The frame part of libopus's pcm_buf (opus_encoder.c:1982-2012): the
+/// input high-passed (VoIP) or DC-rejected, zeroed with the filter state if
+/// it is not finite.
+fn filter_frame(
+    out: &mut [f32],
     hp_mem: &mut [f32; 4],
     input: &[f32],
     voip: bool,
@@ -788,26 +801,27 @@ fn push_delay_history(
     ch: usize,
     fs: i32,
 ) {
-    let ebuf = delay_buffer.len() / ch;
-    let delay = pcm.len() / ch - frame_size;
-    // 1. the delayed history
-    let prefix = delay * ch;
-    pcm[..prefix].copy_from_slice(&delay_buffer[(ebuf - delay) * ch..ebuf * ch]);
-    // 2. the high-passed frame
-    let out = &mut pcm[prefix..];
     if voip {
         hp_cutoff_float(input, cutoff_hz, out, hp_mem, frame_size, ch, fs);
     } else {
         dc_reject_float(input, 3, out, hp_mem, frame_size, ch, fs);
     }
-    // 3. NaN guard, in libopus's shape (`!(sum < 1e9f) || celt_isnan(sum)`).
-    let sum: f32 = pcm[prefix..].iter().map(|v| v * v).sum();
+    // NaN guard, in libopus's shape (`!(sum < 1e9f) || celt_isnan(sum)`).
+    let sum: f32 = out.iter().map(|v| v * v).sum();
     #[allow(clippy::neg_cmp_op_on_partial_ord)]
     if !(sum < 1e9) || sum.is_nan() {
-        pcm[prefix..].fill(0.0);
+        out.fill(0.0);
         *hp_mem = [0.0; 4];
     }
-    // 4. the delay line
+}
+
+/// Puts the delayed history in front of the filtered frame in `pcm` and
+/// moves the delay line on by the frame.
+fn push_delay_history(delay_buffer: &mut [f32], pcm: &mut [f32], frame_size: usize, ch: usize) {
+    let ebuf = delay_buffer.len() / ch;
+    let delay = pcm.len() / ch - frame_size;
+    let prefix = delay * ch;
+    pcm[..prefix].copy_from_slice(&delay_buffer[(ebuf - delay) * ch..ebuf * ch]);
     let n = (frame_size + delay) * ch;
     if ebuf > frame_size + delay {
         let keep = ebuf - frame_size - delay;
@@ -1207,7 +1221,6 @@ impl OpusEncoder {
             nonfinal_frame: false,
             mode: opus_mode,
             variable_hp_smth2_q15,
-            hp_mem: FixedVec::from_value(0, channels * 2),
             width_mem: StereoWidthState::default(),
             signal: Signal::Auto,
             #[cfg(not(feature = "heap"))]
@@ -1268,6 +1281,7 @@ impl OpusEncoder {
             } else {
                 (sampling_rate / 250) as usize
             },
+            hp_mem: FixedVec::from_value(0, channels * 2),
             hp_mem_float: [0.0; 4],
             prev_hb_gain: 1.0,
             silk_opus_can_switch: false,
@@ -2074,50 +2088,81 @@ impl OpusEncoder {
 
         let cutoff_hz = silk_log2lin(silk_rshift(self.variable_hp_smth2_q15, 8));
 
-        // The 16-bit high-passed input of SILK. libopus filters every frame,
-        // so the filter state and the history a SILK prefill codes stay
-        // current through CELT-only frames (opus_encoder.c:2004-2012).
-        if self.application != Application::RestrictedLowDelay {
-            let required_size = frame_size * self.channels;
-            self.buf_filtered.resize(required_size, 0);
-            let voip = self.application == Application::Voip;
-            match input {
-                PcmInput::I16(samples) => {
-                    if voip {
-                        // Native i16 path: feed the integer HP biquad directly,
-                        // skipping the f32 round-trip and its temporary
-                        // conversion buffer (issue #28).
-                        hp_cutoff_i16(
-                            samples,
-                            cutoff_hz,
-                            state_mut(&mut self.buf_filtered),
-                            &mut self.hp_mem,
-                            frame_size,
-                            self.channels,
-                            self.sampling_rate,
-                        );
-                    } else {
-                        let filtered = state_mut(&mut self.buf_filtered);
-                        filtered[..required_size].copy_from_slice(&samples[..required_size]);
-                    }
+        // The frame part of libopus's pcm_buf (opus_encoder.c:1982-2012):
+        // this frame high-passed (VoIP) or DC-rejected, in float. CELT reads
+        // it later behind the delayed history; SILK codes it rounded to 16
+        // bits (enc_API.c, RES2INT16), except for VoIP (below). libopus
+        // filters every frame, so the filter state stays current through
+        // CELT-only frames.
+        //
+        // For the i16 entry point the frame is converted once into a scratch
+        // buffer with the exact per-sample scaling a caller of `encode()`
+        // performs (`s as f32 / 32768.0`), so packets stay byte-for-byte
+        // identical across the two entry points (issue #28).
+        if let PcmInput::I16(samples) = input {
+            let n = frame_size * self.channels;
+            self.buf_f32_frame.resize(n, 0.0);
+            let staging = state_mut(&mut self.buf_f32_frame);
+            for (dst, &src) in staging[..n].iter_mut().zip(samples[..n].iter()) {
+                *dst = src as f32 / 32768.0;
+            }
+        }
+        if self.delay_compensation > 0 {
+            let input_f32: &[f32] = match input {
+                PcmInput::F32(samples) => samples,
+                PcmInput::I16(_) => state_ref(&self.buf_f32_frame),
+            };
+            let ch = self.channels;
+            let prefix = self.delay_compensation * ch;
+            let total = prefix + frame_size * ch;
+            self.buf_celt_pcm.resize(total, 0.0);
+            filter_frame(
+                &mut self.buf_celt_pcm[prefix..total],
+                &mut self.hp_mem_float,
+                input_f32,
+                self.application == Application::Voip,
+                cutoff_hz,
+                frame_size,
+                ch,
+                self.sampling_rate,
+            );
+            // SILK's input. VoIP follows the fixed-point build, whose
+            // `hp_cutoff` is an integer filter on the 16-bit input, so its
+            // SILK layer matches that build byte for byte
+            // (tests/silk_fixed_point_compare.rs, hybrid_cbr_silk_rate.rs).
+            // The other applications follow the float build: SILK reads the
+            // DC-rejected frame of pcm_buf rounded to 16 bits, so an input's
+            // DC offset is gone in SILK packets as it is in CELT ones.
+            let integer_hp = self.application == Application::Voip;
+            self.buf_filtered.resize(frame_size * ch, 0);
+            if integer_hp {
+                let filtered = state_mut(&mut self.buf_filtered);
+                match input {
+                    // Native i16 path: the integer biquad takes it directly
+                    // (issue #28).
+                    PcmInput::I16(samples) => hp_cutoff_i16(
+                        samples,
+                        cutoff_hz,
+                        filtered,
+                        &mut self.hp_mem,
+                        frame_size,
+                        ch,
+                        self.sampling_rate,
+                    ),
+                    PcmInput::F32(samples) => hp_cutoff(
+                        samples,
+                        cutoff_hz,
+                        filtered,
+                        &mut self.hp_mem,
+                        frame_size,
+                        ch,
+                        self.sampling_rate,
+                    ),
                 }
-                PcmInput::F32(samples) => {
-                    if voip {
-                        hp_cutoff(
-                            samples,
-                            cutoff_hz,
-                            state_mut(&mut self.buf_filtered),
-                            &mut self.hp_mem,
-                            frame_size,
-                            self.channels,
-                            self.sampling_rate,
-                        );
-                    } else {
-                        let filtered = state_mut(&mut self.buf_filtered);
-                        for (i, &x) in samples.iter().enumerate().take(required_size) {
-                            filtered[i] = (x * 32768.0).clamp(-32768.0, 32767.0) as i16;
-                        }
-                    }
+            } else if self.application != Application::RestrictedLowDelay {
+                let filtered = state_mut(&mut self.buf_filtered);
+                for (d, &x) in filtered.iter_mut().zip(&self.buf_celt_pcm[prefix..total]) {
+                    *d = float2int16(x);
                 }
             }
         }
@@ -2696,22 +2741,11 @@ impl OpusEncoder {
             }
         }
 
-        // Float view of the current frame for the CELT pipeline. For the
-        // i16 entry point this converts once into a scratch buffer with
-        // the exact per-sample scaling a caller of `encode()` performs
-        // (`s as f32 / 32768.0`), so packets stay byte-for-byte identical
-        // across the two entry points (issue #28).
+        // Float view of the current frame for the CELT pipeline (converted
+        // above for the i16 entry point).
         let input_f32: &[f32] = match input {
             PcmInput::F32(samples) => samples,
-            PcmInput::I16(samples) => {
-                let n = frame_size * ch;
-                self.buf_f32_frame.resize(n, 0.0);
-                let staging = state_mut(&mut self.buf_f32_frame);
-                for (dst, &src) in staging[..n].iter_mut().zip(samples[..n].iter()) {
-                    *dst = src as f32 / 32768.0;
-                }
-                state_ref(&self.buf_f32_frame)
-            }
+            PcmInput::I16(_) => state_ref(&self.buf_f32_frame),
         };
 
         // Build the CELT input exactly like C `opus_encode_frame_native`:
@@ -2724,19 +2758,16 @@ impl OpusEncoder {
         // SILK-only stretch starts from recent history, and the redundancy
         // frames of a SILK-only packet code it.
         if has_delay {
+            // The filtered frame is in place since before SILK ran; the
+            // history and the delay line move on here, after the prefills
+            // read the delay buffer.
             let ebuf = self.encoder_buffer;
             let total = (self.delay_compensation + frame_size) * ch;
-            self.buf_celt_pcm.resize(total, 0.0);
             push_delay_history(
                 &mut self.delay_buffer[..ebuf * ch],
                 &mut self.buf_celt_pcm[..total],
-                &mut self.hp_mem_float,
-                input_f32,
-                self.application == Application::Voip,
-                cutoff_hz,
                 frame_size,
                 ch,
-                self.sampling_rate,
             );
             // Fade after saving unscaled history, so SILK is unaffected.
             if previous_hb_gain < 1.0 || hb_gain < 1.0 {
