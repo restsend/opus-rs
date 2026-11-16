@@ -42,6 +42,21 @@ the first symbol that differs, for example `celt_decoder.c:1426` (a dynalloc
 boost) or `length` (same symbols, different size). Findings are grouped by
 that site.
 
+`opusref/examples/encdiff.rs` prints that first differing symbol per frame
+for one CELT-only configuration. To find the computation behind it, both
+encoders dump intermediate values (pre-emphasised input, MDCT, band
+energies, allocation, ...) under `OFZ_DUMP=1`: opus-rs through `dumpf!`/
+`dumpi!` with the `fuzzing` feature, the reference through a copy of
+libopus instrumented by `opusref/dump/instrument.py`:
+
+```sh
+opusref/dump/instrument.py ../opus-1.6.1 /tmp/ref-dump
+cd opusref && OPUSREF_SRC=/tmp/ref-dump CARGO_TARGET_DIR=<separate dir> \
+  cargo build --release --example encdiff
+OFZ_DUMP=1 <dir>/release/examples/encdiff 1 20 64 0 voice 3 2>dump.txt
+dump/compare.py dump.txt 0   # first frame, value by value
+```
+
 ### aarch64
 
 The NEON kernels run under qemu-user:

@@ -34,3 +34,20 @@ opus_int32 ref_silk_sqrt_approx(opus_int32 a) { return silk_SQRT_APPROX(a); }
 opus_int32 ref_silk_rand(opus_int32 a) { return silk_RAND(a); }
 
 const CELTMode *ref_celt_mode48(void) { return opus_custom_mode_create(48000, 960, NULL); }
+
+/* The static mode's MDCT and FFT, for kernel comparisons. */
+#include "mdct.h"
+#include "kiss_fft.h"
+void ref_mdct_forward(float *in, float *out, int shift, int stride) {
+  const CELTMode *m = ref_celt_mode48();
+  clt_mdct_forward_c(&m->mdct, in, out, m->window, m->overlap, shift, stride, 0);
+}
+void ref_mdct_backward(float *in, float *out, int shift, int stride) {
+  const CELTMode *m = ref_celt_mode48();
+  clt_mdct_backward_c(&m->mdct, in, out, m->window, m->overlap, shift, stride, 0);
+}
+void ref_fft_impl(float *x, int shift) {
+  opus_fft_impl(ref_celt_mode48()->mdct.kfft[shift], (kiss_fft_cpx *)x);
+}
+const float *ref_mdct_trig(void) { return ref_celt_mode48()->mdct.trig; }
+const float *ref_window(void) { return ref_celt_mode48()->window; }

@@ -1980,6 +1980,12 @@ impl CeltEncoder {
             lm = 0;
         }
 
+        dumpf!(
+            "pcm",
+            &(0..api_frame_size * channels)
+                .map(|i| pcm[(i % channels) * api_frame_size + i / channels])
+                .collect::<Vec<f32>>()
+        );
         let syn_mem_size = 2048 + overlap;
         for c in 0..channels {
             let channel_offset = c * syn_mem_size;
@@ -2049,6 +2055,9 @@ impl CeltEncoder {
 
         // Tone detection (C 2022): use channel-contiguous in_buf with N+overlap, float path
         let (tone_freq, mut toneishness) = tone_detect(&*in_buf, channels, buf_stride, mode.fs);
+        dumpf!("pre", in_buf);
+        dumpf!("tone_freq", &[tone_freq]);
+        dumpf!("toneishness", &[toneishness]);
         let mut tf_estimate = 0.0f32;
         let mut tf_chan = 0;
         let mut weak_transient = false;
@@ -2070,6 +2079,9 @@ impl CeltEncoder {
         } else {
             false
         };
+        dumpi!("isTransient", &[is_transient as i32]);
+        dumpf!("tf_estimate", &[tf_estimate]);
+        dumpi!("tf_chan", &[tf_chan as i32]);
         // Put the prefiltered overlap back for the prefilter and the MDCT
         // (C run_prefilter: `OPUS_COPY(in, st->in_mem, overlap)`).
         let in_mem_start = syn_mem_size - frame_size - overlap;
@@ -2206,6 +2218,10 @@ impl CeltEncoder {
             self.complexity,
         );
 
+        dumpi!("pf_on", &[pf_on as i32]);
+        dumpi!("pitch_index", &[pitch_index as i32]);
+        dumpf!("gain1", &[gain1]);
+        dumpf!("inpf", in_buf);
         // A change of pitch (celt_encoder.c:2042-2044), which the VBR target
         // pays for in tonal frames.
         let pitch_change = (gain1 > 0.4 || self.prefilter_gain > 0.4)
@@ -2344,6 +2360,10 @@ impl CeltEncoder {
             crate::bands::amp2log2(mode, start_band, end, band_e, band_log_e, channels);
         }
 
+        dumpf!("freq", freq);
+        dumpf!("bandE", band_e);
+        dumpf!("bandLogE", band_log_e);
+        dumpf!("X", &x[..frame_size * channels]);
         // Temporal VBR (celt_encoder.c:2187-2203): how far this frame's
         // spectral level is above its running average.
         let temporal_vbr = {
@@ -2363,6 +2383,7 @@ impl CeltEncoder {
             temporal_vbr
         };
 
+        dumpf!("bandLogE_q", band_log_e);
         // C uses st->force_intra (CTL flag, 0 by default) instead of the old
         // intra_ener heuristic, so no intra forcing happens here.
         quant_coarse_energy_advanced(
@@ -2385,6 +2406,8 @@ impl CeltEncoder {
             false,
         );
         self.w_tf_res[..nb_ebands].fill(0);
+        dumpf!("error", error);
+        dumpf!("oldBandE", &self.old_band_e[..nb_ebands * channels]);
         let tf_res = &mut self.w_tf_res[..nb_ebands];
         let lambda = 80.max(20480 / effective_bytes + 2) as i32;
 
@@ -2435,6 +2458,9 @@ impl CeltEncoder {
             &mut spread_weight,
         );
 
+        dumpi!("offsets", &offsets[..end]);
+        dumpi!("importance", &importance[..end]);
+        dumpi!("spread_weight", &spread_weight[..end]);
         // TF resolution (celt_encoder.c:2242-2277): analysed only for CELT
         // frames with enough bytes; low-rate hybrid frames keep 5 ms
         // resolution, weak transients use the long window. Strongly tonal
@@ -2467,6 +2493,8 @@ impl CeltEncoder {
             tf_res[..end].fill(is_transient as i32);
             0
         };
+        dumpi!("tf_res", &tf_res[..end]);
+        dumpi!("tf_select", &[tf_select]);
         #[cfg(test)]
         let tf_raw = {
             let mut raw = [0i32; MAX_NB_EBANDS];
@@ -2548,6 +2576,7 @@ impl CeltEncoder {
             self.spread_decision = SPREAD_NORMAL;
         }
 
+        dumpi!("spread", &[self.spread_decision]);
         let mut dynalloc_logp = 6i32;
         let total_bits_bitres = total_bits << BITRES;
         let mut total_boost = 0i32;
@@ -2609,6 +2638,9 @@ impl CeltEncoder {
             }
             rc.encode_icdf(alloc_trim, &TRIM_ICDF, 7);
         }
+        dumpi!("alloc_trim", &[alloc_trim]);
+        dumpi!("boosts", &offsets[..end]);
+        dumpi!("intensity", &[self.intensity]);
         #[cfg(test)]
         {
             self.decisions = FrameDecisions {
@@ -2739,6 +2771,7 @@ impl CeltEncoder {
             rc.shrink(nb_compressed_bytes as u32);
         }
 
+        dumpi!("nbCompressedBytes", &[nb_compressed_bytes as i32]);
         let mut intensity = self.intensity;
         self.w_pulses[..nb_ebands].fill(0);
         let pulses = &mut self.w_pulses[..nb_ebands];
@@ -2816,6 +2849,11 @@ impl CeltEncoder {
             coded_bands
         };
 
+        dumpi!("pulses", &pulses[..end]);
+        dumpi!("fine_quant", &ebits[..end]);
+        dumpi!("fine_priority", &fine_priority[..end]);
+        dumpi!("codedBands", &[coded_bands]);
+        dumpi!("balance", &[balance]);
         quant_fine_energy(
             mode,
             start_band,
@@ -2862,6 +2900,7 @@ impl CeltEncoder {
             &mut 0u32,
         );
 
+        dumpf!("Xq", &x[..frame_size * channels]);
         if anti_collapse_rsv > 0 {
             let anti_collapse_on = if self.consec_transient < 2 {
                 1u32
@@ -2871,6 +2910,8 @@ impl CeltEncoder {
             rc.enc_bits(anti_collapse_on, 1);
         }
 
+        dumpf!("error_fine", error);
+        dumpi!("bits_left", &[total_bits - rc.tell()]);
         quant_energy_finalise(
             mode,
             start_band,

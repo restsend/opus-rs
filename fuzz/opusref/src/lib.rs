@@ -188,3 +188,17 @@ pub const GET_LOOKAHEAD: c_int = 4027;
 pub const GET_FINAL_RANGE: c_int = 4031;
 pub const SET_PHASE_INVERSION_DISABLED: c_int = 4046;
 pub const RESET_STATE: c_int = 4028;
+
+unsafe extern "C" {
+    /// `clt_mdct_forward_c`/`clt_mdct_backward_c` of the static 48 kHz mode,
+    /// with its window and overlap.
+    pub fn ref_mdct_forward(input: *mut f32, out: *mut f32, shift: c_int, stride: c_int);
+    pub fn ref_mdct_backward(input: *mut f32, out: *mut f32, shift: c_int, stride: c_int);
+    /// `opus_fft_impl` of the static mode's FFT at `shift` on interleaved
+    /// (re, im) pairs, already in bit-reversed order.
+    pub fn ref_fft_impl(x: *mut f32, shift: c_int);
+    /// The static mode's MDCT twiddles (all shifts, 1800 values) and its
+    /// 120-sample window.
+    pub fn ref_mdct_trig() -> *const f32;
+    pub fn ref_window() -> *const f32;
+}

@@ -3,6 +3,28 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::needless_range_loop)]
 
+/// Intermediate-value dumps for the differential tools (`OFZ_DUMP`).
+#[cfg(feature = "fuzzing")]
+macro_rules! dumpf {
+    ($t:expr, $x:expr) => {
+        crate::fuzzing::dumpf($t, $x)
+    };
+}
+#[cfg(not(feature = "fuzzing"))]
+macro_rules! dumpf {
+    ($t:expr, $x:expr) => {};
+}
+#[cfg(feature = "fuzzing")]
+macro_rules! dumpi {
+    ($t:expr, $x:expr) => {
+        crate::fuzzing::dumpi($t, $x)
+    };
+}
+#[cfg(not(feature = "fuzzing"))]
+macro_rules! dumpi {
+    ($t:expr, $x:expr) => {};
+}
+
 mod compat;
 mod fixedvec;
 mod mlp;
@@ -48,6 +70,27 @@ pub mod fuzzing {
     /// The samples SILK received in the last frame that ran SILK.
     pub fn take_silk_input() -> Vec<i16> {
         SILK_INPUT.with(|b| b.take())
+    }
+
+    fn dump_on() -> bool {
+        std::thread_local!(static ON: bool = std::env::var_os("OFZ_DUMP").is_some());
+        ON.with(|v| *v)
+    }
+
+    /// With `OFZ_DUMP` set, prints an intermediate array to stderr as
+    /// `R <tag> f <n> <hex bits>...`; the reference prints its dumps with `D`.
+    pub(crate) fn dumpf(tag: &str, x: &[f32]) {
+        if dump_on() {
+            let v: Vec<String> = x.iter().map(|v| format!("{:08x}", v.to_bits())).collect();
+            std::eprintln!("R {tag} f {} {}", x.len(), v.join(" "));
+        }
+    }
+
+    pub(crate) fn dumpi(tag: &str, x: &[i32]) {
+        if dump_on() {
+            let v: Vec<String> = x.iter().map(|v| v.to_string()).collect();
+            std::eprintln!("R {tag} i {} {}", x.len(), v.join(" "));
+        }
     }
 }
 pub mod silk;
