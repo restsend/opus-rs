@@ -24,7 +24,7 @@ macro_rules! tell_frac_inline {
         let r = $rc.rng >> (l - 16);
         let b = (r >> 12).wrapping_sub(8);
 
-        let correction = unsafe { *CORRECTION.get_unchecked(b as usize) };
+        let correction = CORRECTION[b as usize];
         let b = b + (r > correction) as u32;
         nbits - (l << 3) - b as i32
     }};
@@ -227,13 +227,7 @@ impl RangeCoder {
             let write_count = full_bytes.min(available);
             if write_count > 0 {
                 let start = (self.storage - self.end_offs - write_count) as usize;
-                unsafe {
-                    core::ptr::write_bytes(
-                        self.buf.as_mut_ptr().add(start),
-                        0,
-                        write_count as usize,
-                    );
-                }
+                self.buf[start..start + write_count as usize].fill(0);
                 self.end_offs += write_count;
             }
             if write_count < full_bytes {
@@ -315,9 +309,7 @@ impl RangeCoder {
     #[inline(always)]
     fn write_byte(&mut self, value: u8) {
         if self.offs + self.end_offs < self.storage {
-            unsafe {
-                *self.buf.get_unchecked_mut(self.offs as usize) = value;
-            }
+            self.buf[self.offs as usize] = value;
             self.offs += 1;
         } else {
             self.error = 1;
@@ -380,10 +372,7 @@ impl RangeCoder {
                 let carry = c >> EC_SYM_BITS;
                 if self.rem >= 0 {
                     if self.offs + self.end_offs < self.storage {
-                        unsafe {
-                            *self.buf.get_unchecked_mut(self.offs as usize) =
-                                (self.rem + carry) as u8;
-                        }
+                        self.buf[self.offs as usize] = (self.rem + carry) as u8;
                         self.offs += 1;
                     } else {
                         self.error = 1;
@@ -394,9 +383,7 @@ impl RangeCoder {
                     let ext = self.ext as usize;
                     for _j in 0..ext {
                         if self.offs + self.end_offs < self.storage {
-                            unsafe {
-                                *self.buf.get_unchecked_mut(self.offs as usize) = sym as u8;
-                            }
+                            self.buf[self.offs as usize] = sym as u8;
                             self.offs += 1;
                         } else {
                             self.error = 1;
@@ -431,14 +418,14 @@ impl RangeCoder {
     pub fn encode_icdf(&mut self, s: i32, icdf: &[u8], ftb: u32) {
         let r = self.rng >> ftb;
         if s > 0 {
-            let val = unsafe { *icdf.get_unchecked((s - 1) as usize) as u32 };
+            let val = icdf[(s - 1) as usize] as u32;
             self.val = self
                 .val
                 .wrapping_add(self.rng.wrapping_sub(r.wrapping_mul(val)));
-            let lower = unsafe { *icdf.get_unchecked(s as usize) };
+            let lower = icdf[s as usize];
             self.rng = r.wrapping_mul(val.wrapping_sub(lower as u32));
         } else {
-            let val = unsafe { *icdf.get_unchecked(s as usize) as u32 };
+            let val = icdf[s as usize] as u32;
             self.rng = self.rng.wrapping_sub(r.wrapping_mul(val));
         }
         self.normalize_encoder();
@@ -581,9 +568,7 @@ impl RangeCoder {
         if self.offs + self.end_offs < self.storage {
             self.end_offs += 1;
             let idx = (self.storage - self.end_offs) as usize;
-            unsafe {
-                *self.buf.get_unchecked_mut(idx) = value;
-            }
+            self.buf[idx] = value;
         } else {
             self.error = 1;
         }
