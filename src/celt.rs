@@ -377,14 +377,11 @@ fn transient_analysis(
     is_transient
 }
 
-fn l1_metric(tmp: &[f32], n: usize, lm: i32, bias: f32) -> f32 {
-    let l1 = sum_abs(&tmp[..n]);
-    l1 + (lm as f32) * bias * l1
-}
-
 const MAX_NB_EBANDS: usize = 21;
 
 const MAX_TF_TMP: usize = 176;
+/// Most haar1 steps tf_analysis tries (lm + 1 with lm <= 3).
+const MAX_TF_LEVELS: usize = 4;
 
 #[allow(clippy::too_many_arguments)]
 fn tf_analysis(
@@ -402,37 +399,54 @@ fn tf_analysis(
 ) -> i32 {
     debug_assert!(len <= MAX_NB_EBANDS);
     let mut metric = [0i32; MAX_NB_EBANDS];
-    let mut tmp = [0.0f32; MAX_TF_TMP];
-    let mut tmp_1 = [0.0f32; MAX_TF_TMP];
-
     let bias = 0.04 * (-0.25f32).max(0.5 - tf_estimate);
+    // The haar1 levels of one band (see below).
+    let mut levels = [[0.0f32; MAX_TF_TMP]; 2 + MAX_TF_LEVELS];
 
     for (i, metric_i) in metric[..len].iter_mut().enumerate() {
         let n = ((mode.e_bands[i + 1] - mode.e_bands[i]) as usize) << lm;
         let narrow = (mode.e_bands[i + 1] - mode.e_bands[i]) == 1;
         let offset = tf_chan * n0 + ((mode.e_bands[i] as usize) << lm);
-        tmp[..n].copy_from_slice(&x[offset..offset + n]);
+        // The levels depend on each other only through haar1, so all of them
+        // are transformed first and their (sequential) abs sums run side by
+        // side; the decisions then follow in libopus's order.
+        // levels[0]: the band; [1]: haar1 at the shortest blocks (transient,
+        // wide bands); [2 + k]: after the k+1 progressive haar1 steps.
+        levels[0][..n].copy_from_slice(&x[offset..offset + n]);
+        let try_short = is_transient && !narrow;
+        if try_short {
+            levels[1][..n].copy_from_slice(&x[offset..offset + n]);
+            haar1(&mut levels[1][..n], n >> lm, 1 << lm);
+        }
+        let steps = (lm + if is_transient || narrow { 0 } else { 1 }) as usize;
+        for k in 0..steps {
+            let (done, next) = levels.split_at_mut(2 + k);
+            let prev = if k == 0 { &done[0] } else { &done[1 + k] };
+            next[0][..n].copy_from_slice(&prev[..n]);
+            haar1(&mut next[0][..n], n >> k, 1 << k);
+        }
+        let mut sums = [0.0f32; 2 + MAX_TF_LEVELS];
+        for j in 0..n {
+            for (sum, level) in sums.iter_mut().zip(&levels) {
+                *sum += level[j].abs();
+            }
+        }
+        let l1 = |sum: f32, lm: i32| sum + (lm as f32) * bias * sum;
 
-        let mut l1 = l1_metric(&tmp[..n], n, if is_transient { lm } else { 0 }, bias);
-        let mut best_l1 = l1;
+        let mut best_l1 = l1(sums[0], if is_transient { lm } else { 0 });
         let mut best_level = 0;
 
-        if is_transient && !narrow {
-            tmp_1[..n].copy_from_slice(&tmp[..n]);
-            haar1(&mut tmp_1[..n], n >> lm, 1 << lm);
-            l1 = l1_metric(&tmp_1[..n], n, lm + 1, bias);
+        if try_short {
+            let l1 = l1(sums[1], lm + 1);
             if l1 < best_l1 {
                 best_l1 = l1;
                 best_level = -1;
             }
         }
 
-        for k in 0..(lm + if is_transient || narrow { 0 } else { 1 }) {
+        for k in 0..steps as i32 {
             let b = if is_transient { lm - k - 1 } else { k + 1 };
-
-            haar1(&mut tmp[..n], n >> k, 1 << k);
-            l1 = l1_metric(&tmp[..n], n, b, bias);
-
+            let l1 = l1(sums[2 + k as usize], b);
             if l1 < best_l1 {
                 best_l1 = l1;
                 best_level = k + 1;
