@@ -4298,10 +4298,19 @@ impl OpusDecoder {
         output[total * channels..].fill(0.0);
 
         let mut pos = 0usize;
+        // After a SILK-to-CELT redundant frame the CELT state carries on, so
+        // the loss is concealed as CELT; afterwards the concealed mode is the
+        // previous one and no redundancy is pending (opus_decode_frame 331,
+        // 703).
+        let mode = if self.prev_redundancy && self.prev_mode.is_some() {
+            Some(OpusMode::CeltOnly)
+        } else {
+            self.prev_mode
+        };
         while pos < total {
             let remaining = total - pos;
             let dst = &mut output[pos * channels..total * channels];
-            let produced = match self.prev_mode {
+            let produced = match mode {
                 None => {
                     dst.fill(0.0);
                     remaining
@@ -4341,12 +4350,21 @@ impl OpusDecoder {
                         rate,
                         n,
                     )?;
+                    // A partial Hybrid frame plays 10, 5 or 2.5 ms, lengths
+                    // CELT supports; SILK-only plays what is left
+                    // (opus_decode_frame's audiosize).
+                    let take = if hybrid {
+                        [f20, f10, f5, f2_5].into_iter().find(|&c| c <= remaining).unwrap_or(f2_5)
+                    } else {
+                        n.min(remaining)
+                    };
                     if hybrid {
-                        self.conceal_celt(n, 17)?;
+                        // CELT conceals only what is played
+                        // (`celt_frame_size = IMIN(F20, frame_size)`).
+                        self.conceal_celt(take, 17)?;
                     } else {
                         self.w_celt_out[..n * channels].fill(0.0);
                     }
-                    let take = n.min(remaining);
                     for (i, d) in dst[..take * channels].iter_mut().enumerate() {
                         *d = self.w_silk_out[i] + self.w_celt_out[i];
                     }
@@ -4357,6 +4375,8 @@ impl OpusDecoder {
         }
 
         self.save_pcm_tail(output, total);
+        self.prev_mode = mode;
+        self.prev_redundancy = false;
         self.range_final = 0;
         Ok(total)
     }
