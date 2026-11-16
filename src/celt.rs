@@ -843,10 +843,12 @@ fn stereo_analysis(m: &CeltMode, x: &[f32], lm: i32, n0: usize) -> bool {
 const COMBFILTER_MINPERIOD: usize = 15;
 const COMBFILTER_MAXPERIOD: usize = 1024;
 
+// The digits of celt.c:246-249.
+#[allow(clippy::excessive_precision)]
 const PREFILTER_GAINS: [[f32; 3]; 3] = [
-    [0.306_640_6, 0.217_041, 0.129_638_7],
-    [0.463_867_2, 0.268_066_4, 0.0],
-    [0.799_804_7, 0.100_097_7, 0.0],
+    [0.306_640_625, 0.217_041_015_6, 0.129_638_671_9],
+    [0.463_867_187_5, 0.268_066_406_2, 0.0],
+    [0.799_804_687_5, 0.100_097_656_2, 0.0],
 ];
 
 #[allow(clippy::too_many_arguments)]
