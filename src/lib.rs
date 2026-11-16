@@ -3301,6 +3301,9 @@ pub struct OpusDecoder {
     channels: usize,
 
     prev_mode: Option<OpusMode>,
+    /// The mode of the last accepted packet, ToC-only packets included
+    /// (libopus `st->mode`); decode_fec checks it.
+    packet_mode: Option<OpusMode>,
 
     /// Whether the previous frame had redundancy (mode transition marker).
     prev_redundancy: bool,
@@ -3392,6 +3395,7 @@ impl OpusDecoder {
             (&raw mut (*this).sampling_rate).write(sampling_rate);
             (&raw mut (*this).channels).write(channels);
             (&raw mut (*this).prev_mode).write(None);
+            (&raw mut (*this).packet_mode).write(None);
             (&raw mut (*this).prev_redundancy).write(false);
             (&raw mut (*this).frame_size).write(0);
             (&raw mut (*this).bandwidth).write(Bandwidth::Auto);
@@ -3458,7 +3462,12 @@ impl OpusDecoder {
         // A packet of 0 or 1 bytes (ToC only) is a lost/DTX frame: conceal it
         // in the previous mode without touching the mode state (issue #15).
         if input.len() <= 1 {
-            return self.decode_lost(input.first().copied(), frame_size, output);
+            let r = self.decode_lost(input.first().copied(), frame_size, output);
+            // A ToC-only packet still sets the mode (opus_decode_native).
+            if let (Ok(_), Some(&toc)) = (&r, input.first()) {
+                self.packet_mode = Some(mode_from_toc(toc));
+            }
+            return r;
         }
 
         let toc = input[0];
@@ -4029,6 +4038,7 @@ impl OpusDecoder {
 
         self.save_pcm_tail(output, decoded_total);
         self.prev_mode = Some(mode);
+        self.packet_mode = Some(mode);
         self.prev_redundancy = has_redundancy;
         Ok(decoded_total)
     }
@@ -4055,20 +4065,31 @@ impl OpusDecoder {
         frame_size: usize,
         output: &mut [f32],
     ) -> Result<usize, &'static str> {
-        if input.len() <= 1 {
+        if input.is_empty() {
             return self.decode_lost(None, frame_size, output);
         }
         let toc = input[0];
         let mode = mode_from_toc(toc);
         let packet_frame = frame_samples_from_toc(toc, self.sampling_rate)
             .ok_or("Invalid TOC for sampling rate")?;
-        let payloads = frame_payloads(input)?;
+        // A ToC-only packet of code 0 or 1 holds empty frames; codes 2 and 3
+        // need more bytes, and libopus rejects them.
+        let payloads = match (input.len(), toc & 0x03) {
+            (1, 0 | 1) => FixedVec::from_slice(&[&input[1..]]),
+            (1, _) => return Err("ToC-only packet of code 2 or 3"),
+            _ => frame_payloads(input)?,
+        };
         // No FEC can be present: conceal it all (opus_decode_native).
         if frame_size < packet_frame
-            || payloads[0].len() <= 1
             || mode == OpusMode::CeltOnly
-            || self.prev_mode == Some(OpusMode::CeltOnly)
+            || self.packet_mode == Some(OpusMode::CeltOnly)
         {
+            return self.decode_lost(None, frame_size, output);
+        }
+        // An empty first frame is concealed too, but libopus takes the
+        // packet's mode first, which the next decode_fec checks.
+        if payloads[0].len() <= 1 {
+            self.packet_mode = Some(mode);
             return self.decode_lost(None, frame_size, output);
         }
         let channels = self.channels;
@@ -4136,6 +4157,7 @@ impl OpusDecoder {
 
         self.save_pcm_tail(output, frame_size);
         self.prev_mode = Some(mode);
+        self.packet_mode = Some(mode);
         self.prev_redundancy = false;
         Ok(frame_size)
     }
