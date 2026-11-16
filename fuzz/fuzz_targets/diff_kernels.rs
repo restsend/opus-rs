@@ -297,7 +297,8 @@ fn run(which: u8, u: &mut Unstructured) -> R {
                 );
                 y
             });
-            if let Err(f) = exact("comb_filter/scalar", &sc[hist..], &cy[hist..]) {
+            if let Err(mut f) = exact("comb_filter/scalar", &sc[hist..], &cy[hist..]) {
+                f.msg += &format!(" (t0 {t0} t1 {t1} n {n} g0 {g0} g1 {g1} taps {tap0}/{tap1} overlap {overlap})");
                 return Ok(Err(f));
             }
             if let Err(f) = tol("comb_filter/simd", &si[hist..], &cy[hist..]) {
@@ -392,8 +393,9 @@ fn run(which: u8, u: &mut Unstructured) -> R {
                         m::silk_sqrt_approx(a),
                         c::ref_silk_sqrt_approx(a),
                     ),
-                    18 if b != 0 && b != i32::MIN => {
-                        let q = cc.rem_euclid(32);
+                    18 if b != 0 && b != i32::MIN && a != i32::MIN => {
+                        // Shifts of 32 and more are undefined in C (silk_LSHIFT_SAT32).
+                        let q = cc.rem_euclid(29);
                         (
                             "silk_div32_varq",
                             m::silk_div32_varq(a, b, q),
