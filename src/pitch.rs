@@ -45,11 +45,18 @@ pub fn pitch_xcorr(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitc
 
 /// `out[i]` = the inner product of `x` and `y[i..i + x.len()]`, each summed
 /// in order as [`inner_prod`] does. The kernels give each lag a vector lane
-/// (libopus `xcorr_kernel_c`, with up to 8 lags).
+/// (libopus `xcorr_kernel_c`, with up to 32 lags).
 fn xcorr_lags(x: &[f32], y: &[f32], out: &mut [f32]) {
     let len = x.len();
     let mut i = 0;
-    let mut eights = out.chunks_exact_mut(8);
+    // 32 lags keep eight SSE accumulators busy, so the in-order sums of the
+    // lags overlap instead of waiting on each other.
+    let mut many = out.chunks_exact_mut(32);
+    for o in &mut many {
+        xcorr_kernel::<32>(x, &y[i..i + len + 31], o);
+        i += 32;
+    }
+    let mut eights = many.into_remainder().chunks_exact_mut(8);
     for o in &mut eights {
         xcorr_kernel::<8>(x, &y[i..i + len + 7], o);
         i += 8;
