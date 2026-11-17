@@ -16,7 +16,7 @@ exclude = [
 default = ["std", "heap"]
 # `std` links the standard library for float math; without it the crate is
 # `#![no_std]` and needs the `libm` feature.
-std = []
+std = ["fearless_simd/std"]
 # With `heap` (default), the large codec state (`OpusEncoder`/`OpusDecoder`
 # working buffers) lives on the heap behind `Box`, so the public structs are tiny
 # (~1 KB) and constructing them uses almost no stack. This requires `std`.
@@ -31,7 +31,7 @@ heap = ["std"]
 # pure-Rust port of musl libm (`core` does not provide transcendentals). Not
 # needed when `std` is enabled. Enable with:
 #   opus-rs = { version = "...", default-features = false, features = ["libm"] }
-libm = ["dep:libm"]
+libm = ["dep:libm", "fearless_simd/libm"]
 # No effect: the mode table is a compile-time `static`, so the crate needs no
 # atomics. Kept so that existing dependents still build.
 portable-atomic = []
@@ -62,6 +62,11 @@ osce = ["deep-plc"]
 
 [dependencies]
 libm = { version = "0.2", optional = true, default-features = false }
+
+# Runtime-dispatched SIMD through safe kernels (SILK's delayed-decision
+# quantizer); the crate itself stays `#![forbid(unsafe_code)]`.
+[target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))'.dependencies]
+fearless_simd = { version = "1.2", default-features = false }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }

@@ -5,15 +5,39 @@ use crate::silk::sigproc_fix::*;
 use crate::silk::structs::*;
 use crate::silk::tables::*;
 
+/// One value per delayed-decision state.
+pub(crate) type Lanes = [i32; NSQ_MAX_STATES_OPERATING];
+
+/// The AVX2 token, when the CPU has AVX2 (fearless_simd's runtime
+/// detection, which needs `std`).
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+type Avx2 = Option<fearless_simd::Avx2>;
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+type Avx2 = Option<core::convert::Infallible>;
+
+fn detect_avx2() -> Avx2 {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    return fearless_simd::Level::try_detect().and_then(|level| level.as_avx2());
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    None
+}
+
+/// The short-term prediction and noise-shaping filter states of all
+/// delayed-decision states, a lane per state (C `NSQ_del_dec_struct`
+/// `sLPC_Q14` and `sAR2_Q14`).
+#[derive(Copy, Clone)]
+pub struct NSQDelDecFilters {
+    pub s_lpc_q14: [Lanes; MAX_SUB_FRAME_LENGTH + NSQ_LPC_BUF_LENGTH],
+    pub s_ar2_q14: [Lanes; MAX_SHAPE_LPC_ORDER],
+}
+
 #[derive(Copy, Clone)]
 pub struct NSQDelDecStruct {
-    pub s_lpc_q14: [i32; MAX_SUB_FRAME_LENGTH + NSQ_LPC_BUF_LENGTH],
     pub rand_state: [i32; DECISION_DELAY],
     pub q_q10: [i32; DECISION_DELAY],
     pub xq_q14: [i32; DECISION_DELAY],
     pub pred_q15: [i32; DECISION_DELAY],
     pub shape_q14: [i32; DECISION_DELAY],
-    pub s_ar2_q14: [i32; MAX_SHAPE_LPC_ORDER],
     pub lf_ar_q14: i32,
     pub diff_q14: i32,
     pub seed: i32,
@@ -24,13 +48,11 @@ pub struct NSQDelDecStruct {
 impl Default for NSQDelDecStruct {
     fn default() -> Self {
         Self {
-            s_lpc_q14: [0; MAX_SUB_FRAME_LENGTH + NSQ_LPC_BUF_LENGTH],
             rand_state: [0; DECISION_DELAY],
             q_q10: [0; DECISION_DELAY],
             xq_q14: [0; DECISION_DELAY],
             pred_q15: [0; DECISION_DELAY],
             shape_q14: [0; DECISION_DELAY],
-            s_ar2_q14: [0; MAX_SHAPE_LPC_ORDER],
             lf_ar_q14: 0,
             diff_q14: 0,
             seed: 0,
@@ -58,6 +80,7 @@ fn silk_nsq_del_dec_scale_states(
     ps_enc_c: &SilkEncoderStateCommon,
     nsq: &mut SilkNSQState,
     ps_del_dec: &mut [NSQDelDecStruct],
+    filters: &mut NSQDelDecFilters,
     x16: &[i16],
     x_sc_q10: &mut [i32],
     s_ltp: &[i16],
@@ -111,11 +134,9 @@ fn silk_nsq_del_dec_scale_states(
             let ps_dd = &mut ps_del_dec[k];
             ps_dd.lf_ar_q14 = silk_smulww(gain_adj_q16, ps_dd.lf_ar_q14);
             ps_dd.diff_q14 = silk_smulww(gain_adj_q16, ps_dd.diff_q14);
-            for i in 0..NSQ_LPC_BUF_LENGTH {
-                ps_dd.s_lpc_q14[i] = silk_smulww(gain_adj_q16, ps_dd.s_lpc_q14[i]);
-            }
-            for i in 0..MAX_SHAPE_LPC_ORDER {
-                ps_dd.s_ar2_q14[i] = silk_smulww(gain_adj_q16, ps_dd.s_ar2_q14[i]);
+            let lpc = filters.s_lpc_q14[..NSQ_LPC_BUF_LENGTH].iter_mut();
+            for v in lpc.chain(filters.s_ar2_q14.iter_mut()) {
+                v[k] = silk_smulww(gain_adj_q16, v[k]);
             }
             for i in 0..DECISION_DELAY {
                 ps_dd.pred_q15[i] = silk_smulww(gain_adj_q16, ps_dd.pred_q15[i]);
@@ -126,23 +147,72 @@ fn silk_nsq_del_dec_scale_states(
     }
 }
 
-/// The short-term prediction of `buf[NSQ_LPC_BUF_LENGTH - 1]` from the
-/// `order` samples ending there (C `silk_noise_shape_quantizer_short_prediction`).
+/// The short-term prediction (C `silk_noise_shape_quantizer_short_prediction`,
+/// shifted to Q14) of the sample after `s_lpc_q14` and the AR noise-shaping
+/// feedback of the first `N` states, advancing `s_ar2_q14` (warped, of even
+/// order `s_ar2_q14.len()`) by one sample.
+#[allow(clippy::too_many_arguments)]
 #[inline(always)]
-fn silk_noise_shape_quantizer_short_prediction(
-    buf: &[i32; NSQ_LPC_BUF_LENGTH],
+fn short_prediction_and_shaping<const N: usize>(
+    s_lpc_q14: &[Lanes; NSQ_LPC_BUF_LENGTH],
     a_q12: &[i16],
-    order: usize,
-) -> i32 {
-    let mut out = silk_rshift(order as i32, 1);
-    for (&s, &a) in buf[NSQ_LPC_BUF_LENGTH - order..]
-        .iter()
-        .rev()
-        .zip(&a_q12[..order])
-    {
-        out = silk_smlawb(out, s, a as i32);
+    predict_order: usize,
+    s_ar2: &mut [Lanes],
+    ar_shp_q13: &[i16],
+    diff_q14: &Lanes,
+    lf_ar_q14: &Lanes,
+    warping_q16: i32,
+    tilt_q14: i32,
+) -> [Lanes; 2] {
+    let order = s_ar2.len();
+    let mut lpc_pred_q14 = [silk_rshift(predict_order as i32, 1); NSQ_MAX_STATES_OPERATING];
+    let lpc = s_lpc_q14[NSQ_LPC_BUF_LENGTH - predict_order..].iter().rev();
+    for (s, &a) in lpc.zip(&a_q12[..predict_order]) {
+        for k in 0..N {
+            lpc_pred_q14[k] = silk_smlawb(lpc_pred_q14[k], s[k], a as i32);
+        }
     }
-    out
+
+    let mut n_ar_q14 = [silk_rshift(order as i32, 1); NSQ_MAX_STATES_OPERATING];
+    let mut tmp1 = [0i32; N];
+    let mut tmp2 = [0i32; N];
+    for k in 0..N {
+        lpc_pred_q14[k] = silk_lshift(lpc_pred_q14[k], 4);
+        tmp2[k] = silk_smlawb(diff_q14[k], s_ar2[0][k], warping_q16);
+        tmp1[k] = silk_smlawb(
+            s_ar2[0][k],
+            silk_sub32_ovflw(s_ar2[1][k], tmp2[k]),
+            warping_q16,
+        );
+        s_ar2[0][k] = tmp2[k];
+        n_ar_q14[k] = silk_smlawb(n_ar_q14[k], tmp2[k], ar_shp_q13[0] as i32);
+    }
+    for j in (2..order).step_by(2) {
+        for k in 0..N {
+            tmp2[k] = silk_smlawb(
+                s_ar2[j - 1][k],
+                silk_sub32_ovflw(s_ar2[j][k], tmp1[k]),
+                warping_q16,
+            );
+            s_ar2[j - 1][k] = tmp1[k];
+            n_ar_q14[k] = silk_smlawb(n_ar_q14[k], tmp1[k], ar_shp_q13[j - 1] as i32);
+            tmp1[k] = silk_smlawb(
+                s_ar2[j][k],
+                silk_sub32_ovflw(s_ar2[j + 1][k], tmp2[k]),
+                warping_q16,
+            );
+            s_ar2[j][k] = tmp2[k];
+            n_ar_q14[k] = silk_smlawb(n_ar_q14[k], tmp2[k], ar_shp_q13[j] as i32);
+        }
+    }
+    for k in 0..N {
+        s_ar2[order - 1][k] = tmp1[k];
+        n_ar_q14[k] = silk_smlawb(n_ar_q14[k], tmp1[k], ar_shp_q13[order - 1] as i32);
+        n_ar_q14[k] = silk_lshift(n_ar_q14[k], 1);
+        n_ar_q14[k] = silk_smlawb(n_ar_q14[k], lf_ar_q14[k], tilt_q14);
+        n_ar_q14[k] = silk_lshift(n_ar_q14[k], 2);
+    }
+    [lpc_pred_q14, n_ar_q14]
 }
 
 /// The delayed-decision quantizer of one subframe over `N` states. The
@@ -151,6 +221,8 @@ fn silk_noise_shape_quantizer_short_prediction(
 pub fn silk_noise_shape_quantizer_del_dec<const N: usize>(
     nsq: &mut SilkNSQState,
     ps_del_dec: &mut [NSQDelDecStruct; N],
+    filters: &mut NSQDelDecFilters,
+    avx2: Avx2,
     signal_type: i32,
     x_q10: &[i32],
     pulses: &mut [i8],
@@ -232,54 +304,30 @@ pub fn silk_noise_shape_quantizer_del_dec<const N: usize>(
 
         // Short-term prediction and the warped AR noise-shaping filter of
         // every state.
-        let mut lpc_pred_q14 = [0i32; N];
-        let mut n_ar_q14 = [0i32; N];
-        let mut tmp1 = [0i32; N];
-        let mut tmp2 = [0i32; N];
+        let mut diff_q14 = [0i32; NSQ_MAX_STATES_OPERATING];
+        let mut lf_ar_q14 = [0i32; NSQ_MAX_STATES_OPERATING];
         for k in 0..N {
             let ps_dd = &mut ps_del_dec[k];
             ps_dd.seed = silk_rand(ps_dd.seed);
-            let lpc: &[i32; NSQ_LPC_BUF_LENGTH] = ps_dd.s_lpc_q14[idx..idx + NSQ_LPC_BUF_LENGTH]
-                .try_into()
-                .unwrap();
-            lpc_pred_q14[k] = silk_lshift(
-                silk_noise_shape_quantizer_short_prediction(lpc, a_q12, predict_order),
-                4,
-            );
-
-            let s_ar2 = &mut ps_dd.s_ar2_q14;
-            tmp2[k] = silk_smlawb(ps_dd.diff_q14, s_ar2[0], warping_q16);
-            tmp1[k] = silk_smlawb(s_ar2[0], silk_sub32_ovflw(s_ar2[1], tmp2[k]), warping_q16);
-            s_ar2[0] = tmp2[k];
-            n_ar_q14[k] = silk_rshift(shaping_lpc_order, 1);
-            n_ar_q14[k] = silk_smlawb(n_ar_q14[k], tmp2[k], ar_shp_q13[0] as i32);
+            diff_q14[k] = ps_dd.diff_q14;
+            lf_ar_q14[k] = ps_dd.lf_ar_q14;
         }
-        for j in (2..shaping_order).step_by(2) {
-            for k in 0..N {
-                let s_ar2 = &mut ps_del_dec[k].s_ar2_q14;
-                tmp2[k] = silk_smlawb(
-                    s_ar2[j - 1],
-                    silk_sub32_ovflw(s_ar2[j], tmp1[k]),
-                    warping_q16,
-                );
-                s_ar2[j - 1] = tmp1[k];
-                n_ar_q14[k] = silk_smlawb(n_ar_q14[k], tmp1[k], ar_shp_q13[j - 1] as i32);
-                tmp1[k] = silk_smlawb(
-                    s_ar2[j],
-                    silk_sub32_ovflw(s_ar2[j + 1], tmp2[k]),
-                    warping_q16,
-                );
-                s_ar2[j] = tmp2[k];
-                n_ar_q14[k] = silk_smlawb(n_ar_q14[k], tmp2[k], ar_shp_q13[j] as i32);
-            }
-        }
-        for k in 0..N {
-            ps_del_dec[k].s_ar2_q14[shaping_order - 1] = tmp1[k];
-            n_ar_q14[k] = silk_smlawb(n_ar_q14[k], tmp1[k], ar_shp_q13[shaping_order - 1] as i32);
-            n_ar_q14[k] = silk_lshift(n_ar_q14[k], 1);
-            n_ar_q14[k] = silk_smlawb(n_ar_q14[k], ps_del_dec[k].lf_ar_q14, tilt_q14);
-            n_ar_q14[k] = silk_lshift(n_ar_q14[k], 2);
-        }
+        let lpc = filters.s_lpc_q14[idx..idx + NSQ_LPC_BUF_LENGTH]
+            .try_into()
+            .unwrap();
+        let s_ar2 = &mut filters.s_ar2_q14[..shaping_order];
+        let args = (a_q12, predict_order, ar_shp_q13, warping_q16, tilt_q14);
+        let [lpc_pred_q14, n_ar_q14] = match avx2 {
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            Some(avx2) => crate::silk::nsq_del_dec_x86::short_prediction_and_shaping_avx2(
+                avx2, lpc, args.0, args.1, s_ar2, args.2, &diff_q14, &lf_ar_q14, args.3, args.4,
+            ),
+            #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+            Some(never) => match never {},
+            None => short_prediction_and_shaping::<N>(
+                lpc, args.0, args.1, s_ar2, args.2, &diff_q14, &lf_ar_q14, args.3, args.4,
+            ),
+        };
 
         for k in 0..n_states {
             let ps_dd = &mut ps_del_dec[k];
@@ -385,14 +433,15 @@ pub fn silk_noise_shape_quantizer_del_dec<const N: usize>(
                 };
                 // The prediction reads the NSQ_LPC_BUF_LENGTH samples from
                 // idx on; each later one is written before it is read.
-                let lpc = idx..idx + NSQ_LPC_BUF_LENGTH;
-                max_state.s_lpc_q14[lpc.clone()].copy_from_slice(&min_state.s_lpc_q14[lpc]);
+                let lpc = filters.s_lpc_q14[idx..idx + NSQ_LPC_BUF_LENGTH].iter_mut();
+                for v in lpc.chain(filters.s_ar2_q14.iter_mut()) {
+                    v[rd_max_ind] = v[rd_min_ind];
+                }
                 max_state.rand_state = min_state.rand_state;
                 max_state.q_q10 = min_state.q_q10;
                 max_state.xq_q14 = min_state.xq_q14;
                 max_state.pred_q15 = min_state.pred_q15;
                 max_state.shape_q14 = min_state.shape_q14;
-                max_state.s_ar2_q14 = min_state.s_ar2_q14;
                 max_state.lf_ar_q14 = min_state.lf_ar_q14;
                 max_state.diff_q14 = min_state.diff_q14;
                 max_state.seed = min_state.seed;
@@ -436,10 +485,7 @@ pub fn silk_noise_shape_quantizer_del_dec<const N: usize>(
             ps_dd.lf_ar_q14 = ps_ss.lf_ar_q14;
             ps_dd.diff_q14 = ps_ss.diff_q14;
 
-            let lpc_idx = NSQ_LPC_BUF_LENGTH + idx;
-            if lpc_idx < ps_dd.s_lpc_q14.len() {
-                ps_dd.s_lpc_q14[lpc_idx] = ps_ss.xq_q14;
-            }
+            filters.s_lpc_q14[NSQ_LPC_BUF_LENGTH + idx][k] = ps_ss.xq_q14;
             let smpl_idx = (*smpl_buf_idx as usize).min(DECISION_DELAY - 1);
             ps_dd.xq_q14[smpl_idx] = ps_ss.xq_q14;
             ps_dd.q_q10[smpl_idx] = ps_ss.q_q10;
@@ -452,14 +498,10 @@ pub fn silk_noise_shape_quantizer_del_dec<const N: usize>(
         let smpl_idx = (*smpl_buf_idx as usize).min(DECISION_DELAY - 1);
         delayed_ga_q10[smpl_idx] = gain_q10;
     }
-    for k in 0..n_states {
-        let ps_dd = &mut ps_del_dec[k];
-        let mut tmp = [0i32; NSQ_LPC_BUF_LENGTH];
-        tmp.copy_from_slice(
-            &ps_dd.s_lpc_q14[length as usize..length as usize + NSQ_LPC_BUF_LENGTH],
-        );
-        ps_dd.s_lpc_q14[..NSQ_LPC_BUF_LENGTH].copy_from_slice(&tmp);
-    }
+    let length = length as usize;
+    filters
+        .s_lpc_q14
+        .copy_within(length..length + NSQ_LPC_BUF_LENGTH, 0);
 }
 
 pub fn silk_nsq_del_dec(
@@ -485,6 +527,11 @@ pub fn silk_nsq_del_dec(
     let mut s_ltp_q15 = [0i32; LTP_MEM_LENGTH_MS * MAX_FS_KHZ + MAX_FRAME_LENGTH];
     let mut s_ltp = [0i16; LTP_MEM_LENGTH_MS * MAX_FS_KHZ + MAX_FRAME_LENGTH];
     let mut ps_del_dec = [NSQDelDecStruct::default(); NSQ_MAX_STATES_OPERATING];
+    let mut filters = NSQDelDecFilters {
+        s_lpc_q14: [[0; NSQ_MAX_STATES_OPERATING]; MAX_SUB_FRAME_LENGTH + NSQ_LPC_BUF_LENGTH],
+        s_ar2_q14: [[0; NSQ_MAX_STATES_OPERATING]; MAX_SHAPE_LPC_ORDER],
+    };
+    let avx2 = detect_avx2();
 
     let mut lag = ps_nsq.lag_prev;
 
@@ -501,9 +548,13 @@ pub fn silk_nsq_del_dec(
         if ps_common.ltp_mem_length > 0 {
             ps_dd.shape_q14[0] = ps_nsq.s_ltp_shp_q14[ps_common.ltp_mem_length as usize - 1];
         }
-        ps_dd.s_lpc_q14[..NSQ_LPC_BUF_LENGTH]
-            .copy_from_slice(&ps_nsq.s_lpc_q14[..NSQ_LPC_BUF_LENGTH]);
-        ps_dd.s_ar2_q14.copy_from_slice(&ps_nsq.s_ar2_q14);
+        let lpc = filters
+            .s_lpc_q14
+            .iter_mut()
+            .zip(&ps_nsq.s_lpc_q14[..NSQ_LPC_BUF_LENGTH]);
+        for (v, &x) in lpc.chain(filters.s_ar2_q14.iter_mut().zip(&ps_nsq.s_ar2_q14)) {
+            v[k] = x;
+        }
     }
 
     let offset_q10 = SILK_QUANT_OFFSETS_Q10[(ps_indices.signal_type >> 1) as usize]
@@ -623,6 +674,7 @@ pub fn silk_nsq_del_dec(
             ps_common,
             ps_nsq,
             &mut ps_del_dec,
+            &mut filters,
             &x16[x_ptr..],
             &mut x_sc_q10,
             &s_ltp,
@@ -641,6 +693,8 @@ pub fn silk_nsq_del_dec(
                 silk_noise_shape_quantizer_del_dec::<$n>(
                     ps_nsq,
                     (&mut ps_del_dec[..$n]).try_into().unwrap(),
+                    &mut filters,
+                    avx2,
                     ps_indices.signal_type as i32,
                     &x_sc_q10,
                     pulses,
@@ -718,9 +772,12 @@ pub fn silk_nsq_del_dec(
     }
 
     let subfr_len = ps_common.subfr_length as usize;
-    ps_nsq.s_lpc_q14[..NSQ_LPC_BUF_LENGTH]
-        .copy_from_slice(&ps_dd.s_lpc_q14[subfr_len..subfr_len + NSQ_LPC_BUF_LENGTH]);
-    ps_nsq.s_ar2_q14.copy_from_slice(&ps_dd.s_ar2_q14);
+    let lpc = ps_nsq.s_lpc_q14[..NSQ_LPC_BUF_LENGTH]
+        .iter_mut()
+        .zip(&filters.s_lpc_q14[subfr_len..]);
+    for (x, v) in lpc.chain(ps_nsq.s_ar2_q14.iter_mut().zip(&filters.s_ar2_q14)) {
+        *x = v[winner_ind];
+    }
 
     let ltp_mem_len = ps_common.ltp_mem_length as usize;
     let frame_len = ps_common.frame_length as usize;
@@ -730,4 +787,65 @@ pub fn silk_nsq_del_dec(
         .copy_within(frame_len..frame_len + ltp_mem_len, 0);
 
     ps_del_dec[winner_ind].seed_init
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The AVX2 kernel and the scalar filters agree bit for bit, also on
+    /// states and coefficients at the edges of their ranges.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn avx2_filters_match_scalar() {
+        let Some(avx2) = detect_avx2() else {
+            return;
+        };
+        let mut seed = 1u32;
+        let mut rand = || {
+            seed = seed.wrapping_mul(196314165).wrapping_add(907633515);
+            seed as i32
+        };
+        for round in 0..2000 {
+            let wide = round % 2 == 0;
+            let mut value = || if wide { rand() } else { rand() >> 14 };
+            let lpc: [Lanes; NSQ_LPC_BUF_LENGTH] =
+                core::array::from_fn(|_| [value(), value(), value(), value()]);
+            let mut s_ar2: [Lanes; MAX_SHAPE_LPC_ORDER] =
+                core::array::from_fn(|_| [value(), value(), value(), value()]);
+            let diff = [value(), value(), value(), value()];
+            let lf_ar = [value(), value(), value(), value()];
+            let a_q12: [i16; MAX_LPC_ORDER] = core::array::from_fn(|_| rand() as i16);
+            let ar_shp_q13: [i16; MAX_SHAPE_LPC_ORDER] = core::array::from_fn(|_| rand() as i16);
+            let predict_order = [10, 16][round / 2 % 2];
+            let shaping_order = [12, 14, 16, 20, 24][round % 5];
+            let (warping_q16, tilt_q14) = (rand(), rand());
+            let mut s_ar2_simd = s_ar2;
+            let simd = crate::silk::nsq_del_dec_x86::short_prediction_and_shaping_avx2(
+                avx2,
+                &lpc,
+                &a_q12,
+                predict_order,
+                &mut s_ar2_simd[..shaping_order],
+                &ar_shp_q13[..shaping_order],
+                &diff,
+                &lf_ar,
+                warping_q16,
+                tilt_q14,
+            );
+            let scalar = short_prediction_and_shaping::<4>(
+                &lpc,
+                &a_q12,
+                predict_order,
+                &mut s_ar2[..shaping_order],
+                &ar_shp_q13[..shaping_order],
+                &diff,
+                &lf_ar,
+                warping_q16,
+                tilt_q14,
+            );
+            assert_eq!(simd, scalar, "round {round}");
+            assert_eq!(s_ar2_simd, s_ar2, "round {round}");
+        }
+    }
 }
