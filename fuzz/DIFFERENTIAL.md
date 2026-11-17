@@ -145,7 +145,7 @@ find the next one:
 | `tiny-frame` | Packets libopus rejects that opus-rs plays as loss, and 0/1-byte frames inside longer packets (libopus conceals them) |
 | `fec-invalid` | `decode_fec` with a packet libopus rejects |
 | `toc` | The ToC comparison in `diff_encoder` |
-| `simd` | The SIMD encoder in `diff_encoder` |
+| `simd` | The SIMD encoder in `diff_encoder` and the SIMD decoder's oracle in `diff_decoder` |
 | `rate`, `icdf` | Those calls in `api_args` |
 | `silk-input` | The SILK input comparison in `diff_encoder` |
 

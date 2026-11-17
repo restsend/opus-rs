@@ -13,6 +13,10 @@
 //!   `OFZ_PLC_TOL` for concealed frames.
 //! - `simd`: opus-rs with SIMD on matches opus-rs with SIMD off within
 //!   `OFZ_SIMD_TOL` (default 1e-5) and gives the same result and range.
+//!   Where libopus's SIMD kernels change the arithmetic (the concealment,
+//!   the neural features) the levels differ further; `OFZ_SUPPRESS=simd`
+//!   skips this oracle, and the pair (`OPUS_RS_ARCH`, `--features simd`)
+//!   checks those levels against the reference.
 //! - Absurd frame sizes must not panic.
 
 use crate::common::*;
@@ -56,8 +60,10 @@ struct Input {
     ops: Vec<Op>,
 }
 
-/// A new opus-rs decoder with the input's neural network settings.
-fn new_dec(fs: i32, ch: usize, inp: &Input) -> OpusDecoder {
+/// A new opus-rs decoder with the input's neural network settings, at the
+/// CPU's level (`simd`) or at the pair's (scalar unless `OPUS_RS_ARCH`).
+fn new_dec(fs: i32, ch: usize, inp: &Input, simd: bool) -> OpusDecoder {
+    set_simd(simd);
     #[allow(unused_mut)]
     let mut d = OpusDecoder::new(fs, ch).unwrap();
     #[cfg(feature = "dnn")]
@@ -292,8 +298,8 @@ fn class(pkt: &[u8]) -> String {
 fn run(inp: Input) -> Result<(), Finding> {
     let fs = RATES[inp.rate as usize % RATES.len()];
     let ch = 1 + inp.stereo as usize;
-    let mut scalar = new_dec(fs, ch, &inp);
-    let mut simd = new_dec(fs, ch, &inp);
+    let mut scalar = new_dec(fs, ch, &inp, false);
+    let mut simd = new_dec(fs, ch, &inp, true);
     let mut refd = new_ref(fs, ch, &inp);
     let t = tol();
     let mut prev_cls = String::new();
@@ -357,8 +363,8 @@ fn run(inp: Input) -> Result<(), Finding> {
                 continue;
             }
             Op::NewDecoder => {
-                scalar = new_dec(fs, ch, &inp);
-                simd = new_dec(fs, ch, &inp);
+                scalar = new_dec(fs, ch, &inp, false);
+                simd = new_dec(fs, ch, &inp, true);
                 refd = new_ref(fs, ch, &inp);
                 continue;
             }
@@ -479,7 +485,7 @@ fn run(inp: Input) -> Result<(), Finding> {
         let n = match (r_sc, r_ref) {
             (Ok(n), c) if c >= 0 && n == c as usize => n,
             (Err(_), c) if c < 0 => {
-                if r_si.is_ok() {
+                if r_si.is_ok() && !suppressed("simd") {
                     fail!(
                         "simd",
                         sig("ok-vs-err"),
@@ -494,7 +500,7 @@ fn run(inp: Input) -> Result<(), Finding> {
                 "op {k} {kind} frame={frame}: opus-rs {r:?}, libopus {c}"
             ),
         };
-        if r_si != r_sc {
+        if r_si != r_sc && !suppressed("simd") {
             fail!(
                 "simd",
                 sig("result"),
@@ -509,7 +515,7 @@ fn run(inp: Input) -> Result<(), Finding> {
                 "op {k} {kind}: opus-rs {rs:#010x}, libopus {rr:#010x}"
             );
         }
-        if simd.final_range() != rs {
+        if simd.final_range() != rs && !suppressed("simd") {
             fail!("simd", sig("range"), "op {k} {kind}: SIMD range differs");
         }
         // `get`: the queries after the call.
@@ -584,7 +590,7 @@ fn run(inp: Input) -> Result<(), Finding> {
             );
         }
         let (d, peak, at) = max_diff(&o_si[..n * ch], &o_sc[..n * ch]);
-        if !(d <= t.simd * peak) {
+        if !(d <= t.simd * peak) && !suppressed("simd") {
             fail!(
                 "simd",
                 sig("pcm"),

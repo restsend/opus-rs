@@ -29,7 +29,7 @@ n3	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	decode_fec dtx->silk	FEC fra
 n4	diff_encoder@fixed	OFZ_SUPPRESS=toc,simd	silk-input] app2048	VoIP SILK input follows fixed-point libopus (by design)
 n5	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	bytes] celt length	no DTX inside multi-frame CELT packets
 n7	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	cbr] scalar 20ms	CBR packets stop at 1276 bytes; libopus pads to the CBR size
-n8	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	lost silk->	SILK concealment differs (libopus output beyond full scale)
+n8	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid,simd	lost silk->	SILK concealment differs (libopus output beyond full scale)
 n9	diff_encoder	OFZ_SUPPRESS=toc,simd	range celt	encoder final range differs from the decoder's for its own packet
 n10	diff_encoder	OFZ_SUPPRESS=toc,simd	returns -4	encoder emits a 2-byte packet libopus rejects
 d1	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode ->hybrid	SILK resampling to 8 kHz misses the down-FIR
