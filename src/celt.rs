@@ -2791,9 +2791,11 @@ impl CeltEncoder {
             // frames smaller than 20 ms." It bounds unconstrained VBR.
             nb_compressed_bytes = nb_compressed_bytes.min(1275 >> (3 - lm));
             target += cur_tell_frac;
-            let mut nb_available = ((target + (1 << (BITRES + 2))) >> (BITRES + 3)) as usize;
-            nb_available = nb_available.max(min_allowed as usize);
-            nb_available = nb_available.min(nb_compressed_bytes);
+            // Signed, like libopus: a negative target gives min_allowed
+            // (celt_encoder.c:2479-2481).
+            let mut nb_available = ((target + (1 << (BITRES + 2))) >> (BITRES + 3))
+                .max(min_allowed)
+                .min(nb_compressed_bytes as i32) as usize;
             let mut delta = target - vbr_rate;
             target = (nb_available as i32) << (BITRES + 3);
             if silence {
