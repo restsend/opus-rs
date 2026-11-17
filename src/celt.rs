@@ -1513,14 +1513,24 @@ fn tone_lpc(x: &[f32], len: usize, delay: usize, lpc: &mut [f32; 2]) -> bool {
     if den < 0.001 * (r00 * r11) {
         return true;
     }
-    let mut lpc1 = (r02 * r11 - r01 * r12) / den;
-    let mut lpc0 = (r00 * r12 - r02 * r01) / den;
-    // Clamp as in C (Q29 limits)
-    lpc1 = lpc1.clamp(-1.0, 1.0);
-    lpc0 = lpc0.clamp(-1.999999, 1.999999);
-    // C does HALF check for lpc0, but float clamp suffices
-    lpc[0] = lpc0;
-    lpc[1] = lpc1;
+    // celt_encoder.c:1349-1356: the limits apply where the quotient
+    // reaches 1 or 2.
+    let num1 = r02 * r11 - r01 * r12;
+    lpc[1] = if num1 >= den {
+        1.0
+    } else if num1 <= -den {
+        -1.0
+    } else {
+        num1 / den
+    };
+    let num0 = r00 * r12 - r02 * r01;
+    lpc[0] = if 0.5 * num0 >= den {
+        1.999999
+    } else if 0.5 * num0 <= -den {
+        -1.999999
+    } else {
+        num0 / den
+    };
     false
 }
 
@@ -4119,6 +4129,16 @@ mod tests {
         let x = [1065354220u32, 1065258483, 1064974314, 1064508070, 1063861141, 1063042093]
             .map(f32::from_bits);
         assert!(tone_lpc(&x, 6, 1, &mut [0.0; 2]));
+    }
+
+    /// tone_lpc limits lpc[0] to +-1.999999 only where num0/den reaches
+    /// +-2 (celt_encoder.c:1354-1356); this input gives -1.9999999.
+    #[test]
+    fn tone_lpc_keeps_quotients_below_two() {
+        let x = [1012005056u32, 1023960200, 3156529856, 3188496314, 1052018348].map(f32::from_bits);
+        let mut lpc = [0.0; 2];
+        assert!(!tone_lpc(&x, 5, 1, &mut lpc));
+        assert!(lpc[0] < -1.999999, "{lpc:?}");
     }
 
     #[test]
