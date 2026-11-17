@@ -1,8 +1,11 @@
-//! Soundness fuzzer for the public low-level API: arbitrary call sequences
-//! and arguments on `RangeCoder` and the CELT rate functions.
+//! Soundness fuzzer for the public API: arbitrary call sequences and
+//! arguments on `RangeCoder` and the CELT rate functions, and the libopus
+//! API calls of `api_calls` (encoder, decoder, multistream, projection,
+//! packet and repacketizer functions).
 //!
-//! Safe functions may panic on bad arguments; those panics are caught and
-//! ignored. What remains is undefined behaviour: built with debug assertions
+//! The low-level functions may panic on bad arguments; those panics are
+//! caught and ignored. The libopus API calls must not panic, and match
+//! libopus's error codes where it has the same call (see `api_calls`). What remains is undefined behaviour: built with debug assertions
 //! (the cargo-fuzz default), the standard library aborts on a violated
 //! `get_unchecked`/`unchecked_*` precondition, and AddressSanitizer reports
 //! out-of-bounds accesses. Both are libFuzzer crashes.
@@ -10,7 +13,7 @@
 use arbitrary::Arbitrary;
 use opus_rs::range_coder::RangeCoder;
 
-#[derive(Arbitrary, Debug)]
+#[derive(Debug)]
 enum Op {
     EncUint(u32, u32),
     EncBits(u32, u32),
@@ -32,6 +35,44 @@ enum Op {
     Tell,
     Bits2Pulses(u8, i32, i32),
     Pulses2Bits(u8, i32, i32),
+    /// A libopus API call (`api_calls`).
+    Api(crate::api_calls::ApiOp),
+}
+
+/// The derived encoding of the first twenty variants, which the saved
+/// reproducers use; `Api` takes the top 256th of the variant word, which
+/// selected `Pulses2Bits` there.
+impl<'a> Arbitrary<'a> for Op {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        use Op::*;
+        let x = u32::arbitrary(u)?;
+        if x >= 0xff00_0000 {
+            return Ok(Api(Arbitrary::arbitrary(u)?));
+        }
+        let a = |u: &mut arbitrary::Unstructured<'a>| u32::arbitrary(u);
+        Ok(match (u64::from(x) * 20) >> 32 {
+            0 => EncUint(a(u)?, a(u)?),
+            1 => EncBits(a(u)?, a(u)?),
+            2 => Encode(a(u)?, a(u)?, a(u)?),
+            3 => EncodeBitLogp(Arbitrary::arbitrary(u)?, a(u)?),
+            4 => EncodeIcdf(Arbitrary::arbitrary(u)?, Arbitrary::arbitrary(u)?),
+            5 => Laplace(Arbitrary::arbitrary(u)?, a(u)?, Arbitrary::arbitrary(u)?),
+            6 => PadToBits(Arbitrary::arbitrary(u)?),
+            7 => PatchInitialBits(a(u)?, a(u)?),
+            8 => Shrink(a(u)?),
+            9 => Done,
+            10 => DecUint(a(u)?),
+            11 => DecBits(a(u)?),
+            12 => Decode(a(u)?),
+            13 => Update(a(u)?, a(u)?, a(u)?),
+            14 => DecodeBitLogp(a(u)?),
+            15 => DecodeIcdf(Arbitrary::arbitrary(u)?),
+            16 => LaplaceDecode(a(u)?, Arbitrary::arbitrary(u)?),
+            17 => Tell,
+            18 => Bits2Pulses(Arbitrary::arbitrary(u)?, Arbitrary::arbitrary(u)?, Arbitrary::arbitrary(u)?),
+            _ => Pulses2Bits(Arbitrary::arbitrary(u)?, Arbitrary::arbitrary(u)?, Arbitrary::arbitrary(u)?),
+        })
+    }
 }
 
 #[derive(Arbitrary, Debug)]
@@ -80,7 +121,17 @@ pub fn run(inp: Input) {
     // `OFZ_SUPPRESS=rate,icdf` skips those calls to reach other sites.
     let sup = |n: &str| std::env::var("OFZ_SUPPRESS").is_ok_and(|v| v.split(',').any(|s| s == n));
     let (skip_rate, skip_icdf) = (sup("rate"), sup("icdf"));
+    let mut prev_codes = [0i32; 8];
+    // The libopus API calls build codecs; a few per input keep it fast.
+    let mut api_calls = 0;
     for op in inp.ops.iter().take(256) {
+        if let Op::Api(api) = op {
+            api_calls += 1;
+            if api_calls <= 4 {
+                crate::api_calls::run(api, &mut prev_codes);
+            }
+            continue;
+        }
         if skip_rate && matches!(op, Op::Bits2Pulses(..) | Op::Pulses2Bits(..))
             || skip_icdf && matches!(op, Op::EncodeIcdf(..) | Op::DecodeIcdf(..))
         {
@@ -149,6 +200,7 @@ pub fn run(inp: Input) {
             Op::Pulses2Bits(b, lm, p) => {
                 std::hint::black_box(opus_rs::rate::pulses2bits(mode, *b as usize, *lm, *p));
             }
+            Op::Api(_) => {}
         }));
         // Safe code may keep using a coder after catching a panic, so the
         // sequence continues with the same state.

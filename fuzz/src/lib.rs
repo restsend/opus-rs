@@ -6,6 +6,7 @@
 pub mod common;
 
 pub mod api_args;
+pub mod api_calls;
 pub mod diff_decoder;
 pub mod diff_encoder;
 pub mod diff_kernels;
