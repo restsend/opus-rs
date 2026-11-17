@@ -283,16 +283,21 @@ impl MdctLookup {
         let (t0, t1) = trig.split_at(n4);
 
         with_scratch(n4, |f2: &mut [KissCpx]| {
-            for (i, &rev) in st.bitrev[..n4].iter().enumerate() {
-                let x1 = input[2 * i * stride];
-                let x2 = input[stride * (n2 - 1 - 2 * i)];
-                let yr = x2 * t0[i] + x1 * t1[i];
-                let yi = x1 * t0[i] - x2 * t1[i];
+            // x1 = input[2 * i * stride], x2 = input[stride * (n2 - 1 - 2 * i)].
+            let input = &input[..stride * (n2 - 1) + 1];
+            let x1s = input.iter().step_by(2 * stride);
+            let x2s = input.iter().rev().step_by(2 * stride);
+            let tw = t0.iter().zip(t1);
+            for ((&rev, (&x1, &x2)), (&t0, &t1)) in st.bitrev[..n4].iter().zip(x1s.zip(x2s)).zip(tw)
+            {
+                let yr = x2 * t0 + x1 * t1;
+                let yi = x1 * t0 - x2 * t1;
                 f2[rev as usize] = KissCpx::new(yi, yr);
             }
 
             opus_fft_impl(st, f2);
 
+            let out = &mut output[overlap2..overlap2 + n2];
             for i in 0..((n4 + 1) >> 1) {
                 let im0 = f2[i].r;
                 let re0 = f2[i].i;
@@ -305,10 +310,10 @@ impl MdctLookup {
                 let yr1 = re1 * t0[j] + im1 * t1[j];
                 let yi1 = re1 * t1[j] - im1 * t0[j];
 
-                output[overlap2 + 2 * i] = yr0;
-                output[overlap2 + n2 - 1 - 2 * i] = yi0;
-                output[overlap2 + n2 - 2 - 2 * i] = yr1;
-                output[overlap2 + 2 * i + 1] = yi1;
+                out[2 * i] = yr0;
+                out[n2 - 1 - 2 * i] = yi0;
+                out[n2 - 2 - 2 * i] = yr1;
+                out[2 * i + 1] = yi1;
             }
         });
 
