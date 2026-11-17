@@ -173,16 +173,16 @@ fn issue_7_decode_returns_actual_sample_count() {
     // CELT 20ms @ 48kHz mono → should return 960, not whatever frame_size was passed.
     let pkt = [0xF8_u8, 0x00, 0x00, 0x00, 0x00];
     let mut dec = OpusDecoder::new(48000, 1).unwrap();
-    let mut pcm = vec![0.0f32; 1920]; // pass double the needed size
+    let mut pcm = vec![0.5f32; 1920]; // pass double the needed size
     let n = dec.decode(&pkt, 1920, &mut pcm).unwrap();
     assert_eq!(
         n, 960,
         "should return actual decoded samples (960), got {n}"
     );
-    // tail should be zero-filled
+    // As in libopus, the samples past the decoded ones are left unchanged.
     assert!(
-        pcm[960..].iter().all(|&x| x == 0.0),
-        "tail should be zero-filled"
+        pcm[960..].iter().all(|&x| x == 0.5),
+        "the tail past the decoded samples changed"
     );
 }
 

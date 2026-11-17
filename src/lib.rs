@@ -3918,7 +3918,8 @@ impl OpusDecoder {
     }
 
     /// Decode one Opus packet into interleaved `f32` PCM, returning the
-    /// number of samples per channel written.
+    /// number of samples per channel written. As in libopus, `output` past
+    /// those samples is left unchanged.
     ///
     /// Packet loss follows libopus: pass an empty packet (`&[]`) to conceal
     /// `frame_size` samples (a multiple of 2.5 ms), or a ToC-only 1-byte
@@ -3935,18 +3936,14 @@ impl OpusDecoder {
         frame_size: usize,
         output: &mut [f32],
     ) -> Result<usize, &'static str> {
-        let n = self.decode_native(input, frame_size, output, false)?;
-        // Leave no stale samples past the decoded ones.
-        if let Some(rest) = output.get_mut(n * self.channels..) {
-            rest.fill(0.0);
-        }
-        Ok(n)
+        self.decode_native(input, frame_size, output, false)
     }
 
     /// Rebuild a lost packet from the in-band FEC of the packet after it,
     /// into interleaved `f32` PCM, returning the number of samples per
     /// channel written (always `frame_size`). This is libopus's
-    /// `opus_decode(..., decode_fec = 1)`.
+    /// `opus_decode(..., decode_fec = 1)`; `output` past those samples is
+    /// left unchanged.
     ///
     /// `input` is the packet that followed the loss. When it is SILK-only or
     /// Hybrid, the last frame's worth of `frame_size` (one frame of `input`)
@@ -3964,11 +3961,7 @@ impl OpusDecoder {
         frame_size: usize,
         output: &mut [f32],
     ) -> Result<usize, &'static str> {
-        let n = self.decode_native(input, frame_size, output, true)?;
-        if let Some(rest) = output.get_mut(n * self.channels..) {
-            rest.fill(0.0);
-        }
-        Ok(n)
+        self.decode_native(input, frame_size, output, true)
     }
 
     /// libopus `opus_decode_native` (not self-delimited, no soft clipping).
