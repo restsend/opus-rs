@@ -3289,7 +3289,8 @@ impl CeltDecoder {
     /// libopus `deemphasis` of the last `n` (48 kHz) samples of each
     /// channel's decode memory into `pcm`, keeping every `downsample`-th.
     pub(crate) fn deemphasis(&mut self, n: usize, pcm: &mut [f32], layout: PcmLayout) {
-        const SIG_SAT: f32 = 536870911.0;
+        // libopus saturates at SIG_SAT here only in the fixed-point build;
+        // the float build's SATURATE is the identity (celt/arch.h:323).
         const VERY_SMALL: f32 = 1e-30;
         let cc = self.channels;
         let ds = self.downsample;
@@ -3306,13 +3307,13 @@ impl CeltDecoder {
             if ds == 1 && accum {
                 // libopus adds VERY_SMALL last on this path.
                 for (j, &xj) in x.iter().enumerate() {
-                    let tmp = (xj + m + VERY_SMALL).clamp(-SIG_SAT, SIG_SAT);
+                    let tmp = xj + m + VERY_SMALL;
                     m = coef0 * tmp;
                     pcm[base + j * stride] += (1.0 / 32768.0) * tmp;
                 }
             } else {
                 for (j, &xj) in x.iter().enumerate() {
-                    let tmp = (xj + VERY_SMALL + m).clamp(-SIG_SAT, SIG_SAT);
+                    let tmp = xj + VERY_SMALL + m;
                     m = coef0 * tmp;
                     if j % ds == 0 {
                         let y = &mut pcm[base + j / ds * stride];
@@ -3793,11 +3794,8 @@ impl CeltDecoder {
                 );
             }
 
-            const SIG_SAT: f32 = 536870911.0;
-            for i in 0..frame_size {
-                let v = &mut self.decode_mem[channel_mem_offset + out_syn_idx + i];
-                *v = v.clamp(-SIG_SAT, SIG_SAT);
-            }
+            // celt_synthesis saturates at SIG_SAT, which the float build's
+            // SATURATE leaves out (celt/arch.h:323).
 
             self.w_pcm_frame[..frame_size].fill(0.0);
             let pcm_frame = &mut self.w_pcm_frame[..frame_size];

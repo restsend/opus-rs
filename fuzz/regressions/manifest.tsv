@@ -49,3 +49,4 @@ d13	test:tiny_frames	-	FAILED	0/1-byte frames inside a packet decoded instead of
 d15	test:hybrid_postfilter_carry	-	FAILED	Hybrid frames drop the postfilter gain of the frame before
 d16	test:mono_inv	-	FAILED	mono decoder applies intensity inversion before the downmix
 d17	test:celt_fold_after_loss	-	FAILED	prefilter_and_fold crossfades the postfilters
+d18	test:celt_no_saturation	-	FAILED	CELT output saturated at SIG_SAT in the float path
