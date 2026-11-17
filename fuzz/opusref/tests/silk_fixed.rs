@@ -242,22 +242,27 @@ fn stereo_to_mono_switches_match_fixed_point_libopus() {
     let mut fails = Vec::new();
     for fs in [16000, 48000] {
         let pcm = signal(fs as usize, 2);
-        for ms in [10, 20, 40, 60] {
-            for cx in [0, 2, 5, 8, 10] {
-                for cbr in [false, true] {
-                    let c = Cfg {
-                        fs,
-                        bws: &[2],
-                        ch: 2,
-                        ms,
-                        cx,
-                        cbr,
-                        fec: false,
-                        dtx: false,
-                        rates: [32000, 10000],
-                    };
-                    if let Some(d) = run(c, &pcm) {
-                        fails.push((c, d));
+        // Wideband throughout, or switching up to it with the switch to
+        // mono: the internal rate rises on the first mono frame, which SILK
+        // resamples without the side's resampler, still at the old rate.
+        for bws in [&[2][..], &[0, 2], &[1, 2]] {
+            for ms in [10, 20, 40, 60] {
+                for cx in [0, 2, 5, 8, 10] {
+                    for cbr in [false, true] {
+                        let c = Cfg {
+                            fs,
+                            bws,
+                            ch: 2,
+                            ms,
+                            cx,
+                            cbr,
+                            fec: false,
+                            dtx: false,
+                            rates: [32000, 10000],
+                        };
+                        if let Some(d) = run(c, &pcm) {
+                            fails.push((c, d));
+                        }
                     }
                 }
             }

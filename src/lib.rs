@@ -2751,7 +2751,7 @@ impl OpusEncoder {
                     let pre_internal = &mut pre_internal[..pre_resampled_len];
                     self.silk_resampler_enc
                         .process(pre_internal, pre, eb as i32);
-                    if prev_silk_channels == 2 {
+                    if prev_silk_channels == 2 && self.silk_enc_side.s_cmn.fs_khz == silk_fs_khz {
                         let mut right = [0i16; 480];
                         let right = &mut right[..pre_resampled_len];
                         self.silk_resampler_enc_right.process(right, pre, eb as i32);
@@ -2839,8 +2839,9 @@ impl OpusEncoder {
                     return Err("SILK input resampling failed");
                 }
                 // The first frame after two coded channels averages both
-                // channels' resamplers (enc_API.c:324-331).
-                if prev_silk_channels == 2 {
+                // channels' resamplers while they run at the same rate
+                // (enc_API.c:322-333).
+                if prev_silk_channels == 2 && self.silk_enc_side.s_cmn.fs_khz == silk_fs_khz {
                     self.buf_silk_input_right.resize(silk_frame_len_samples, 0);
                     let right = state_mut(&mut self.buf_silk_input_right).as_mut_slice();
                     if self.silk_resampler_enc_right.process(
