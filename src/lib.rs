@@ -370,6 +370,13 @@ pub struct OpusEncoder {
     /// Range encoder state after the last packet (libopus `rangeFinal`), 0
     /// when no frame was coded.
     range_final: u32,
+
+    /// The DRED encoder and settings (libopus `dred_encoder` and the DRED
+    /// fields).
+    #[cfg(all(feature = "dred", not(feature = "heap")))]
+    dred: dred::EncoderDred,
+    #[cfg(all(feature = "dred", feature = "heap"))]
+    dred: Box<dred::EncoderDred>,
 }
 
 /// Format-agnostic PCM input for `encode_impl` (issue #28): `F32` is the
@@ -1405,6 +1412,10 @@ impl OpusEncoder {
             silk_resampler_enc_right: silk::resampler::SilkResampler::default(),
             rc: RangeCoder::new_encoder(1),
             range_final: 0,
+            #[cfg(all(feature = "dred", not(feature = "heap")))]
+            dred: dred::EncoderDred::new(sampling_rate, channels),
+            #[cfg(all(feature = "dred", feature = "heap"))]
+            dred: Box::new(dred::EncoderDred::new(sampling_rate, channels)),
         })
     }
 
@@ -1766,7 +1777,54 @@ impl OpusEncoder {
         (info, is_silence)
     }
 
+    /// A packet; with the `dred` feature, `dred.rs` takes DRED's share of
+    /// the bitrate first.
+    #[cfg(not(feature = "dred"))]
     fn encode_impl(
+        &mut self,
+        input: PcmInput<'_>,
+        frame_size: usize,
+        output: &mut [u8],
+    ) -> Result<usize, &'static str> {
+        self.encode_frame(input, frame_size, output)
+    }
+
+    /// One frame; with the `dred` feature, `dred.rs` adds the DRED
+    /// extension.
+    #[cfg(not(feature = "dred"))]
+    fn encode_subframe(
+        &mut self,
+        input: PcmInput<'_>,
+        frame_size: usize,
+        output: &mut [u8],
+    ) -> Result<usize, &'static str> {
+        self.encode_frame(input, frame_size, output)
+    }
+
+    /// DRED's share of the packet's bitrate (libopus `dred_bitrate_bps`),
+    /// which `bitrate_bps` excludes while a packet is coded; 0 without DRED.
+    fn dred_bitrate(&self) -> i32 {
+        #[cfg(feature = "dred")]
+        return self.dred.bitrate_bps;
+        #[cfg(not(feature = "dred"))]
+        0
+    }
+
+    /// The bitrate that sets a CBR packet's size: the codec's and DRED's.
+    fn packet_bitrate(&self) -> i32 {
+        self.bitrate_bps + self.dred_bitrate()
+    }
+
+    /// Whether CELT codes CBR. Under CBR with DRED, CELT codes VBR and the
+    /// DRED extension and padding fill the packet (opus_encoder.c).
+    fn celt_cbr(&self) -> bool {
+        #[cfg(feature = "dred")]
+        return self.use_cbr && self.dred.duration == 0;
+        #[cfg(not(feature = "dred"))]
+        self.use_cbr
+    }
+
+    fn encode_frame(
         &mut self,
         input: PcmInput<'_>,
         frame_size: usize,
@@ -1889,7 +1947,7 @@ impl OpusEncoder {
         // Per-frame packet budget (C computes this before the mode-dependent
         // encode; the starved-budget rules below need it too).
         let target_bits =
-            (self.bitrate_bps as i64 * frame_size as i64 / self.sampling_rate as i64) as i32;
+            (self.packet_bitrate() as i64 * frame_size as i64 / self.sampling_rate as i64) as i32;
         let cbr_bytes = ((target_bits + 4) / 8) as usize;
         let max_data_bytes = output.len();
 
@@ -2012,7 +2070,7 @@ impl OpusEncoder {
                 );
                 let max_data_bytes = if self.use_cbr {
                     let bits =
-                        self.bitrate_bps as i64 * frame_size as i64 / self.sampling_rate as i64;
+                        self.packet_bitrate() as i64 * frame_size as i64 / self.sampling_rate as i64;
                     (((bits + 4) / 8) as usize).min(output.len()).max(1)
                 } else {
                     output.len().min(6 * OPUS_MAX_PACKET_BYTES)
@@ -2332,6 +2390,10 @@ impl OpusEncoder {
             }
         }
 
+        // The DRED latents, before SILK (opus_encode_frame_native).
+        #[cfg(feature = "dred")]
+        self.dred_frame(frame_size, activity);
+
         let mut silk_bitrate = 0;
         let mut hb_gain = 1.0;
         let mut silk_switch_ready = false;
@@ -2351,7 +2413,7 @@ impl OpusEncoder {
             // first re-quantizes the bitrate to the whole bytes it codes, as
             // opus_encode_native does, so the cap is the packet itself.
             let rate_bps = if self.use_cbr {
-                bits_to_bitrate(8 * n_bytes as i32, self.sampling_rate, frame_size)
+                bits_to_bitrate(8 * n_bytes as i32, self.sampling_rate, frame_size) - self.dred_bitrate()
             } else {
                 self.bitrate_bps
             };
@@ -2530,7 +2592,8 @@ impl OpusEncoder {
             // silk_control_encoder (control_codec.c:76), the encoder states
             // take the flag for every packet, since the noise shaping reads
             // it.
-            let silk_use_cbr = self.use_cbr && mode != OpusMode::Hybrid;
+            // With DRED bits to code, SILK-only CBR runs as capped VBR too.
+            let silk_use_cbr = self.use_cbr && mode != OpusMode::Hybrid && self.dred_bitrate() == 0;
 
             // C silk_setup_LBRR (control_codec.c): per-packet FEC state and
             // LBRR gain increase (7 on the first FEC packet, then
@@ -2722,6 +2785,12 @@ impl OpusEncoder {
                     );
                     max_bit_rate * frame_size as i32 / self.sampling_rate
                 }
+            } else if self.use_cbr && self.dred_bitrate() > 0 {
+                // SILK may take up to 25% of what its rate leaves to DRED.
+                let silk_bits =
+                    (silk_bitrate as i64 * frame_size as i64 / self.sampling_rate as i64) as i32;
+                let other_bits = 0i32.max(packet_max_bits - silk_bits);
+                0i32.max(packet_max_bits - other_bits * 3 / 4)
             } else {
                 packet_max_bits
             };
@@ -2769,6 +2838,8 @@ impl OpusEncoder {
                     i32::from(self.silk_enc.s_cmn.indices.signal_type)
                         != silk::define::TYPE_NO_VOICE_ACTIVITY,
                 );
+                #[cfg(feature = "dred")]
+                self.dred.set_activity(frame_size * 400 / self.sampling_rate as usize, activity);
             }
             // What the next bandwidth decision may do (libopus
             // `silk_mode.allowBandwidthSwitch`, `inWBmodeWithoutVariableLP`).
@@ -2854,6 +2925,18 @@ impl OpusEncoder {
             let nb_compr_bytes = (n_bytes - 1 - redundancy_bytes) as u32;
             self.rc.shrink(nb_compr_bytes);
         }
+        // With DRED, CELT may take up to 25% of DRED's bytes, and at least
+        // 5 bytes (opus_encode_frame_native).
+        #[cfg(feature = "dred")]
+        if mode != OpusMode::SilkOnly && self.dred.duration > 0 {
+            let nb_compr_bytes = (n_bytes - 1 - redundancy_bytes) as i32;
+            let dred_bytes = bitrate_to_bits(self.dred_bitrate(), self.sampling_rate, frame_size) / 8;
+            let max_celt_bytes = ((self.rc.tell() + 7) / 8 + 5).max(nb_compr_bytes - dred_bytes * 3 / 4);
+            if max_celt_bytes < nb_compr_bytes {
+                self.rc.shrink(max_celt_bytes as u32);
+                n_bytes = max_celt_bytes as usize + 1 + redundancy_bytes;
+            }
+        }
 
         let silk_ret_bytes = if mode == OpusMode::SilkOnly {
             ((self.rc.tell() + 7) >> 3) as usize
@@ -2866,7 +2949,7 @@ impl OpusEncoder {
         // This is the CBR branch (vbr==0) in celt_encoder.c; for VBR the encoder
         // does *not* do this adjustment - it uses the vbr_bound logic instead.
         // Doing it for VBR would double-shrink and corrupt the budget.
-        if mode != OpusMode::SilkOnly && self.use_cbr {
+        if mode != OpusMode::SilkOnly && self.celt_cbr() {
             let tell = self.rc.tell();
             if tell > 1 {
                 let tmp = self.bitrate_bps as i64 * frame_size as i64
@@ -3028,15 +3111,19 @@ impl OpusEncoder {
                 self.celt_enc
                     .set_silk_info(i32::from(ix.signal_type), i32::from(offset));
             }
-            let celt_rate = celt_bitrate(mode, !self.use_cbr, self.bitrate_bps, silk_bitrate, ch);
+            let celt_cbr = self.celt_cbr();
+            let celt_rate = celt_bitrate(mode, !celt_cbr, self.bitrate_bps, silk_bitrate, ch);
             // CELT codes VBR only with a rate (celt_encoder.c `vbr_rate`).
-            let celt_vbr = !self.use_cbr && celt_rate != celt::OPUS_BITRATE_MAX;
+            let celt_vbr = !celt_cbr && celt_rate != celt::OPUS_BITRATE_MAX;
             self.celt_enc.set_bitrate(celt_rate);
-            self.celt_enc.set_vbr(!self.use_cbr);
+            self.celt_enc.set_vbr(!celt_cbr);
             // libopus: Hybrid VBR is unconstrained (can steal from SILK);
-            // CELT-only VBR follows OPUS_SET_VBR_CONSTRAINT.
-            self.celt_enc
-                .set_constrained_vbr(mode == OpusMode::CeltOnly && self.vbr_constraint);
+            // CELT-only VBR follows OPUS_SET_VBR_CONSTRAINT, and the VBR of
+            // CBR with DRED is unconstrained.
+            let dred_vbr = self.use_cbr && !celt_cbr;
+            self.celt_enc.set_constrained_vbr(
+                mode == OpusMode::CeltOnly && self.vbr_constraint && !dred_vbr,
+            );
             if celt_prefill {
                 self.celt_enc.reset_state();
                 let mut dummy = [0u8; 2];
@@ -3125,6 +3212,12 @@ impl OpusEncoder {
             }
         } else {
             self.nb_no_activity_ms_q1 = 0;
+        }
+
+        // Where libopus adds DRED to the packet (encode_subframe does).
+        #[cfg(feature = "dred")]
+        {
+            self.dred.reached = true;
         }
 
         // C opus_encoder.c:2578-2589 (1.6.1): "In the unlikely case that the
@@ -3325,7 +3418,7 @@ impl OpusEncoder {
         // Under CBR the packet is the CBR size, to which it is padded
         // (encode_multiframe_packet).
         let cbr_total = if self.use_cbr {
-            let bits = self.bitrate_bps as i64 * frame_size as i64 / self.sampling_rate as i64;
+            let bits = self.packet_bitrate() as i64 * frame_size as i64 / self.sampling_rate as i64;
             // max_data_bytes is at most six frames of 1275 bytes
             // (opus_encoder.c:1221).
             Some((((bits + 4) / 8) as usize).clamp(1, 6 * 1275).min(output.len()))
@@ -3341,8 +3434,15 @@ impl OpusEncoder {
         let frame_bytes = (3 * self.bitrate_bps as i64
             / (3 * 8 * self.sampling_rate as i64 / enc_frame as i64))
             as usize;
-        let sub_budget = frame_bytes.min(max_len_sum / nb).clamp(2, 1276);
+        // DRED's bytes go to the first frame that is not DTX.
+        let dred_bytes = (bitrate_to_bits(self.dred_bitrate(), self.sampling_rate, frame_size) / 8) as usize;
+        let sub_budget = frame_bytes
+            .min(max_len_sum / nb)
+            .min(max_len_sum.saturating_sub(dred_bytes) / nb)
+            .clamp(2, 1276);
         let mut used = 0usize;
+        let mut dtx_count = 0;
+        let mut sub_lens = [0usize; MAX_SUB];
         // The frames read the packet's analysis one at a time, from where it
         // started (libopus `analysis_read_pos_bak`).
         let analysed = self.analysis_read_bak;
@@ -3376,11 +3476,21 @@ impl OpusEncoder {
                 });
                 self.frame_fec = Some(fec);
                 self.nonfinal_frame = i < nb - 1;
-                let budget = sub_budget.min(max_len_sum.saturating_sub(used)).max(2);
-                let n = self.encode_impl(sub_input, enc_frame, &mut sub[i][..budget])?;
+                let first_frame = i == 0 || i == dtx_count;
+                #[cfg(feature = "dred")]
+                {
+                    self.dred.first_frame = first_frame;
+                }
+                let bonus = if first_frame { dred_bytes } else { 0 };
+                let budget = (sub_budget + bonus).min(1276).min(max_len_sum.saturating_sub(used)).max(2);
+                let n = self.encode_subframe(sub_input, enc_frame, &mut sub[i][..budget])?;
                 if n == 0 {
                     return Err("Empty sub-frame");
                 }
+                if n == 1 {
+                    dtx_count += 1;
+                }
+                sub_lens[i] = n;
                 used += n;
                 // A sub-packet is not always a ToC and a frame: CBR pads it
                 // as a code 3 packet, and a frame over its budget or below 3
@@ -3422,6 +3532,19 @@ impl OpusEncoder {
             output[1] = nb as u8;
             return Ok(2);
         }
+
+        // Extensions (DRED) of the frames go in the packet's padding.
+        #[cfg(feature = "dred")]
+        {
+            let subs: [&[u8]; MAX_SUB] = core::array::from_fn(|i| &sub[i][..sub_lens[i]]);
+            let frames: [&[u8]; MAX_SUB] = core::array::from_fn(|i| &sub[i][offs[i]..offs[i] + lens[i]]);
+            let maxlen = cbr_total.unwrap_or(output.len());
+            if let Some(ret) = dred::repacketize_extensions(output, &subs[..nb], &frames[..nb], maxlen, cbr_total.is_some()) {
+                return ret;
+            }
+        }
+        #[cfg(not(feature = "dred"))]
+        let _ = sub_lens;
 
         let toc = sub[0][0] & 0xFC;
         let mut pos = 0usize;

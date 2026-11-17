@@ -501,6 +501,11 @@ fn dred_decode_matches_libopus() {
     }
 }
 
+/// The largest difference between `a` and `b`.
+fn max_diff(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b).fold(0f32, |m, (x, y)| m.max((x - y).abs()))
+}
+
 /// opus_decoder_dred_decode (16-bit output) against
 /// OpusDecoder::dred_decode, also for losses concealed in one call of
 /// 45 ms and 22.5 ms, which opus-rs conceals in pieces.
@@ -688,3 +693,240 @@ fn packet_writing_matches_libopus() {
     }
     assert!(ok > 2000, "{ok}");
 }
+
+/// Packets of opus-rs's encoder with DRED for `pcm`, at encoder
+/// `complexity`.
+pub fn rs_encode(s: Setup, pcm: &[f32], complexity: i32) -> Vec<Vec<u8>> {
+    let frame = s.fs as usize * s.frame_ms / 1000;
+    let app = match s.app {
+        2048 => opus_rs::Application::Voip,
+        2049 => opus_rs::Application::Audio,
+        _ => opus_rs::Application::RestrictedLowDelay,
+    };
+    let mut enc = opus_rs::OpusEncoder::new(s.fs, s.channels, app).unwrap();
+    enc.bitrate_bps = s.bitrate;
+    enc.complexity = complexity;
+    enc.use_cbr = !s.vbr;
+    enc.packet_loss_perc = s.loss;
+    enc.set_max_bandwidth(match s.max_bandwidth {
+        1101 => opus_rs::Bandwidth::Narrowband,
+        1102 => opus_rs::Bandwidth::Mediumband,
+        1103 => opus_rs::Bandwidth::Wideband,
+        1104 => opus_rs::Bandwidth::Superwideband,
+        _ => opus_rs::Bandwidth::Fullband,
+    });
+    enc.set_dred_duration(s.dred).unwrap();
+    pcm.chunks_exact(frame * s.channels)
+        .map(|f| {
+            let mut pkt = [0u8; 1500];
+            let n = enc.encode(f, frame, &mut pkt).unwrap();
+            pkt[..n].to_vec()
+        })
+        .collect()
+}
+
+/// Packets of the reference encoder at encoder `complexity`.
+pub fn ref_encode_c(s: Setup, pcm: &[f32], complexity: i32) -> Vec<Vec<u8>> {
+    let frame = s.fs as usize * s.frame_ms / 1000;
+    let mut out = Vec::new();
+    unsafe {
+        let mut err = 0;
+        let enc = opus_encoder_create(s.fs, s.channels as i32, s.app, &mut err);
+        opus_encoder_ctl(enc, SET_BITRATE, s.bitrate);
+        opus_encoder_ctl(enc, SET_MAX_BANDWIDTH, s.max_bandwidth);
+        opus_encoder_ctl(enc, SET_COMPLEXITY, complexity);
+        opus_encoder_ctl(enc, SET_VBR, s.vbr as i32);
+        opus_encoder_ctl(enc, SET_PACKET_LOSS_PERC, s.loss);
+        set_dred_duration(enc, s.dred);
+        for f in pcm.chunks_exact(frame * s.channels) {
+            let mut pkt = [0u8; 1500];
+            let len = opus_encode_float(enc, f.as_ptr(), frame as i32, pkt.as_mut_ptr(), 1500);
+            assert!(len > 0);
+            out.push(pkt[..len as usize].to_vec());
+        }
+        opus_encoder_destroy(enc);
+    }
+    out
+}
+
+/// The DRED extension payload of a packet, if any.
+fn dred_payload(p: &[u8]) -> Option<Vec<u8>> {
+    let parts = opus_rs::extensions::parse_packet(p).ok()?;
+    let mut it = opus_rs::extensions::ExtensionIterator::new(parts.padding, parts.count);
+    it.find(126).ok()?.map(|e| e.data.to_vec())
+}
+
+/// Prints, per setup, how many packets of opus-rs's and libopus's encoders
+/// carry the same DRED payload. See dred_encode_payload_matches_libopus for
+/// where they differ.
+#[test]
+#[ignore]
+fn dred_encode_survey() {
+    for (name, s) in [
+        ("silk wb 16k", SILK_WB_16K),
+        ("silk wb 48k", SILK_WB_48K),
+        ("silk wb 16k cbr 10ms", SILK_WB_16K_CBR_10MS),
+        ("hybrid 48k", HYBRID_48K),
+        ("celt 48k", CELT_48K),
+        ("celt 48k stereo", CELT_48K_STEREO),
+        ("silk wb 16k audio", Setup { app: 2049, ..SILK_WB_16K }),
+        ("silk wb 48k 60ms", Setup { frame_ms: 60, ..SILK_WB_48K }),
+        ("silk wb 48k 100ms", Setup { frame_ms: 100, ..SILK_WB_48K }),
+        ("hybrid 48k 40ms", Setup { frame_ms: 40, ..HYBRID_48K }),
+        ("celt 48k 40ms", Setup { frame_ms: 40, ..CELT_48K }),
+        ("celt 48k 40ms cbr", Setup { frame_ms: 40, vbr: false, ..CELT_48K }),
+        ("celt 48k cbr", Setup { vbr: false, ..CELT_48K }),
+        ("silk wb 48k 60ms audio", Setup { frame_ms: 60, app: 2049, ..SILK_WB_48K }),
+        ("silk wb 48k 100ms audio", Setup { frame_ms: 100, app: 2049, ..SILK_WB_48K }),
+        ("hybrid 48k 40ms audio", Setup { frame_ms: 40, app: 2049, ..HYBRID_48K }),
+        ("silk wb 16k 60ms audio", Setup { frame_ms: 60, app: 2049, ..SILK_WB_16K }),
+        ("silk wb 48k cbr", Setup { vbr: false, ..SILK_WB_48K }),
+    ] {
+        let pcm = signal(s, if name.ends_with("8s") { 8 } else { 4 }, 5);
+        for c in [5, 9] {
+            let a = ref_encode_c(s, &pcm, c);
+            let b = rs_encode(s, &pcm, c);
+            let (mut both, mut same, mut only_c, mut only_rs, mut same_pkt) = (0, 0, 0, 0, 0);
+            let mut first_diff = None;
+            for (k, (x, y)) in a.iter().zip(&b).enumerate() {
+                same_pkt += usize::from(x == y);
+                match (dred_payload(x), dred_payload(y)) {
+                    (Some(p), Some(q)) => {
+                        both += 1;
+                        if p == q { same += 1 } else if first_diff.is_none() { first_diff = Some(k) }
+                    }
+                    (Some(_), None) => only_c += 1,
+                    (None, Some(_)) => only_rs += 1,
+                    _ => {}
+                }
+            }
+            println!("{name} c{c}: {} packets, {same_pkt} identical; DRED in both {both}, same payload {same}, first diff {first_diff:?}; only libopus {only_c}, only opus-rs {only_rs}", a.len());
+        }
+    }
+}
+
+/// The DRED payloads of opus-rs's encoder equal libopus's, byte for byte,
+/// for every packet where the DRED encoder's inputs are the same: VBR
+/// (the room for DRED is then the buffer, up to 1000 bytes) with the
+/// input high-passed alike, at encoder complexity 5 and 9. SILK wideband
+/// at 48 kHz (VoIP) and 16 kHz (Audio), hybrid, CELT mono and stereo, and
+/// CELT in 40 ms packets of two frames.
+///
+/// Elsewhere the inputs differ (dred_encode_survey): VoIP's
+/// high-pass cutoff follows SILK's smoothed pitch, which opus-rs's SILK
+/// (following the fixed-point build) computes differently, so DRED sees
+/// another input in VoIP at 16 kHz and with 60 ms frames; under CBR the
+/// room for DRED is what the main payload leaves; and SILK's voice
+/// activity decision, which selects the latents DRED sends, differs on
+/// some frames of long SILK packets.
+#[test]
+fn dred_encode_payload_matches_libopus() {
+    let celt_40 = Setup { frame_ms: 40, ..CELT_48K };
+    for (name, s, complexities) in [
+        ("silk wb 48k", SILK_WB_48K, &[5, 9][..]),
+        ("silk wb 16k audio", Setup { app: 2049, ..SILK_WB_16K }, &[5, 9]),
+        ("hybrid 48k", HYBRID_48K, &[5, 9]),
+        ("celt 48k", CELT_48K, &[5, 9]),
+        ("celt 48k stereo", CELT_48K_STEREO, &[5, 9]),
+        ("celt 48k 40ms", celt_40, &[5]),
+    ] {
+        let pcm = signal(s, 4, 5);
+        for &c in complexities {
+            let a = ref_encode_c(s, &pcm, c);
+            let b = rs_encode(s, &pcm, c);
+            let mut n = 0;
+            for (k, (x, y)) in a.iter().zip(&b).enumerate() {
+                let (p, q) = (dred_payload(x), dred_payload(y));
+                assert_eq!(p, q, "{name} complexity {c}, packet {k}");
+                n += usize::from(p.is_some());
+            }
+            assert!(n * 10 >= a.len() * 9, "{name} complexity {c}: {n} of {} packets with DRED", a.len());
+        }
+    }
+}
+
+/// Whole CELT packets with DRED, where opus-rs's CELT encoder is
+/// byte-exact with libopus: mono and stereo, VBR and CBR, 20 ms, and
+/// 40 ms VBR packets of two frames, at encoder complexity 5 and 9, are
+/// identical to libopus's, DRED extension and padding included.
+#[test]
+fn dred_encode_celt_packets_match_libopus() {
+    for (name, s) in [
+        ("celt 48k", CELT_48K),
+        ("celt 48k stereo", CELT_48K_STEREO),
+        ("celt 48k cbr", Setup { vbr: false, ..CELT_48K }),
+        ("celt 48k 40ms", Setup { frame_ms: 40, ..CELT_48K }),
+    ] {
+        let pcm = signal(s, 4, 5);
+        for c in [5, 9] {
+            let a = ref_encode_c(s, &pcm, c);
+            let b = rs_encode(s, &pcm, c);
+            assert_eq!(a.len(), b.len());
+            for (k, (x, y)) in a.iter().zip(&b).enumerate() {
+                assert_eq!(x, y, "{name} complexity {c}, packet {k}");
+            }
+            assert!(a.iter().filter(|p| dred_payload(p).is_some()).count() * 10 >= a.len() * 9);
+        }
+    }
+}
+
+/// libopus decodes every packet of opus-rs's encoder with DRED, and its
+/// opus_dred_parse reads the same OpusDRED from them as opus-rs's parser,
+/// for VBR and CBR, 10 to 100 ms packets (multiframe packets carry DRED
+/// in their first frame), SILK, hybrid and CELT.
+#[test]
+fn libopus_parses_opus_rs_dred() {
+    for (name, s) in [
+        ("silk wb 16k", SILK_WB_16K),
+        ("silk wb 48k", SILK_WB_48K),
+        ("silk wb 16k cbr 10ms", SILK_WB_16K_CBR_10MS),
+        ("silk wb 48k cbr", Setup { vbr: false, ..SILK_WB_48K }),
+        ("silk wb 48k 60ms", Setup { frame_ms: 60, ..SILK_WB_48K }),
+        ("silk wb 48k 100ms", Setup { frame_ms: 100, ..SILK_WB_48K }),
+        ("hybrid 48k", HYBRID_48K),
+        ("hybrid 48k cbr", Setup { vbr: false, ..HYBRID_48K }),
+        ("hybrid 48k 40ms", Setup { frame_ms: 40, ..HYBRID_48K }),
+        ("celt 48k", CELT_48K),
+        ("celt 48k cbr", Setup { vbr: false, ..CELT_48K }),
+        ("celt 48k 40ms cbr", Setup { frame_ms: 40, vbr: false, ..CELT_48K }),
+        ("celt 48k stereo", CELT_48K_STEREO),
+    ] {
+        let packets = rs_encode(s, &signal(s, 4, 5), 9);
+        let frame = s.fs as usize * s.frame_ms / 1000;
+        unsafe {
+            let mut err = 0;
+            let dec = opus_decoder_create(s.fs, s.channels as i32, &mut err);
+            for (k, p) in packets.iter().enumerate() {
+                let mut out = vec![0f32; frame * s.channels];
+                let n = opus_decode_float(dec, p.as_ptr(), p.len() as i32, out.as_mut_ptr(), frame as i32, 0);
+                assert_eq!(n, frame as i32, "{name}: packet {k}");
+                if !s.vbr {
+                    let cbr = (s.bitrate as usize * frame / s.fs as usize + 4) / 8;
+                    assert_eq!(p.len(), cbr, "{name}: packet {k} is not CBR");
+                }
+            }
+            opus_decoder_destroy(dec);
+        }
+        let n = compare_parse(s, &packets);
+        assert!(n * 10 >= packets.len() * 9, "{name}: only {n} of {} packets carry DRED", packets.len());
+    }
+}
+
+/// Round trip: opus-rs encodes with DRED, packets are lost, and libopus
+/// and opus-rs conceal from the DRED of the next packet: bit-exact for
+/// SILK wideband at decoder complexity 0 and 5, and DRED changes the
+/// concealment.
+#[test]
+fn dred_round_trip_matches_libopus() {
+    for (name, s) in [("silk wb 16k", SILK_WB_16K), ("silk wb 48k", SILK_WB_48K), ("silk wb 16k cbr 10ms", SILK_WB_16K_CBR_10MS)] {
+        let packets = with_losses(rs_encode(s, &signal(s, 6, 7), 9), 3, 15, 5, s.frame_ms);
+        for complexity in [0, 5] {
+            let (d, f, n) = dred_decode_compare(s, &packets, complexity, Lost::Frame);
+            assert_eq!((d, f), (0.0, None), "{name} complexity {complexity}");
+            assert!(n > 20, "{name}: only {n} DRED decodes");
+            let effect = max_diff(&plc_output(s, &packets, complexity, false), &plc_output(s, &packets, complexity, true));
+            assert!(effect > 0.01, "{name} complexity {complexity}: DRED changed nothing ({effect})");
+        }
+    }
+}
+
