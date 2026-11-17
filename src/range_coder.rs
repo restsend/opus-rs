@@ -30,6 +30,31 @@ macro_rules! tell_frac_inline {
     }};
 }
 
+/// The coder's state without its buffer, as libopus copies an `ec_ctx`
+/// (whose buffer is a pointer).
+#[derive(Clone, Copy)]
+pub struct RangeCoderState {
+    storage: u32,
+    end_offs: u32,
+    end_window: u32,
+    nend_bits: i32,
+    nbits_total: i32,
+    offs: u32,
+    rng: u32,
+    val: u32,
+    ext: u32,
+    rem: i32,
+    error: i32,
+}
+
+impl RangeCoderState {
+    /// The bytes coding from this state may write: from the front position
+    /// to the end of the buffer.
+    pub fn writable(&self) -> core::ops::Range<usize> {
+        self.offs as usize..self.storage as usize
+    }
+}
+
 #[derive(Clone)]
 pub struct RangeCoder {
     pub buf: FixedVec<u8, RANGE_BUF_MAX>,
@@ -47,6 +72,36 @@ pub struct RangeCoder {
 }
 
 impl RangeCoder {
+    pub fn state(&self) -> RangeCoderState {
+        RangeCoderState {
+            storage: self.storage,
+            end_offs: self.end_offs,
+            end_window: self.end_window,
+            nend_bits: self.nend_bits,
+            nbits_total: self.nbits_total,
+            offs: self.offs,
+            rng: self.rng,
+            val: self.val,
+            ext: self.ext,
+            rem: self.rem,
+            error: self.error,
+        }
+    }
+
+    pub fn set_state(&mut self, s: RangeCoderState) {
+        self.storage = s.storage;
+        self.end_offs = s.end_offs;
+        self.end_window = s.end_window;
+        self.nend_bits = s.nend_bits;
+        self.nbits_total = s.nbits_total;
+        self.offs = s.offs;
+        self.rng = s.rng;
+        self.val = s.val;
+        self.ext = s.ext;
+        self.rem = s.rem;
+        self.error = s.error;
+    }
+
     pub fn new_encoder(size: u32) -> Self {
         let size = (size as usize).clamp(1, RANGE_BUF_MAX);
         let buf = FixedVec::from_value(0u8, size);

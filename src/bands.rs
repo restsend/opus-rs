@@ -1759,6 +1759,11 @@ pub fn quant_all_bands(
     let norm2 = &mut norm2_buf[..norm_size];
 
     let mut lowband_scratch = [0.0f32; MAX_PVQ_N];
+    // The theta RDO copies (bands.c X_save, Y_save, X_save2, Y_save2,
+    // norm_save2 and bytes_save).
+    let [mut x_save, mut y_save] = [[0.0f32; MAX_PVQ_N]; 2];
+    let [mut x_down, mut y_down, mut norm_down] = [[0.0f32; MAX_PVQ_N]; 3];
+    let mut bytes_down = [0u8; crate::range_coder::RANGE_BUF_MAX];
 
     let mut lowband_offset: usize = 0;
     let mut update_lowband = true;
@@ -1933,10 +1938,8 @@ pub fn quant_all_bands(
                 let min_e = ex.min(ey);
                 let w = [ex + min_e / 3.0, ey + min_e / 3.0];
                 let cm = x_cm | y_cm;
-                let rc_save = ctx.rc.clone();
+                let rc_save = ctx.rc.state();
                 let (seed_save, bits_save) = (ctx.seed, ctx.remaining_bits);
-                let mut x_save = [0.0f32; MAX_PVQ_N];
-                let mut y_save = [0.0f32; MAX_PVQ_N];
                 x_save[..n].copy_from_slice(x_slice);
                 y_save[..n].copy_from_slice(y_slice);
 
@@ -1956,18 +1959,17 @@ pub fn quant_all_bands(
                 let dist_down = w[0] * crate::pitch::inner_prod(&x_save, x_slice, n)
                     + w[1] * crate::pitch::inner_prod(&y_save, y_slice, n);
 
-                let rc_down = ctx.rc.clone();
+                let rc_down = ctx.rc.state();
                 let (seed_down, bits_down) = (ctx.seed, ctx.remaining_bits);
-                let mut x_down = [0.0f32; MAX_PVQ_N];
-                let mut y_down = [0.0f32; MAX_PVQ_N];
-                let mut norm_down = [0.0f32; MAX_PVQ_N];
                 x_down[..n].copy_from_slice(x_slice);
                 y_down[..n].copy_from_slice(y_slice);
                 if !last {
                     norm_down[..n].copy_from_slice(&norm[norm_pos..norm_pos + n]);
                 }
+                let written = rc_save.writable();
+                bytes_down[written.clone()].copy_from_slice(&ctx.rc.buf[written.clone()]);
 
-                *ctx.rc = rc_save;
+                ctx.rc.set_state(rc_save);
                 ctx.seed = seed_save;
                 ctx.remaining_bits = bits_save;
                 x_slice.copy_from_slice(&x_save[..n]);
@@ -1999,7 +2001,8 @@ pub fn quant_all_bands(
                 dumpf!("rdo_ysave", &y_save[..n]);
                 if dist_down >= dist_up {
                     x_cm = cm_down;
-                    *ctx.rc = rc_down;
+                    ctx.rc.set_state(rc_down);
+                    ctx.rc.buf[written.clone()].copy_from_slice(&bytes_down[written]);
                     ctx.seed = seed_down;
                     ctx.remaining_bits = bits_down;
                     x_slice.copy_from_slice(&x_down[..n]);
