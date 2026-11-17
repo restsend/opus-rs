@@ -4,7 +4,7 @@
 //! Inputs and outputs may be longer than a layer reads or writes; only the
 //! first `nb_inputs`/`nb_outputs` values are used.
 
-use super::vec::{Elem, MAX_INPUTS, cgemv8x4_at, sgemv, sparse_sgemv8x4, vec_apply};
+use super::vec::{Elem, cgemv8x4_at, sgemv, sparse_sgemv8x4, vec_apply};
 use super::weights::{F32s, I32s};
 use crate::Arch;
 
@@ -68,6 +68,21 @@ pub struct Conv2dLayer<'a> {
     pub out_channels: usize,
     pub ktime: usize,
     pub kheight: usize,
+}
+
+/// Runs `f` on `n` zeroed values on the stack, zeroing only the smallest
+/// of 64, 256, 1024, 2048 and 8192 values that holds them: the scratch
+/// buffers of the layers, which libopus sizes for the largest layer.
+#[inline(always)]
+pub(crate) fn with_zeroed<T: Copy + Default, R>(n: usize, f: impl FnOnce(&mut [T]) -> R) -> R {
+    let z = T::default();
+    match n {
+        0..=64 => f(&mut [z; 64][..n]),
+        65..=256 => f(&mut [z; 256][..n]),
+        257..=1024 => f(&mut [z; 1024][..n]),
+        1025..=2048 => f(&mut [z; 2048][..n]),
+        _ => f(&mut [z; 8192][..n]),
+    }
 }
 
 /// `compute_linear` at `arch` (libopus's `compute_linear_c` or the x86
@@ -190,48 +205,51 @@ pub fn compute_generic_gru(
     assert_eq!(3 * n, recurrent_weights.nb_outputs);
     assert_eq!(input_weights.nb_outputs, recurrent_weights.nb_outputs);
     assert!(n <= MAX_RNN_NEURONS_ALL);
-    let mut zrh = [0.0f32; 3 * MAX_RNN_NEURONS_ALL];
-    let mut recur = [0.0f32; 3 * MAX_RNN_NEURONS_ALL];
-    compute_linear(input_weights, &mut zrh, input, arch);
-    compute_linear(recurrent_weights, &mut recur, state, arch);
-    for i in 0..2 * n {
-        zrh[i] += recur[i];
-    }
-    compute_activation_inplace(&mut zrh[..2 * n], Activation::Sigmoid, arch);
-    let (zr, h) = zrh.split_at_mut(2 * n);
-    let (z, r) = zr.split_at(n);
-    for i in 0..n {
-        h[i] += recur[2 * n + i] * r[i];
-    }
-    compute_activation_inplace(&mut h[..n], Activation::Tanh, arch);
-    for i in 0..n {
-        h[i] = z[i] * state[i] + (1.0 - z[i]) * h[i];
-    }
-    state[..n].copy_from_slice(&h[..n]);
+    with_zeroed(6 * n, |buf: &mut [f32]| {
+        let (zrh, recur) = buf.split_at_mut(3 * n);
+        compute_linear(input_weights, zrh, input, arch);
+        compute_linear(recurrent_weights, recur, state, arch);
+        for i in 0..2 * n {
+            zrh[i] += recur[i];
+        }
+        compute_activation_inplace(&mut zrh[..2 * n], Activation::Sigmoid, arch);
+        let (zr, h) = zrh.split_at_mut(2 * n);
+        let (z, r) = zr.split_at(n);
+        for i in 0..n {
+            h[i] += recur[2 * n + i] * r[i];
+        }
+        compute_activation_inplace(&mut h[..n], Activation::Tanh, arch);
+        for i in 0..n {
+            h[i] = z[i] * state[i] + (1.0 - z[i]) * h[i];
+        }
+        state[..n].copy_from_slice(&h[..n]);
+    })
 }
 
 /// `compute_glu`: `output = input * sigmoid(W input + b)`.
 pub fn compute_glu(layer: &LinearLayer<'_>, output: &mut [f32], input: &[f32], arch: Arch) {
     assert_eq!(layer.nb_inputs, layer.nb_outputs);
     let n = layer.nb_outputs;
-    let mut act2 = [0.0f32; MAX_INPUTS];
-    compute_linear(layer, &mut act2, input, arch);
-    compute_activation_inplace(&mut act2[..n], Activation::Sigmoid, arch);
-    for i in 0..n {
-        output[i] = input[i] * act2[i];
-    }
+    with_zeroed(n, |act2: &mut [f32]| {
+        compute_linear(layer, act2, input, arch);
+        compute_activation_inplace(act2, Activation::Sigmoid, arch);
+        for i in 0..n {
+            output[i] = input[i] * act2[i];
+        }
+    })
 }
 
 /// `compute_glu` with the output in place of the input.
 pub fn compute_glu_inplace(layer: &LinearLayer<'_>, x: &mut [f32], arch: Arch) {
     assert_eq!(layer.nb_inputs, layer.nb_outputs);
     let n = layer.nb_outputs;
-    let mut act2 = [0.0f32; MAX_INPUTS];
-    compute_linear(layer, &mut act2, x, arch);
-    compute_activation_inplace(&mut act2[..n], Activation::Sigmoid, arch);
-    for i in 0..n {
-        x[i] *= act2[i];
-    }
+    with_zeroed(n, |act2: &mut [f32]| {
+        compute_linear(layer, act2, x, arch);
+        compute_activation_inplace(act2, Activation::Sigmoid, arch);
+        for i in 0..n {
+            x[i] *= act2[i];
+        }
+    })
 }
 
 /// `compute_generic_conv1d`: the layer input is the memory
@@ -247,13 +265,14 @@ pub fn compute_generic_conv1d(
 ) {
     let ni = layer.nb_inputs;
     assert!(ni <= MAX_CONV_INPUTS_ALL);
-    let mut tmp = [0.0f32; MAX_CONV_INPUTS_ALL];
     let hist = ni - input_size;
-    tmp[..hist].copy_from_slice(&mem[..hist]);
-    tmp[hist..ni].copy_from_slice(&input[..input_size]);
-    compute_linear(layer, output, &tmp, arch);
-    compute_activation_inplace(&mut output[..layer.nb_outputs], activation, arch);
-    mem[..hist].copy_from_slice(&tmp[input_size..input_size + hist]);
+    with_zeroed(ni, |tmp: &mut [f32]| {
+        tmp[..hist].copy_from_slice(&mem[..hist]);
+        tmp[hist..ni].copy_from_slice(&input[..input_size]);
+        compute_linear(layer, output, tmp, arch);
+        compute_activation_inplace(&mut output[..layer.nb_outputs], activation, arch);
+        mem[..hist].copy_from_slice(&tmp[input_size..input_size + hist]);
+    })
 }
 
 /// `compute_generic_conv1d_dilation`.
@@ -270,26 +289,28 @@ pub fn compute_generic_conv1d_dilation(
     let ni = layer.nb_inputs;
     assert!(ni <= MAX_CONV_INPUTS_ALL);
     let ksize = ni / input_size;
-    let mut tmp = [0.0f32; MAX_CONV_INPUTS_ALL];
     let hist = ni - input_size;
-    if dilation == 1 {
-        tmp[..hist].copy_from_slice(&mem[..hist]);
-    } else {
-        for i in 0..ksize - 1 {
-            let src = i * input_size * dilation;
-            tmp[i * input_size..(i + 1) * input_size].copy_from_slice(&mem[src..src + input_size]);
+    with_zeroed(ni, |tmp: &mut [f32]| {
+        if dilation == 1 {
+            tmp[..hist].copy_from_slice(&mem[..hist]);
+        } else {
+            for i in 0..ksize - 1 {
+                let src = i * input_size * dilation;
+                tmp[i * input_size..(i + 1) * input_size]
+                    .copy_from_slice(&mem[src..src + input_size]);
+            }
         }
-    }
-    tmp[hist..ni].copy_from_slice(&input[..input_size]);
-    compute_linear(layer, output, &tmp, arch);
-    compute_activation_inplace(&mut output[..layer.nb_outputs], activation, arch);
-    if dilation == 1 {
-        mem[..hist].copy_from_slice(&tmp[input_size..input_size + hist]);
-    } else {
-        let total = input_size * dilation * (ksize - 1);
-        mem.copy_within(input_size..total, 0);
-        mem[total - input_size..total].copy_from_slice(&input[..input_size]);
-    }
+        tmp[hist..ni].copy_from_slice(&input[..input_size]);
+        compute_linear(layer, output, tmp, arch);
+        compute_activation_inplace(&mut output[..layer.nb_outputs], activation, arch);
+        if dilation == 1 {
+            mem[..hist].copy_from_slice(&tmp[input_size..input_size + hist]);
+        } else {
+            let total = input_size * dilation * (ksize - 1);
+            mem.copy_within(input_size..total, 0);
+            mem[total - input_size..total].copy_from_slice(&input[..input_size]);
+        }
+    })
 }
 
 /// `conv2d_float`: each product is added to the output on its own, with
@@ -405,18 +426,16 @@ pub fn compute_conv2d(
     let time_stride = conv.in_channels * (height + conv.kheight - 1);
     assert!(conv.ktime * time_stride <= MAX_CONV2D_INPUTS);
     let hist = (conv.ktime - 1) * time_stride;
-    let mut in_buf = [0.0f32; MAX_CONV2D_INPUTS];
-    in_buf[..hist].copy_from_slice(&mem[..hist]);
-    in_buf[hist..hist + time_stride].copy_from_slice(&input[..time_stride]);
-    mem[..hist].copy_from_slice(&in_buf[time_stride..time_stride + hist]);
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if let Some(avx2) = arch.avx2() {
-        super::vec_x86::conv2d(avx2, conv, out, &in_buf, height, hstride);
-    } else {
-        conv2d_by(conv, out, &in_buf, height, hstride, |w, x, y| y + w * x);
-    }
-    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-    conv2d_by(conv, out, &in_buf, height, hstride, |w, x, y| y + w * x);
+    with_zeroed(hist + time_stride, |in_buf: &mut [f32]| {
+        in_buf[..hist].copy_from_slice(&mem[..hist]);
+        in_buf[hist..].copy_from_slice(&input[..time_stride]);
+        mem[..hist].copy_from_slice(&in_buf[time_stride..]);
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if let Some(avx2) = arch.avx2() {
+            return super::vec_x86::conv2d(avx2, conv, out, in_buf, height, hstride);
+        }
+        conv2d_by(conv, out, in_buf, height, hstride, |w, x, y| y + w * x);
+    });
     if let Some(bias) = conv.bias {
         for i in 0..conv.out_channels {
             for j in 0..height {

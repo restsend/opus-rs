@@ -22,7 +22,7 @@ use core::arch::x86_64::*;
 
 use fearless_simd::{Avx2, Sse2, f32x4, f32x8, prelude::*, u8x32};
 
-use super::nnet::{Conv2dLayer, conv2d_by, diag_by};
+use super::nnet::{Conv2dLayer, conv2d_by, diag_by, with_zeroed};
 use super::vec::{Elem, MAX_INPUTS, c_floor, sgemv_by, sparse_sgemv8x4_by};
 use super::weights::{F32s, I32s};
 use crate::Arch;
@@ -311,9 +311,9 @@ pub(crate) fn cgemv8x4(
     x_in: &[f32],
     arch: Arch,
 ) {
-    let mut x = [0u8; MAX_INPUTS];
-    let (x, x_in) = (&mut x[..cols], &x_in[..cols]);
-    match arch.avx2() {
+    assert!(cols <= MAX_INPUTS);
+    let x_in = &x_in[..cols];
+    with_zeroed(cols, |x: &mut [u8]| match arch.avx2() {
         Some(avx2) => {
             quantize8(avx2, x, x_in);
             blocks8(avx2, out, w, idx, scale, rows, cols, x);
@@ -322,7 +322,7 @@ pub(crate) fn cgemv8x4(
             quantize4(x, x_in);
             blocks4(out, w, idx, scale, rows, cols, x, arch == Arch::Sse4_1);
         }
-    }
+    })
 }
 
 fearless_simd::kernel!(
