@@ -188,16 +188,22 @@ fearless_simd::kernel!(
     fn quantize8(simd: Avx2, q: &mut [u8], x: &[f32]) {
         let c127 = _mm256_set1_ps(127.0);
         let zero = _mm256_setzero_si256();
-        for (q, x) in q.chunks_mut(8).zip(x.chunks(8)) {
-            let mut b = [0.0f32; 8];
-            b[..x.len()].copy_from_slice(x);
-            let v = _mm256_fmadd_ps(f32x8::from_slice(simd, &b).into(), c127, c127);
+        let quantize = |x: &[f32; 8]| -> [u8; 8] {
+            let v = _mm256_fmadd_ps(f32x8::from_slice(simd, x).into(), c127, c127);
             let v = _mm256_packus_epi32(_mm256_cvtps_epi32(v), zero);
             let v = _mm256_packus_epi16(_mm256_permute4x64_epi64::<0xD8>(v), zero);
-            let mut bytes = [0u8; 32];
             let v: u8x32<Avx2> = v.simd_into(simd);
-            v.store_slice(&mut bytes);
-            q.copy_from_slice(&bytes[..q.len()]);
+            v.as_array()[..8].try_into().unwrap()
+        };
+        let (qs, q_rest) = q.as_chunks_mut::<8>();
+        let (xs, x_rest) = x.as_chunks::<8>();
+        for (q, x) in qs.iter_mut().zip(xs) {
+            *q = quantize(x);
+        }
+        if !x_rest.is_empty() {
+            let mut b = [0.0f32; 8];
+            b[..x_rest.len()].copy_from_slice(x_rest);
+            q_rest.copy_from_slice(&quantize(&b)[..q_rest.len()]);
         }
     }
 );
