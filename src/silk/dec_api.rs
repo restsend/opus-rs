@@ -25,6 +25,9 @@ pub struct SilkDecControl {
     pub internal_sample_rate: i32,
     /// Duration of the packet's SILK payload: 10, 20, 40 or 60 ms.
     pub payload_size_ms: i32,
+    /// Deep PLC conceals 16 kHz losses (decoder complexity 5 and above).
+    #[cfg(feature = "deep-plc")]
+    pub enable_deep_plc: bool,
 }
 
 pub struct SilkDecoder {
@@ -45,6 +48,12 @@ pub struct SilkDecoder {
 
     /// Per-channel temp buffers for M/S → L/R conversion (frame_length + 2).
     w_silk_buf: [[i16; MAX_FRAME_LENGTH + 2]; 2],
+
+    /// The deep PLC state of the Opus decoder (libopus `st->lpcnet`), kept
+    /// here so that SILK's first channel and CELT can both reach it. It is
+    /// created by [`Self::init_states`].
+    #[cfg(feature = "deep-plc")]
+    pub lpcnet: Option<crate::dnn::lpcnet_plc::LpcnetPlcState<'static>>,
 }
 
 impl Default for SilkDecoder {
@@ -73,6 +82,8 @@ impl SilkDecoder {
         s_stereo: StereoDecState::DEFAULT,
         api_sample_rate: 0,
         w_silk_buf: [[0; MAX_FRAME_LENGTH + 2]; 2],
+        #[cfg(feature = "deep-plc")]
+        lpcnet: None,
     };
 
     /// libopus `silk_InitDecoder`.
@@ -84,6 +95,12 @@ impl SilkDecoder {
         self.prev_decode_only_middle = 0;
         self.n_channels_api = 0;
         self.n_channels_internal = 0;
+        // libopus `lpcnet_plc_init` in opus_decoder_init.
+        #[cfg(feature = "deep-plc")]
+        {
+            let models = crate::dnn::lpcnet_plc::PlcModels::builtin().expect("built-in deep PLC models");
+            self.lpcnet = Some(crate::dnn::lpcnet_plc::LpcnetPlcState::new(models));
+        }
     }
 
     /// Sets the decoder up for direct use with [`Self::decode`]: output at
@@ -152,6 +169,7 @@ impl SilkDecoder {
             api_sample_rate: self.api_sample_rate,
             internal_sample_rate,
             payload_size_ms,
+            ..SilkDecControl::default()
         };
         let (ret, fl, _) = self.decode_core(&ctrl, lost_flag, new_packet, range_dec);
         if ret < 0 {
@@ -349,6 +367,10 @@ impl SilkDecoder {
                         == 1)
         };
 
+        #[cfg(feature = "deep-plc")]
+        {
+            self.channel_state[0].s_plc.enable_deep_plc = ctrl.enable_deep_plc as i32;
+        }
         // Call the decoder for one frame.
         let mut n_samples_out_dec = 0i32;
         for n in 0..n_internal {
@@ -370,6 +392,10 @@ impl SilkDecoder {
                 } else {
                     CODE_CONDITIONALLY
                 };
+                #[cfg(feature = "deep-plc")]
+                let lpcnet = if n == 0 { self.lpcnet.as_mut() } else { None };
+                #[cfg(not(feature = "deep-plc"))]
+                let lpcnet = None;
                 ret += silk_decode_frame(
                     &mut self.channel_state[n],
                     range_dec,
@@ -377,6 +403,7 @@ impl SilkDecoder {
                     &mut n_samples_out_dec,
                     lost_flag,
                     cond_coding,
+                    lpcnet,
                 );
             } else {
                 let len = n_samples_out_dec as usize;

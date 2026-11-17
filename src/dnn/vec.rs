@@ -21,6 +21,12 @@ pub fn c_int(x: f64) -> i32 {
     if x > -2147483649.0 && x < 2147483648.0 { x as i32 } else { i32::MIN }
 }
 
+/// C's `(int)floor(x)` for a double.
+#[inline(always)]
+pub fn c_floor(x: f64) -> i32 {
+    c_int(x.floor())
+}
+
 /// The int8 input of `cgemv8x4`: `(int)floor(.5+127*x)` stored in an
 /// `opus_int8` (gcc keeps the low 8 bits).
 #[inline(always)]

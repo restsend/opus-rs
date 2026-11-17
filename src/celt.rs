@@ -3146,6 +3146,9 @@ pub struct CeltDecoder {
     start_band: usize,
     /// End band decoded and concealed (libopus `CELT_SET_END_BAND`).
     end_band: usize,
+    /// The deep PLC fields of libopus's decoder.
+    #[cfg(feature = "deep-plc")]
+    pub(crate) deep_plc: plc::deep_plc::DeepPlcMem,
 
     w_tf_res: FixedVec<i32, CELT_NB_EBANDS>,
     w_cap: FixedVec<i32, CELT_NB_EBANDS>,
@@ -3191,6 +3194,21 @@ impl CeltDecoder {
         frame_size: usize,
         accum: bool,
     ) -> Option<usize> {
+        self.decode_with_ec_dred(data, rc, pcm, frame_size, accum, None)
+    }
+
+    /// libopus `celt_decode_with_ec_dred`: [`Self::decode_with_ec`] with the
+    /// deep PLC state of the Opus decoder, which concealment uses and a
+    /// decoded frame resets (`blend`).
+    pub(crate) fn decode_with_ec_dred(
+        &mut self,
+        data: Option<&[u8]>,
+        rc: Option<&mut RangeCoder>,
+        pcm: &mut [f32],
+        frame_size: usize,
+        accum: bool,
+        lpcnet: crate::silk::plc::DeepPlc<'_>,
+    ) -> Option<usize> {
         let mode = self.mode;
         let n = frame_size * self.downsample;
         (0..=mode.max_lm).find(|&lm| mode.short_mdct_size << lm == n)?;
@@ -3208,10 +3226,18 @@ impl CeltDecoder {
                         &mut own
                     }
                 };
+                // A bit of a hack in libopus too: opus_decode_native learns
+                // that the PLC has ended.
+                #[cfg(feature = "deep-plc")]
+                if let Some(l) = lpcnet {
+                    l.blend = 0;
+                }
+                #[cfg(not(feature = "deep-plc"))]
+                let _ = lpcnet;
                 let (start, end) = (self.start_band, self.end_band);
                 self.decode_impl_from_rc(rc, (d.len() * 8) as i32, frame_size, pcm, start, end, layout)
             }
-            _ => self.decode_lost_into(frame_size, pcm, self.start_band, layout),
+            _ => self.decode_lost_into(frame_size, pcm, self.start_band, layout, lpcnet),
         };
         (r == frame_size).then_some(r)
     }
@@ -3255,6 +3281,8 @@ impl CeltDecoder {
         plc_lpc: [0.0; plc::LPC_ORDER * CELT_MAX_CHANNELS],
         start_band: 0,
         end_band: 0,
+        #[cfg(feature = "deep-plc")]
+        deep_plc: plc::deep_plc::DeepPlcMem::EMPTY,
         w_tf_res: FixedVec::new(),
         w_cap: FixedVec::new(),
         w_offsets: FixedVec::new(),
@@ -3370,6 +3398,8 @@ impl CeltDecoder {
         self.last_pitch_index = 0;
         self.prefilter_and_fold = false;
         self.plc_lpc = [0.0; plc::LPC_ORDER * CELT_MAX_CHANNELS];
+        #[cfg(feature = "deep-plc")]
+        self.deep_plc.reset();
     }
 
     pub fn decode_with_start_band(

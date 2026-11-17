@@ -28,6 +28,12 @@ pub(super) const FRAME_NORMAL: u8 = 1;
 const FRAME_PLC_NOISE: u8 = 2;
 /// Last frame concealed by pitch repetition.
 const FRAME_PLC_PERIODIC: u8 = 3;
+/// Last frame concealed by deep PLC.
+#[cfg(feature = "deep-plc")]
+const FRAME_PLC_NEURAL: u8 = 4;
+/// Last frame rebuilt from DRED.
+#[cfg(feature = "dred")]
+const FRAME_DRED: u8 = 5;
 
 const PLC_PITCH_LAG_MAX: usize = 720;
 const PLC_PITCH_LAG_MIN: usize = 100;
@@ -42,16 +48,19 @@ impl CeltDecoder {
     ///
     /// Returns `frame_size`, or 0 for a frame size CELT does not have.
     pub fn decode_lost(&mut self, frame_size: usize, pcm: &mut [f32], start_band: usize) -> usize {
-        self.decode_lost_into(frame_size, pcm, start_band, PcmLayout::Planar)
+        self.decode_lost_into(frame_size, pcm, start_band, PcmLayout::Planar, None)
     }
 
-    /// [`Self::decode_lost`] with the output written as `layout` says.
+    /// [`Self::decode_lost`] with the output written as `layout` says and
+    /// the deep PLC state of the Opus decoder (libopus passes `lpcnet` to
+    /// `celt_decode_lost`).
     pub(crate) fn decode_lost_into(
         &mut self,
         frame_size: usize,
         pcm: &mut [f32],
         start_band: usize,
         layout: PcmLayout,
+        lpcnet: crate::silk::plc::DeepPlc<'_>,
     ) -> usize {
         let mode = self.mode;
         let n = frame_size * self.downsample;
@@ -64,18 +73,35 @@ impl CeltDecoder {
         }
 
         let periodic = self.plc_duration < 40 && start_band == 0 && !self.skip_plc;
-        if periodic {
-            self.conceal_periodic(n);
-        } else {
+        #[allow(unused_mut)]
+        let mut frame_type = if periodic { FRAME_PLC_PERIODIC } else { FRAME_PLC_NOISE };
+        #[cfg(feature = "deep-plc")]
+        if start_band == 0
+            && let Some(l) = lpcnet.as_deref()
+        {
+            if self.deep_plc.complexity >= 5 && self.plc_duration < 80 && !self.skip_plc {
+                frame_type = FRAME_PLC_NEURAL;
+            }
+            #[cfg(feature = "dred")]
+            if l.fec_fill_pos > l.fec_read_pos {
+                frame_type = FRAME_DRED;
+            }
+            #[cfg(not(feature = "dred"))]
+            let _ = l;
+        }
+        if frame_type == FRAME_PLC_NOISE {
             self.conceal_noise(n, lm, start_band, self.end_band);
+        } else {
+            self.conceal_periodic(n, frame_type, lpcnet);
         }
         self.loss_duration = (self.loss_duration + (1 << lm)).min(10_000);
         self.plc_duration = (self.plc_duration + (1 << lm)).min(10_000);
-        self.last_frame_type = if periodic {
-            FRAME_PLC_PERIODIC
-        } else {
-            FRAME_PLC_NOISE
-        };
+        #[cfg(feature = "dred")]
+        if frame_type == FRAME_DRED {
+            self.plc_duration = 0;
+            self.skip_plc = false;
+        }
+        self.last_frame_type = frame_type;
 
         let mem_len = DECODE_BUFFER_SIZE + mode.overlap;
         for c in 0..cc {
@@ -203,13 +229,15 @@ impl CeltDecoder {
 
     /// Periodic concealment: repeat the last pitch period through the LPC
     /// filter of the signal before the loss.
-    fn conceal_periodic(&mut self, n: usize) {
+    fn conceal_periodic(&mut self, n: usize, frame_type: u8, lpcnet: crate::silk::plc::DeepPlc<'_>) {
         let mode = self.mode;
         let overlap = mode.overlap;
         let window = mode.window;
         let cc = self.channels;
         let mem_len = DECODE_BUFFER_SIZE + overlap;
-        let first = self.last_frame_type != FRAME_PLC_PERIODIC;
+        let curr_neural = is_neural(frame_type);
+        let last_neural = is_neural(self.last_frame_type);
+        let first = self.last_frame_type != FRAME_PLC_PERIODIC && !(last_neural && curr_neural);
         let (pitch_index, fade) = if first {
             let pitch = self.plc_pitch_search();
             self.last_pitch_index = pitch;
@@ -217,6 +245,17 @@ impl CeltDecoder {
         } else {
             (self.last_pitch_index, 0.8)
         };
+        #[cfg(feature = "deep-plc")]
+        let mut lpcnet = lpcnet;
+        #[cfg(feature = "deep-plc")]
+        if curr_neural
+            && !last_neural
+            && let Some(l) = lpcnet.as_deref_mut()
+        {
+            deep_plc::update_plc_state(l, &self.decode_mem, mem_len, &mut self.deep_plc.preemphasis_mem, cc);
+        }
+        #[cfg(not(feature = "deep-plc"))]
+        let _ = lpcnet;
         // Excitation of two pitch periods, to see whether the signal decays.
         let exc_length = (2 * pitch_index).min(MAX_PERIOD);
 
@@ -321,6 +360,10 @@ impl CeltDecoder {
                     *v *= g;
                 }
             }
+        }
+        #[cfg(feature = "deep-plc")]
+        if curr_neural && let Some(l) = lpcnet {
+            deep_plc::synthesize(self, l, n, last_neural);
         }
         self.prefilter_and_fold = true;
     }
@@ -515,5 +558,183 @@ fn celt_iir(x: &mut [f32], den: &[f32], mem: &[f32; LPC_ORDER]) {
         y[i + ORD] = sum;
         x[i] = sum;
         i += 1;
+    }
+}
+
+/// Whether a frame type is a deep PLC or DRED frame.
+fn is_neural(frame_type: u8) -> bool {
+    #[cfg(feature = "deep-plc")]
+    if frame_type == FRAME_PLC_NEURAL {
+        return true;
+    }
+    #[cfg(feature = "dred")]
+    if frame_type == FRAME_DRED {
+        return true;
+    }
+    let _ = frame_type;
+    false
+}
+
+/// The deep PLC part of libopus `celt_decode_lost` (ENABLE_DEEP_PLC): the
+/// concealed frame comes from the LPCNet PLC at 16 kHz, resampled to 48 kHz.
+#[cfg(feature = "deep-plc")]
+pub(super) mod deep_plc {
+    use super::{CeltDecoder, DECODE_BUFFER_SIZE};
+    use crate::dnn::freq::{FRAME_SIZE, PREEMPHASIS};
+    use crate::dnn::lpcnet_plc::LpcnetPlcState;
+    use crate::dnn::vec::{max32, min32};
+    #[cfg(not(feature = "std"))]
+    use crate::compat::Math;
+
+    const PLC_UPDATE_FRAMES: usize = 4;
+    const PLC_UPDATE_SAMPLES: usize = PLC_UPDATE_FRAMES * FRAME_SIZE;
+    const SINC_ORDER: usize = 48;
+    /// `sinc_filter` of celt_decoder.c.
+    const SINC_FILTER: [f32; SINC_ORDER + 1] = [
+        4.2931e-05, -0.000190293, -0.000816132, -0.000637162, 0.00141662, 0.00354764, 0.00184368, -0.00428274,
+        -0.00856105, -0.0034003, 0.00930201, 0.0159616, 0.00489785, -0.0169649, -0.0259484, -0.00596856,
+        0.0286551, 0.0405872, 0.00649994, -0.0509284, -0.0716655, -0.00665212, 0.134336, 0.278927,
+        0.339995, 0.278927, 0.134336, -0.00665212, -0.0716655, -0.0509284, 0.00649994, 0.0405872,
+        0.0286551, -0.00596856, -0.0259484, -0.0169649, 0.00489785, 0.0159616, 0.00930201, -0.0034003,
+        -0.00856105, -0.00428274, 0.00184368, 0.00354764, 0.00141662, -0.000637162, -0.000816132, -0.000190293,
+        4.2931e-05,
+    ];
+
+    /// The deep PLC fields of libopus's CELTDecoder (`complexity`,
+    /// `plc_pcm`, `plc_fill`, `plc_preemphasis_mem`).
+    pub(crate) struct DeepPlcMem {
+        /// The decoder complexity (`OPUS_SET_COMPLEXITY`), kept by a reset.
+        pub(crate) complexity: i32,
+        plc_pcm: [i16; PLC_UPDATE_SAMPLES],
+        plc_fill: usize,
+        pub(super) preemphasis_mem: f32,
+    }
+
+    impl DeepPlcMem {
+        pub(crate) const EMPTY: Self = Self {
+            complexity: 0,
+            plc_pcm: [0; PLC_UPDATE_SAMPLES],
+            plc_fill: 0,
+            preemphasis_mem: 0.0,
+        };
+
+        /// `OPUS_RESET_STATE` (these fields follow `DECODER_RESET_START`).
+        pub(crate) fn reset(&mut self) {
+            *self = Self { complexity: self.complexity, ..Self::EMPTY };
+        }
+    }
+
+    /// `float2int` (lrintf): round to nearest, ties to even.
+    fn float2int(x: f32) -> i32 {
+        let f = x.floor();
+        let d = x - f;
+        (if d > 0.5 || (d == 0.5 && (f as i64) % 2 != 0) { f + 1.0 } else { f }) as i32
+    }
+
+    /// `update_plc_state`: feeds the last 40 ms of the decoded signal,
+    /// downsampled to 16 kHz, to the deep PLC without consuming DRED
+    /// features.
+    pub(super) fn update_plc_state(
+        lpcnet: &mut LpcnetPlcState<'static>,
+        decode_mem: &[f32],
+        mem_len: usize,
+        preemphasis_mem: &mut f32,
+        cc: usize,
+    ) {
+        let mut buf48k = [0.0f32; DECODE_BUFFER_SIZE];
+        let mut buf16k = [0i16; PLC_UPDATE_SAMPLES];
+        if cc == 1 {
+            buf48k.copy_from_slice(&decode_mem[..DECODE_BUFFER_SIZE]);
+        } else {
+            for (i, b) in buf48k.iter_mut().enumerate() {
+                *b = (0.5 * (decode_mem[i] + decode_mem[mem_len + i]) as f64) as f32;
+            }
+        }
+        for i in 1..DECODE_BUFFER_SIZE {
+            buf48k[i] += PREEMPHASIS * buf48k[i - 1];
+        }
+        *preemphasis_mem = buf48k[DECODE_BUFFER_SIZE - 1];
+        let offset = DECODE_BUFFER_SIZE - SINC_ORDER - 1 - 3 * (PLC_UPDATE_SAMPLES - 1);
+        for (i, o) in buf16k.iter_mut().enumerate() {
+            let mut sum = 0.0f32;
+            for (j, &f) in SINC_FILTER.iter().enumerate() {
+                sum += buf48k[3 * i + j + offset] * f;
+            }
+            *o = float2int(min32(32767.0, max32(-32767.0, sum))) as i16;
+        }
+        let (read_pos, skip) = (lpcnet.fec_read_pos, lpcnet.fec_skip);
+        for k in 0..PLC_UPDATE_FRAMES {
+            lpcnet.update(&buf16k[FRAME_SIZE * k..]);
+        }
+        lpcnet.fec_read_pos = read_pos;
+        lpcnet.fec_skip = skip;
+    }
+
+    /// Replaces the periodic concealment of the frame (and its overlap)
+    /// with the deep PLC output resampled to 48 kHz, cross-fading the first
+    /// overlap when the previous frame was not neural.
+    pub(super) fn synthesize(st: &mut CeltDecoder, lpcnet: &mut LpcnetPlcState<'static>, n: usize, last_neural: bool) {
+        let overlap = st.mode.overlap;
+        let window = st.mode.window;
+        let cc = st.channels;
+        let mem_len = DECODE_BUFFER_SIZE + overlap;
+        let start = DECODE_BUFFER_SIZE - n;
+        let mut buf_copy = [0.0f32; 2 * 120];
+        for c in 0..cc {
+            buf_copy[c * overlap..(c + 1) * overlap]
+                .copy_from_slice(&st.decode_mem[c * mem_len + start..c * mem_len + start + overlap]);
+        }
+        let samples_needed16k = (n + SINC_ORDER + overlap) / 3;
+        let m = &mut st.deep_plc;
+        if !last_neural {
+            m.plc_fill = 0;
+        }
+        while m.plc_fill < samples_needed16k {
+            lpcnet.conceal(&mut m.plc_pcm[m.plc_fill..m.plc_fill + FRAME_SIZE]);
+            m.plc_fill += FRAME_SIZE;
+        }
+        let buf = &mut st.decode_mem[..mem_len];
+        for i in 0..(n + overlap) / 3 {
+            let mut sum = 0.0f32;
+            for j in 0..17 {
+                sum += (3 * m.plc_pcm[i + j] as i32) as f32 * SINC_FILTER[3 * j];
+            }
+            buf[start + 3 * i] = sum;
+            let mut sum = 0.0f32;
+            for j in 0..16 {
+                sum += (3 * m.plc_pcm[i + j + 1] as i32) as f32 * SINC_FILTER[3 * j + 2];
+            }
+            buf[start + 3 * i + 1] = sum;
+            let mut sum = 0.0f32;
+            for j in 0..16 {
+                sum += (3 * m.plc_pcm[i + j + 1] as i32) as f32 * SINC_FILTER[3 * j + 1];
+            }
+            buf[start + 3 * i + 2] = sum;
+        }
+        m.plc_pcm.copy_within(n / 3..m.plc_fill, 0);
+        m.plc_fill -= n / 3;
+        for i in 0..n {
+            let tmp = buf[start + i];
+            buf[start + i] -= PREEMPHASIS * m.preemphasis_mem;
+            m.preemphasis_mem = tmp;
+        }
+        let mut overlap_mem = m.preemphasis_mem;
+        for i in 0..overlap {
+            let tmp = buf[DECODE_BUFFER_SIZE + i];
+            buf[DECODE_BUFFER_SIZE + i] -= PREEMPHASIS * overlap_mem;
+            overlap_mem = tmp;
+        }
+        // Deep PLC is mono.
+        if cc == 2 {
+            st.decode_mem.copy_within(..mem_len, mem_len);
+        }
+        if !last_neural {
+            for c in 0..cc {
+                for i in 0..overlap {
+                    let d = &mut st.decode_mem[c * mem_len + start + i];
+                    *d = (1.0 - window[i]) * buf_copy[c * overlap + i] + window[i] * *d;
+                }
+            }
+        }
     }
 }

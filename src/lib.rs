@@ -3597,6 +3597,8 @@ impl OpusDecoder {
             api_sample_rate: 0,
             internal_sample_rate: 0,
             payload_size_ms: 0,
+            #[cfg(feature = "deep-plc")]
+            enable_deep_plc: false,
         },
         stream_channels: 0,
         bandwidth: Bandwidth::Auto,
@@ -3662,6 +3664,11 @@ impl OpusDecoder {
             return Err("complexity must be 0 to 10");
         }
         self.complexity = complexity;
+        // libopus passes it on to CELT (OPUS_SET_COMPLEXITY).
+        #[cfg(feature = "deep-plc")]
+        {
+            self.celt_dec.deep_plc.complexity = complexity;
+        }
         Ok(())
     }
 
@@ -3949,6 +3956,10 @@ impl OpusDecoder {
                     16000
                 };
             }
+            #[cfg(feature = "deep-plc")]
+            {
+                self.dec_control.enable_deep_plc = self.complexity >= 5;
+            }
 
             let lost_flag = if data.is_none() {
                 silk::decode_frame::FLAG_PACKET_LOST
@@ -4083,9 +4094,13 @@ impl OpusDecoder {
             } else {
                 data.map(|d| &d[..len_u])
             };
+            #[cfg(feature = "deep-plc")]
+            let lpcnet = self.silk_dec.lpcnet.as_mut();
+            #[cfg(not(feature = "deep-plc"))]
+            let lpcnet = None;
             celt_ok = self
                 .celt_dec
-                .decode_with_ec(celt_data, Some(&mut dec), pcm, celt_frame_size, celt_accum)
+                .decode_with_ec_dred(celt_data, Some(&mut dec), pcm, celt_frame_size, celt_accum, lpcnet)
                 .is_some();
             self.range_final = self.celt_dec.rng();
         } else {

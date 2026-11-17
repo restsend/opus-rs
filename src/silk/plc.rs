@@ -11,6 +11,14 @@ use crate::silk::sigproc_fix::{
     silk_bwexpander, silk_lpc_analysis_filter, silk_sum_sqr_shift,
 };
 
+/// The deep PLC state that SILK's first channel conceals and updates with
+/// (libopus passes `LPCNetPLCState *lpcnet`, NULL for the second channel).
+#[cfg(feature = "deep-plc")]
+pub type DeepPlc<'a> = Option<&'a mut crate::dnn::lpcnet_plc::LpcnetPlcState<'static>>;
+/// Without the `deep-plc` feature there is no deep PLC state to pass.
+#[cfg(not(feature = "deep-plc"))]
+pub type DeepPlc<'a> = Option<&'a mut core::convert::Infallible>;
+
 /// Reset PLC state (silk_PLC_Reset).
 pub fn silk_plc_reset(ps_dec: &mut SilkDecoderState) {
     ps_dec.s_plc.pitch_l_q8 = silk_lshift(ps_dec.frame_length, 8 - 1);
@@ -26,6 +34,7 @@ pub fn silk_plc(
     ps_dec_ctrl: &mut SilkDecoderControl,
     frame: &mut [i16],
     lost: i32,
+    lpcnet: DeepPlc<'_>,
 ) {
     if ps_dec.fs_khz != ps_dec.s_plc.fs_khz {
         silk_plc_reset(ps_dec);
@@ -34,11 +43,23 @@ pub fn silk_plc(
 
     if lost != 0 {
         // Generate signal
-        silk_plc_conceal(ps_dec, ps_dec_ctrl, frame);
+        silk_plc_conceal(ps_dec, ps_dec_ctrl, frame, lpcnet);
         ps_dec.loss_cnt += 1;
     } else {
         // Update state
         silk_plc_update(ps_dec, ps_dec_ctrl);
+        // The deep PLC follows every decoded 16 kHz frame, 10 ms at a time.
+        #[cfg(feature = "deep-plc")]
+        if let Some(lpcnet) = lpcnet
+            && ps_dec.s_plc.fs_khz == 16
+        {
+            let sub = ps_dec.subfr_length as usize;
+            for k in (0..ps_dec.nb_subfr as usize).step_by(2) {
+                lpcnet.update(&frame[k * sub..]);
+            }
+        }
+        #[cfg(not(feature = "deep-plc"))]
+        let _ = lpcnet;
     }
 }
 
@@ -149,6 +170,7 @@ fn silk_plc_conceal(
     ps_dec: &mut SilkDecoderState,
     ps_dec_ctrl: &mut SilkDecoderControl,
     frame: &mut [i16],
+    lpcnet: DeepPlc<'_>,
 ) {
     let mut s_ltp_q14 = [0i32; MAX_FRAME_LENGTH + MAX_LTP_MEM];
     let mut s_ltp = [0i16; MAX_LTP_MEM];
@@ -324,6 +346,30 @@ fn silk_plc_conceal(
         ))) as i16;
     }
 
+    // Deep PLC replaces the concealed 16 kHz frame (libopus PLC.c, under
+    // ENABLE_DEEP_PLC), or follows it when it is off.
+    #[cfg(feature = "deep-plc")]
+    if let Some(lpcnet) = lpcnet
+        && ps_plc.fs_khz == 16
+    {
+        let sub = ps_dec.subfr_length as usize;
+        if ps_plc.enable_deep_plc != 0 || lpcnet.fec_fill_pos != 0 {
+            for k in (0..ps_dec.nb_subfr as usize).step_by(2) {
+                lpcnet.conceal(&mut frame[k * sub..k * sub + 2 * sub]);
+            }
+            for i in 0..frame_length {
+                let v = frame[i] as f32 * (1i32 << 24) as f32 / prev_gain_q10[1] as f32;
+                s_ltp_q14[lpc_mem_start + MAX_LPC_ORDER + i] = crate::dnn::vec::c_floor(0.5 + v as f64);
+            }
+        } else {
+            for k in (0..ps_dec.nb_subfr as usize).step_by(2) {
+                lpcnet.update(&frame[k * sub..]);
+            }
+        }
+    }
+    #[cfg(not(feature = "deep-plc"))]
+    let _ = lpcnet;
+
     // Save LPC state.
     ps_dec.s_lpc_q14_buf.copy_from_slice(
         &s_ltp_q14[lpc_mem_start + frame_length..lpc_mem_start + frame_length + MAX_LPC_ORDER],
@@ -379,7 +425,10 @@ pub fn silk_plc_glue_frames(ps_dec: &mut SilkDecoderState, frame: &mut [i16], le
                 let slope_q16 = silk_div32_16((1 << 16) - gain_q16, length as i32);
                 // Make slope 4x steeper to avoid missing onsets after DTX.
                 let slope_q16 = silk_lshift(slope_q16, 2);
-                for i in 0..length {
+                // libopus skips this fade-in at 16 kHz when it is built with
+                // deep PLC, at every complexity.
+                let fade = !cfg!(feature = "deep-plc") || ps_dec.s_plc.fs_khz != 16;
+                for i in 0..if fade { length } else { 0 } {
                     frame[i] = silk_smulwb(gain_q16, frame[i] as i32) as i16;
                     gain_q16 += slope_q16;
                     if gain_q16 > (1 << 16) {
