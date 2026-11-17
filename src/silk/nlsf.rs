@@ -367,7 +367,7 @@ pub fn silk_nlsf_vq_weights_laroia(p_w_q5: &mut [i16], p_nlsf_q15: &[i16], d: us
 
 pub fn silk_process_nlsfs(
     ps_enc: &mut SilkEncoderState,
-    ps_enc_ctrl: &mut SilkEncoderControl,
+    pred_coef_q12: &mut [[i16; MAX_LPC_ORDER]; 2],
     nlsf_q15: &mut [i16],
 ) {
     let mut nlsf_interp_q15 = [0i16; MAX_LPC_ORDER];
@@ -423,7 +423,7 @@ pub fn silk_process_nlsfs(
         ps_enc.s_cmn.indices.signal_type as i32,
     );
 
-    silk_nlsf2a(&mut ps_enc_ctrl.pred_coef_q12[1], nlsf_q15, order);
+    silk_nlsf2a(&mut pred_coef_q12[1], nlsf_q15, order);
 
     if do_interp != 0 {
         let prev_nlsf_q15 = ps_enc.s_cmn.prev_nlsf_q15;
@@ -435,9 +435,9 @@ pub fn silk_process_nlsfs(
                 ) as i16;
         }
 
-        silk_nlsf2a(&mut ps_enc_ctrl.pred_coef_q12[0], &nlsf_interp_q15, order);
+        silk_nlsf2a(&mut pred_coef_q12[0], &nlsf_interp_q15, order);
     } else {
-        let (first, second) = ps_enc_ctrl.pred_coef_q12.split_at_mut(1);
+        let (first, second) = pred_coef_q12.split_at_mut(1);
         first[0][..order].copy_from_slice(&second[0][..order]);
     }
 

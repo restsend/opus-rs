@@ -117,7 +117,7 @@ pub fn silk_find_pred_coefs_fix(
         min_inv_gain_q30,
     );
 
-    silk_process_nlsfs(ps_enc, ps_enc_ctrl, &mut nlsf_q15);
+    silk_process_nlsfs(ps_enc, &mut ps_enc_ctrl.pred_coef_q12, &mut nlsf_q15);
 
     silk_residual_energy_fix(
         &mut ps_enc_ctrl.res_nrg,
