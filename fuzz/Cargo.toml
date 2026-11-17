@@ -165,5 +165,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "diff_ms_encoder"
+path = "fuzz_targets/diff_ms_encoder.rs"
+test = false
+doc = false
+bench = false
+
 [profile.release]
 debug = 1

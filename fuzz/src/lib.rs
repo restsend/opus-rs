@@ -9,5 +9,6 @@ pub mod api_args;
 pub mod diff_decoder;
 pub mod diff_encoder;
 pub mod diff_kernels;
+pub mod diff_ms_encoder;
 pub mod diff_multistream;
 pub mod diff_repacketizer;

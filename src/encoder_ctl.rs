@@ -222,24 +222,7 @@ impl OpusEncoder {
     /// libopus `frame_size_select`: the samples per channel a call of
     /// `frame_size` codes, `None` when that is no valid frame.
     pub(crate) fn select_frame_size(&self, frame_size: usize) -> Option<usize> {
-        let fs = self.sampling_rate as usize;
-        if frame_size < fs / 400 {
-            return None;
-        }
-        let d = self.variable_duration as usize;
-        let new_size = match self.variable_duration {
-            FrameDuration::Argument => frame_size,
-            FrameDuration::Ms2_5
-            | FrameDuration::Ms5
-            | FrameDuration::Ms10
-            | FrameDuration::Ms20
-            | FrameDuration::Ms40 => (fs / 400) << (d - 5001),
-            _ => (d - 5001 - 2) * fs / 50,
-        };
-        if new_size > frame_size {
-            return None;
-        }
-        frame_rate_from_params(self.sampling_rate, new_size).map(|_| new_size)
+        frame_size_select(self.sampling_rate, frame_size, self.variable_duration)
     }
 
     /// The depth the encoder assumes for `input`: the set depth, at most
@@ -250,4 +233,24 @@ impl OpusEncoder {
             PcmInput::I16(_) => self.lsb_depth.min(16),
         }
     }
+}
+
+/// libopus `frame_size_select` at `fs` Hz.
+pub(crate) fn frame_size_select(fs: i32, frame_size: usize, duration: FrameDuration) -> Option<usize> {
+    let rate = fs as usize;
+    if frame_size < rate / 400 {
+        return None;
+    }
+    let d = duration as usize;
+    let new_size = match duration {
+        FrameDuration::Argument => frame_size,
+        FrameDuration::Ms2_5 | FrameDuration::Ms5 | FrameDuration::Ms10 | FrameDuration::Ms20 | FrameDuration::Ms40 => {
+            (rate / 400) << (d - 5001)
+        }
+        _ => (d - 5001 - 2) * rate / 50,
+    };
+    if new_size > frame_size {
+        return None;
+    }
+    frame_rate_from_params(fs, new_size).map(|_| new_size)
 }

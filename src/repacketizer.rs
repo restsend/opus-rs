@@ -7,7 +7,7 @@
 //! extensions of the frames it holds, renumbered. Unpadding drops them.
 
 use crate::error::{ALLOC_FAIL, BAD_ARG, INVALID_PACKET};
-use crate::extensions::{ExtensionData, ExtensionIterator, parse_packet_impl, write_packet};
+use crate::extensions::{ExtensionData, ExtensionIterator, parse_packet_impl, write_packet_impl};
 use crate::packet::{nb_frames, samples_per_frame};
 
 /// The most extensions a packet written by [`Repacketizer::out_range`] or
@@ -97,22 +97,24 @@ impl<'a> Repacketizer<'a> {
     /// out-of-range span, `error::BUFFER_TOO_SMALL` when the packet does
     /// not fit.
     pub fn out_range(&self, begin: usize, end: usize, out: &mut [u8]) -> Result<usize, &'static str> {
-        self.out_range_impl(begin, end, out, false)
+        self.out_range_impl(begin, end, out, false, false)
     }
 
     /// Writes all frames as one packet (libopus `opus_repacketizer_out`).
     pub fn out(&self, out: &mut [u8]) -> Result<usize, &'static str> {
-        self.out_range_impl(0, self.nb_frames, out, false)
+        self.out_range_impl(0, self.nb_frames, out, false, false)
     }
 
-    /// libopus `opus_repacketizer_out_range_impl` (not self-delimited,
-    /// without added extensions): with `pad`, the packet fills `out`.
-    fn out_range_impl(
+    /// libopus `opus_repacketizer_out_range_impl` without added
+    /// extensions: with `pad`, the packet fills `out`; with
+    /// `self_delimited`, it is self-delimited.
+    pub(crate) fn out_range_impl(
         &self,
         begin: usize,
         end: usize,
         out: &mut [u8],
         pad: bool,
+        self_delimited: bool,
     ) -> Result<usize, &'static str> {
         if begin >= end || end > self.nb_frames {
             return Err(BAD_ARG);
@@ -150,7 +152,7 @@ impl<'a> Repacketizer<'a> {
             return Err(ALLOC_FAIL);
         }
         let len = out.len();
-        write_packet(out, self.toc, &self.frames[begin..end], &exts[..n], len, pad)
+        write_packet_impl(out, self.toc, &self.frames[begin..end], &exts[..n], len, pad, self_delimited)
     }
 }
 
@@ -167,7 +169,7 @@ pub fn pad(packet: &[u8], out: &mut [u8]) -> Result<(), &'static str> {
     }
     let mut rp = Repacketizer::new();
     rp.cat(packet)?;
-    rp.out_range_impl(0, rp.nb_frames, out, true).map(|_| ())
+    rp.out_range_impl(0, rp.nb_frames, out, true, false).map(|_| ())
 }
 
 /// libopus `opus_packet_unpad`: removes the padding and extensions of the

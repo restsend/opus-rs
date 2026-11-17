@@ -59,6 +59,10 @@ pub mod modes;
 /// + no-`alloc` capable (see `split_self_delimited` docs).
 #[cfg(feature = "std")]
 pub mod multistream;
+/// The multistream encoder, which keeps its stream encoders in a `Vec`
+/// like the multistream decoder.
+#[cfg(feature = "std")]
+pub mod multistream_encoder;
 pub mod packet;
 pub mod pitch;
 pub mod pvq;
@@ -1913,10 +1917,23 @@ impl OpusEncoder {
         self.range_final = 0;
         // The frame coded from the call's `frame_size` samples (libopus
         // `frame_size_select`), which the analysis reads all of.
-        let analysis_frame_size = frame_size;
-        let frame_size = self
+        let coded = self
             .select_frame_size(frame_size)
             .ok_or("Invalid frame size for sampling rate")?;
+        self.encode_selected(input, frame_size, coded, output, analysis24)
+    }
+
+    /// libopus `opus_encode_native` itself: codes `frame_size` samples of
+    /// `input`, whose signal analysis reads `analysis_frame_size`.
+    pub(crate) fn encode_selected(
+        &mut self,
+        input: PcmInput<'_>,
+        analysis_frame_size: usize,
+        frame_size: usize,
+        output: &mut [u8],
+        analysis24: Option<&[i32]>,
+    ) -> Result<usize, &'static str> {
+        self.range_final = 0;
         let frame_rate = frame_rate_from_params(self.sampling_rate, frame_size)
             .ok_or("Invalid frame size for sampling rate")?;
         // A 1-byte buffer takes a ToC-only packet, except at 100 ms

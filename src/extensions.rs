@@ -777,13 +777,33 @@ pub fn write_packet(
     maxlen: usize,
     pad: bool,
 ) -> Result<usize, &'static str> {
+    write_packet_impl(out, toc, frames, extensions, maxlen, pad, false)
+}
+
+/// [`write_packet`], self-delimited (RFC 6716 appendix B) with
+/// `self_delimited`, as all but the last stream of a multistream packet.
+pub fn write_packet_impl(
+    out: &mut [u8],
+    toc: u8,
+    frames: &[&[u8]],
+    extensions: &[ExtensionData<'_>],
+    maxlen: usize,
+    pad: bool,
+    self_delimited: bool,
+) -> Result<usize, &'static str> {
     let count = frames.len();
     if count == 0 || count > 48 {
         return Err(BAD_ARG);
     }
     let maxlen = maxlen.min(out.len());
     let len = |i: usize| frames[i].len();
-    let mut tot_size = 0;
+    // The extra length of the last frame of a self-delimited packet.
+    let sd_size = if self_delimited {
+        1 + usize::from(len(count - 1) >= 252)
+    } else {
+        0
+    };
+    let mut tot_size = sd_size;
     let mut ptr = 0;
     if count == 1 {
         tot_size += len(0) + 1;
@@ -816,7 +836,8 @@ pub fn write_packet(
         // Code 3, also for the padding.
         let vbr = (1..count).any(|i| len(i) != len(0));
         if vbr {
-            tot_size = 2
+            tot_size = sd_size
+                + 2
                 + (0..count - 1)
                     .map(|i| 1 + usize::from(len(i) >= 252) + len(i))
                     .sum::<usize>()
@@ -827,7 +848,7 @@ pub fn write_packet(
             out[0] = (toc & 0xfc) | 3;
             out[1] = count as u8 | 0x80;
         } else {
-            tot_size = count * len(0) + 2;
+            tot_size = sd_size + count * len(0) + 2;
             if tot_size > maxlen {
                 return Err(BUFFER_TOO_SMALL);
             }
@@ -868,6 +889,9 @@ pub fn write_packet(
                 ptr += encode_size(len(i), &mut out[ptr..]);
             }
         }
+    }
+    if self_delimited {
+        ptr += encode_size(len(count - 1), &mut out[ptr..]);
     }
     for f in frames {
         out[ptr..ptr + f.len()].copy_from_slice(f);

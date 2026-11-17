@@ -47,6 +47,7 @@ fn target(name: &str) -> fn(&[u8]) {
         "diff_decoder" => opus_rs_fuzz::diff_decoder::fuzz,
         "diff_encoder" => opus_rs_fuzz::diff_encoder::fuzz,
         "diff_kernels" => opus_rs_fuzz::diff_kernels::fuzz,
+        "diff_ms_encoder" => opus_rs_fuzz::diff_ms_encoder::fuzz,
         "diff_multistream" => opus_rs_fuzz::diff_multistream::fuzz,
         "diff_repacketizer" => opus_rs_fuzz::diff_repacketizer::fuzz,
         _ => panic!("unknown fuzz target {name}"),
