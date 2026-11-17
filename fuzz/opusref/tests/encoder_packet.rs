@@ -342,3 +342,30 @@ fn celt_codes_16_bit_input_at_16_bits() {
         }
     }
 }
+
+/// CELT measures the input's peak over every input channel, also when
+/// stereo input codes a mono stream (celt_encoder.c:1970, CC channels): a
+/// frame whose first half is silent is coded from its second half.
+#[test]
+fn mono_stream_of_stereo_input_sees_the_whole_frame() {
+    let mut p = Pair::new(48000, 2, Application::RestrictedLowDelay);
+    p.bitrate(16000);
+    for f in 0..6 {
+        let pcm: Vec<f32> = (0..2 * 960)
+            .map(|i| {
+                let t = f * 960 + i / 2;
+                if f % 2 == 0 && i < 960 {
+                    0.0
+                } else {
+                    0.3 * (t as f32 * 0.07).sin()
+                }
+            })
+            .collect();
+        let mut a = vec![0u8; 1500];
+        let mut b = vec![0u8; 1500];
+        let n = p.rs.encode(&pcm, 960, &mut a).unwrap();
+        let m = unsafe { c::opus_encode_float(p.re, pcm.as_ptr(), 960, b.as_mut_ptr(), 1500) };
+        assert_eq!(a[0] & 4, 0, "mono stream");
+        assert_eq!(&a[..n], &b[..m as usize], "frame {f}");
+    }
+}
