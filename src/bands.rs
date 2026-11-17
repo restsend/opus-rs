@@ -1705,6 +1705,13 @@ pub fn quant_band_stereo(
     cm
 }
 
+/// libopus `celt_exp2` (and `celt_exp2_db`) in the float build
+/// (celt/mathops.h:347-350): 2^x as exp(ln 2 * x) in double, rounded once.
+#[inline]
+fn celt_exp2(x: f32) -> f32 {
+    (0.693_147_180_559_945_309_4_f64 * x as f64).exp() as f32
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn quant_all_bands(
     encode: bool,
@@ -2058,7 +2065,7 @@ pub fn denormalise_bands(
             let band_log = band_e[c * m.nb_ebands + i];
 
             // Match C: celt_exp2_db(MIN32(32.f, lg)) — cap gain to prevent overflow
-            let g = (2.0f32).powf(band_log.min(32.0));
+            let g = celt_exp2(band_log.min(32.0));
             let src = &x[base..base + n];
             let dst = &mut freq[base..base + n];
             for (d, &s) in dst.iter_mut().zip(src) {
@@ -2105,7 +2112,7 @@ pub fn anti_collapse(
             0
         };
 
-        let thresh = 0.5 * (-(0.125 * depth as f32)).exp2();
+        let thresh = 0.5 * celt_exp2(-(0.125 * depth as f32));
         let sqrt_1 = 1.0 / ((n0 << lm) as f32).sqrt();
 
         for c in 0..channels {
@@ -2124,7 +2131,7 @@ pub fn anti_collapse(
             let e_diff = log_e[c * m.nb_ebands + i] - p1_adj.min(p2_adj);
             let e_diff = e_diff.max(0.0);
 
-            let mut r = 2.0 * (-e_diff).exp2();
+            let mut r = 2.0 * celt_exp2(-e_diff);
             if lm == 3 {
                 r *= core::f32::consts::SQRT_2;
             }
