@@ -2813,7 +2813,6 @@ impl CeltEncoder {
         }
 
         dumpi!("nbCompressedBytes", &[nb_compressed_bytes as i32]);
-        let mut intensity = self.intensity;
         self.w_pulses[..nb_ebands].fill(0);
         let pulses = &mut self.w_pulses[..nb_ebands];
 
@@ -2868,7 +2867,7 @@ impl CeltEncoder {
             offsets,
             cap,
             alloc_trim,
-            &mut intensity,
+            &mut self.intensity,
             &mut dual_stereo_val,
             alloc_bits,
             &mut balance,
@@ -2930,7 +2929,7 @@ impl CeltEncoder {
             short_blocks,
             self.spread_decision,
             &mut dual_stereo,
-            intensity as usize,
+            self.intensity as usize,
             tf_res,
             (total_bits << BITRES) - anti_collapse_rsv,
             &mut balance,
