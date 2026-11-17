@@ -24,10 +24,16 @@ fn list(src: &PathBuf, mk: &str, var: &str) -> Vec<PathBuf> {
     out
 }
 
+/// The package directory, read when the script runs: cargo reuses a
+/// compiled build script for a copy of the package at another path, so a
+/// compile-time `env!` would name the old path.
+fn manifest_dir() -> String {
+    env::var("CARGO_MANIFEST_DIR").unwrap()
+}
+
 fn main() {
     let src = PathBuf::from(
-        env::var("OPUSREF_SRC")
-            .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../../opus-1.6.1").into()),
+        env::var("OPUSREF_SRC").unwrap_or_else(|_| format!("{}/../../opus-1.6.1", manifest_dir())),
     );
     println!("cargo:rerun-if-env-changed=OPUSREF_SRC");
     println!("cargo:rerun-if-changed=shim.c");
@@ -76,7 +82,7 @@ fn main() {
     }
     b.file("trace.c")
         .include(&src)
-        .include(env!("CARGO_MANIFEST_DIR"))
+        .include(manifest_dir())
         .file("shim.c")
         .include(src.join("include"))
         .include(src.join("celt"))
@@ -130,7 +136,7 @@ fn build_dnn(src: &PathBuf) -> Vec<PathBuf> {
     }
     println!("cargo:rerun-if-changed=wrap/dnn");
     // dnn_shim.c and one dnn_shim_<component>.c per component.
-    let mut shims: Vec<PathBuf> = fs::read_dir(env!("CARGO_MANIFEST_DIR"))
+    let mut shims: Vec<PathBuf> = fs::read_dir(manifest_dir())
         .unwrap()
         .map(|e| e.unwrap().path())
         .filter(|p| {
