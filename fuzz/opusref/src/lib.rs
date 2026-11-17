@@ -223,6 +223,10 @@ pub mod dnn_plc;
 /// DRED of the reference.
 #[cfg(feature = "dnn")]
 pub mod dnn_dred;
+/// The DRED decoder API, DRED encoder control and packet extensions of
+/// the reference.
+#[cfg(feature = "dnn")]
+pub mod dnn_dred_api;
 /// OSCE of the reference.
 #[cfg(feature = "dnn")]
 pub mod dnn_osce;

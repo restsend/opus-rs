@@ -40,6 +40,9 @@ pub mod celt_lpc;
 /// `deep-plc`, `dred`, `osce`).
 #[cfg(feature = "dnn")]
 pub mod dnn;
+/// Opus packet extensions, which carry DRED (cargo feature `dred`).
+#[cfg(feature = "dred")]
+pub mod extensions;
 pub mod hp_cutoff;
 pub mod kiss_fft;
 mod mathops;
