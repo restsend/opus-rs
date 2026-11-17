@@ -8,6 +8,7 @@ use super::vec::{
     MAX_INPUTS, cgemv8x4, sgemv, softmax, sparse_cgemv8x4, sparse_sgemv8x4, vec_sigmoid, vec_tanh,
 };
 use super::weights::{F32s, I32s};
+use crate::Arch;
 
 /// The activation after a layer (`ACTIVATION_*`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -72,7 +73,7 @@ pub struct Conv2dLayer<'a> {
 }
 
 /// `compute_linear_c`.
-pub fn compute_linear(linear: &LinearLayer<'_>, out: &mut [f32], input: &[f32]) {
+pub fn compute_linear(linear: &LinearLayer<'_>, out: &mut [f32], input: &[f32], _arch: Arch) {
     let m = linear.nb_inputs;
     let n = linear.nb_outputs;
     if let Some(fw) = linear.float_weights {
@@ -111,7 +112,7 @@ fn relu(x: f32) -> f32 {
 }
 
 /// `compute_activation_c` on `x` in place.
-pub fn compute_activation_inplace(x: &mut [f32], activation: Activation) {
+pub fn compute_activation_inplace(x: &mut [f32], activation: Activation, _arch: Arch) {
     match activation {
         Activation::Sigmoid => {
             for v in x.iter_mut() {
@@ -157,7 +158,13 @@ fn softmax_normalized(x: &mut [f32]) {
 }
 
 /// `compute_activation_c`: `output[..n] = activation(input[..n])`.
-pub fn compute_activation(output: &mut [f32], input: &[f32], n: usize, activation: Activation) {
+pub fn compute_activation(
+    output: &mut [f32],
+    input: &[f32],
+    n: usize,
+    activation: Activation,
+    _arch: Arch,
+) {
     let (output, input) = (&mut output[..n], &input[..n]);
     match activation {
         Activation::Sigmoid => vec_sigmoid(output, input),
@@ -189,9 +196,10 @@ pub fn compute_generic_dense(
     output: &mut [f32],
     input: &[f32],
     activation: Activation,
+    arch: Arch,
 ) {
-    compute_linear(layer, output, input);
-    compute_activation_inplace(&mut output[..layer.nb_outputs], activation);
+    compute_linear(layer, output, input, arch);
+    compute_activation_inplace(&mut output[..layer.nb_outputs], activation, arch);
 }
 
 /// `compute_generic_gru`: one step of a GRU with state `state`
@@ -201,6 +209,7 @@ pub fn compute_generic_gru(
     recurrent_weights: &LinearLayer<'_>,
     state: &mut [f32],
     input: &[f32],
+    arch: Arch,
 ) {
     let n = recurrent_weights.nb_inputs;
     assert_eq!(3 * n, recurrent_weights.nb_outputs);
@@ -208,18 +217,18 @@ pub fn compute_generic_gru(
     assert!(n <= MAX_RNN_NEURONS_ALL);
     let mut zrh = [0.0f32; 3 * MAX_RNN_NEURONS_ALL];
     let mut recur = [0.0f32; 3 * MAX_RNN_NEURONS_ALL];
-    compute_linear(input_weights, &mut zrh, input);
-    compute_linear(recurrent_weights, &mut recur, state);
+    compute_linear(input_weights, &mut zrh, input, arch);
+    compute_linear(recurrent_weights, &mut recur, state, arch);
     for i in 0..2 * n {
         zrh[i] += recur[i];
     }
-    compute_activation_inplace(&mut zrh[..2 * n], Activation::Sigmoid);
+    compute_activation_inplace(&mut zrh[..2 * n], Activation::Sigmoid, arch);
     let (zr, h) = zrh.split_at_mut(2 * n);
     let (z, r) = zr.split_at(n);
     for i in 0..n {
         h[i] += recur[2 * n + i] * r[i];
     }
-    compute_activation_inplace(&mut h[..n], Activation::Tanh);
+    compute_activation_inplace(&mut h[..n], Activation::Tanh, arch);
     for i in 0..n {
         h[i] = z[i] * state[i] + (1.0 - z[i]) * h[i];
     }
@@ -227,24 +236,24 @@ pub fn compute_generic_gru(
 }
 
 /// `compute_glu`: `output = input * sigmoid(W input + b)`.
-pub fn compute_glu(layer: &LinearLayer<'_>, output: &mut [f32], input: &[f32]) {
+pub fn compute_glu(layer: &LinearLayer<'_>, output: &mut [f32], input: &[f32], arch: Arch) {
     assert_eq!(layer.nb_inputs, layer.nb_outputs);
     let n = layer.nb_outputs;
     let mut act2 = [0.0f32; MAX_INPUTS];
-    compute_linear(layer, &mut act2, input);
-    compute_activation_inplace(&mut act2[..n], Activation::Sigmoid);
+    compute_linear(layer, &mut act2, input, arch);
+    compute_activation_inplace(&mut act2[..n], Activation::Sigmoid, arch);
     for i in 0..n {
         output[i] = input[i] * act2[i];
     }
 }
 
 /// `compute_glu` with the output in place of the input.
-pub fn compute_glu_inplace(layer: &LinearLayer<'_>, x: &mut [f32]) {
+pub fn compute_glu_inplace(layer: &LinearLayer<'_>, x: &mut [f32], arch: Arch) {
     assert_eq!(layer.nb_inputs, layer.nb_outputs);
     let n = layer.nb_outputs;
     let mut act2 = [0.0f32; MAX_INPUTS];
-    compute_linear(layer, &mut act2, x);
-    compute_activation_inplace(&mut act2[..n], Activation::Sigmoid);
+    compute_linear(layer, &mut act2, x, arch);
+    compute_activation_inplace(&mut act2[..n], Activation::Sigmoid, arch);
     for i in 0..n {
         x[i] *= act2[i];
     }
@@ -259,6 +268,7 @@ pub fn compute_generic_conv1d(
     input: &[f32],
     input_size: usize,
     activation: Activation,
+    arch: Arch,
 ) {
     let ni = layer.nb_inputs;
     assert!(ni <= MAX_CONV_INPUTS_ALL);
@@ -266,8 +276,8 @@ pub fn compute_generic_conv1d(
     let hist = ni - input_size;
     tmp[..hist].copy_from_slice(&mem[..hist]);
     tmp[hist..ni].copy_from_slice(&input[..input_size]);
-    compute_linear(layer, output, &tmp);
-    compute_activation_inplace(&mut output[..layer.nb_outputs], activation);
+    compute_linear(layer, output, &tmp, arch);
+    compute_activation_inplace(&mut output[..layer.nb_outputs], activation, arch);
     mem[..hist].copy_from_slice(&tmp[input_size..input_size + hist]);
 }
 
@@ -280,6 +290,7 @@ pub fn compute_generic_conv1d_dilation(
     input_size: usize,
     dilation: usize,
     activation: Activation,
+    arch: Arch,
 ) {
     let ni = layer.nb_inputs;
     assert!(ni <= MAX_CONV_INPUTS_ALL);
@@ -295,8 +306,8 @@ pub fn compute_generic_conv1d_dilation(
         }
     }
     tmp[hist..ni].copy_from_slice(&input[..input_size]);
-    compute_linear(layer, output, &tmp);
-    compute_activation_inplace(&mut output[..layer.nb_outputs], activation);
+    compute_linear(layer, output, &tmp, arch);
+    compute_activation_inplace(&mut output[..layer.nb_outputs], activation, arch);
     if dilation == 1 {
         mem[..hist].copy_from_slice(&tmp[input_size..input_size + hist]);
     } else {
@@ -385,6 +396,7 @@ pub fn compute_conv2d(
     height: usize,
     hstride: usize,
     activation: Activation,
+    arch: Arch,
 ) {
     let time_stride = conv.in_channels * (height + conv.kheight - 1);
     assert!(conv.ktime * time_stride <= MAX_CONV2D_INPUTS);
@@ -425,6 +437,10 @@ pub fn compute_conv2d(
         }
     }
     for i in 0..conv.out_channels {
-        compute_activation_inplace(&mut out[i * hstride..i * hstride + height], activation);
+        compute_activation_inplace(
+            &mut out[i * hstride..i * hstride + height],
+            activation,
+            arch,
+        );
     }
 }

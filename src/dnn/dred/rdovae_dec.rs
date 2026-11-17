@@ -8,6 +8,7 @@ use super::super::nnet::{
     Activation, compute_generic_conv1d, compute_generic_dense, compute_generic_gru, compute_glu,
 };
 use super::rdovae_enc::conv1_cond_init;
+use crate::Arch;
 
 /// libopus `RDOVAEDecState`.
 #[derive(Clone, Debug)]
@@ -54,6 +55,7 @@ pub fn dred_rdovae_dec_init_states(
     h: &mut RdovaeDecState,
     model: &RdovaeDec<'_>,
     initial_state: &[f32],
+    arch: Arch,
 ) {
     let mut hidden = [0.0f32; DEC_HIDDEN_INIT_OUT_SIZE];
     let mut state_init = [0.0f32;
@@ -67,12 +69,14 @@ pub fn dred_rdovae_dec_init_states(
         &mut hidden,
         initial_state,
         Activation::Tanh,
+        arch,
     );
     compute_generic_dense(
         &model.dec_gru_init,
         &mut state_init,
         &hidden,
         Activation::Tanh,
+        arch,
     );
     let mut c = 0;
     for gru in [
@@ -109,6 +113,7 @@ pub fn dred_rdovae_decode_qframe(
     model: &RdovaeDec<'_>,
     qframe: &mut [f32],
     input: &[f32],
+    arch: Arch,
 ) {
     let mut buffer = [0.0f32; BUFFER_SIZE];
     let mut conv_tmp = [0.0f32; DRED_MAX_CONV_INPUTS];
@@ -119,17 +124,18 @@ pub fn dred_rdovae_decode_qframe(
         &mut buffer[oi..],
         input,
         Activation::Tanh,
+        arch,
     );
     oi += DEC_DENSE1_OUT_SIZE;
 
     // Five times: a GRU, a GLU of its state, a dense layer and a convolution.
     macro_rules! stage {
         ($gi:ident, $gr:ident, $gs:ident, $glu:ident, $gn:expr, $cd:ident, $cv:ident, $cs:ident, $cin:expr, $cn:expr) => {
-            compute_generic_gru(&model.$gi, &model.$gr, &mut st.$gs, &buffer);
-            compute_glu(&model.$glu, &mut buffer[oi..], &st.$gs);
+            compute_generic_gru(&model.$gi, &model.$gr, &mut st.$gs, &buffer, arch);
+            compute_glu(&model.$glu, &mut buffer[oi..], &st.$gs, arch);
             oi += $gn;
             conv1_cond_init(&mut st.$cs, $cin, 1, st.initialized);
-            compute_generic_dense(&model.$cd, &mut conv_tmp, &buffer, Activation::Tanh);
+            compute_generic_dense(&model.$cd, &mut conv_tmp, &buffer, Activation::Tanh, arch);
             compute_generic_conv1d(
                 &model.$cv,
                 &mut buffer[oi..],
@@ -137,6 +143,7 @@ pub fn dred_rdovae_decode_qframe(
                 &conv_tmp,
                 $cn,
                 Activation::Tanh,
+                arch,
             );
             oi += $cn;
         };
@@ -203,7 +210,7 @@ pub fn dred_rdovae_decode_qframe(
     );
     debug_assert_eq!(oi, BUFFER_SIZE);
 
-    compute_generic_dense(&model.dec_output, qframe, &buffer, Activation::Linear);
+    compute_generic_dense(&model.dec_output, qframe, &buffer, Activation::Linear, arch);
     st.initialized = true;
 }
 
@@ -216,15 +223,17 @@ pub fn dred_rdovae_decode_all(
     state: &[f32],
     latents: &[f32],
     nb_latents: usize,
+    arch: Arch,
 ) {
     let mut dec = RdovaeDecState::default();
-    dred_rdovae_dec_init_states(&mut dec, model, state);
+    dred_rdovae_dec_init_states(&mut dec, model, state, arch);
     for k in 0..nb_latents {
         dred_rdovae_decode_qframe(
             &mut dec,
             model,
             &mut features[k * DRED_QFRAME_SIZE..],
             &latents[k * (DRED_LATENT_DIM + 1)..],
+            arch,
         );
     }
 }

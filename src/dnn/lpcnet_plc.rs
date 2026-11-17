@@ -15,6 +15,7 @@ use super::models::plc::{
 };
 use super::nnet::{Activation, compute_generic_dense, compute_generic_gru};
 use super::weights::{WeightError, WeightList};
+use crate::Arch;
 
 pub const PLC_MAX_FEC: usize = 104;
 pub const CONT_VECTORS: usize = 5;
@@ -86,6 +87,8 @@ pub struct LpcnetPlcState<'a> {
     pub loss_count: i32,
     pub plc_net: PlcNetState,
     pub plc_bak: [PlcNetState; 2],
+    /// The level of the layers (`lpcnet_plc_init`: `opus_select_arch()`).
+    pub arch: Arch,
 }
 
 impl<'a> LpcnetPlcState<'a> {
@@ -109,6 +112,7 @@ impl<'a> LpcnetPlcState<'a> {
             loss_count: 0,
             plc_net: PlcNetState::ZERO,
             plc_bak: [PlcNetState::ZERO; 2],
+            arch: Arch::select(),
         };
         st.reset();
         st
@@ -157,14 +161,16 @@ impl<'a> LpcnetPlcState<'a> {
     /// `compute_plc_pred`.
     fn compute_plc_pred(&mut self, out: &mut [f32], input: &[f32]) {
         let m = &self.model;
+        let arch = self.arch;
         let net = &mut self.plc_net;
         let mut tmp = [0.0f32; PLC_DENSE_IN_OUT_SIZE];
-        compute_generic_dense(&m.plc_dense_in, &mut tmp, input, Activation::Tanh);
+        compute_generic_dense(&m.plc_dense_in, &mut tmp, input, Activation::Tanh, arch);
         compute_generic_gru(
             &m.plc_gru1_input,
             &m.plc_gru1_recurrent,
             &mut net.gru1_state,
             &tmp,
+            arch,
         );
         let g1 = net.gru1_state;
         compute_generic_gru(
@@ -172,8 +178,15 @@ impl<'a> LpcnetPlcState<'a> {
             &m.plc_gru2_recurrent,
             &mut net.gru2_state,
             &g1,
+            arch,
         );
-        compute_generic_dense(&m.plc_dense_out, out, &net.gru2_state, Activation::Linear);
+        compute_generic_dense(
+            &m.plc_dense_out,
+            out,
+            &net.gru2_state,
+            Activation::Linear,
+            arch,
+        );
     }
 
     /// `get_fec_or_pred`: the next DRED features, or a prediction. Returns
@@ -245,7 +258,12 @@ impl<'a> LpcnetPlcState<'a> {
                     *o = 32768.0f32 * v;
                 }
                 burg_cepstral_analysis(&mut plc_features, &x);
-                lpcnet_compute_single_frame_features_float(&mut self.enc, &x, &mut self.features);
+                lpcnet_compute_single_frame_features_float(
+                    &mut self.enc,
+                    &x,
+                    &mut self.features,
+                    self.arch,
+                );
                 if (self.analysis_gap == 0 || count > 0) && self.analysis_pos >= self.predict_pos {
                     let mut features = self.features;
                     self.queue_features(&features);

@@ -9,6 +9,7 @@ use super::coding::compute_quantizer;
 use super::laplace::ec_laplace_decode_p0;
 use super::rdovae_dec::dred_rdovae_decode_all;
 use super::stats::*;
+use crate::Arch;
 use crate::range_coder::RangeCoder;
 
 /// The values of `OpusDRED::fec_features`.
@@ -30,6 +31,10 @@ pub struct OpusDred {
     pub nb_latents: i32,
     pub process_stage: i32,
     pub dred_offset: i32,
+    /// The level of the RDOVAE decoder. libopus takes the level of the
+    /// `OpusDREDDecoder` (`opus_select_arch()` at its creation), which
+    /// is the one this state takes when it is created.
+    pub arch: Arch,
 }
 
 impl Default for OpusDred {
@@ -42,6 +47,7 @@ impl Default for OpusDred {
             nb_latents: 0,
             process_stage: 0,
             dred_offset: 0,
+            arch: Arch::select(),
         }
     }
 }
@@ -150,6 +156,7 @@ impl OpusDred {
                     &self.state,
                     &self.latents,
                     self.nb_latents as usize,
+                    self.arch,
                 );
                 self.process_stage = 2;
                 true

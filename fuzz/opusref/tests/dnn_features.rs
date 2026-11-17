@@ -2,6 +2,7 @@
 //! cepstrum, LPC, PitchDNN, `lpcnet_compute_single_frame_features`)
 //! against libopus: every output must have the same bits.
 #![cfg(feature = "dnn")]
+use opus_rs::Arch;
 use opus_rs::dnn::{builtin, burg, fft::Cpx, freq, lpcnet_enc, pitchdnn};
 use opusref::dnn::{self as c, Rng, same_bits};
 
@@ -72,7 +73,7 @@ fn pitchdnn_matches() {
         let iff: Vec<f32> = (0..88).map(|_| r.uni()).collect();
         let xcf: Vec<f32> = (0..pitchdnn::NB_XCORR_FEATURES).map(|_| r.uni()).collect();
         let a = unsafe { c::ref_compute_pitchdnn(cst, iff.as_ptr(), xcf.as_ptr()) };
-        let b = pitchdnn::compute_pitchdnn(&mut rst, &iff, &xcf);
+        let b = pitchdnn::compute_pitchdnn(&mut rst, &iff, &xcf, Arch::select());
         assert_eq!(a.to_bits(), b.to_bits(), "frame {f}: {a} vs {b}");
     }
     unsafe { c::ref_pitchdnn_destroy(cst) };
@@ -91,7 +92,12 @@ fn frame_features_match() {
             let mut a = [0f32; lpcnet_enc::NB_TOTAL_FEATURES];
             let mut b = [0f32; lpcnet_enc::NB_TOTAL_FEATURES];
             unsafe { c::ref_lpcnet_features_float(cst, x.as_ptr(), a.as_mut_ptr()) };
-            lpcnet_enc::lpcnet_compute_single_frame_features_float(&mut rst, x, &mut b);
+            lpcnet_enc::lpcnet_compute_single_frame_features_float(
+                &mut rst,
+                x,
+                &mut b,
+                Arch::select(),
+            );
             assert_eq!(
                 same_bits(&a, &b),
                 None,

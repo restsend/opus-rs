@@ -1,6 +1,7 @@
 //! FARGAN and the deep PLC state machine of opus-rs against libopus: the
 //! synthesized samples must have the same bits.
 #![cfg(feature = "dnn")]
+use opus_rs::Arch;
 use opus_rs::dnn::fargan::{self, FarganState};
 use opus_rs::dnn::lpcnet_enc::{self, LpcnetEncState, NB_FEATURES, NB_TOTAL_FEATURES};
 use opus_rs::dnn::lpcnet_plc::{LpcnetPlcState, PlcModels};
@@ -14,7 +15,12 @@ fn features_of(sig: &[f32]) -> Vec<[f32; NB_TOTAL_FEATURES]> {
     sig.chunks_exact(FRAME_SIZE)
         .map(|x| {
             let mut f = [0f32; NB_TOTAL_FEATURES];
-            lpcnet_enc::lpcnet_compute_single_frame_features_float(&mut st, x, &mut f);
+            lpcnet_enc::lpcnet_compute_single_frame_features_float(
+                &mut st,
+                x,
+                &mut f,
+                Arch::select(),
+            );
             f
         })
         .collect()

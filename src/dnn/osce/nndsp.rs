@@ -3,6 +3,7 @@
 //! comb filter around the pitch lag) and `adashape` (temporal envelope
 //! shaping).
 
+use crate::Arch;
 #[cfg(not(feature = "std"))]
 use crate::compat::Math;
 
@@ -200,6 +201,7 @@ pub fn adaconv_process_frame(
     gain_layer: &LinearLayer<'_>,
     cfg: &AdaConvConfig,
     window: &[f32],
+    arch: Arch,
 ) {
     const IN_STRIDE_MAX: usize = ADACONV_MAX_FRAME_SIZE + ADACONV_MAX_KERNEL_SIZE;
     let AdaConvConfig {
@@ -242,8 +244,15 @@ pub fn adaconv_process_frame(
         &mut kernel_buffer,
         features,
         Activation::Linear,
+        arch,
     );
-    compute_generic_dense(gain_layer, &mut gain_buffer, features, Activation::Tanh);
+    compute_generic_dense(
+        gain_layer,
+        &mut gain_buffer,
+        features,
+        Activation::Tanh,
+        arch,
+    );
     transform_gains(
         &mut gain_buffer[..out_channels],
         cfg.filter_gain_a,
@@ -318,6 +327,7 @@ pub fn adacomb_process_frame(
     pitch_lag: usize,
     cfg: &AdaCombConfig,
     window: &[f32],
+    arch: Arch,
 ) {
     const HIST: usize = ADACOMB_MAX_KERNEL_SIZE + ADACOMB_MAX_LAG;
     let AdaCombConfig {
@@ -348,13 +358,15 @@ pub fn adacomb_process_frame(
         &mut kernel_buffer,
         features,
         Activation::Linear,
+        arch,
     );
-    compute_generic_dense(gain_layer, &mut gain, features, Activation::Relu);
+    compute_generic_dense(gain_layer, &mut gain, features, Activation::Relu, arch);
     compute_generic_dense(
         global_gain_layer,
         &mut global_gain,
         features,
         Activation::Tanh,
+        arch,
     );
     let gain = ((cfg.log_gain_limit - gain[0]) as f64).exp() as f32;
     let global_gain =
@@ -413,6 +425,7 @@ pub fn adashape_process_frame(
     alpha1t: &LinearLayer<'_>,
     alpha2: &LinearLayer<'_>,
     cfg: &AdaShapeConfig,
+    arch: Arch,
 ) {
     let AdaShapeConfig {
         feature_dim,
@@ -459,6 +472,7 @@ pub fn adashape_process_frame(
         &in_buffer,
         feature_dim,
         Activation::Linear,
+        arch,
     );
     compute_generic_conv1d(
         alpha1t,
@@ -467,6 +481,7 @@ pub fn adashape_process_frame(
         &in_buffer[feature_dim..],
         tenv_size + 1,
         Activation::Linear,
+        arch,
     );
     // Leaky ReLU, with the double constant 0.2.
     for i in 0..hidden_dim {
@@ -484,6 +499,7 @@ pub fn adashape_process_frame(
         &in_buffer,
         hidden_dim,
         Activation::Linear,
+        arch,
     );
 
     for i in 0..hidden_dim {
@@ -495,7 +511,7 @@ pub fn adashape_process_frame(
         state.interpolate_state = tmp_buffer[i];
     }
 
-    compute_activation_inplace(&mut out_buffer[..frame_size], Activation::Exp);
+    compute_activation_inplace(&mut out_buffer[..frame_size], Activation::Exp, arch);
     for (v, &g) in x[..frame_size].iter_mut().zip(&out_buffer) {
         *v *= g;
     }

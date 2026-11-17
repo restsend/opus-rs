@@ -5,6 +5,7 @@
 //! every sample must have the same bits.
 #![cfg(feature = "dnn")]
 use core::ffi::{c_int, c_void};
+use opus_rs::Arch;
 use opus_rs::dnn::nnet::LinearLayer;
 use opus_rs::dnn::osce::{
     self as rs, OsceMethod, bbwenet as rb, features as rf, lace as rl, nndsp, nolace as rn,
@@ -170,7 +171,17 @@ fn adaconv() {
             let feat = uni_vec(&mut r, fdim, 1.0);
             let mut out = vec![0.0f32; cfg.out_channels * cfg.frame_size];
             let mut out_c = out.clone();
-            nndsp::adaconv_process_frame(&mut st, &mut out, &x, &feat, kl, gl, &cfg, window);
+            nndsp::adaconv_process_frame(
+                &mut st,
+                &mut out,
+                &x,
+                &feat,
+                kl,
+                gl,
+                &cfg,
+                window,
+                Arch::select(),
+            );
             unsafe {
                 c::ref_adaconv_process_frame(
                     cst.0,
@@ -267,7 +278,18 @@ fn adacomb() {
             let feat = uni_vec(&mut r, fdim, 1.0);
             let mut out = x.clone();
             let mut out_c = vec![0.0f32; cfg.frame_size];
-            nndsp::adacomb_process_frame(&mut st, &mut out, &feat, kl, gl, ggl, lag, &cfg, window);
+            nndsp::adacomb_process_frame(
+                &mut st,
+                &mut out,
+                &feat,
+                kl,
+                gl,
+                ggl,
+                lag,
+                &cfg,
+                window,
+                Arch::select(),
+            );
             unsafe {
                 c::ref_adacomb_process_frame(
                     cst.0,
@@ -360,7 +382,16 @@ fn adashape() {
             let feat = uni_vec(&mut r, cfg.feature_dim, 1.0);
             let mut out = x.clone();
             let mut out_c = vec![0.0f32; cfg.frame_size];
-            nndsp::adashape_process_frame(&mut st, &mut out, &feat, a1f, a1t, a2, &cfg);
+            nndsp::adashape_process_frame(
+                &mut st,
+                &mut out,
+                &feat,
+                a1f,
+                a1t,
+                a2,
+                &cfg,
+                Arch::select(),
+            );
             unsafe {
                 c::ref_adashape_process_frame(
                     cst.0,
@@ -552,7 +583,16 @@ fn lace_nolace_frames() {
         let x: Vec<f32> = xq.iter().map(|&v| v as f32 * (1.0 / 32768.0)).collect();
         let mut out = [0.0f32; 320];
         let mut out_c = [0.0f32; 320];
-        rl::lace_process_20ms_frame(&m.rs.lace, &mut ls, &mut out, &x, &f, &nb, &per);
+        rl::lace_process_20ms_frame(
+            &m.rs.lace,
+            &mut ls,
+            &mut out,
+            &x,
+            &f,
+            &nb,
+            &per,
+            Arch::select(),
+        );
         unsafe {
             c::ref_lace_process_20ms_frame(
                 m.c.0,
@@ -565,7 +605,16 @@ fn lace_nolace_frames() {
             )
         };
         check(&format!("lace frame {frame}"), &out, &out_c);
-        rn::nolace_process_20ms_frame(&m.rs.nolace, &mut ns, &mut out, &x, &f, &nb, &per);
+        rn::nolace_process_20ms_frame(
+            &m.rs.nolace,
+            &mut ns,
+            &mut out,
+            &x,
+            &f,
+            &nb,
+            &per,
+            Arch::select(),
+        );
         unsafe {
             c::ref_nolace_process_20ms_frame(
                 m.c.0,
@@ -731,7 +780,15 @@ fn bbwenet_frames() {
         let x: Vec<f32> = xq.iter().map(|&v| v as f32 * (1.0 / 32768.0)).collect();
         let mut out = vec![0.0f32; 480 * num_frames];
         let mut out_c = out.clone();
-        rb::bbwenet_process_frames(&m.rs.bbwenet, &mut st, &mut out, &x, &f, num_frames);
+        rb::bbwenet_process_frames(
+            &m.rs.bbwenet,
+            &mut st,
+            &mut out,
+            &x,
+            &f,
+            num_frames,
+            Arch::select(),
+        );
         unsafe {
             c::ref_bbwenet_process_frames(
                 m.c.0,

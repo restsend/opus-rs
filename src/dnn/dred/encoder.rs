@@ -2,6 +2,7 @@
 //! 16 kHz, computes LPCNet features and RDOVAE latents every 20 ms, and
 //! codes the newest initial state and latents into a DRED payload.
 
+use crate::Arch;
 #[cfg(not(feature = "std"))]
 use crate::compat::Math;
 
@@ -51,6 +52,9 @@ pub struct DredEnc<'a> {
     pub latents_buffer_fill: i32,
     pub state_buffer: [f32; DRED_MAX_FRAMES * DRED_STATE_DIM],
     pub resample_mem: [f32; RESAMPLING_ORDER + 1],
+    /// The level of the layers and kernels: libopus passes the Opus
+    /// encoder's (`opus_select_arch()` at its creation).
+    pub arch: Arch,
 }
 
 impl<'a> DredEnc<'a> {
@@ -77,6 +81,7 @@ impl<'a> DredEnc<'a> {
             latents_buffer_fill: 0,
             state_buffer: [0.0; DRED_MAX_FRAMES * DRED_STATE_DIM],
             resample_mem: [0.0; RESAMPLING_ORDER + 1],
+            arch: Arch::select(),
         };
         enc.reset();
         enc
@@ -116,11 +121,13 @@ impl<'a> DredEnc<'a> {
             &mut self.lpcnet_enc_state,
             &self.input_buffer,
             f0,
+            self.arch,
         );
         lpcnet_compute_single_frame_features_float(
             &mut self.lpcnet_enc_state,
             &self.input_buffer[DRED_FRAME_SIZE..],
             f1,
+            self.arch,
         );
 
         input_buffer[..DRED_NUM_FEATURES].copy_from_slice(&f0[..DRED_NUM_FEATURES]);
@@ -132,6 +139,7 @@ impl<'a> DredEnc<'a> {
             &mut self.latents_buffer,
             &mut self.state_buffer,
             &input_buffer,
+            self.arch,
         );
         self.latents_buffer_fill =
             (self.latents_buffer_fill + 1).min(DRED_NUM_REDUNDANCY_FRAMES as i32);
@@ -379,6 +387,7 @@ impl<'a> DredEnc<'a> {
             &DRED_STATE_DEAD_ZONE_Q8[so..],
             &DRED_STATE_R_Q8[so..],
             &DRED_STATE_P0_Q8[so..],
+            self.arch,
         );
         if ec.tell() > 8 * max_bytes {
             return 0;
@@ -397,6 +406,7 @@ impl<'a> DredEnc<'a> {
                 &DRED_LATENT_DEAD_ZONE_Q8[off..],
                 &DRED_LATENT_R_Q8[off..],
                 &DRED_LATENT_P0_Q8[off..],
+                self.arch,
             );
             if ec.tell() > 8 * max_bytes {
                 // Without one complete chunk, no DRED at all.
@@ -484,6 +494,7 @@ fn dred_encode_latents(
     dzone: &[u8],
     r: &[u8],
     p0: &[u8],
+    arch: Arch,
 ) {
     const MAX_DIM: usize = if DRED_LATENT_DIM > DRED_STATE_DIM {
         DRED_LATENT_DIM
@@ -500,7 +511,7 @@ fn dred_encode_latents(
         xq[i] = x[i] * scale[i] as f32 * (1.0 / 256.0);
         deadzone[i] = xq[i] / (delta[i] + eps);
     }
-    compute_activation_inplace(&mut deadzone[..dim], Activation::Tanh);
+    compute_activation_inplace(&mut deadzone[..dim], Activation::Tanh, arch);
     for i in 0..dim {
         xq[i] -= delta[i] * deadzone[i];
         let q = c_int(((0.5f32 + xq[i]) as f64).floor());

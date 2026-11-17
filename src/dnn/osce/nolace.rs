@@ -7,6 +7,7 @@ use super::nndsp::{
     AdaCombConfig, AdaCombState, AdaConvConfig, AdaConvState, AdaShapeConfig, AdaShapeState,
     adacomb_process_frame, adaconv_process_frame, adashape_process_frame, compute_overlap_window,
 };
+use crate::Arch;
 use crate::dnn::models::nolace::*;
 use crate::dnn::nnet::{
     Activation, compute_generic_conv1d, compute_generic_dense, compute_generic_gru,
@@ -114,6 +115,7 @@ fn nolace_feature_net(
     features: &[f32],
     numbits: &[f32; 2],
     periods: &[i32; 4],
+    arch: Arch,
 ) {
     let layers = &nolace.layers;
     let mut input_buffer = [0.0f32; BUF];
@@ -157,6 +159,7 @@ fn nolace_feature_net(
             &input_buffer,
             CONV1_IN,
             Activation::Tanh,
+            arch,
         );
     }
 
@@ -169,6 +172,7 @@ fn nolace_feature_net(
         &input_buffer,
         4 * NOLACE_HIDDEN_FEATURE_DIM,
         Activation::Tanh,
+        arch,
     );
 
     input_buffer[..4 * COND].copy_from_slice(&output_buffer[..4 * COND]);
@@ -177,6 +181,7 @@ fn nolace_feature_net(
         &mut output_buffer,
         &input_buffer,
         Activation::Tanh,
+        arch,
     );
 
     input_buffer[..4 * COND].copy_from_slice(&output_buffer[..4 * COND]);
@@ -186,6 +191,7 @@ fn nolace_feature_net(
             &layers.nolace_fnet_gru_recurrent,
             &mut state.feature_net_gru_state,
             &input_buffer[i * COND..],
+            arch,
         );
         output[i * COND..(i + 1) * COND].copy_from_slice(&state.feature_net_gru_state);
     }
@@ -313,6 +319,7 @@ pub fn nolace_process_20ms_frame(
     features: &[f32],
     numbits: &[f32; 2],
     periods: &[i32; 4],
+    arch: Arch,
 ) {
     const F: usize = NOLACE_FRAME_SIZE;
     const _: () = assert!(
@@ -339,6 +346,7 @@ pub fn nolace_process_20ms_frame(
         features,
         numbits,
         periods,
+        arch,
     );
 
     // 1st comb filtering stage.
@@ -353,6 +361,7 @@ pub fn nolace_process_20ms_frame(
             periods[i] as usize,
             &CF1,
             window,
+            arch,
         );
         compute_generic_conv1d(
             &layers.nolace_post_cf1,
@@ -361,6 +370,7 @@ pub fn nolace_process_20ms_frame(
             &feature_buffer[i * COND..],
             COND,
             Activation::Tanh,
+            arch,
         );
     }
     feature_buffer.copy_from_slice(&feature_transform_buffer);
@@ -377,6 +387,7 @@ pub fn nolace_process_20ms_frame(
             periods[i] as usize,
             &CF2,
             window,
+            arch,
         );
         compute_generic_conv1d(
             &layers.nolace_post_cf2,
@@ -385,6 +396,7 @@ pub fn nolace_process_20ms_frame(
             &feature_buffer[i * COND..],
             COND,
             Activation::Tanh,
+            arch,
         );
     }
     feature_buffer.copy_from_slice(&feature_transform_buffer);
@@ -400,6 +412,7 @@ pub fn nolace_process_20ms_frame(
             &layers.nolace_af1_gain,
             &AF1,
             window,
+            arch,
         );
         compute_generic_conv1d(
             &layers.nolace_post_af1,
@@ -408,6 +421,7 @@ pub fn nolace_process_20ms_frame(
             &feature_buffer[i * COND..],
             COND,
             Activation::Tanh,
+            arch,
         );
     }
     feature_buffer.copy_from_slice(&feature_transform_buffer);
@@ -422,6 +436,7 @@ pub fn nolace_process_20ms_frame(
             &layers.nolace_tdshape1_alpha1_t,
             &layers.nolace_tdshape1_alpha2,
             &TDSHAPE1,
+            arch,
         );
         adaconv_process_frame(
             &mut state.af2_state,
@@ -432,6 +447,7 @@ pub fn nolace_process_20ms_frame(
             &layers.nolace_af2_gain,
             &AF2,
             window,
+            arch,
         );
         compute_generic_conv1d(
             &layers.nolace_post_af2,
@@ -440,6 +456,7 @@ pub fn nolace_process_20ms_frame(
             &feature_buffer[i * COND..],
             COND,
             Activation::Tanh,
+            arch,
         );
     }
     feature_buffer.copy_from_slice(&feature_transform_buffer);
@@ -454,6 +471,7 @@ pub fn nolace_process_20ms_frame(
             &layers.nolace_tdshape2_alpha1_t,
             &layers.nolace_tdshape2_alpha2,
             &TDSHAPE2,
+            arch,
         );
         adaconv_process_frame(
             &mut state.af3_state,
@@ -464,6 +482,7 @@ pub fn nolace_process_20ms_frame(
             &layers.nolace_af3_gain,
             &AF3,
             window,
+            arch,
         );
         compute_generic_conv1d(
             &layers.nolace_post_af3,
@@ -472,6 +491,7 @@ pub fn nolace_process_20ms_frame(
             &feature_buffer[i * COND..],
             COND,
             Activation::Tanh,
+            arch,
         );
     }
     feature_buffer.copy_from_slice(&feature_transform_buffer);
@@ -486,6 +506,7 @@ pub fn nolace_process_20ms_frame(
             &layers.nolace_tdshape3_alpha1_t,
             &layers.nolace_tdshape3_alpha2,
             &TDSHAPE3,
+            arch,
         );
         adaconv_process_frame(
             &mut state.af4_state,
@@ -496,6 +517,7 @@ pub fn nolace_process_20ms_frame(
             &layers.nolace_af4_gain,
             &AF4,
             window,
+            arch,
         );
     }
 

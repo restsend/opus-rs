@@ -8,6 +8,7 @@ use super::nndsp::{
     AdaConvConfig, AdaConvState, AdaShapeConfig, AdaShapeState, adaconv_process_frame,
     adashape_process_frame, compute_overlap_window,
 };
+use crate::Arch;
 use crate::dnn::common::{celt_log, celt_sin};
 use crate::dnn::models::bbwenet::*;
 use crate::dnn::nnet::{
@@ -102,6 +103,7 @@ fn bbwe_feature_net(
     output: &mut [f32; 4 * BBWENET_COND_DIM],
     features: &[f32],
     num_frames: usize,
+    arch: Arch,
 ) {
     const _: () = assert!(
         GRU == BBWENET_FNET_TCONV_OUT_CHANNELS
@@ -122,6 +124,7 @@ fn bbwe_feature_net(
             &features[i * BBWENET_FEATURE_DIM..],
             BBWENET_FEATURE_DIM,
             Activation::Tanh,
+            arch,
         );
     }
     input_buffer[..num_frames * GRU].copy_from_slice(&output_buffer[..num_frames * GRU]);
@@ -134,6 +137,7 @@ fn bbwe_feature_net(
             &input_buffer[i * BBWENET_FNET_CONV1_OUT_SIZE..],
             BBWENET_FNET_CONV1_OUT_SIZE,
             Activation::Tanh,
+            arch,
         );
     }
     input_buffer[..num_frames * GRU].copy_from_slice(&output_buffer[..num_frames * GRU]);
@@ -145,6 +149,7 @@ fn bbwe_feature_net(
             &mut output_buffer[i * TC..],
             &input_buffer[i * BBWENET_FNET_CONV2_OUT_SIZE..],
             Activation::Tanh,
+            arch,
         );
     }
     input_buffer[..num_frames * TC].copy_from_slice(&output_buffer[..num_frames * TC]);
@@ -155,6 +160,7 @@ fn bbwe_feature_net(
             &layers.bbwenet_fnet_gru_recurrent,
             &mut state.feature_net_gru_state,
             &input_buffer[i * BBWENET_FNET_TCONV_OUT_CHANNELS..],
+            arch,
         );
         output[i * GRU..(i + 1) * GRU].copy_from_slice(&state.feature_net_gru_state);
     }
@@ -330,6 +336,7 @@ pub fn bbwenet_process_frames(
     x_in: &[f32],
     features: &[f32],
     num_frames: usize,
+    arch: Arch,
 ) {
     const F16: usize = BBWENET_AF1_FRAME_SIZE;
     const F32: usize = BBWENET_TDSHAPE1_FRAME_SIZE;
@@ -351,7 +358,14 @@ pub fn bbwenet_process_frames(
     let mut x_buffer2 = [0.0f32; 3 * 3 * 4 * 3 * BBWENET_FRAME_SIZE16];
     const COND: usize = BBWENET_COND_DIM;
 
-    bbwe_feature_net(bbwenet, state, &mut latent_features, features, num_frames);
+    bbwe_feature_net(
+        bbwenet,
+        state,
+        &mut latent_features,
+        features,
+        num_frames,
+        arch,
+    );
 
     // First adaptive filter: three channels at 16 kHz.
     for i in 0..num_subframes {
@@ -364,6 +378,7 @@ pub fn bbwenet_process_frames(
             &layers.bbwenet_af1_gain,
             &AF1,
             &bbwenet.window16,
+            arch,
         );
     }
 
@@ -384,6 +399,7 @@ pub fn bbwenet_process_frames(
             &layers.bbwenet_tdshape1_alpha1_t,
             &layers.bbwenet_tdshape1_alpha2,
             &TDSHAPE1,
+            arch,
         );
         apply_valin_activation(&mut x_buffer2[i * 3 * F32 + 2 * F32..(i + 1) * 3 * F32]);
     }
@@ -399,6 +415,7 @@ pub fn bbwenet_process_frames(
             &layers.bbwenet_af2_gain,
             &AF2,
             &bbwenet.window32,
+            arch,
         );
     }
 
@@ -419,6 +436,7 @@ pub fn bbwenet_process_frames(
             &layers.bbwenet_tdshape2_alpha1_t,
             &layers.bbwenet_tdshape2_alpha2,
             &TDSHAPE2,
+            arch,
         );
         apply_valin_activation(&mut x_buffer2[i * 3 * F48 + 2 * F48..(i + 1) * 3 * F48]);
     }
@@ -434,6 +452,7 @@ pub fn bbwenet_process_frames(
             &layers.bbwenet_af3_gain,
             &AF3,
             &bbwenet.window48,
+            arch,
         );
     }
 }

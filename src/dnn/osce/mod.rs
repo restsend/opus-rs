@@ -20,6 +20,7 @@ pub mod lace;
 pub mod nndsp;
 pub mod nolace;
 
+use crate::Arch;
 use crate::dnn::builtin;
 use crate::dnn::weights::{WeightError, WeightList};
 
@@ -147,6 +148,9 @@ pub struct Osce {
     pub lace: LaceState,
     pub nolace: NolaceState,
     pub method: OsceMethod,
+    /// The level of the layers and kernels: libopus passes the SILK
+    /// decoder's (`opus_select_arch()` when the Opus decoder is created).
+    pub arch: Arch,
 }
 
 impl Osce {
@@ -158,6 +162,7 @@ impl Osce {
             lace: LaceState::new(),
             nolace: NolaceState::new(),
             method: OsceMethod::None,
+            arch: Arch::select(),
         };
         osce_reset(&mut st, OSCE_DEFAULT_METHOD);
         st
@@ -176,6 +181,8 @@ impl Default for Osce {
 pub struct OsceBwe {
     pub features: OsceBweFeatureState,
     pub bbwenet: BbwenetState,
+    /// The level of the layers and kernels, as [`Osce::arch`].
+    pub arch: Arch,
 }
 
 impl OsceBwe {
@@ -186,6 +193,7 @@ impl OsceBwe {
         OsceBwe {
             features: OsceBweFeatureState::new(),
             bbwenet: BbwenetState::new(),
+            arch: Arch::select(),
         }
     }
 }
@@ -289,6 +297,7 @@ pub fn osce_enhance_frame(
             &features,
             &numbits,
             &periods,
+            st.arch,
         ),
         (OsceMethod::Nolace, Some(m)) => nolace_process_20ms_frame(
             &m.nolace,
@@ -298,6 +307,7 @@ pub fn osce_enhance_frame(
             &features,
             &numbits,
             &periods,
+            st.arch,
         ),
         _ => out_buffer.copy_from_slice(&in_buffer),
     }
@@ -339,6 +349,7 @@ pub fn osce_bwe(model: &OsceModel<'_>, st: &mut OsceBwe, xq48: &mut [i16], xq16:
         &in_buffer,
         &features,
         num_frames,
+        st.arch,
     );
 
     const D: usize = OSCE_BWE_OUTPUT_DELAY;

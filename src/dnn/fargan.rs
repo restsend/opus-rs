@@ -13,6 +13,7 @@ use super::nnet::{
 };
 use super::pitchdnn::{PITCH_MAX_PERIOD, PITCH_MIN_PERIOD};
 use super::vec::{c_int, max32, min32};
+use crate::Arch;
 
 pub const FARGAN_CONT_SAMPLES: usize = 320;
 pub const FARGAN_NB_SUBFRAMES: usize = 4;
@@ -41,6 +42,8 @@ pub struct FarganState<'a> {
     pub gru2_state: [f32; SIG_NET_GRU2_STATE_SIZE],
     pub gru3_state: [f32; SIG_NET_GRU3_STATE_SIZE],
     pub last_period: i32,
+    /// The level of the layers (`fargan_init`: `opus_select_arch()`).
+    pub arch: Arch,
 }
 
 impl<'a> FarganState<'a> {
@@ -57,6 +60,7 @@ impl<'a> FarganState<'a> {
             gru2_state: [0.0; SIG_NET_GRU2_STATE_SIZE],
             gru3_state: [0.0; SIG_NET_GRU3_STATE_SIZE],
             last_period: 0,
+            arch: Arch::select(),
         }
     }
 }
@@ -96,6 +100,7 @@ fn compute_fargan_cond(st: &mut FarganState<'_>, cond: &mut [f32], features: &[f
         &mut conv1_in,
         &dense_in,
         Activation::Tanh,
+        st.arch,
     );
     compute_generic_conv1d(
         &model.cond_net_fconv1,
@@ -104,8 +109,15 @@ fn compute_fargan_cond(st: &mut FarganState<'_>, cond: &mut [f32], features: &[f
         &conv1_in,
         COND_NET_FCONV1_IN_SIZE,
         Activation::Tanh,
+        st.arch,
     );
-    compute_generic_dense(&model.cond_net_fdense2, cond, &fdense2_in, Activation::Tanh);
+    compute_generic_dense(
+        &model.cond_net_fdense2,
+        cond,
+        &fdense2_in,
+        Activation::Tanh,
+        st.arch,
+    );
 }
 
 /// `fargan_deemphasis`.
@@ -136,6 +148,7 @@ fn run_fargan_subframe(st: &mut FarganState<'_>, pcm: &mut [f32], cond: &[f32], 
         &mut gain,
         cond,
         Activation::Linear,
+        st.arch,
     );
     let gain = (gain[0] as f64).exp() as f32;
     let gain_1 = 1.0f32 / (1e-5f32 + gain);
@@ -169,18 +182,20 @@ fn run_fargan_subframe(st: &mut FarganState<'_>, pcm: &mut [f32], cond: &[f32], 
         &fwc0_in,
         SIG_NET_INPUT_SIZE,
         Activation::Tanh,
+        st.arch,
     );
     assert_eq!(
         model.sig_net_fwc0_glu_gate.nb_outputs,
         SIG_NET_FWC0_GLU_GATE_OUT_SIZE
     );
-    compute_glu_inplace(&model.sig_net_fwc0_glu_gate, &mut gru1_in);
+    compute_glu_inplace(&model.sig_net_fwc0_glu_gate, &mut gru1_in, st.arch);
 
     compute_generic_dense(
         &model.sig_net_gain_dense_out,
         &mut pitch_gate,
         &gru1_in,
         Activation::Sigmoid,
+        st.arch,
     );
 
     let g = SIG_NET_FWC0_GLU_GATE_OUT_SIZE;
@@ -193,8 +208,14 @@ fn run_fargan_subframe(st: &mut FarganState<'_>, pcm: &mut [f32], cond: &[f32], 
         &model.sig_net_gru1_recurrent,
         &mut st.gru1_state,
         &gru1_in,
+        st.arch,
     );
-    compute_glu(&model.sig_net_gru1_glu_gate, &mut gru2_in, &st.gru1_state);
+    compute_glu(
+        &model.sig_net_gru1_glu_gate,
+        &mut gru2_in,
+        &st.gru1_state,
+        st.arch,
+    );
 
     let g = SIG_NET_GRU1_OUT_SIZE;
     for i in 0..FARGAN_SUBFRAME_SIZE {
@@ -206,8 +227,14 @@ fn run_fargan_subframe(st: &mut FarganState<'_>, pcm: &mut [f32], cond: &[f32], 
         &model.sig_net_gru2_recurrent,
         &mut st.gru2_state,
         &gru2_in,
+        st.arch,
     );
-    compute_glu(&model.sig_net_gru2_glu_gate, &mut gru3_in, &st.gru2_state);
+    compute_glu(
+        &model.sig_net_gru2_glu_gate,
+        &mut gru3_in,
+        &st.gru2_state,
+        st.arch,
+    );
 
     let g = SIG_NET_GRU2_OUT_SIZE;
     for i in 0..FARGAN_SUBFRAME_SIZE {
@@ -219,12 +246,14 @@ fn run_fargan_subframe(st: &mut FarganState<'_>, pcm: &mut [f32], cond: &[f32], 
         &model.sig_net_gru3_recurrent,
         &mut st.gru3_state,
         &gru3_in,
+        st.arch,
     );
     let o3 = SIG_NET_GRU1_OUT_SIZE + SIG_NET_GRU2_OUT_SIZE;
     compute_glu(
         &model.sig_net_gru3_glu_gate,
         &mut skip_cat[o3..],
         &st.gru3_state,
+        st.arch,
     );
 
     skip_cat[..SIG_NET_GRU1_OUT_SIZE].copy_from_slice(&gru2_in[..SIG_NET_GRU1_OUT_SIZE]);
@@ -243,14 +272,16 @@ fn run_fargan_subframe(st: &mut FarganState<'_>, pcm: &mut [f32], cond: &[f32], 
         &mut skip_out,
         &skip_cat,
         Activation::Tanh,
+        st.arch,
     );
-    compute_glu_inplace(&model.sig_net_skip_glu_gate, &mut skip_out);
+    compute_glu_inplace(&model.sig_net_skip_glu_gate, &mut skip_out, st.arch);
 
     compute_generic_dense(
         &model.sig_net_sig_dense_out,
         pcm,
         &skip_out,
         Activation::Tanh,
+        st.arch,
     );
     for v in pcm[..FARGAN_SUBFRAME_SIZE].iter_mut() {
         *v *= gain;

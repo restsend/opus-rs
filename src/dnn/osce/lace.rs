@@ -1,6 +1,7 @@
 //! LACE, the light SILK enhancer (libopus `dnn/osce.c`): a feature network
 //! conditions two adaptive comb filters and one adaptive convolution.
 
+use crate::Arch;
 #[cfg(not(feature = "std"))]
 use crate::compat::Math;
 
@@ -112,6 +113,7 @@ fn lace_feature_net(
     features: &[f32],
     numbits: &[f32; 2],
     periods: &[i32; 4],
+    arch: Arch,
 ) {
     let layers = &lace.layers;
     let mut input_buffer = [0.0f32; if BUF > CONV1_IN { BUF } else { CONV1_IN }];
@@ -155,6 +157,7 @@ fn lace_feature_net(
             &input_buffer,
             CONV1_IN,
             Activation::Tanh,
+            arch,
         );
     }
 
@@ -167,6 +170,7 @@ fn lace_feature_net(
         &input_buffer,
         4 * LACE_HIDDEN_FEATURE_DIM,
         Activation::Tanh,
+        arch,
     );
 
     input_buffer[..4 * LACE_COND_DIM].copy_from_slice(&output_buffer[..4 * LACE_COND_DIM]);
@@ -175,6 +179,7 @@ fn lace_feature_net(
         &mut output_buffer,
         &input_buffer,
         Activation::Tanh,
+        arch,
     );
 
     input_buffer[..4 * LACE_COND_DIM].copy_from_slice(&output_buffer[..4 * LACE_COND_DIM]);
@@ -184,6 +189,7 @@ fn lace_feature_net(
             &layers.lace_fnet_gru_recurrent,
             &mut state.feature_net_gru_state,
             &input_buffer[i * LACE_COND_DIM..],
+            arch,
         );
         output[i * LACE_COND_DIM..(i + 1) * LACE_COND_DIM]
             .copy_from_slice(&state.feature_net_gru_state);
@@ -236,6 +242,7 @@ pub fn lace_process_20ms_frame(
     features: &[f32],
     numbits: &[f32; 2],
     periods: &[i32; 4],
+    arch: Arch,
 ) {
     const F: usize = LACE_FRAME_SIZE;
     let layers = &lace.layers;
@@ -247,7 +254,15 @@ pub fn lace_process_20ms_frame(
         state.preemph_mem = x_in[i];
     }
 
-    lace_feature_net(lace, state, &mut feature_buffer, features, numbits, periods);
+    lace_feature_net(
+        lace,
+        state,
+        &mut feature_buffer,
+        features,
+        numbits,
+        periods,
+        arch,
+    );
 
     for i in 0..4 {
         adacomb_process_frame(
@@ -260,6 +275,7 @@ pub fn lace_process_20ms_frame(
             periods[i] as usize,
             &CF1,
             &lace.window,
+            arch,
         );
     }
     for i in 0..4 {
@@ -273,6 +289,7 @@ pub fn lace_process_20ms_frame(
             periods[i] as usize,
             &CF2,
             &lace.window,
+            arch,
         );
     }
     for i in 0..4 {
@@ -287,6 +304,7 @@ pub fn lace_process_20ms_frame(
             &layers.lace_af1_gain,
             &AF1,
             &lace.window,
+            arch,
         );
     }
 

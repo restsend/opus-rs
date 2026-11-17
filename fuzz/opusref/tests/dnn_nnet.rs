@@ -2,6 +2,7 @@
 //! C kernels on random layers and inputs: every output must have the same
 //! bits.
 #![cfg(feature = "dnn")]
+use opus_rs::Arch;
 use opus_rs::dnn::nnet::{self as rs, Activation};
 use opus_rs::dnn::weights::{F32s, I32s};
 use opusref::dnn::{self as c, Rng, same_bits};
@@ -172,10 +173,10 @@ fn activations_match() {
         unsafe {
             c::ref_compute_activation(a.as_mut_ptr(), x.as_ptr(), x.len() as i32, act as i32)
         };
-        rs::compute_activation(&mut b, &x, x.len(), act);
+        rs::compute_activation(&mut b, &x, x.len(), act, Arch::select());
         assert_eq!(same_bits(&a, &b), None, "{act:?}");
         let mut d = x.clone();
-        rs::compute_activation_inplace(&mut d, act);
+        rs::compute_activation_inplace(&mut d, act, Arch::select());
         assert_eq!(same_bits(&a, &d), None, "{act:?} in place");
     }
 }
@@ -206,7 +207,7 @@ fn linear_and_dense_match() {
         let mut a = vec![0f32; nout];
         let mut b = vec![0f32; nout];
         unsafe { c::ref_compute_generic_dense(&l.c(), a.as_mut_ptr(), x.as_ptr(), act as i32) };
-        rs::compute_generic_dense(&l.rs(), &mut b, &x, act);
+        rs::compute_generic_dense(&l.rs(), &mut b, &x, act, Arch::select());
         assert_eq!(same_bits(&a, &b), None, "iteration {it}");
     }
 }
@@ -226,7 +227,7 @@ fn diag_gru_glu_match() {
         let (mut sa, mut sb) = (st.clone(), st);
         for _ in 0..3 {
             unsafe { c::ref_compute_generic_gru(&inp.c(), &rec.c(), sa.as_mut_ptr(), x.as_ptr()) };
-            rs::compute_generic_gru(&inp.rs(), &rec.rs(), &mut sb, &x);
+            rs::compute_generic_gru(&inp.rs(), &rec.rs(), &mut sb, &x, Arch::select());
             assert_eq!(same_bits(&sa, &sb), None, "gru iteration {it}");
         }
         let glu = Layer::new(&mut r, n, n, kind, true, false);
@@ -234,10 +235,10 @@ fn diag_gru_glu_match() {
         let mut a = vec![0f32; n];
         let mut b = vec![0f32; n];
         unsafe { c::ref_compute_glu(&glu.c(), a.as_mut_ptr(), y.as_ptr()) };
-        rs::compute_glu(&glu.rs(), &mut b, &y);
+        rs::compute_glu(&glu.rs(), &mut b, &y, Arch::select());
         assert_eq!(same_bits(&a, &b), None, "glu iteration {it}");
         let mut d = y.clone();
-        rs::compute_glu_inplace(&glu.rs(), &mut d);
+        rs::compute_glu_inplace(&glu.rs(), &mut d, Arch::select());
         assert_eq!(same_bits(&a, &d), None, "glu in place iteration {it}");
     }
 }
@@ -286,6 +287,7 @@ fn conv1d_match() {
                 input_size,
                 dilation,
                 act,
+                Arch::select(),
             );
             assert_eq!(same_bits(&a, &b), None, "conv1d iteration {it}");
             assert_eq!(same_bits(&ma, &mb), None, "conv1d memory iteration {it}");
@@ -300,7 +302,15 @@ fn conv1d_match() {
                         act as i32,
                     )
                 };
-                rs::compute_generic_conv1d(&l.rs(), &mut b, &mut mb, &x, input_size, act);
+                rs::compute_generic_conv1d(
+                    &l.rs(),
+                    &mut b,
+                    &mut mb,
+                    &x,
+                    input_size,
+                    act,
+                    Arch::select(),
+                );
                 assert_eq!(same_bits(&a, &b), None, "conv1d iteration {it}");
                 assert_eq!(same_bits(&ma, &mb), None, "conv1d memory iteration {it}");
             }
@@ -359,7 +369,16 @@ fn conv2d_match() {
                     act as i32,
                 )
             };
-            rs::compute_conv2d(&rl, &mut b, &mut mb, &x, height, hstride, act);
+            rs::compute_conv2d(
+                &rl,
+                &mut b,
+                &mut mb,
+                &x,
+                height,
+                hstride,
+                act,
+                Arch::select(),
+            );
             assert_eq!(same_bits(&a, &b), None, "conv2d iteration {it}");
             assert_eq!(same_bits(&ma, &mb), None, "conv2d memory iteration {it}");
         }

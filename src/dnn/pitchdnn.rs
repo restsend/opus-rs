@@ -9,6 +9,7 @@ use super::models::pitchdnn::{
     DENSE_IF_UPSAMPLER_2_OUT_SIZE, GRU_1_STATE_SIZE, PitchDnn,
 };
 use super::nnet::{Activation, compute_conv2d, compute_generic_dense, compute_generic_gru};
+use crate::Arch;
 
 pub const PITCH_MIN_PERIOD: usize = 32;
 pub const PITCH_MAX_PERIOD: usize = 256;
@@ -49,6 +50,7 @@ pub fn compute_pitchdnn(
     st: &mut PitchDnnState<'_>,
     if_features: &[f32],
     xcorr_features: &[f32],
+    arch: Arch,
 ) -> f32 {
     let mut if1_out = [0.0f32; DENSE_IF_UPSAMPLER_1_OUT_SIZE];
     let mut downsampler_in = [0.0f32; NB_XCORR_FEATURES + DENSE_IF_UPSAMPLER_2_OUT_SIZE];
@@ -62,12 +64,14 @@ pub fn compute_pitchdnn(
         &mut if1_out,
         if_features,
         Activation::Tanh,
+        arch,
     );
     compute_generic_dense(
         &model.dense_if_upsampler_2,
         &mut downsampler_in[NB_XCORR_FEATURES..],
         &if1_out,
         Activation::Tanh,
+        arch,
     );
     conv1_tmp1[1..1 + NB_XCORR_FEATURES].copy_from_slice(&xcorr_features[..NB_XCORR_FEATURES]);
     compute_conv2d(
@@ -78,6 +82,7 @@ pub fn compute_pitchdnn(
         NB_XCORR_FEATURES,
         NB_XCORR_FEATURES + 2,
         Activation::Tanh,
+        arch,
     );
     compute_conv2d(
         &model.conv2d_2,
@@ -87,24 +92,28 @@ pub fn compute_pitchdnn(
         NB_XCORR_FEATURES,
         NB_XCORR_FEATURES,
         Activation::Tanh,
+        arch,
     );
     compute_generic_dense(
         &model.dense_downsampler,
         &mut downsampler_out,
         &downsampler_in,
         Activation::Tanh,
+        arch,
     );
     compute_generic_gru(
         &model.gru_1_input,
         &model.gru_1_recurrent,
         &mut st.gru_state,
         &downsampler_out,
+        arch,
     );
     compute_generic_dense(
         &model.dense_final_upsampler,
         &mut output,
         &st.gru_state,
         Activation::Linear,
+        arch,
     );
     let mut pos = 0usize;
     let mut maxval = -1.0f32;

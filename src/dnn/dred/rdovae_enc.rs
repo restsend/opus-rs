@@ -9,6 +9,7 @@ use super::super::nnet::{
     Activation, compute_generic_conv1d, compute_generic_conv1d_dilation, compute_generic_dense,
     compute_generic_gru,
 };
+use crate::Arch;
 
 /// libopus `RDOVAEEncState`.
 #[derive(Clone, Debug)]
@@ -75,6 +76,7 @@ pub fn dred_rdovae_encode_dframe(
     latents: &mut [f32],
     initial_state: &mut [f32],
     input: &[f32],
+    arch: Arch,
 ) {
     let mut padded_latents = [0.0f32; DRED_PADDED_LATENT_DIM];
     let mut padded_state = [0.0f32; DRED_PADDED_STATE_DIM];
@@ -88,6 +90,7 @@ pub fn dred_rdovae_encode_dframe(
         &mut buffer[oi..],
         input,
         Activation::Tanh,
+        arch,
     );
     oi += ENC_DENSE1_OUT_SIZE;
 
@@ -96,6 +99,7 @@ pub fn dred_rdovae_encode_dframe(
         &model.enc_gru1_recurrent,
         &mut st.gru1_state,
         &buffer,
+        arch,
     );
     buffer[oi..oi + ENC_GRU1_OUT_SIZE].copy_from_slice(&st.gru1_state[..ENC_GRU1_OUT_SIZE]);
     oi += ENC_GRU1_OUT_SIZE;
@@ -105,6 +109,7 @@ pub fn dred_rdovae_encode_dframe(
         &mut conv_tmp,
         &buffer,
         Activation::Tanh,
+        arch,
     );
     compute_generic_conv1d(
         &model.enc_conv1,
@@ -113,17 +118,18 @@ pub fn dred_rdovae_encode_dframe(
         &conv_tmp,
         ENC_CONV1_OUT_SIZE,
         Activation::Tanh,
+        arch,
     );
     oi += ENC_CONV1_OUT_SIZE;
 
     // GRU 2 to 5, each followed by a dilated convolution.
     macro_rules! stage {
         ($gi:ident, $gr:ident, $gs:ident, $gn:expr, $cd:ident, $cv:ident, $cs:ident, $cin:expr, $cn:expr) => {
-            compute_generic_gru(&model.$gi, &model.$gr, &mut st.$gs, &buffer);
+            compute_generic_gru(&model.$gi, &model.$gr, &mut st.$gs, &buffer, arch);
             buffer[oi..oi + $gn].copy_from_slice(&st.$gs[..$gn]);
             oi += $gn;
             conv1_cond_init(&mut st.$cs, $cin, 2, st.initialized);
-            compute_generic_dense(&model.$cd, &mut conv_tmp, &buffer, Activation::Tanh);
+            compute_generic_dense(&model.$cd, &mut conv_tmp, &buffer, Activation::Tanh, arch);
             compute_generic_conv1d_dilation(
                 &model.$cv,
                 &mut buffer[oi..],
@@ -132,6 +138,7 @@ pub fn dred_rdovae_encode_dframe(
                 $cn,
                 2,
                 Activation::Tanh,
+                arch,
             );
             oi += $cn;
         };
@@ -187,15 +194,23 @@ pub fn dred_rdovae_encode_dframe(
         &mut padded_latents,
         &buffer,
         Activation::Linear,
+        arch,
     );
     latents[..DRED_LATENT_DIM].copy_from_slice(&padded_latents[..DRED_LATENT_DIM]);
 
-    compute_generic_dense(&model.gdense1, &mut state_hidden, &buffer, Activation::Tanh);
+    compute_generic_dense(
+        &model.gdense1,
+        &mut state_hidden,
+        &buffer,
+        Activation::Tanh,
+        arch,
+    );
     compute_generic_dense(
         &model.gdense2,
         &mut padded_state,
         &state_hidden,
         Activation::Linear,
+        arch,
     );
     initial_state[..DRED_STATE_DIM].copy_from_slice(&padded_state[..DRED_STATE_DIM]);
     st.initialized = true;

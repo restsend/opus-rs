@@ -14,6 +14,7 @@ use super::freq::{
 use super::models::pitchdnn::PitchDnn;
 use super::pitchdnn::{PITCH_MAX_PERIOD, PITCH_MIN_PERIOD, PitchDnnState, compute_pitchdnn};
 use super::vec::c_int;
+use crate::Arch;
 
 pub const NB_FEATURES: usize = 20;
 pub const NB_TOTAL_FEATURES: usize = 36;
@@ -120,7 +121,7 @@ fn clamp1(x: f32) -> f32 {
 }
 
 /// `compute_frame_features`.
-pub fn compute_frame_features(st: &mut LpcnetEncState<'_>, input: &[f32]) {
+pub fn compute_frame_features(st: &mut LpcnetEncState<'_>, input: &[f32], arch: Arch) {
     let mut aligned_in = [0.0f32; FRAME_SIZE];
     let mut ly = [0.0f32; NB_BANDS];
     let mut xf = [Cpx::default(); FREQ_SIZE];
@@ -226,7 +227,7 @@ pub fn compute_frame_features(st: &mut LpcnetEncState<'_>, input: &[f32]) {
         }
     }
     let (iff, xcf) = (st.if_features, st.xcorr_features);
-    st.dnn_pitch = compute_pitchdnn(&mut st.pitchdnn, &iff, &xcf);
+    st.dnn_pitch = compute_pitchdnn(&mut st.pitchdnn, &iff, &xcf, arch);
     let pitch = c_int(
         (0.5 + 256.0 / 2.0f32.powf_f64((1.0 / 60.0) * ((st.dnn_pitch as f64 + 1.5) * 60.0)))
             .floor(),
@@ -276,11 +277,12 @@ pub fn lpcnet_compute_single_frame_features_float(
     st: &mut LpcnetEncState<'_>,
     pcm: &[f32],
     features: &mut [f32; NB_TOTAL_FEATURES],
+    arch: Arch,
 ) {
     let mut x = [0.0f32; FRAME_SIZE];
     x.copy_from_slice(&pcm[..FRAME_SIZE]);
     preemphasis(&mut x, &mut st.mem_preemph, PREEMPHASIS, FRAME_SIZE);
-    compute_frame_features(st, &x);
+    compute_frame_features(st, &x, arch);
     features.copy_from_slice(&st.features);
 }
 
@@ -290,10 +292,11 @@ pub fn lpcnet_compute_single_frame_features(
     st: &mut LpcnetEncState<'_>,
     pcm: &[i16],
     features: &mut [f32; NB_TOTAL_FEATURES],
+    arch: Arch,
 ) {
     let mut x = [0.0f32; FRAME_SIZE];
     for (o, &v) in x.iter_mut().zip(&pcm[..FRAME_SIZE]) {
         *o = v as f32;
     }
-    lpcnet_compute_single_frame_features_float(st, &x, features);
+    lpcnet_compute_single_frame_features_float(st, &x, features, arch);
 }
