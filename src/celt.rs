@@ -2068,6 +2068,20 @@ impl CeltEncoder {
         }
 
         dumpf!(
+            "analysis",
+            &[
+                self.analysis.valid as i32 as f32,
+                self.analysis.tonality,
+                self.analysis.tonality_slope,
+                self.analysis.noisiness,
+                self.analysis.activity,
+                self.analysis.music_prob,
+                self.analysis.bandwidth as f32,
+                self.analysis.activity_probability,
+                self.analysis.max_pitch_ratio,
+            ]
+        );
+        dumpf!(
             "pcm",
             &(0..api_frame_size * cc)
                 .map(|i| pcm[(i % cc) * api_frame_size + i / cc])

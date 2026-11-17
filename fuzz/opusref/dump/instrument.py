@@ -18,7 +18,7 @@ text = open(path).read()
 POINTS = [
     ('#include "celt_lpc.h"', '#include "ofz_dump.h"', 'after'),
     ('   sample_max=MAX32(st->overlap_max, celt_maxabs_res(pcm, C*(N-overlap)/st->upsample));',
-     'ofz_dumpf("pcm", pcm, CC*N/st->upsample);', 'before'),
+     'ofz_dumpf("pcm", pcm, CC*N/st->upsample); ofz_dumpf("analysis", (float[]){st->analysis.valid, st->analysis.tonality, st->analysis.tonality_slope, st->analysis.noisiness, st->analysis.activity, st->analysis.music_prob, st->analysis.bandwidth, st->analysis.activity_probability, st->analysis.max_pitch_ratio}, 9);', 'before'),
     ('   tone_freq = tone_detect(in, CC, N+overlap, &toneishness, mode->Fs);',
      'ofz_dumpf("pre", in, CC*(N+overlap)); ofz_dump1f("tone_freq", tone_freq); ofz_dump1f("toneishness", toneishness);', 'after'),
     ('   toneishness = MIN32(toneishness, QCONST32(1.f, 29)-SHL32(tf_estimate, 15));',
