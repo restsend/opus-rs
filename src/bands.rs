@@ -270,8 +270,8 @@ pub fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i32 {
     }
     let mid = emid.sqrt();
     let side = eside.sqrt();
-    let theta_norm = celt_atan2p_norm(side, mid);
-    (0.5 + 16384.0 * theta_norm) as i32
+    // The angle in Q30 (vq.c:749); compute_theta keeps its Q14 part.
+    (0.5f32 + 65536.0f32 * 16384.0 * celt_atan2p_norm(side, mid)).floor() as i32
 }
 
 #[inline(always)]
@@ -337,7 +337,7 @@ pub fn compute_theta(
 
     let mut itheta = 0;
     if ctx.encode {
-        itheta = stereo_itheta(x, y, stereo, n);
+        itheta = stereo_itheta(x, y, stereo, n) >> 16;
     }
 
     let tell_start = tell_frac_inline!(ctx.rc);

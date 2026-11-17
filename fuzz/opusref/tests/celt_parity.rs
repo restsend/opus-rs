@@ -148,3 +148,9 @@ fn dynalloc_reads_the_previous_frame_energy() {
 fn coarse_energy_follows_the_previous_error() {
     assert_eq!(identical(1, 20.0, 32, 1, "noise", 5), [true; 5]);
 }
+
+/// compute_theta takes the Q14 part of stereo_itheta's Q30 angle.
+#[test]
+fn split_angle_is_truncated_from_q30() {
+    assert_eq!(identical(1, 20.0, 64, 0, "voice", 5), [true; 5]);
+}
