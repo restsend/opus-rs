@@ -175,6 +175,28 @@ pub enum Application {
     Voip = 2048,
     Audio = 2049,
     RestrictedLowDelay = 2051,
+    /// SILK only, no CELT (libopus `OPUS_APPLICATION_RESTRICTED_SILK`):
+    /// frames of 10 ms or more, up to wideband.
+    RestrictedSilk = 2052,
+    /// CELT only, without the 4 ms delay compensation (libopus
+    /// `OPUS_APPLICATION_RESTRICTED_CELT`).
+    RestrictedCelt = 2053,
+}
+
+impl Application {
+    /// CELT-only with no delay compensation: RestrictedLowDelay and
+    /// RestrictedCelt.
+    fn celt_only(self) -> bool {
+        matches!(self, Application::RestrictedLowDelay | Application::RestrictedCelt)
+    }
+
+    /// No delay compensation in the encoder: the restricted applications.
+    fn restricted(self) -> bool {
+        matches!(
+            self,
+            Application::RestrictedLowDelay | Application::RestrictedCelt | Application::RestrictedSilk
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1442,12 +1464,12 @@ impl OpusEncoder {
             buf_f32_frame: FixedVec::new(),
             #[cfg(feature = "heap")]
             buf_f32_frame: Box::new(FixedVec::new()),
-            encoder_buffer: if matches!(application, Application::RestrictedLowDelay) {
+            encoder_buffer: if application.restricted() {
                 0
             } else {
                 (sampling_rate / 100) as usize
             },
-            delay_compensation: if matches!(application, Application::RestrictedLowDelay) {
+            delay_compensation: if application.restricted() {
                 0
             } else {
                 (sampling_rate / 250) as usize
@@ -1529,7 +1551,13 @@ impl OpusEncoder {
     /// `Fs/400 + Fs/250` (312 samples at 48 kHz), only `Fs/400` for
     /// `RestrictedLowDelay`.
     pub fn lookahead(&self) -> usize {
-        self.sampling_rate as usize / 400 + self.delay_compensation
+        let fs = self.sampling_rate as usize;
+        match self.application {
+            // libopus adds its delay compensation, which RestrictedSilk does
+            // not apply.
+            Application::RestrictedSilk => fs / 400 + fs / 250,
+            _ => fs / 400 + self.delay_compensation,
+        }
     }
 
     /// The range encoder's final state after the last packet, like libopus
@@ -1862,7 +1890,10 @@ impl OpusEncoder {
         // analysis itself (opus_encoder.c:1252).
         let depth = self.input_depth(input);
         let is_silence = is_digital_silence(input, n, depth);
-        let info = if self.complexity >= 7 && self.sampling_rate >= 16000 {
+        let info = if self.complexity >= 7
+            && self.sampling_rate >= 16000
+            && self.application != Application::RestrictedSilk
+        {
             self.analysis_read_bak = Some(self.analysis.read_position());
             let na = analysis_frame_size * self.channels;
             let pcm = match (analysis_pcm, input) {
@@ -2073,7 +2104,9 @@ impl OpusEncoder {
         // Mode selection: match C's opus_encode_native() behavior.
         // C reference auto-selects between SILK_ONLY and CELT_ONLY; Hybrid is
         // produced afterwards by bandwidth overrides (SILK-only + FB/SWB → Hybrid).
-        let mut mode = if self.application == Application::RestrictedLowDelay {
+        let mut mode = if self.application == Application::RestrictedSilk {
+            OpusMode::SilkOnly
+        } else if self.application.celt_only() {
             OpusMode::CeltOnly
         } else if let Some(forced) = self.user_forced_mode {
             forced
@@ -2112,17 +2145,17 @@ impl OpusEncoder {
             if silk_use_dtx && voice_est > 100 {
                 mode = OpusMode::SilkOnly;
             }
+            // C opus_encoder.c:1530-1532: a budget representing less than
+            // 6 kb/s (9 kb/s for frames shorter than 20 ms) cannot carry
+            // SILK — libopus's automatic choice switches to CELT-only mode,
+            // which codes it as a small valid packet instead of a PLC
+            // placeholder (issue #46).
+            let tiny_budget_rate = if frame_rate > 50 { 9000 } else { 6000 };
+            if (max_data_bytes as i32) < bitrate_to_bits(tiny_budget_rate, fs, frame_size) / 8 {
+                mode = OpusMode::CeltOnly;
+            }
             mode
         };
-
-        // C opus_encoder.c:1525-1527: a budget representing less than 6 kb/s
-        // (9 kb/s for frames shorter than 20 ms) cannot carry SILK — libopus
-        // switches to CELT-only mode, which codes it as a small valid packet
-        // instead of a PLC placeholder (issue #46).
-        let tiny_budget_rate = if frame_rate > 50 { 9000 } else { 6000 };
-        if (max_data_bytes as i32) < bitrate_to_bits(tiny_budget_rate, fs, frame_size) / 8 {
-            mode = OpusMode::CeltOnly;
-        }
 
         // SILK and Hybrid frames are 10 ms or longer: shorter frames are
         // coded in CELT, as libopus overrides the mode to meet the requested
@@ -2215,6 +2248,11 @@ impl OpusEncoder {
         }
         if self.lfe {
             bandwidth = Bandwidth::Narrowband;
+        }
+        if self.application == Application::RestrictedSilk
+            && bandwidth_fec_index(bandwidth) > bandwidth_fec_index(Bandwidth::Wideband)
+        {
+            bandwidth = Bandwidth::Wideband;
         }
         self.bandwidth = bandwidth;
 
@@ -2547,7 +2585,7 @@ impl OpusEncoder {
                         self.sampling_rate,
                     ),
                 }
-            } else if self.application != Application::RestrictedLowDelay {
+            } else if !self.application.celt_only() {
                 let filtered = state_mut(&mut self.buf_filtered);
                 for (d, &x) in filtered.iter_mut().zip(&self.buf_celt_pcm[prefix..total]) {
                     *d = float2int16(x);
@@ -3195,7 +3233,7 @@ impl OpusEncoder {
         }
         // The last 10 ms of SILK input, which a prefill reuses (libopus
         // `delay_buffer` in the fixed-point build), in every mode.
-        if self.application != Application::RestrictedLowDelay {
+        if !self.application.celt_only() {
             let n = self.encoder_buffer * self.channels;
             push_silk_history(
                 &mut self.silk_delay_buffer[..n],

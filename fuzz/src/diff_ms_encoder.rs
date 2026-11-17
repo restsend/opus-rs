@@ -73,7 +73,13 @@ enum Ctl {
 }
 
 const DURATIONS: [usize; 9] = [1, 2, 4, 8, 16, 24, 32, 40, 48];
-const APPS: [Application; 3] = [Application::Voip, Application::Audio, Application::RestrictedLowDelay];
+const APPS: [Application; 5] = [
+    Application::Voip,
+    Application::Audio,
+    Application::RestrictedLowDelay,
+    Application::RestrictedSilk,
+    Application::RestrictedCelt,
+];
 const BW: [Bandwidth; 6] = [
     Bandwidth::Auto,
     Bandwidth::Narrowband,
@@ -189,7 +195,7 @@ fn run(inp: Input) -> Result<(), Finding> {
     let mut streams = inp.streams as usize % 9;
     let mut coupled = inp.coupled as usize % 9;
     let mut mapping = inp.mapping[..channels].to_vec();
-    let app = APPS[inp.app as usize % 3];
+    let app = APPS[inp.app as usize % APPS.len()];
     let mut err = 0;
     let (re, rs) = match inp.surround {
         None => (

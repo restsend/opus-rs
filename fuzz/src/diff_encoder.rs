@@ -97,10 +97,12 @@ enum Ctl {
     Int24(bool),
 }
 
-const APPS: [(Application, i32); 3] = [
+const APPS: [(Application, i32); 5] = [
     (Application::Voip, 2048),
     (Application::Audio, 2049),
     (Application::RestrictedLowDelay, 2051),
+    (Application::RestrictedSilk, 2052),
+    (Application::RestrictedCelt, 2053),
 ];
 
 const FRAME_DURATIONS: [FrameDuration; 10] = [
@@ -371,11 +373,13 @@ pub fn fuzz(data: &[u8]) {
 fn run(inp: Input) -> Result<(), Finding> {
     let fs = RATES[inp.rate as usize % 5];
     let ch = 1 + inp.stereo as usize;
-    let (mut app, mut capp) = [
-        (Application::Voip, 2048),
-        (Application::Audio, 2049),
-        (Application::RestrictedLowDelay, 2051),
-    ][inp.app as usize % 3];
+    // 0xfe and 0xff select the restricted SILK and CELT applications; the
+    // other values keep the three of the saved reproducers.
+    let (mut app, mut capp) = APPS[match inp.app {
+        0xfe => 3,
+        0xff => 4,
+        a => a as usize % 3,
+    }];
     let mut frame = fs as usize / 400 * DURATIONS[inp.frame as usize % 9];
 
     let mut e_sc = OpusEncoder::new(fs, ch, app).unwrap();

@@ -42,7 +42,13 @@ enum Op {
 }
 
 const DURATIONS: [usize; 9] = [1, 2, 4, 8, 16, 24, 32, 40, 48];
-const APPS: [Application; 3] = [Application::Voip, Application::Audio, Application::RestrictedLowDelay];
+const APPS: [Application; 5] = [
+    Application::Voip,
+    Application::Audio,
+    Application::RestrictedLowDelay,
+    Application::RestrictedSilk,
+    Application::RestrictedCelt,
+];
 
 struct RefEnc(*mut c_void);
 impl Drop for RefEnc {
@@ -77,7 +83,7 @@ fn run(inp: Input) -> Result<(), Finding> {
         k => [4, 6, 9, 11, 16, 18, 25, 27, 36, 38, 1, 3, 49, 2, 5][k as usize - 1],
     };
     let family = if inp.family % 8 == 0 { inp.family as i32 / 8 } else { 3 };
-    let app = APPS[inp.app as usize % 3];
+    let app = APPS[inp.app as usize % APPS.len()];
     let (mut s, mut cp, mut err) = (0, 0, 0);
     let re = unsafe {
         c::opus_projection_ambisonics_encoder_create(fs, channels as c_int, family, &mut s, &mut cp, app as c_int, &mut err)

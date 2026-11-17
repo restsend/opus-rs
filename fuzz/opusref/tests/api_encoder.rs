@@ -118,7 +118,7 @@ impl Pair {
             assert_eq!(r, self.rs.final_range(), "{what}: final range");
         }
         assert_eq!(pkt[0] & 0xfc, reference[0] & 0xfc, "{what}: ToC");
-        if self.app == Application::RestrictedLowDelay as i32 {
+        if self.app == Application::RestrictedLowDelay as i32 || self.app == Application::RestrictedCelt as i32 {
             assert_eq!(pkt, reference, "{what}: bytes");
         }
     }
@@ -409,6 +409,30 @@ fn encode24_matches_libopus() {
                 let what = format!("{fs} {ch} {app:?} gain {gain} frame {f}");
                 assert_eq!(n.is_ok(), m > 0, "{what}");
                 p.check(&a[..n.unwrap()], &b[..m as usize], frame, &what);
+            }
+        }
+    }
+}
+
+/// OPUS_APPLICATION_RESTRICTED_SILK and _CELT: SILK-only streams of 10 ms
+/// frames and more up to wideband, CELT-only streams without delay
+/// compensation; the application stays fixed.
+#[test]
+fn restricted_applications_match_libopus() {
+    for app in [Application::RestrictedSilk, Application::RestrictedCelt] {
+        for (fs, ch) in [(48000, 2), (16000, 1), (24000, 1), (8000, 2)] {
+            for rate in [12000, 32000, 96000] {
+                let mut p = Pair::new(fs, ch, app);
+                assert_eq!(p.rs.lookahead() as i32, p.get(GET_LOOKAHEAD), "{app:?} {fs}");
+                p.rs.set_bitrate(rate).unwrap();
+                p.ctl(SET_BITRATE, rate);
+                for a in [Application::Voip, Application::RestrictedSilk, Application::RestrictedCelt] {
+                    assert_eq!(code(p.rs.set_application(a)), p.ctl(SET_APPLICATION, a as i32));
+                }
+                for (f, units) in [8, 1, 4, 24, 48, 2, 16, 8, 40].into_iter().enumerate() {
+                    let frame = fs as usize / 400 * units;
+                    p.encode(frame, f, &format!("{app:?} {fs} {ch} {rate} {units}"));
+                }
             }
         }
     }

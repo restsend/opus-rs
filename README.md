@@ -59,6 +59,7 @@ a libopus function return libopus's errors as the constants of
 | libopus | opus-rs |
 | --- | --- |
 | `opus_encoder_ctl(OPUS_RESET_STATE)` | `OpusEncoder::reset` |
+| `OPUS_APPLICATION_VOIP`, `_AUDIO`, `_RESTRICTED_LOWDELAY`, `_RESTRICTED_SILK`, `_RESTRICTED_CELT` | `Application::Voip`, `Audio`, `RestrictedLowDelay`, `RestrictedSilk`, `RestrictedCelt` |
 | `OPUS_SET_APPLICATION`, `OPUS_GET_APPLICATION` | `OpusEncoder::set_application`, `application` |
 | `OPUS_SET_BITRATE`, `OPUS_GET_BITRATE` | `OpusEncoder::set_bitrate`, `bitrate` (the field `bitrate_bps` holds the set value) |
 | `OPUS_SET_COMPLEXITY`, `OPUS_SET_PACKET_LOSS_PERC` | `OpusEncoder::set_complexity`, `set_packet_loss_perc` (the fields `complexity`, `packet_loss_perc` hold the values) |

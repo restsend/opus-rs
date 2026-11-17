@@ -300,7 +300,9 @@ impl MultistreamEncoder {
     fn encode_native(&mut self, pcm: MsPcm<'_>, analysis_frame_size: usize, out: &mut [u8]) -> Result<usize, &'static str> {
         let fs = self.sampling_rate;
         let vbr = self.encoders[0].vbr();
-        let frame_size = frame_size_select(fs, analysis_frame_size, self.variable_duration).ok_or(BAD_ARG)?;
+        let frame_size = frame_size_select(fs, analysis_frame_size, self.variable_duration)
+            .filter(|&n| self.application != Application::RestrictedSilk || n >= fs as usize / 100)
+            .ok_or(BAD_ARG)?;
         let streams = self.encoders.len();
         let len = match pcm {
             MsPcm::F32(x) => x.len(),

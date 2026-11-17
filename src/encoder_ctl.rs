@@ -28,7 +28,8 @@ impl OpusEncoder {
     /// `OPUS_SET_APPLICATION`): after it, and after a [`Self::reset`], only
     /// the current one is accepted, others are `error::BAD_ARG`.
     pub fn set_application(&mut self, application: Application) -> Result<(), &'static str> {
-        if !self.first && application != self.application {
+        let fixed = |a| matches!(a, Application::RestrictedSilk | Application::RestrictedCelt);
+        if fixed(self.application) || fixed(application) || (!self.first && application != self.application) {
             return Err(BAD_ARG);
         }
         self.application = application;
@@ -225,6 +226,7 @@ impl OpusEncoder {
     /// `frame_size` codes, `None` when that is no valid frame.
     pub(crate) fn select_frame_size(&self, frame_size: usize) -> Option<usize> {
         frame_size_select(self.sampling_rate, frame_size, self.variable_duration)
+            .filter(|&n| self.application != Application::RestrictedSilk || n >= self.sampling_rate as usize / 100)
     }
 
     /// libopus `OPUS_SET_FORCE_MODE`: codes every frame in `mode`, or

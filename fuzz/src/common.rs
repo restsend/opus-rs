@@ -15,7 +15,8 @@ pub const RATES: [i32; 5] = [8000, 12000, 16000, 24000, 48000];
 /// algorithm and codes the same bytes, CELT-only streams so far. A
 /// configuration joins here when its encoder becomes byte-exact.
 pub fn strict_bytes(app: opus_rs::Application) -> bool {
-    std::env::var_os("OFZ_STRICT_BYTES").is_some() && app == opus_rs::Application::RestrictedLowDelay
+    use opus_rs::Application::{RestrictedCelt, RestrictedLowDelay};
+    std::env::var_os("OFZ_STRICT_BYTES").is_some() && matches!(app, RestrictedLowDelay | RestrictedCelt)
 }
 
 /// A differential finding. `sig` groups findings that likely share a cause.
