@@ -1334,12 +1334,14 @@ mod tests {
         });
         let [mid, side] = &mut ch;
         mid.n_bits_exceeded = 10000;
-        let left: Vec<i16> = (0..160)
-            .map(|i| ((i * 37 % 101) * 60 - 3000) as i16)
-            .collect();
-        let right: Vec<i16> = (0..160)
-            .map(|i| ((i * 53 % 89) * 70 - 3000) as i16)
-            .collect();
+        let left: [i16; 160] = core::array::from_fn(|i| {
+            let i = i as i32;
+            ((i * 37 % 101) * 60 - 3000) as i16
+        });
+        let right: [i16; 160] = core::array::from_fn(|i| {
+            let i = i as i32;
+            ((i * 53 % 89) * 70 - 3000) as i16
+        });
         silk_encode_prefill_stereo(mid, side, &left, &right, 40000, 1);
         assert_eq!(mid.stereo.width_prev_q14, 0);
     }
@@ -1358,9 +1360,10 @@ mod tests {
         mid.s_cmn.s_lp.transition_frame_no = 40;
         side.s_cmn.s_lp.mode = 1;
         side.s_cmn.s_lp.transition_frame_no = 10;
-        let left: Vec<i16> = (0..160)
-            .map(|i| ((i * 37 % 101) * 60 - 3000) as i16)
-            .collect();
+        let left: [i16; 160] = core::array::from_fn(|i| {
+            let i = i as i32;
+            ((i * 37 % 101) * 60 - 3000) as i16
+        });
         silk_encode_prefill_stereo(mid, side, &left, &left, 40000, 1);
         assert_eq!(side.s_cmn.s_lp.transition_frame_no, 41);
     }
@@ -1392,12 +1395,14 @@ mod tests {
     fn to_mono_collapses_the_stereo_width() {
         // Decorrelated channels at 40 kb/s code full width, unless the
         // packet is the last before a switch to mono (stereo_LR_to_MS.c:135-140).
-        let left: Vec<i16> = (0..320)
-            .map(|i| ((i * 37 % 101) * 60 - 3000) as i16)
-            .collect();
-        let right: Vec<i16> = (0..320)
-            .map(|i| ((i * 53 % 89) * 70 - 3000) as i16)
-            .collect();
+        let left: [i16; 320] = core::array::from_fn(|i| {
+            let i = i as i32;
+            ((i * 37 % 101) * 60 - 3000) as i16
+        });
+        let right: [i16; 320] = core::array::from_fn(|i| {
+            let i = i as i32;
+            ((i * 53 % 89) * 70 - 3000) as i16
+        });
         for to_mono in [false, true] {
             let mut ch = [0, 1].map(|_| {
                 let mut enc = SilkEncoderState::default();
