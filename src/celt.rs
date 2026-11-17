@@ -2601,11 +2601,11 @@ impl CeltEncoder {
             self.intensity = self.intensity.clamp(start_band as i32, end as i32);
         }
 
-        if self.complexity == 0 {
+        // Without room for the spread symbol the decoder spreads normally,
+        // and so does the encoder (celt_encoder.c:2346-2348).
+        if self.complexity == 0 && rc.tell() + 4 <= total_bits {
             self.spread_decision = SPREAD_NONE;
-            if rc.tell() + 4 <= total_bits {
-                rc.encode_icdf(self.spread_decision, &SPREAD_ICDF, 5);
-            }
+            rc.encode_icdf(self.spread_decision, &SPREAD_ICDF, 5);
         } else if rc.tell() + 4 <= total_bits {
             if hybrid {
                 // celt_encoder.c:2308-2314: hybrid frames spread aggressively
