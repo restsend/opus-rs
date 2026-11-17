@@ -8,6 +8,7 @@
 //!   `lpcnet_enc`: the LPCNet feature analysis;
 //! - `fargan`, `lpcnet_plc`: deep packet loss concealment;
 //! - `dred`: deep redundancy (RDOVAE and its coding);
+//! - `osce`: the LACE/NoLACE enhancers and the BBWENet bandwidth extension.
 //!
 //! The arithmetic follows libopus's generic C build (no SIMD,
 //! `-ffp-contract=off`) operation for operation, including its mix of
@@ -32,6 +33,8 @@ pub mod lpcnet_tables;
 #[rustfmt::skip]
 pub mod models;
 pub mod nnet;
+#[cfg(feature = "osce")]
+pub mod osce;
 pub mod pitchdnn;
 pub mod vec;
 pub mod weights;

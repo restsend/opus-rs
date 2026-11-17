@@ -223,3 +223,6 @@ pub mod dnn_plc;
 /// DRED of the reference.
 #[cfg(feature = "dnn")]
 pub mod dnn_dred;
+/// OSCE of the reference.
+#[cfg(feature = "dnn")]
+pub mod dnn_osce;
