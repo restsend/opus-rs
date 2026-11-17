@@ -1755,6 +1755,10 @@ fn dynalloc_analysis_simple(
             follower[i] += (1.0 / 64.0) * analysis.leak_boost[i] as f32;
         }
     }
+    // At high rates the first band gets up to 1.5 more (celt_encoder.c:1232).
+    if effective_bytes > 320 {
+        follower[0] += 1.5f32.min(1e-3 * (effective_bytes - 320) as f32);
+    }
     let mut tot_boost = 0i32;
     for i in start..end {
         let f = follower[i].min(4.0);
