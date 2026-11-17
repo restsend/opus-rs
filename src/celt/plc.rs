@@ -303,15 +303,7 @@ impl CeltDecoder {
                 *m = buf[DECODE_BUFFER_SIZE - n - 1 - i];
             }
             let out = &mut buf[DECODE_BUFFER_SIZE - n..DECODE_BUFFER_SIZE - n + extrapolation_len];
-            for v in out.iter_mut() {
-                let mut sum = *v;
-                for (d, m) in lpc.iter().zip(lpc_mem.iter()) {
-                    sum -= d * m;
-                }
-                lpc_mem.copy_within(..LPC_ORDER - 1, 1);
-                lpc_mem[0] = sum;
-                *v = sum;
-            }
+            celt_iir(out, lpc, &lpc_mem);
 
             // Attenuate a synthesis louder than what it copies; drop an
             // explosion (written to also catch a NaN, as libopus does).
@@ -471,5 +463,55 @@ pub(super) fn prefilter_and_fold(
     );
     for i in 0..overlap / 2 {
         mem[x0 + i] = window[i] * etmp[overlap - 1 - i] + window[overlap - i - 1] * etmp[i];
+    }
+}
+
+/// libopus `celt_iir` (celt/celt_lpc.c:221-276), in place: `x` filtered by
+/// 1/A(z) with `den` and the past outputs `mem` (newest first), in libopus's
+/// summation order. Outputs come four at a time: each sums the history
+/// known when the group starts, oldest sample first, then adds the group's
+/// own earlier outputs, newest first.
+fn celt_iir(x: &mut [f32], den: &[f32], mem: &[f32; LPC_ORDER]) {
+    const ORD: usize = LPC_ORDER;
+    let n = x.len();
+    let mut rden = [0.0f32; ORD];
+    for i in 0..ORD {
+        rden[i] = den[ORD - i - 1];
+    }
+    // y[i] is the output i samples before x[0] counted from ORD down; zero
+    // where not computed yet.
+    let mut y = [0.0f32; ORD + MAX_PERIOD + 2 * 120];
+    for i in 0..ORD {
+        y[i] = mem[ORD - i - 1];
+    }
+    let mut i = 0;
+    while i + 3 < n {
+        let mut sum = [x[i], x[i + 1], x[i + 2], x[i + 3]];
+        for j in 0..ORD {
+            for (k, s) in sum.iter_mut().enumerate() {
+                *s -= rden[j] * y[i + j + k];
+            }
+        }
+        y[i + ORD] = sum[0];
+        sum[1] -= y[i + ORD] * den[0];
+        y[i + ORD + 1] = sum[1];
+        sum[2] -= y[i + ORD + 1] * den[0];
+        sum[2] -= y[i + ORD] * den[1];
+        y[i + ORD + 2] = sum[2];
+        sum[3] -= y[i + ORD + 2] * den[0];
+        sum[3] -= y[i + ORD + 1] * den[1];
+        sum[3] -= y[i + ORD] * den[2];
+        y[i + ORD + 3] = sum[3];
+        x[i..i + 4].copy_from_slice(&sum);
+        i += 4;
+    }
+    while i < n {
+        let mut sum = x[i];
+        for j in 0..ORD {
+            sum -= rden[j] * y[i + j];
+        }
+        y[i + ORD] = sum;
+        x[i] = sum;
+        i += 1;
     }
 }
