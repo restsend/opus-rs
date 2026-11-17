@@ -96,3 +96,4 @@ pub use vq_wmat_ec::*;
 pub type SilkFloat = f32;
 pub mod enc_api;
 pub use enc_api::*;
+pub mod float;
