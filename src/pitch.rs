@@ -96,25 +96,44 @@ fn xcorr_lags(x: &[f32], y: &[f32], out: &mut [f32], arch: crate::Arch) {
     }
 }
 
-/// libopus `celt_pitch_xcorr_avx2`: eight lags at a time, each from eight
-/// fused multiply-add sums of every eighth product (`xcorr_kernel_avx`,
-/// the last partial block with zeros in the missing lanes), added as
-/// ((s0 + s4) + (s1 + s5)) + ((s2 + s6) + (s3 + s7)); the last
-/// `max_pitch % 8` lags are `celt_inner_prod_sse`.
+/// libopus `celt_pitch_xcorr_avx2`: eight lags at a time
+/// ([`xcorr_kernel_avx`]); the last `max_pitch % 8` lags are
+/// `celt_inner_prod_sse`.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline(always)]
 fn xcorr_lags_avx2(simd: fearless_simd::Avx2, x: &[f32], y: &[f32], out: &mut [f32]) {
-    use fearless_simd::{SimdBase, SimdFloat, f32x8};
-    let len = x.len();
     let groups = out.len() & !7;
     for g in (0..groups).step_by(8) {
-        let y = &y[g..];
-        let mut acc = [f32x8::splat(simd, 0.0); 8];
+        out[g..g + 8].copy_from_slice(&xcorr_kernel_avx(simd, x, &y[g..]));
+    }
+    for (k, o) in out.iter_mut().enumerate().skip(groups) {
+        *o = inner_prod(x, &y[k..], x.len(), crate::Arch::Avx2);
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fearless_simd::kernel!(
+    /// libopus `xcorr_kernel_avx`: the inner products of `x` with
+    /// `y[k..k + x.len()]` for eight lags `k`, each from eight fused
+    /// multiply-add sums of every eighth product (the last partial block
+    /// with zeros in the missing lanes), added as
+    /// ((s0 + s4) + (s1 + s5)) + ((s2 + s6) + (s3 + s7)).
+    fn xcorr_kernel_avx(simd: Avx2, x: &[f32], y: &[f32]) -> [f32; 8] {
+        #[cfg(target_arch = "x86")]
+        use core::arch::x86::*;
+        #[cfg(target_arch = "x86_64")]
+        use core::arch::x86_64::*;
+        use fearless_simd::{Avx2, f32x8, prelude::*};
+        let len = x.len();
+        let y = &y[..len + 7];
+        let load = |v: &[f32]| -> __m256 { f32x8::from_slice(simd, &v[..8]).into() };
+        let mut acc = [_mm256_setzero_ps(); 8];
         let mut i = 0;
         while i + 8 <= len {
-            let x0 = f32x8::from_slice(simd, &x[i..i + 8]);
+            let x0 = load(&x[i..]);
+            let yw = &y[i..][..15];
             for (k, acc) in acc.iter_mut().enumerate() {
-                *acc = x0.mul_add(f32x8::from_slice(simd, &y[i + k..i + k + 8]), *acc);
+                *acc = _mm256_fmadd_ps(x0, load(&yw[k..]), *acc);
             }
             i += 8;
         }
@@ -122,22 +141,29 @@ fn xcorr_lags_avx2(simd: fearless_simd::Avx2, x: &[f32], y: &[f32], out: &mut [f
             let r = len - i;
             let mut xb = [0.0f32; 8];
             xb[..r].copy_from_slice(&x[i..]);
-            let x0 = f32x8::from_slice(simd, &xb);
+            let x0 = load(&xb);
             for (k, acc) in acc.iter_mut().enumerate() {
                 let mut yb = [0.0f32; 8];
                 yb[..r].copy_from_slice(&y[i + k..i + k + r]);
-                *acc = x0.mul_add(f32x8::from_slice(simd, &yb), *acc);
+                *acc = _mm256_fmadd_ps(x0, load(&yb), *acc);
             }
         }
-        for (k, acc) in acc.iter().enumerate() {
-            let c = acc.to_array();
-            out[g + k] = ((c[0] + c[4]) + (c[1] + c[5])) + ((c[2] + c[6]) + (c[3] + c[7]));
-        }
+        // [s0+s4 s1+s5 s2+s6 s3+s7] of lag k in the low half, of lag k + 4
+        // in the high half; two horizontal adds finish each sum.
+        let fold = |a: __m256, b: __m256| {
+            _mm256_add_ps(
+                _mm256_permute2f128_ps::<0x20>(a, b),
+                _mm256_permute2f128_ps::<0x31>(a, b),
+            )
+        };
+        let s = _mm256_hadd_ps(
+            _mm256_hadd_ps(fold(acc[0], acc[4]), fold(acc[1], acc[5])),
+            _mm256_hadd_ps(fold(acc[2], acc[6]), fold(acc[3], acc[7])),
+        );
+        let s: f32x8<Avx2> = s.simd_into(simd);
+        s.to_array()
     }
-    for (k, o) in out.iter_mut().enumerate().skip(groups) {
-        *o = inner_prod(x, &y[k..], len, crate::Arch::Avx2);
-    }
-}
+);
 
 /// [`xcorr_lags`] in blocks of `B` lags, then the rest in one block each of
 /// 32, 16, 8 and 4 lags and the last few. Its helpers take no closures so
