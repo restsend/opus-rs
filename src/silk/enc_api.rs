@@ -858,9 +858,8 @@ pub fn silk_encode(
     let mut lbrr_bits = 0i32;
 
     for frame_idx in 0..n_frames_per_packet {
-        if frame_idx == 0 {
-            silk_hp_variable_cutoff(&mut ps_enc.s_cmn);
-        }
+        // Once per frame, from the previous frame's state (enc_API.c:409).
+        silk_hp_variable_cutoff(&mut ps_enc.s_cmn);
 
         let frame_end = (sample_offset + frame_length).min(n_samples_in);
         let raw_frame = &samples_in[sample_offset..frame_end];
@@ -1055,9 +1054,7 @@ pub fn silk_encode_stereo_packet(
 
     for frame_idx in 0..n_frames_per_packet {
         let fi = frame_idx as usize;
-        if frame_idx == 0 {
-            silk_hp_variable_cutoff(&mut mid.s_cmn);
-        }
+        silk_hp_variable_cutoff(&mut mid.s_cmn);
 
         // libopus `inputBuf` layout: two history slots, then the frame.
         let offset = fi * frame_length;
