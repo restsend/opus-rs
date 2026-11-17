@@ -1947,22 +1947,31 @@ impl CeltEncoder {
         self.silk_offset = 0;
     }
 
-    /// libopus `CELT_SET_PREDICTION` (0, 1 or 2).
+    /// libopus `CELT_SET_PREDICTION` (0, 1 or 2; other values are ignored,
+    /// as libopus rejects them).
     pub fn set_prediction(&mut self, prediction: i32) {
-        self.disable_pf = prediction <= 1;
-        self.force_intra = prediction == 0;
+        if (0..=2).contains(&prediction) {
+            self.disable_pf = prediction <= 1;
+            self.force_intra = prediction == 0;
+        }
     }
 
     /// Set the highest coded band (`CELT_SET_END_BAND`). Must match the
     /// bandwidth the packet's TOC signals.
     /// libopus `CELT_SET_CHANNELS`: code `channels` (1 or 2, at most the
-    /// input's) channels.
+    /// input's) channels; other values are ignored.
     pub fn set_stream_channels(&mut self, channels: usize) {
-        self.stream_channels = channels.clamp(1, self.channels);
+        if (1..=2).contains(&channels) {
+            self.stream_channels = channels.min(self.channels);
+        }
     }
 
+    /// libopus `CELT_SET_END_BAND` (1 to the band count; other values are
+    /// ignored).
     pub fn set_end_band(&mut self, end: usize) {
-        self.end_band = end;
+        if (1..=self.mode.nb_ebands).contains(&end) {
+            self.end_band = end;
+        }
     }
 
     pub fn encode(&mut self, pcm: &[f32], frame_size: usize, rc: &mut RangeCoder) {
@@ -2004,22 +2013,33 @@ impl CeltEncoder {
         self.encode_impl(pcm, frame_size, rc, start_band, Some(total_bits))
     }
 
+    /// libopus `OPUS_SET_LSB_DEPTH` (8 to 24; other values are ignored).
     pub fn set_lsb_depth(&mut self, depth: i32) {
-        self.lsb_depth = depth.clamp(8, 24);
+        if (8..=24).contains(&depth) {
+            self.lsb_depth = depth;
+        }
     }
 
     pub fn get_lsb_depth(&self) -> i32 {
         self.lsb_depth
     }
+    /// libopus `OPUS_SET_BITRATE` on the CELT encoder: at most 750 kb/s per
+    /// channel; rates of 500 b/s or less other than `OPUS_BITRATE_MAX` (-1)
+    /// are ignored (celt_encoder.c:3001-3009).
     pub fn set_bitrate(&mut self, bitrate: i32) {
-        self.bitrate = bitrate;
+        if bitrate > 500 || bitrate == OPUS_BITRATE_MAX {
+            self.bitrate = bitrate.min(750000 * self.channels as i32);
+        }
     }
     pub fn set_vbr(&mut self, vbr: bool) {
         self.vbr = vbr;
     }
-    /// libopus `OPUS_SET_PACKET_LOSS_PERC` on the CELT encoder.
+    /// libopus `OPUS_SET_PACKET_LOSS_PERC` on the CELT encoder (0 to 100;
+    /// other values are ignored).
     pub fn set_loss_rate(&mut self, loss_rate: i32) {
-        self.loss_rate = loss_rate.clamp(0, 100);
+        if (0..=100).contains(&loss_rate) {
+            self.loss_rate = loss_rate;
+        }
     }
     /// libopus `CELT_SET_SILK_INFO`: the hybrid SILK layer's signal type
     /// and quantization offset (Q10).
@@ -4167,6 +4187,32 @@ mod tests {
             enc.encode_with_budget_vbr(&silence, 960, &mut rc, 0, 800, is_vbr);
             assert_eq!(rc.storage, bytes, "vbr {vbr} bitrate {bitrate} is_vbr {is_vbr}");
         }
+    }
+
+    /// libopus's CELT ctls reject out-of-range values and keep the setting
+    /// (celt_encoder.c:2956-3024); the bitrate is capped at 750 kb/s per
+    /// channel.
+    #[test]
+    fn out_of_range_settings_are_ignored() {
+        let mut enc = CeltEncoder::new(modes::default_mode(), 1);
+        enc.set_lsb_depth(16);
+        enc.set_lsb_depth(30);
+        enc.set_loss_rate(10);
+        enc.set_loss_rate(150);
+        enc.set_bitrate(64000);
+        enc.set_bitrate(400);
+        enc.set_end_band(17);
+        enc.set_end_band(0);
+        enc.set_stream_channels(3);
+        enc.set_prediction(1);
+        enc.set_prediction(3);
+        assert_eq!(
+            (enc.lsb_depth, enc.loss_rate, enc.bitrate, enc.end_band, enc.stream_channels),
+            (16, 10, 64000, 17, 1)
+        );
+        assert_eq!((enc.disable_pf, enc.force_intra), (true, false));
+        enc.set_bitrate(2_000_000);
+        assert_eq!(enc.bitrate, 750000);
     }
 
     #[test]
