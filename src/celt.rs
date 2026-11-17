@@ -798,6 +798,7 @@ fn comb_filter_const(
     g10: f32,
     g11: f32,
     g12: f32,
+    arch: crate::Arch,
 ) {
     let y = &mut y[y_idx..y_idx + n];
     let xs = &x[x_idx..x_idx + n];
@@ -810,8 +811,41 @@ fn comb_filter_const(
         &past[3..n + 3],
         &past[4..n + 4],
     );
+    let sse = sse_groups(n, arch);
     for i in 0..n {
-        y[i] = xs[i] + g10 * x2[i] + g11 * (x1[i] + x3[i]) + g12 * (x0[i] + x4[i]);
+        y[i] = comb_tap(
+            i < sse,
+            xs[i],
+            [x0[i], x1[i], x2[i], x3[i], x4[i]],
+            g10,
+            g11,
+            g12,
+        );
+    }
+}
+
+/// The samples of a constant comb filter of `n` samples that libopus's
+/// `comb_filter_const_sse` computes at the x86 levels: whole groups of
+/// four (the rest, which only custom modes have, as the scalar code).
+fn sse_groups(n: usize, arch: crate::Arch) -> usize {
+    if arch == crate::Arch::Scalar {
+        0
+    } else {
+        n & !3
+    }
+}
+
+/// One sample of the constant comb filter from `x` and the taps
+/// `[x0, x1, x2, x3, x4]` (x[i - T + 2] down to x[i - T - 2]): in
+/// `comb_filter_const_c`'s order, or with `sse` in
+/// `comb_filter_const_sse`'s partial sums.
+#[inline(always)]
+fn comb_tap(sse: bool, x: f32, t: [f32; 5], g10: f32, g11: f32, g12: f32) -> f32 {
+    let [x0, x1, x2, x3, x4] = t;
+    if sse {
+        (x + g10 * x2) + (g11 * (x3 + x1) + g12 * (x4 + x0))
+    } else {
+        x + g10 * x2 + g11 * (x1 + x3) + g12 * (x0 + x4)
     }
 }
 
@@ -834,7 +868,20 @@ pub fn fuzz_comb_filter(
     overlap: usize,
 ) {
     comb_filter(
-        y, x, y_idx, x_idx, t0, t1, n, g0, g1, tapset0, tapset1, window, overlap,
+        y,
+        x,
+        y_idx,
+        x_idx,
+        t0,
+        t1,
+        n,
+        g0,
+        g1,
+        tapset0,
+        tapset1,
+        window,
+        overlap,
+        crate::Arch::select(),
     )
 }
 
@@ -853,6 +900,7 @@ fn comb_filter(
     tapset1: i32,
     window: &[f32],
     overlap: usize,
+    arch: crate::Arch,
 ) {
     if g0 == 0.0 && g1 == 0.0 {
         if x_idx != y_idx || !core::ptr::eq(x.as_ptr(), y.as_ptr()) {
@@ -912,7 +960,7 @@ fn comb_filter(
         if g1 == 0.0 {
             y[y_idx + i..y_idx + n].copy_from_slice(&x[x_idx + i..x_idx + n]);
         } else {
-            comb_filter_const(y, x, y_idx + i, x_idx + i, t1, n - i, g10, g11, g12);
+            comb_filter_const(y, x, y_idx + i, x_idx + i, t1, n - i, g10, g11, g12, arch);
         }
     }
 }
@@ -933,6 +981,7 @@ fn comb_filter_inplace(
     tapset1: i32,
     window: &[f32],
     overlap: usize,
+    arch: crate::Arch,
 ) {
     if g0 == 0.0 && g1 == 0.0 {
         return;
@@ -975,10 +1024,11 @@ fn comb_filter_inplace(
     let start = y_idx + overlap - t1 - 2;
     let x = &mut buf[start..y_idx + n];
     let (mut x4, mut x3, mut x2, mut x1) = (x[0], x[1], x[2], x[3]);
+    let sse = sse_groups(n - overlap, arch);
     for i in 0..n - overlap {
         let x0 = x[i + 4];
         let y = &mut x[i + t1 + 2];
-        *y = *y + g10 * x2 + g11 * (x1 + x3) + g12 * (x0 + x4);
+        *y = comb_tap(i < sse, *y, [x0, x1, x2, x3, x4], g10, g11, g12);
         x4 = x3;
         x3 = x2;
         x2 = x1;
@@ -1170,6 +1220,7 @@ fn run_prefilter(
                 prefilter_tapset,
                 window,
                 0,
+                arch,
             );
         }
 
@@ -1189,6 +1240,7 @@ fn run_prefilter(
                 tapset_decision,
                 window,
                 overlap,
+                arch,
             );
         }
     }
@@ -1237,6 +1289,7 @@ fn run_prefilter(
                 tapset_decision,
                 window,
                 overlap,
+                arch,
             );
         }
     }
@@ -4187,6 +4240,7 @@ impl CeltDecoder {
                     pf,
                     mode.window,
                     overlap,
+                    self.arch,
                 );
             }
 
@@ -4243,6 +4297,7 @@ impl CeltDecoder {
                 self.prefilter_tapset,
                 mode.window,
                 overlap,
+                self.arch,
             );
             if lm != 0 {
                 comb_filter_inplace(
@@ -4257,6 +4312,7 @@ impl CeltDecoder {
                     prefilter_tapset as i32,
                     mode.window,
                     overlap,
+                    self.arch,
                 );
             }
         }

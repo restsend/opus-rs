@@ -202,6 +202,7 @@ impl CeltDecoder {
                 self.prefilter_tapset,
                 mode.window,
                 overlap,
+                self.arch,
             );
             if lm != 0 {
                 comb_filter_inplace(
@@ -216,6 +217,7 @@ impl CeltDecoder {
                     self.prefilter_tapset,
                     mode.window,
                     overlap,
+                    self.arch,
                 );
             }
         }
@@ -439,6 +441,7 @@ impl CeltDecoder {
                     pf.tapset_old,
                     &[],
                     0,
+                    self.arch,
                 );
                 for i in 0..overlap / 2 {
                     let (w1, w2) = (window[i], window[overlap - 1 - i]);
@@ -459,6 +462,7 @@ impl CeltDecoder {
                     pf.tapset_old,
                     &[],
                     0,
+                    self.arch,
                 );
             }
         }
@@ -521,6 +525,7 @@ impl CeltDecoder {
             &pf,
             self.mode.window,
             self.mode.overlap,
+            self.arch,
         );
     }
 
@@ -571,6 +576,7 @@ pub(super) fn prefilter_and_fold(
     pf: &Postfilter,
     window: &[f32],
     overlap: usize,
+    arch: crate::Arch,
 ) {
     let x0 = DECODE_BUFFER_SIZE - n;
     let mut etmp = [0.0f32; 128];
@@ -590,6 +596,7 @@ pub(super) fn prefilter_and_fold(
         // filtered with the current parameters (celt_decoder.c:606-609).
         &[],
         0,
+        arch,
     );
     for i in 0..overlap / 2 {
         mem[x0 + i] = window[i] * etmp[overlap - 1 - i] + window[overlap - i - 1] * etmp[i];

@@ -185,3 +185,56 @@ fn pitch_correlations() {
         }
     }
 }
+
+#[test]
+fn comb_filters() {
+    let mut seed = 4;
+    let mode = opus_rs::modes::default_mode();
+    for (arch, c) in levels() {
+        opus_rs::fuzzing::force_arch(Some(arch));
+        for k in 0..300 {
+            let hist = 1026;
+            let n = [120, 240, 480, 960][k % 4];
+            let overlap = if k % 3 == 0 { 0 } else { 120 };
+            let (t0, t1) = (15 + (k * 31) % 1000, 15 + (k * 17) % 1000);
+            let (g0, g1) = ([0.0, 0.3, 0.6][k % 3], [0.0, 0.25, 0.5][(k / 3) % 3]);
+            let (tap0, tap1) = ((k % 3) as i32, ((k / 2) % 3) as i32);
+            let x = noise(hist + n, &mut seed, 1e3);
+            let mut a = vec![0f32; hist + n];
+            opus_rs::fuzzing::comb_filter(
+                &mut a,
+                &x,
+                hist,
+                hist,
+                t0,
+                t1,
+                n,
+                g0,
+                g1,
+                tap0,
+                tap1,
+                mode.window,
+                overlap,
+            );
+            let (mut b, mut cx) = (vec![0f32; hist + n], x.clone());
+            unsafe {
+                comb_filter(
+                    b.as_mut_ptr().add(hist),
+                    cx.as_mut_ptr().add(hist),
+                    t0 as i32,
+                    t1 as i32,
+                    n as i32,
+                    g0,
+                    g1,
+                    tap0,
+                    tap1,
+                    mode.window.as_ptr(),
+                    overlap as i32,
+                    c,
+                )
+            };
+            assert_eq!(bits(&a[hist..]), bits(&b[hist..]), "comb_filter k={k}");
+        }
+    }
+    opus_rs::fuzzing::force_arch(None);
+}
