@@ -422,10 +422,8 @@ pub fn remove_doubling(
     for i in 1..=max_period {
         yy_curr = yy_curr + x[max_period - i] * x[max_period - i]
             - x[max_period + n - i] * x[max_period + n - i];
-        if yy_curr < 0.0 {
-            yy_curr = 0.0;
-        }
-        yy_lookup[i] = yy_curr;
+        // pitch.c:486: the running sum stays unclamped.
+        yy_lookup[i] = yy_curr.max(0.0);
     }
 
     let mut best_xy = xy;

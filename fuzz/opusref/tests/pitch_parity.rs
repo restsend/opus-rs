@@ -76,3 +76,10 @@ fn mismatches(long: bool) -> (usize, usize) {
 fn pitch_search_and_doubling_match_libopus() {
     assert_eq!(mismatches(false), (0, 0));
 }
+
+/// remove_doubling clamps only the stored energies at 0 and keeps the
+/// running sum (pitch.c:483-487), which cancellation can drive negative.
+#[test]
+fn doubling_keeps_the_running_energy() {
+    assert_eq!(mismatches(true), (0, 0));
+}
