@@ -72,7 +72,9 @@ fn rld_input_is_dc_rejected() {
 }
 
 /// The static mode's MDCT twiddles and window are libopus's
-/// static_modes_float.h literals.
+/// static_modes_float.h literals. libopus interleaves each size's
+/// twiddles as (-sin, cos) pairs; opus-rs keeps the N/4 cosines followed
+/// by the N/4 negated sines.
 #[test]
 fn static_mode_tables_are_libopus_literals() {
     let mode = opus_rs::modes::default_mode();
@@ -80,7 +82,12 @@ fn static_mode_tables_are_libopus_literals() {
     let mut at = 0;
     for shift in 0..4 {
         let t = mode.mdct.get_trig_debug(shift);
-        assert_eq!(t, &trig[at..at + t.len()], "shift {shift}");
+        let (cos, msin) = t.split_at(t.len() / 2);
+        let pairs = &trig[at..at + t.len()];
+        let ref_msin: Vec<f32> = pairs.iter().step_by(2).copied().collect();
+        let ref_cos: Vec<f32> = pairs.iter().skip(1).step_by(2).copied().collect();
+        assert_eq!(cos, ref_cos, "cos, shift {shift}");
+        assert_eq!(msin, ref_msin, "-sin, shift {shift}");
         at += t.len();
     }
     assert_eq!(mode.window, unsafe {
