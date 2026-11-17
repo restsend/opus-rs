@@ -161,7 +161,9 @@ fn band_energies_add_the_floor_after_the_sum() {
         let mut a = [0f32; 21];
         let mut b = [0f32; 21];
         opus_rs::bands::compute_band_energies(mode, &x, &mut a, 21, 1, 3);
-        unsafe { compute_band_energies(ref_celt_mode48(), x.as_ptr(), b.as_mut_ptr(), 21, 1, 3, 0) };
+        unsafe {
+            compute_band_energies(ref_celt_mode48(), x.as_ptr(), b.as_mut_ptr(), 21, 1, 3, 0)
+        };
         assert_eq!(a, b, "scale {scale}");
     }
 }

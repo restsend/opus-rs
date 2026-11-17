@@ -19,7 +19,13 @@ impl Pair {
         let mut err = 0;
         let re = unsafe { c::opus_encoder_create(fs, ch as i32, app as i32, &mut err) };
         assert!(!re.is_null() && err == 0);
-        Pair { rs: OpusEncoder::new(fs, ch, app).unwrap(), re, fs, ch, t: 0 }
+        Pair {
+            rs: OpusEncoder::new(fs, ch, app).unwrap(),
+            re,
+            fs,
+            ch,
+            t: 0,
+        }
     }
 
     fn ctl(&mut self, req: i32, val: i32) {
@@ -49,7 +55,9 @@ impl Pair {
                     let f = 140.0 * h as f32 * (1.0 + 0.05 * c as f32);
                     x += (2.0 * std::f32::consts::PI * f * t + h as f32).sin() / h as f32;
                 }
-                let n = ((self.t + i) as u32).wrapping_mul(2654435761).wrapping_add(c as u32 * 7919);
+                let n = ((self.t + i) as u32)
+                    .wrapping_mul(2654435761)
+                    .wrapping_add(c as u32 * 7919);
                 x += ((n >> 8) as f32 / (1 << 24) as f32 - 0.5) * 0.05;
                 out.push(0.25 * env * x);
             }
@@ -60,25 +68,51 @@ impl Pair {
 
     /// One frame into a `budget`-byte buffer: (opus-rs, libopus) packets,
     /// or the errors.
-    fn encode(&mut self, frame: usize, budget: usize) -> (Result<Vec<u8>, String>, Result<Vec<u8>, i32>) {
+    fn encode(
+        &mut self,
+        frame: usize,
+        budget: usize,
+    ) -> (Result<Vec<u8>, String>, Result<Vec<u8>, i32>) {
         let pcm = self.pcm(frame);
         let mut a = vec![0u8; budget];
         let mut b = vec![0u8; budget];
-        let r = self.rs.encode(&pcm, frame, &mut a).map(|n| a[..n].to_vec()).map_err(String::from);
+        let r = self
+            .rs
+            .encode(&pcm, frame, &mut a)
+            .map(|n| a[..n].to_vec())
+            .map_err(String::from);
         let n = unsafe {
-            c::opus_encode_float(self.re, pcm.as_ptr(), frame as i32, b.as_mut_ptr(), budget as i32)
+            c::opus_encode_float(
+                self.re,
+                pcm.as_ptr(),
+                frame as i32,
+                b.as_mut_ptr(),
+                budget as i32,
+            )
         };
-        let l = if n < 0 { Err(n) } else { Ok(b[..n as usize].to_vec()) };
+        let l = if n < 0 {
+            Err(n)
+        } else {
+            Ok(b[..n as usize].to_vec())
+        };
         (r, l)
     }
 
     /// Codes `frames` frames and asserts that both encoders accept or both
     /// reject each call, and that `same` holds for the packets.
-    fn check(&mut self, frames: usize, frame: usize, budget: usize, same: fn(&[u8], &[u8]) -> bool) {
+    fn check(
+        &mut self,
+        frames: usize,
+        frame: usize,
+        budget: usize,
+        same: fn(&[u8], &[u8]) -> bool,
+    ) {
         for f in 0..frames {
             let (r, l) = self.encode(frame, budget);
             match (&r, &l) {
-                (Ok(a), Ok(b)) => assert!(same(a, b), "frame {f}: opus-rs {a:02x?}, libopus {b:02x?}"),
+                (Ok(a), Ok(b)) => {
+                    assert!(same(a, b), "frame {f}: opus-rs {a:02x?}, libopus {b:02x?}")
+                }
                 (Err(_), Err(_)) => {}
                 _ => panic!("frame {f}: opus-rs {r:?}, libopus {l:?}"),
             }
@@ -158,7 +192,11 @@ fn small_buffer_threshold_floors_to_bytes() {
 #[test]
 fn initial_bandwidth_is_fullband() {
     for fs in [8000, 12000, 16000, 24000, 48000] {
-        for app in [Application::Voip, Application::Audio, Application::RestrictedLowDelay] {
+        for app in [
+            Application::Voip,
+            Application::Audio,
+            Application::RestrictedLowDelay,
+        ] {
             let p = Pair::new(fs, 1, app);
             let mut bw = 0i32;
             unsafe { c::opus_encoder_ctl(p.re, 4009, &mut bw as *mut i32) }; // OPUS_GET_BANDWIDTH
@@ -199,7 +237,12 @@ fn one_byte_buffers_take_a_toc_only_packet() {
 #[test]
 fn starved_multiframe_packets_are_toc_only() {
     for app in [Application::Audio, Application::RestrictedLowDelay] {
-        for (ms, bitrate, budget) in [(40, 2000, 1500), (40, 32000, 11), (60, 2000, 1500), (120, 2300, 1500)] {
+        for (ms, bitrate, budget) in [
+            (40, 2000, 1500),
+            (40, 32000, 11),
+            (60, 2000, 1500),
+            (120, 2300, 1500),
+        ] {
             let mut p = Pair::new(48000, 1, app);
             p.bitrate(bitrate);
             p.check(3, 48 * ms, budget, toc_len);
@@ -249,7 +292,10 @@ fn max_bandwidth_ignores_auto() {
     p.rs.set_max_bandwidth(opus_rs::Bandwidth::Wideband);
     p.ctl(c::SET_MAX_BANDWIDTH, 1103);
     p.rs.set_max_bandwidth(opus_rs::Bandwidth::Auto);
-    assert_ne!(unsafe { c::opus_encoder_ctl(p.re, c::SET_MAX_BANDWIDTH, -1000) }, 0);
+    assert_ne!(
+        unsafe { c::opus_encoder_ctl(p.re, c::SET_MAX_BANDWIDTH, -1000) },
+        0
+    );
     p.bitrate(64000);
     p.check(4, 960, 1500, toc);
 }
@@ -263,8 +309,9 @@ fn celt_codes_16_bit_input_at_16_bits() {
         let mut p = Pair::new(48000, 1, app);
         p.bitrate(64000);
         for f in 0..20 {
-            let pcm: Vec<i16> =
-                (0..960).map(|i| (((f * 960 + i) as f32 * 0.031).sin() * 3.0) as i16).collect();
+            let pcm: Vec<i16> = (0..960)
+                .map(|i| (((f * 960 + i) as f32 * 0.031).sin() * 3.0) as i16)
+                .collect();
             let mut a = vec![0u8; 1500];
             let mut b = vec![0u8; 1500];
             let n = p.rs.encode_i16(&pcm, 960, &mut a).unwrap();

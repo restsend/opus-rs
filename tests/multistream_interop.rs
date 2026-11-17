@@ -13,8 +13,8 @@
 //!                   mapping[channels] — i.e. OpusHead byte 9 + bytes 19..
 //! Tests are skipped if the reference files are not present.
 
-use opus_rs::multistream::{split_self_delimited, ChannelMappingTable, MultistreamDecoder};
 use opus_rs::OpusDecoder;
+use opus_rs::multistream::{ChannelMappingTable, MultistreamDecoder, split_self_delimited};
 use std::fs;
 
 const OPUS_DECODE_RATE: i32 = 48_000;
@@ -56,7 +56,12 @@ fn load_ref(path_prefix: &str) -> Option<RefData> {
         .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
         .collect();
 
-    Some(RefData { packets, ref_pcm, table, pre_skip })
+    Some(RefData {
+        packets,
+        ref_pcm,
+        table,
+        pre_skip,
+    })
 }
 
 fn goertzel_power(samples: &[f32], sample_rate: f64, freq: f64) -> f64 {
@@ -80,12 +85,15 @@ fn goertzel_power(samples: &[f32], sample_rate: f64, freq: f64) -> f64 {
 
 fn run_diff(label: &str, data: &RefData) {
     let channels = data.table.channels as usize;
-    let mut dec = MultistreamDecoder::new(OPUS_DECODE_RATE, ChannelMappingTable {
-        channels: data.table.channels,
-        stream_count: data.table.stream_count,
-        coupled_count: data.table.coupled_count,
-        mapping: data.table.mapping.clone(),
-    })
+    let mut dec = MultistreamDecoder::new(
+        OPUS_DECODE_RATE,
+        ChannelMappingTable {
+            channels: data.table.channels,
+            stream_count: data.table.stream_count,
+            coupled_count: data.table.coupled_count,
+            mapping: data.table.mapping.clone(),
+        },
+    )
     .unwrap_or_else(|e| panic!("{}: failed to build MultistreamDecoder: {}", label, e));
 
     // Frame-boundary diagnostic: independently re-run split_self_delimited on
@@ -95,12 +103,22 @@ fn run_diff(label: &str, data: &RefData) {
     // packet) to isolate whether corruption is in per-stream decode itself
     // vs. MultistreamDecoder's aggregation/scatter logic.
     for (pkt_idx, pkt) in data.packets.iter().take(2).enumerate() {
-        eprintln!("{}: packet {} total_len={} toc={:02x}", label, pkt_idx, pkt.len(), pkt[0]);
+        eprintln!(
+            "{}: packet {} total_len={} toc={:02x}",
+            label,
+            pkt_idx,
+            pkt.len(),
+            pkt[0]
+        );
         let mut rest = pkt.as_slice();
         let mut split_scratch = Vec::new();
         for s in 0..data.table.stream_count as usize {
             let is_last = s + 1 == data.table.stream_count as usize;
-            let stream_ch = if (s as u8) < data.table.coupled_count { 2 } else { 1 };
+            let stream_ch = if (s as u8) < data.table.coupled_count {
+                2
+            } else {
+                1
+            };
             let sub: Vec<u8> = if is_last {
                 rest.to_vec()
             } else {
@@ -111,7 +129,10 @@ fn run_diff(label: &str, data: &RefData) {
                         sub
                     }
                     Err(e) => {
-                        eprintln!("{}:   stream {}: split_self_delimited ERROR: {}", label, s, e);
+                        eprintln!(
+                            "{}:   stream {}: split_self_delimited ERROR: {}",
+                            label, s, e
+                        );
                         continue;
                     }
                 }
@@ -119,7 +140,11 @@ fn run_diff(label: &str, data: &RefData) {
 
             eprintln!(
                 "{}:   stream {}: len={} toc={:02x} ch={}",
-                label, s, sub.len(), sub.first().copied().unwrap_or(0), stream_ch
+                label,
+                s,
+                sub.len(),
+                sub.first().copied().unwrap_or(0),
+                stream_ch
             );
 
             match OpusDecoder::new(OPUS_DECODE_RATE, stream_ch) {
@@ -127,8 +152,12 @@ fn run_diff(label: &str, data: &RefData) {
                     let mut buf = vec![0.0f32; MAX_FRAME_SIZE * stream_ch];
                     match standalone_dec.decode(&sub, MAX_FRAME_SIZE, &mut buf) {
                         Ok(n) => {
-                            let preview: Vec<f32> = buf[..(6 * stream_ch).min(n * stream_ch)].to_vec();
-                            eprintln!("{}:     standalone decode: n={} preview={:?}", label, n, preview);
+                            let preview: Vec<f32> =
+                                buf[..(6 * stream_ch).min(n * stream_ch)].to_vec();
+                            eprintln!(
+                                "{}:     standalone decode: n={} preview={:?}",
+                                label, n, preview
+                            );
                         }
                         Err(e) => eprintln!("{}:     standalone decode ERROR: {:?}", label, e),
                     }
@@ -143,7 +172,10 @@ fn run_diff(label: &str, data: &RefData) {
         let mut buf = vec![0.0f32; MAX_FRAME_SIZE * channels];
         match dec.decode(pkt, MAX_FRAME_SIZE, &mut buf) {
             Ok(n) => rust_pcm.extend_from_slice(&buf[..n * channels]),
-            Err(e) => panic!("{}: decode error on packet (toc={:02x}): {}", label, pkt[0], e),
+            Err(e) => panic!(
+                "{}: decode error on packet (toc={:02x}): {}",
+                label, pkt[0], e
+            ),
         }
     }
 
@@ -186,15 +218,31 @@ fn run_diff(label: &str, data: &RefData) {
         rust_pcm.len(),
         data.ref_pcm.len()
     );
-    eprintln!("{}: rust[0..12]  = {:?}", label, &rust_pcm[..12.min(rust_pcm.len())]);
-    eprintln!("{}: ref[0..12]   = {:?}", label, &data.ref_pcm[..12.min(data.ref_pcm.len())]);
+    eprintln!(
+        "{}: rust[0..12]  = {:?}",
+        label,
+        &rust_pcm[..12.min(rust_pcm.len())]
+    );
+    eprintln!(
+        "{}: ref[0..12]   = {:?}",
+        label,
+        &data.ref_pcm[..12.min(data.ref_pcm.len())]
+    );
 
     // A second sample point well past any startup transient/preskip-adjacent
     // region, so a channel-order bug shows up clearly against steady-state signal.
     let mid = (rust_pcm.len() / 2 / channels) * channels;
     if mid + 12 <= rust_pcm.len() && mid + 12 <= data.ref_pcm.len() {
-        eprintln!("{}: rust[mid..mid+12] = {:?}", label, &rust_pcm[mid..mid + 12]);
-        eprintln!("{}: ref[mid..mid+12]  = {:?}", label, &data.ref_pcm[mid..mid + 12]);
+        eprintln!(
+            "{}: rust[mid..mid+12] = {:?}",
+            label,
+            &rust_pcm[mid..mid + 12]
+        );
+        eprintln!(
+            "{}: ref[mid..mid+12]  = {:?}",
+            label,
+            &data.ref_pcm[mid..mid + 12]
+        );
     }
 
     // Per-channel dominant-frequency check: identifies which known tone lives
@@ -204,19 +252,33 @@ fn run_diff(label: &str, data: &RefData) {
     const CANDIDATE_FREQS: [f64; 8] = [100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0];
     let analysis_start = (48_000usize / 10) * channels; // skip 100ms of onset
     let analysis_len = 4_800 * channels; // 100ms window
-    if analysis_start + analysis_len <= rust_pcm.len() && analysis_start + analysis_len <= data.ref_pcm.len() {
+    if analysis_start + analysis_len <= rust_pcm.len()
+        && analysis_start + analysis_len <= data.ref_pcm.len()
+    {
         for ch_idx in 0..channels {
             let rust_ch: Vec<f32> = rust_pcm[analysis_start..analysis_start + analysis_len]
-                .iter().skip(ch_idx).step_by(channels).copied().collect();
+                .iter()
+                .skip(ch_idx)
+                .step_by(channels)
+                .copied()
+                .collect();
             let ref_ch: Vec<f32> = data.ref_pcm[analysis_start..analysis_start + analysis_len]
-                .iter().skip(ch_idx).step_by(channels).copied().collect();
+                .iter()
+                .skip(ch_idx)
+                .step_by(channels)
+                .copied()
+                .collect();
 
-            let rust_dom = CANDIDATE_FREQS.iter()
+            let rust_dom = CANDIDATE_FREQS
+                .iter()
                 .map(|&f| (f, goertzel_power(&rust_ch, 48_000.0, f)))
-                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap();
-            let ref_dom = CANDIDATE_FREQS.iter()
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                .unwrap();
+            let ref_dom = CANDIDATE_FREQS
+                .iter()
                 .map(|&f| (f, goertzel_power(&ref_ch, 48_000.0, f)))
-                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap();
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                .unwrap();
 
             eprintln!(
                 "{}: channel {} — rust dominant: {:.0}Hz ({:.4}), ref dominant: {:.0}Hz ({:.4})",
@@ -270,7 +332,11 @@ fn run_diff(label: &str, data: &RefData) {
                 err += (r - f) * (r - f);
             }
             if ef > 0.0 {
-                let snr = if err > 1e-30 { 10.0 * (ef / err).log10() } else { 999.0 };
+                let snr = if err > 1e-30 {
+                    10.0 * (ef / err).log10()
+                } else {
+                    999.0
+                };
                 if snr > best_snr {
                     best_snr = snr;
                 }
@@ -306,7 +372,11 @@ fn run_diff(label: &str, data: &RefData) {
     assert!(
         n_bad == 0,
         "{}: {} of {} windows below 40dB SNR (worst {:.1}dB @ window {})",
-        label, n_bad, n_windows, worst_snr, worst_window
+        label,
+        n_bad,
+        n_windows,
+        worst_snr,
+        worst_window
     );
 }
 
@@ -337,7 +407,9 @@ fn multistream_silence_mapping_produces_silence() {
 fn diff_multistream_5_1() {
     match load_ref("surround_5_1") {
         Some(data) => run_diff("multistream 5.1 (family 1)", &data),
-        None => eprintln!("diff_multistream_5_1: SKIPPED (no fixtures at tmp/opus_ref/surround_5_1.*)"),
+        None => {
+            eprintln!("diff_multistream_5_1: SKIPPED (no fixtures at tmp/opus_ref/surround_5_1.*)")
+        }
     }
 }
 
@@ -345,6 +417,8 @@ fn diff_multistream_5_1() {
 fn diff_multistream_7_1() {
     match load_ref("surround_7_1") {
         Some(data) => run_diff("multistream 7.1 (family 1)", &data),
-        None => eprintln!("diff_multistream_7_1: SKIPPED (no fixtures at tmp/opus_ref/surround_7_1.*)"),
+        None => {
+            eprintln!("diff_multistream_7_1: SKIPPED (no fixtures at tmp/opus_ref/surround_7_1.*)")
+        }
     }
 }

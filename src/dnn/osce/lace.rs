@@ -5,11 +5,13 @@
 use crate::compat::Math;
 
 use super::nndsp::{
-    adacomb_process_frame, adaconv_process_frame, compute_overlap_window, AdaCombConfig, AdaCombState,
-    AdaConvConfig, AdaConvState,
+    AdaCombConfig, AdaCombState, AdaConvConfig, AdaConvState, adacomb_process_frame,
+    adaconv_process_frame, compute_overlap_window,
 };
 use crate::dnn::models::lace::*;
-use crate::dnn::nnet::{compute_generic_conv1d, compute_generic_dense, compute_generic_gru, Activation};
+use crate::dnn::nnet::{
+    Activation, compute_generic_conv1d, compute_generic_dense, compute_generic_gru,
+};
 
 /// libopus `LACE`: the layers and the overlap window.
 #[derive(Clone, Debug)]
@@ -64,9 +66,19 @@ impl Default for LaceState {
 /// (with `logscale` set): sines of the scaled log bit count. The bit count
 /// is limited from above only, as the C macro `CLIP` returns its argument
 /// when it is below the minimum.
-pub fn numbits_embedding(emb: &mut [f32], numbits: f32, min_val: f32, max_val: f32, scales: &[f32; 8]) {
+pub fn numbits_embedding(
+    emb: &mut [f32],
+    numbits: f32,
+    min_val: f32,
+    max_val: f32,
+    scales: &[f32; 8],
+) {
     let numbits = (numbits as f64).ln() as f32;
-    let clipped = if (if numbits < min_val { min_val } else { numbits }) > max_val { max_val } else { numbits };
+    let clipped = if (if numbits < min_val { min_val } else { numbits }) > max_val {
+        max_val
+    } else {
+        numbits
+    };
     let x = clipped - (max_val + min_val) / 2.0;
     for (e, &s) in emb[..8].iter_mut().zip(scales) {
         *e = ((x * s - 0.5f32) as f64).sin() as f32;
@@ -84,8 +96,13 @@ const LACE_NUMBITS_SCALES: [f32; 8] = [
     LACE_NUMBITS_SCALE_7,
 ];
 
-const CONV1_IN: usize = LACE_NUM_FEATURES + LACE_PITCH_EMBEDDING_DIM + 2 * LACE_NUMBITS_EMBEDDING_DIM;
-const BUF: usize = 4 * if LACE_COND_DIM > LACE_HIDDEN_FEATURE_DIM { LACE_COND_DIM } else { LACE_HIDDEN_FEATURE_DIM };
+const CONV1_IN: usize =
+    LACE_NUM_FEATURES + LACE_PITCH_EMBEDDING_DIM + 2 * LACE_NUMBITS_EMBEDDING_DIM;
+const BUF: usize = 4 * if LACE_COND_DIM > LACE_HIDDEN_FEATURE_DIM {
+    LACE_COND_DIM
+} else {
+    LACE_HIDDEN_FEATURE_DIM
+};
 
 /// `lace_feature_net`: `LACE_COND_DIM` conditioning values per subframe.
 fn lace_feature_net(
@@ -103,10 +120,25 @@ fn lace_feature_net(
     let lo = (LACE_NUMBITS_RANGE_LOW as f64).ln() as f32;
     let hi = (LACE_NUMBITS_RANGE_HIGH as f64).ln() as f32;
 
-    numbits_embedding(&mut numbits_embedded, numbits[0], lo, hi, &LACE_NUMBITS_SCALES);
-    numbits_embedding(&mut numbits_embedded[LACE_NUMBITS_EMBEDDING_DIM..], numbits[1], lo, hi, &LACE_NUMBITS_SCALES);
+    numbits_embedding(
+        &mut numbits_embedded,
+        numbits[0],
+        lo,
+        hi,
+        &LACE_NUMBITS_SCALES,
+    );
+    numbits_embedding(
+        &mut numbits_embedded[LACE_NUMBITS_EMBEDDING_DIM..],
+        numbits[1],
+        lo,
+        hi,
+        &LACE_NUMBITS_SCALES,
+    );
 
-    let emb = layers.lace_pitch_embedding.float_weights.expect("pitch embedding without float weights");
+    let emb = layers
+        .lace_pitch_embedding
+        .float_weights
+        .expect("pitch embedding without float weights");
     for i in 0..4 {
         input_buffer[..LACE_NUM_FEATURES]
             .copy_from_slice(&features[i * LACE_NUM_FEATURES..(i + 1) * LACE_NUM_FEATURES]);
@@ -114,7 +146,8 @@ fn lace_feature_net(
         for j in 0..LACE_PITCH_EMBEDDING_DIM {
             input_buffer[LACE_NUM_FEATURES + j] = emb.at(row + j);
         }
-        input_buffer[LACE_NUM_FEATURES + LACE_PITCH_EMBEDDING_DIM..CONV1_IN].copy_from_slice(&numbits_embedded);
+        input_buffer[LACE_NUM_FEATURES + LACE_PITCH_EMBEDDING_DIM..CONV1_IN]
+            .copy_from_slice(&numbits_embedded);
         compute_generic_conv1d(
             &layers.lace_fnet_conv1,
             &mut output_buffer[i * LACE_HIDDEN_FEATURE_DIM..],
@@ -125,7 +158,8 @@ fn lace_feature_net(
         );
     }
 
-    input_buffer[..4 * LACE_HIDDEN_FEATURE_DIM].copy_from_slice(&output_buffer[..4 * LACE_HIDDEN_FEATURE_DIM]);
+    input_buffer[..4 * LACE_HIDDEN_FEATURE_DIM]
+        .copy_from_slice(&output_buffer[..4 * LACE_HIDDEN_FEATURE_DIM]);
     compute_generic_conv1d(
         &layers.lace_fnet_conv2,
         &mut output_buffer,
@@ -136,7 +170,12 @@ fn lace_feature_net(
     );
 
     input_buffer[..4 * LACE_COND_DIM].copy_from_slice(&output_buffer[..4 * LACE_COND_DIM]);
-    compute_generic_dense(&layers.lace_fnet_tconv, &mut output_buffer, &input_buffer, Activation::Tanh);
+    compute_generic_dense(
+        &layers.lace_fnet_tconv,
+        &mut output_buffer,
+        &input_buffer,
+        Activation::Tanh,
+    );
 
     input_buffer[..4 * LACE_COND_DIM].copy_from_slice(&output_buffer[..4 * LACE_COND_DIM]);
     for i in 0..4 {
@@ -146,7 +185,8 @@ fn lace_feature_net(
             &mut state.feature_net_gru_state,
             &input_buffer[i * LACE_COND_DIM..],
         );
-        output[i * LACE_COND_DIM..(i + 1) * LACE_COND_DIM].copy_from_slice(&state.feature_net_gru_state);
+        output[i * LACE_COND_DIM..(i + 1) * LACE_COND_DIM]
+            .copy_from_slice(&state.feature_net_gru_state);
     }
 }
 

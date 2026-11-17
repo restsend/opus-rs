@@ -3,13 +3,17 @@
 //! the decoded signal (or from DRED), and FARGAN synthesizes them.
 
 use super::builtin;
-use super::fargan::{fargan_cont, fargan_synthesize_int, FarganState, FARGAN_CONT_SAMPLES};
-use super::freq::{burg_cepstral_analysis, FRAME_SIZE, NB_BANDS};
-use super::lpcnet_enc::{lpcnet_compute_single_frame_features_float, LpcnetEncState, NB_FEATURES, NB_TOTAL_FEATURES};
+use super::fargan::{FARGAN_CONT_SAMPLES, FarganState, fargan_cont, fargan_synthesize_int};
+use super::freq::{FRAME_SIZE, NB_BANDS, burg_cepstral_analysis};
+use super::lpcnet_enc::{
+    LpcnetEncState, NB_FEATURES, NB_TOTAL_FEATURES, lpcnet_compute_single_frame_features_float,
+};
 use super::models::fargan::Fargan;
 use super::models::pitchdnn::PitchDnn;
-use super::models::plc::{PlcModel, PLC_DENSE_IN_OUT_SIZE, PLC_GRU1_STATE_SIZE, PLC_GRU2_STATE_SIZE};
-use super::nnet::{compute_generic_dense, compute_generic_gru, Activation};
+use super::models::plc::{
+    PLC_DENSE_IN_OUT_SIZE, PLC_GRU1_STATE_SIZE, PLC_GRU2_STATE_SIZE, PlcModel,
+};
+use super::nnet::{Activation, compute_generic_dense, compute_generic_gru};
 use super::weights::{WeightError, WeightList};
 
 pub const PLC_MAX_FEC: usize = 104;
@@ -25,7 +29,10 @@ pub struct PlcNetState {
 }
 
 impl PlcNetState {
-    const ZERO: PlcNetState = PlcNetState { gru1_state: [0.0; PLC_GRU1_STATE_SIZE], gru2_state: [0.0; PLC_GRU2_STATE_SIZE] };
+    const ZERO: PlcNetState = PlcNetState {
+        gru1_state: [0.0; PLC_GRU1_STATE_SIZE],
+        gru2_state: [0.0; PLC_GRU2_STATE_SIZE],
+    };
 }
 
 /// The three models of deep PLC.
@@ -40,14 +47,22 @@ impl<'a> PlcModels<'a> {
     /// The models of a blob (libopus `lpcnet_plc_load_model`: the PLC
     /// model, PitchDNN and FARGAN from the same blob).
     pub fn from_blob(list: &WeightList<'a>) -> Result<Self, WeightError> {
-        Ok(PlcModels { plc: PlcModel::init(list)?, pitchdnn: PitchDnn::init(list)?, fargan: Fargan::init(list)? })
+        Ok(PlcModels {
+            plc: PlcModel::init(list)?,
+            pitchdnn: PitchDnn::init(list)?,
+            fargan: Fargan::init(list)?,
+        })
     }
 }
 
 impl PlcModels<'static> {
     /// The built-in models.
     pub fn builtin() -> Result<Self, WeightError> {
-        Ok(PlcModels { plc: builtin::plc()?, fargan: builtin::fargan()?, pitchdnn: builtin::pitchdnn()? })
+        Ok(PlcModels {
+            plc: builtin::plc()?,
+            fargan: builtin::fargan()?,
+            pitchdnn: builtin::pitchdnn()?,
+        })
     }
 }
 
@@ -145,9 +160,19 @@ impl<'a> LpcnetPlcState<'a> {
         let net = &mut self.plc_net;
         let mut tmp = [0.0f32; PLC_DENSE_IN_OUT_SIZE];
         compute_generic_dense(&m.plc_dense_in, &mut tmp, input, Activation::Tanh);
-        compute_generic_gru(&m.plc_gru1_input, &m.plc_gru1_recurrent, &mut net.gru1_state, &tmp);
+        compute_generic_gru(
+            &m.plc_gru1_input,
+            &m.plc_gru1_recurrent,
+            &mut net.gru1_state,
+            &tmp,
+        );
         let g1 = net.gru1_state;
-        compute_generic_gru(&m.plc_gru2_input, &m.plc_gru2_recurrent, &mut net.gru2_state, &g1);
+        compute_generic_gru(
+            &m.plc_gru2_input,
+            &m.plc_gru2_recurrent,
+            &mut net.gru2_state,
+            &g1,
+        );
         compute_generic_dense(&m.plc_dense_out, out, &net.gru2_state, Activation::Linear);
     }
 
@@ -159,7 +184,8 @@ impl<'a> LpcnetPlcState<'a> {
             let mut discard = [0.0f32; NB_FEATURES];
             out[..NB_FEATURES].copy_from_slice(&self.fec[self.fec_read_pos]);
             self.fec_read_pos += 1;
-            plc_features[2 * NB_BANDS..2 * NB_BANDS + NB_FEATURES].copy_from_slice(&out[..NB_FEATURES]);
+            plc_features[2 * NB_BANDS..2 * NB_BANDS + NB_FEATURES]
+                .copy_from_slice(&out[..NB_FEATURES]);
             plc_features[2 * NB_BANDS + NB_FEATURES] = -1.0;
             self.compute_plc_pred(&mut discard, &plc_features);
             true
@@ -176,12 +202,16 @@ impl<'a> LpcnetPlcState<'a> {
     /// `queue_features`.
     fn queue_features(&mut self, features: &[f32]) {
         self.cont_features.copy_within(NB_FEATURES.., 0);
-        self.cont_features[(CONT_VECTORS - 1) * NB_FEATURES..].copy_from_slice(&features[..NB_FEATURES]);
+        self.cont_features[(CONT_VECTORS - 1) * NB_FEATURES..]
+            .copy_from_slice(&features[..NB_FEATURES]);
     }
 
     fn push_pcm(&mut self, pcm: &[i16]) {
         self.pcm.copy_within(FRAME_SIZE.., 0);
-        for (o, &v) in self.pcm[PLC_BUF_SIZE - FRAME_SIZE..].iter_mut().zip(&pcm[..FRAME_SIZE]) {
+        for (o, &v) in self.pcm[PLC_BUF_SIZE - FRAME_SIZE..]
+            .iter_mut()
+            .zip(&pcm[..FRAME_SIZE])
+        {
             *o = (1.0f32 / 32768.0) * v as f32;
         }
     }
@@ -219,7 +249,8 @@ impl<'a> LpcnetPlcState<'a> {
                 if (self.analysis_gap == 0 || count > 0) && self.analysis_pos >= self.predict_pos {
                     let mut features = self.features;
                     self.queue_features(&features);
-                    plc_features[2 * NB_BANDS..2 * NB_BANDS + NB_FEATURES].copy_from_slice(&features[..NB_FEATURES]);
+                    plc_features[2 * NB_BANDS..2 * NB_BANDS + NB_FEATURES]
+                        .copy_from_slice(&features[..NB_FEATURES]);
                     plc_features[2 * NB_BANDS + NB_FEATURES] = 1.0;
                     self.plc_bak[0] = self.plc_bak[1];
                     self.plc_bak[1] = self.plc_net;
@@ -238,7 +269,11 @@ impl<'a> LpcnetPlcState<'a> {
                 self.queue_features(&features);
             }
             let cont = self.cont_features;
-            fargan_cont(&mut self.fargan, &self.pcm[PLC_BUF_SIZE - FARGAN_CONT_SAMPLES..], &cont);
+            fargan_cont(
+                &mut self.fargan,
+                &self.pcm[PLC_BUF_SIZE - FARGAN_CONT_SAMPLES..],
+                &cont,
+            );
             self.analysis_gap = 0;
         }
         self.plc_bak[0] = self.plc_bak[1];

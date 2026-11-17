@@ -1,6 +1,8 @@
 //! The DRED payload reader (libopus `dnn/dred_decoder.c`).
 
-use super::super::models::dred_rdovae_constants::{DRED_LATENT_DIM, DRED_NUM_FEATURES, DRED_STATE_DIM};
+use super::super::models::dred_rdovae_constants::{
+    DRED_LATENT_DIM, DRED_NUM_FEATURES, DRED_STATE_DIM,
+};
 use super::super::models::dred_rdovae_dec::RdovaeDec;
 use super::DRED_NUM_REDUNDANCY_FRAMES;
 use super::coding::compute_quantizer;
@@ -64,12 +66,21 @@ impl OpusDred {
     /// `dred_frame_offset` is the position of the DRED extension in the
     /// packet, in 2.5 ms units. Latent slots past the decoded ones keep
     /// their values. Returns the number of latent vectors read.
-    pub fn ec_decode(&mut self, bytes: &[u8], min_feature_frames: i32, dred_frame_offset: i32) -> i32 {
+    pub fn ec_decode(
+        &mut self,
+        bytes: &[u8],
+        min_feature_frames: i32,
+        dred_frame_offset: i32,
+    ) -> i32 {
         let num_bytes = bytes.len() as i32;
         let mut ec = RangeCoder::new_decoder(bytes);
         let q0 = ec.dec_uint(16) as i32;
         let dq = ec.dec_uint(8) as i32;
-        let extra_offset = if ec.dec_uint(2) != 0 { 32 * ec.dec_uint(256) as i32 } else { 0 };
+        let extra_offset = if ec.dec_uint(2) != 0 {
+            32 * ec.dec_uint(256) as i32
+        } else {
+            0
+        };
         // The total offset, including the DRED position in the packet.
         self.dred_offset = 16 - ec.dec_uint(32) as i32 - extra_offset + dred_frame_offset;
         let mut qmax = 15;

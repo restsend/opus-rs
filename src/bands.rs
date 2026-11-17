@@ -1,6 +1,6 @@
 use crate::compat::with_scratch;
-use crate::modes::CeltMode;
 use crate::mathops::celt_log2;
+use crate::modes::CeltMode;
 use crate::pvq::*;
 use crate::range_coder::RangeCoder;
 use crate::rate::{BITRES, bits2pulses, get_pulses, pulses2bits};
@@ -1485,7 +1485,6 @@ fn prepare_lowband_views<'a>(
 
     (Some(&mut norm[lb_start..lb_end]), None)
 }
-
 
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]

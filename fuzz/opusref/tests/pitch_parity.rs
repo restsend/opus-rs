@@ -23,15 +23,35 @@ fn signals() -> Vec<Vec<f32>> {
         let x: Vec<f32> = (0..LEN)
             .map(|i| {
                 let t = i as f32 / 24000.0;
-                let voice: f32 = (1..8).map(|h| (h as f32 * f0 * t * 6.2832).sin() / h as f32).sum();
+                let voice: f32 = (1..8)
+                    .map(|h| (h as f32 * f0 * t * 6.2832).sin() / h as f32)
+                    .sum();
                 match k % 5 {
                     0 => voice * 3000.0 + rnd() * 30.0,
                     1 => rnd() * 1000.0,
                     // Loud history, then a quiet stretch.
-                    2 => if i < split { voice * loud * 1000.0 } else { voice * 0.01 + rnd() * 1e-3 },
+                    2 => {
+                        if i < split {
+                            voice * loud * 1000.0
+                        } else {
+                            voice * 0.01 + rnd() * 1e-3
+                        }
+                    }
                     // Quiet, then loud: the running energies cancel.
-                    3 if k % 10 == 3 => if i >= split { voice * loud * 1000.0 } else { voice * 0.01 + rnd() * 1e-3 },
-                    3 => if i % (60 + k % 50) == 0 { 5000.0 } else { 0.0 },
+                    3 if k % 10 == 3 => {
+                        if i >= split {
+                            voice * loud * 1000.0
+                        } else {
+                            voice * 0.01 + rnd() * 1e-3
+                        }
+                    }
+                    3 => {
+                        if i % (60 + k % 50) == 0 {
+                            5000.0
+                        } else {
+                            0.0
+                        }
+                    }
                     // Quiet noise: correlations of order 1, where the
                     // value outside the candidate windows weighs.
                     4 if k % 10 == 9 => rnd() * 0.05,
@@ -49,23 +69,52 @@ fn signals() -> Vec<Vec<f32>> {
 fn mismatches(long: bool) -> (usize, usize) {
     let (mut search, mut doubling) = (0, 0);
     for (k, x) in signals().iter().enumerate() {
-        let a = opus_rs::pitch::pitch_search(&x[MAX_PERIOD >> 1..], x, N, MAX_PERIOD - 3 * MIN_PERIOD);
+        let a =
+            opus_rs::pitch::pitch_search(&x[MAX_PERIOD >> 1..], x, N, MAX_PERIOD - 3 * MIN_PERIOD);
         let mut b = 0;
         let mut y = x.clone();
         unsafe {
-            pitch_search(x[MAX_PERIOD >> 1..].as_ptr(), y.as_mut_ptr(), N as i32, (MAX_PERIOD - 3 * MIN_PERIOD) as i32, &mut b, 0)
+            pitch_search(
+                x[MAX_PERIOD >> 1..].as_ptr(),
+                y.as_mut_ptr(),
+                N as i32,
+                (MAX_PERIOD - 3 * MIN_PERIOD) as i32,
+                &mut b,
+                0,
+            )
         };
         search += (a != b as usize) as usize;
         // Long periods take their energies from the end of the running sum.
-        let t0 = if long { 962 + k % 60 } else { (MAX_PERIOD - b as usize).min(MAX_PERIOD - 2) };
+        let t0 = if long {
+            962 + k % 60
+        } else {
+            (MAX_PERIOD - b as usize).min(MAX_PERIOD - 2)
+        };
         {
             let (prev_period, prev_gain) = (MIN_PERIOD + k % 300, (k % 5) as f32 * 0.2);
             let mut ta = t0;
-            let ga = opus_rs::pitch::remove_doubling(x, MAX_PERIOD, MIN_PERIOD, N, &mut ta, prev_period, prev_gain);
+            let ga = opus_rs::pitch::remove_doubling(
+                x,
+                MAX_PERIOD,
+                MIN_PERIOD,
+                N,
+                &mut ta,
+                prev_period,
+                prev_gain,
+            );
             let mut tb = t0 as i32;
             let mut y = x.clone();
             let gb = unsafe {
-                remove_doubling(y.as_mut_ptr(), MAX_PERIOD as i32, MIN_PERIOD as i32, N as i32, &mut tb, prev_period as i32, prev_gain, 0)
+                remove_doubling(
+                    y.as_mut_ptr(),
+                    MAX_PERIOD as i32,
+                    MIN_PERIOD as i32,
+                    N as i32,
+                    &mut tb,
+                    prev_period as i32,
+                    prev_gain,
+                    0,
+                )
             };
             // A zero gain may differ in sign; the pre-filter treats both as off.
             doubling += ((ta, ga) != (tb as usize, gb)) as usize;

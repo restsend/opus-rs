@@ -4,11 +4,13 @@
 
 use super::lace::numbits_embedding;
 use super::nndsp::{
-    adacomb_process_frame, adaconv_process_frame, adashape_process_frame, compute_overlap_window, AdaCombConfig,
-    AdaCombState, AdaConvConfig, AdaConvState, AdaShapeConfig, AdaShapeState,
+    AdaCombConfig, AdaCombState, AdaConvConfig, AdaConvState, AdaShapeConfig, AdaShapeState,
+    adacomb_process_frame, adaconv_process_frame, adashape_process_frame, compute_overlap_window,
 };
 use crate::dnn::models::nolace::*;
-use crate::dnn::nnet::{compute_generic_conv1d, compute_generic_dense, compute_generic_gru, Activation};
+use crate::dnn::nnet::{
+    Activation, compute_generic_conv1d, compute_generic_dense, compute_generic_gru,
+};
 
 #[cfg(not(feature = "std"))]
 use crate::compat::Math;
@@ -95,9 +97,13 @@ const NOLACE_NUMBITS_SCALES: [f32; 8] = [
     NOLACE_NUMBITS_SCALE_7,
 ];
 
-const CONV1_IN: usize = NOLACE_NUM_FEATURES + NOLACE_PITCH_EMBEDDING_DIM + 2 * NOLACE_NUMBITS_EMBEDDING_DIM;
-const BUF: usize =
-    4 * if NOLACE_COND_DIM > NOLACE_HIDDEN_FEATURE_DIM { NOLACE_COND_DIM } else { NOLACE_HIDDEN_FEATURE_DIM };
+const CONV1_IN: usize =
+    NOLACE_NUM_FEATURES + NOLACE_PITCH_EMBEDDING_DIM + 2 * NOLACE_NUMBITS_EMBEDDING_DIM;
+const BUF: usize = 4 * if NOLACE_COND_DIM > NOLACE_HIDDEN_FEATURE_DIM {
+    NOLACE_COND_DIM
+} else {
+    NOLACE_HIDDEN_FEATURE_DIM
+};
 const COND: usize = NOLACE_COND_DIM;
 
 /// `nolace_feature_net`: `NOLACE_COND_DIM` conditioning values per subframe.
@@ -116,10 +122,25 @@ fn nolace_feature_net(
     let lo = (NOLACE_NUMBITS_RANGE_LOW as f64).ln() as f32;
     let hi = (NOLACE_NUMBITS_RANGE_HIGH as f64).ln() as f32;
 
-    numbits_embedding(&mut numbits_embedded, numbits[0], lo, hi, &NOLACE_NUMBITS_SCALES);
-    numbits_embedding(&mut numbits_embedded[NOLACE_NUMBITS_EMBEDDING_DIM..], numbits[1], lo, hi, &NOLACE_NUMBITS_SCALES);
+    numbits_embedding(
+        &mut numbits_embedded,
+        numbits[0],
+        lo,
+        hi,
+        &NOLACE_NUMBITS_SCALES,
+    );
+    numbits_embedding(
+        &mut numbits_embedded[NOLACE_NUMBITS_EMBEDDING_DIM..],
+        numbits[1],
+        lo,
+        hi,
+        &NOLACE_NUMBITS_SCALES,
+    );
 
-    let emb = layers.nolace_pitch_embedding.float_weights.expect("pitch embedding without float weights");
+    let emb = layers
+        .nolace_pitch_embedding
+        .float_weights
+        .expect("pitch embedding without float weights");
     for i in 0..4 {
         input_buffer[..NOLACE_NUM_FEATURES]
             .copy_from_slice(&features[i * NOLACE_NUM_FEATURES..(i + 1) * NOLACE_NUM_FEATURES]);
@@ -127,7 +148,8 @@ fn nolace_feature_net(
         for j in 0..NOLACE_PITCH_EMBEDDING_DIM {
             input_buffer[NOLACE_NUM_FEATURES + j] = emb.at(row + j);
         }
-        input_buffer[NOLACE_NUM_FEATURES + NOLACE_PITCH_EMBEDDING_DIM..CONV1_IN].copy_from_slice(&numbits_embedded);
+        input_buffer[NOLACE_NUM_FEATURES + NOLACE_PITCH_EMBEDDING_DIM..CONV1_IN]
+            .copy_from_slice(&numbits_embedded);
         compute_generic_conv1d(
             &layers.nolace_fnet_conv1,
             &mut output_buffer[i * NOLACE_HIDDEN_FEATURE_DIM..],
@@ -138,7 +160,8 @@ fn nolace_feature_net(
         );
     }
 
-    input_buffer[..4 * NOLACE_HIDDEN_FEATURE_DIM].copy_from_slice(&output_buffer[..4 * NOLACE_HIDDEN_FEATURE_DIM]);
+    input_buffer[..4 * NOLACE_HIDDEN_FEATURE_DIM]
+        .copy_from_slice(&output_buffer[..4 * NOLACE_HIDDEN_FEATURE_DIM]);
     compute_generic_conv1d(
         &layers.nolace_fnet_conv2,
         &mut output_buffer,
@@ -149,7 +172,12 @@ fn nolace_feature_net(
     );
 
     input_buffer[..4 * COND].copy_from_slice(&output_buffer[..4 * COND]);
-    compute_generic_dense(&layers.nolace_fnet_tconv, &mut output_buffer, &input_buffer, Activation::Tanh);
+    compute_generic_dense(
+        &layers.nolace_fnet_tconv,
+        &mut output_buffer,
+        &input_buffer,
+        Activation::Tanh,
+    );
 
     input_buffer[..4 * COND].copy_from_slice(&output_buffer[..4 * COND]);
     for i in 0..4 {
@@ -163,7 +191,13 @@ fn nolace_feature_net(
     }
 }
 
-const fn comb(kernel_size: usize, left_padding: usize, a: f32, b: f32, limit: f32) -> AdaCombConfig {
+const fn comb(
+    kernel_size: usize,
+    left_padding: usize,
+    a: f32,
+    b: f32,
+    limit: f32,
+) -> AdaCombConfig {
     AdaCombConfig {
         frame_size: NOLACE_FRAME_SIZE,
         overlap_size: NOLACE_OVERLAP_SIZE,
@@ -281,7 +315,11 @@ pub fn nolace_process_20ms_frame(
     periods: &[i32; 4],
 ) {
     const F: usize = NOLACE_FRAME_SIZE;
-    const _: () = assert!(NOLACE_AF1_OUT_CHANNELS == 2 && NOLACE_AF2_OUT_CHANNELS == 2 && NOLACE_AF3_OUT_CHANNELS == 2);
+    const _: () = assert!(
+        NOLACE_AF1_OUT_CHANNELS == 2
+            && NOLACE_AF2_OUT_CHANNELS == 2
+            && NOLACE_AF3_OUT_CHANNELS == 2
+    );
     let layers = &nolace.layers;
     let window = &nolace.window;
     let mut feature_buffer = [0.0f32; 4 * COND];
@@ -294,7 +332,14 @@ pub fn nolace_process_20ms_frame(
         state.preemph_mem = x_in[i];
     }
 
-    nolace_feature_net(nolace, state, &mut feature_buffer, features, numbits, periods);
+    nolace_feature_net(
+        nolace,
+        state,
+        &mut feature_buffer,
+        features,
+        numbits,
+        periods,
+    );
 
     // 1st comb filtering stage.
     for i in 0..4 {

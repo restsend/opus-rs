@@ -16,8 +16,8 @@ use std::f32::consts::PI;
 /// the `opus` crate links an older libopus whose concealment legitimately
 /// diverges from 1.6 after consecutive losses.
 mod oracle16 {
-    use std::ffi::c_int;
     use opusic_sys as ffi;
+    use std::ffi::c_int;
 
     pub struct Decoder {
         ptr: *mut ffi::OpusDecoder,
@@ -61,11 +61,7 @@ mod oracle16 {
                     out.len() as c_int,
                     fec as c_int,
                 );
-                if n < 0 {
-                    Err(n)
-                } else {
-                    Ok(n as usize)
-                }
+                if n < 0 { Err(n) } else { Ok(n as usize) }
             }
         }
     }

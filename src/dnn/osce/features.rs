@@ -6,14 +6,15 @@
 use crate::compat::Math;
 
 use super::{
-    OsceFrameInput, OSCE_ACORR_START, OSCE_BWE_FEATURE_DIM, OSCE_BWE_HALF_WINDOW_SIZE, OSCE_BWE_MAX_INSTAFREQ_BIN,
+    OSCE_ACORR_START, OSCE_BWE_FEATURE_DIM, OSCE_BWE_HALF_WINDOW_SIZE, OSCE_BWE_MAX_INSTAFREQ_BIN,
     OSCE_BWE_NUM_BANDS, OSCE_BWE_WINDOW_SIZE, OSCE_CLEAN_SPEC_LENGTH, OSCE_CLEAN_SPEC_NUM_BANDS,
-    OSCE_CLEAN_SPEC_START, OSCE_FEATURES_MAX_HISTORY, OSCE_FEATURE_DIM, OSCE_LOG_GAIN_START, OSCE_LTP_LENGTH,
-    OSCE_LTP_START, OSCE_MAX_FEATURE_FRAMES, OSCE_NOISY_CEPSTRUM_LENGTH, OSCE_NOISY_CEPSTRUM_START,
-    OSCE_NOISY_SPEC_NUM_BANDS, OSCE_NO_PITCH_VALUE, TYPE_VOICED,
+    OSCE_CLEAN_SPEC_START, OSCE_FEATURE_DIM, OSCE_FEATURES_MAX_HISTORY, OSCE_LOG_GAIN_START,
+    OSCE_LTP_LENGTH, OSCE_LTP_START, OSCE_MAX_FEATURE_FRAMES, OSCE_NO_PITCH_VALUE,
+    OSCE_NOISY_CEPSTRUM_LENGTH, OSCE_NOISY_CEPSTRUM_START, OSCE_NOISY_SPEC_NUM_BANDS,
+    OsceFrameInput, TYPE_VOICED,
 };
 use crate::dnn::fft::Cpx;
-use crate::dnn::freq::{dct, forward_transform, NB_BANDS};
+use crate::dnn::freq::{NB_BANDS, dct, forward_transform};
 use crate::dnn::vec::c_int;
 
 const OSCE_SPEC_WINDOW_SIZE: usize = 320;
@@ -76,55 +77,142 @@ impl Default for OsceBweFeatureState {
 }
 
 const CENTER_BINS_CLEAN: [usize; 64] = [
-    0, 2, 5, 8, 10, 12, 15, 18, 20, 22, 25, 28, 30, 33, 35, 38, 40, 42, 45, 48, 50, 52, 55, 58, 60, 62, 65, 68, 70,
-    73, 75, 78, 80, 82, 85, 88, 90, 92, 95, 98, 100, 102, 105, 108, 110, 112, 115, 118, 120, 122, 125, 128, 130, 132,
-    135, 138, 140, 142, 145, 148, 150, 152, 155, 160,
+    0, 2, 5, 8, 10, 12, 15, 18, 20, 22, 25, 28, 30, 33, 35, 38, 40, 42, 45, 48, 50, 52, 55, 58, 60,
+    62, 65, 68, 70, 73, 75, 78, 80, 82, 85, 88, 90, 92, 95, 98, 100, 102, 105, 108, 110, 112, 115,
+    118, 120, 122, 125, 128, 130, 132, 135, 138, 140, 142, 145, 148, 150, 152, 155, 160,
 ];
 
-const CENTER_BINS_NOISY: [usize; 18] = [0, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64, 80, 96, 112, 136, 160];
+const CENTER_BINS_NOISY: [usize; 18] = [
+    0, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64, 80, 96, 112, 136, 160,
+];
 
 const CENTER_BINS_BWE: [usize; 32] = [
-    0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130,
-    135, 140, 145, 150, 160,
+    0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110,
+    115, 120, 125, 130, 135, 140, 145, 150, 160,
 ];
 
 const BAND_WEIGHTS_CLEAN: [f32; 64] = [
-    0.666666666667f32, 0.400000000000f32, 0.333333333333f32, 0.400000000000f32,
-    0.500000000000f32, 0.400000000000f32, 0.333333333333f32, 0.400000000000f32,
-    0.500000000000f32, 0.400000000000f32, 0.333333333333f32, 0.400000000000f32,
-    0.400000000000f32, 0.400000000000f32, 0.400000000000f32, 0.400000000000f32,
-    0.500000000000f32, 0.400000000000f32, 0.333333333333f32, 0.400000000000f32,
-    0.500000000000f32, 0.400000000000f32, 0.333333333333f32, 0.400000000000f32,
-    0.500000000000f32, 0.400000000000f32, 0.333333333333f32, 0.400000000000f32,
-    0.400000000000f32, 0.400000000000f32, 0.400000000000f32, 0.400000000000f32,
-    0.500000000000f32, 0.400000000000f32, 0.333333333333f32, 0.400000000000f32,
-    0.500000000000f32, 0.400000000000f32, 0.333333333333f32, 0.400000000000f32,
-    0.500000000000f32, 0.400000000000f32, 0.333333333333f32, 0.400000000000f32,
-    0.500000000000f32, 0.400000000000f32, 0.333333333333f32, 0.400000000000f32,
-    0.500000000000f32, 0.400000000000f32, 0.333333333333f32, 0.400000000000f32,
-    0.500000000000f32, 0.400000000000f32, 0.333333333333f32, 0.400000000000f32,
-    0.500000000000f32, 0.400000000000f32, 0.333333333333f32, 0.400000000000f32,
-    0.500000000000f32, 0.400000000000f32, 0.250000000000f32, 0.333333333333f32,
+    0.666666666667f32,
+    0.400000000000f32,
+    0.333333333333f32,
+    0.400000000000f32,
+    0.500000000000f32,
+    0.400000000000f32,
+    0.333333333333f32,
+    0.400000000000f32,
+    0.500000000000f32,
+    0.400000000000f32,
+    0.333333333333f32,
+    0.400000000000f32,
+    0.400000000000f32,
+    0.400000000000f32,
+    0.400000000000f32,
+    0.400000000000f32,
+    0.500000000000f32,
+    0.400000000000f32,
+    0.333333333333f32,
+    0.400000000000f32,
+    0.500000000000f32,
+    0.400000000000f32,
+    0.333333333333f32,
+    0.400000000000f32,
+    0.500000000000f32,
+    0.400000000000f32,
+    0.333333333333f32,
+    0.400000000000f32,
+    0.400000000000f32,
+    0.400000000000f32,
+    0.400000000000f32,
+    0.400000000000f32,
+    0.500000000000f32,
+    0.400000000000f32,
+    0.333333333333f32,
+    0.400000000000f32,
+    0.500000000000f32,
+    0.400000000000f32,
+    0.333333333333f32,
+    0.400000000000f32,
+    0.500000000000f32,
+    0.400000000000f32,
+    0.333333333333f32,
+    0.400000000000f32,
+    0.500000000000f32,
+    0.400000000000f32,
+    0.333333333333f32,
+    0.400000000000f32,
+    0.500000000000f32,
+    0.400000000000f32,
+    0.333333333333f32,
+    0.400000000000f32,
+    0.500000000000f32,
+    0.400000000000f32,
+    0.333333333333f32,
+    0.400000000000f32,
+    0.500000000000f32,
+    0.400000000000f32,
+    0.333333333333f32,
+    0.400000000000f32,
+    0.500000000000f32,
+    0.400000000000f32,
+    0.250000000000f32,
+    0.333333333333f32,
 ];
 
 const BAND_WEIGHTS_NOISY: [f32; 18] = [
-    0.400000000000f32, 0.250000000000f32, 0.250000000000f32, 0.250000000000f32,
-    0.250000000000f32, 0.250000000000f32, 0.250000000000f32, 0.250000000000f32,
-    0.166666666667f32, 0.125000000000f32, 0.125000000000f32, 0.125000000000f32,
-    0.083333333333f32, 0.062500000000f32, 0.062500000000f32, 0.050000000000f32,
-    0.041666666667f32, 0.080000000000f32,
+    0.400000000000f32,
+    0.250000000000f32,
+    0.250000000000f32,
+    0.250000000000f32,
+    0.250000000000f32,
+    0.250000000000f32,
+    0.250000000000f32,
+    0.250000000000f32,
+    0.166666666667f32,
+    0.125000000000f32,
+    0.125000000000f32,
+    0.125000000000f32,
+    0.083333333333f32,
+    0.062500000000f32,
+    0.062500000000f32,
+    0.050000000000f32,
+    0.041666666667f32,
+    0.080000000000f32,
 ];
 
 // Double literals in a float array: each is rounded from its double value.
 const BAND_WEIGHTS_BWE: [f32; 32] = [
-    0.333333333f64 as f32, 0.200000000f64 as f32, 0.200000000f64 as f32, 0.200000000f64 as f32,
-    0.200000000f64 as f32, 0.200000000f64 as f32, 0.200000000f64 as f32, 0.200000000f64 as f32,
-    0.200000000f64 as f32, 0.200000000f64 as f32, 0.200000000f64 as f32, 0.200000000f64 as f32,
-    0.200000000f64 as f32, 0.200000000f64 as f32, 0.200000000f64 as f32, 0.200000000f64 as f32,
-    0.200000000f64 as f32, 0.200000000f64 as f32, 0.200000000f64 as f32, 0.200000000f64 as f32,
-    0.200000000f64 as f32, 0.200000000f64 as f32, 0.200000000f64 as f32, 0.200000000f64 as f32,
-    0.200000000f64 as f32, 0.200000000f64 as f32, 0.200000000f64 as f32, 0.200000000f64 as f32,
-    0.200000000f64 as f32, 0.200000000f64 as f32, 0.133333333f64 as f32, 0.181818182f64 as f32,
+    0.333333333f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.200000000f64 as f32,
+    0.133333333f64 as f32,
+    0.181818182f64 as f32,
 ];
 
 /// `osce_window`: a sine window of 320 samples.
@@ -204,7 +292,8 @@ fn apply_filterbank(x_out: &mut [f32], x_in: &[f32], center_bins: &[usize], band
     for b in 0..num_bands - 1 {
         x_out[b + 1] = 0.0;
         for i in center_bins[b]..center_bins[b + 1] {
-            let frac = (center_bins[b + 1] - i) as f32 / (center_bins[b + 1] - center_bins[b]) as f32;
+            let frac =
+                (center_bins[b + 1] - i) as f32 / (center_bins[b + 1] - center_bins[b]) as f32;
             x_out[b] += band_weights[b] * frac * x_in[i];
             x_out[b + 1] += band_weights[b + 1] * (1.0 - frac) * x_in[i];
         }
@@ -344,22 +433,33 @@ pub fn osce_calculate_features(
         } else {
             let last = &prev[(k - 1) * OSCE_FEATURE_DIM..];
             pf[OSCE_CLEAN_SPEC_START..OSCE_CLEAN_SPEC_START + OSCE_CLEAN_SPEC_LENGTH]
-                .copy_from_slice(&last[OSCE_CLEAN_SPEC_START..OSCE_CLEAN_SPEC_START + OSCE_CLEAN_SPEC_LENGTH]);
-            pf[OSCE_NOISY_CEPSTRUM_START..OSCE_NOISY_CEPSTRUM_START + OSCE_NOISY_CEPSTRUM_LENGTH].copy_from_slice(
-                &last[OSCE_NOISY_CEPSTRUM_START..OSCE_NOISY_CEPSTRUM_START + OSCE_NOISY_CEPSTRUM_LENGTH],
-            );
+                .copy_from_slice(
+                    &last[OSCE_CLEAN_SPEC_START..OSCE_CLEAN_SPEC_START + OSCE_CLEAN_SPEC_LENGTH],
+                );
+            pf[OSCE_NOISY_CEPSTRUM_START..OSCE_NOISY_CEPSTRUM_START + OSCE_NOISY_CEPSTRUM_LENGTH]
+                .copy_from_slice(
+                    &last[OSCE_NOISY_CEPSTRUM_START
+                        ..OSCE_NOISY_CEPSTRUM_START + OSCE_NOISY_CEPSTRUM_LENGTH],
+                );
         }
 
         periods[k] = pitch_postprocessing(st, input.pitch_l[k], input.signal_type);
-        calculate_acorr(&mut pf[OSCE_ACORR_START..], &buffer, frame, periods[k] as usize);
+        calculate_acorr(
+            &mut pf[OSCE_ACORR_START..],
+            &buffer,
+            frame,
+            periods[k] as usize,
+        );
 
         for i in 0..OSCE_LTP_LENGTH {
             pf[OSCE_LTP_START + i] = input.ltp_coef_q14[k * OSCE_LTP_LENGTH + i] as f32 / 16384.0;
         }
-        pf[OSCE_LOG_GAIN_START] = ((input.gains_q16[k] as f32 / 65536.0 + 1e-9f32) as f64).ln() as f32;
+        pf[OSCE_LOG_GAIN_START] =
+            ((input.gains_q16[k] as f32 / 65536.0 + 1e-9f32) as f64).ln() as f32;
     }
 
-    st.signal_history.copy_from_slice(&buffer[num_samples..num_samples + H]);
+    st.signal_history
+        .copy_from_slice(&buffer[num_samples..num_samples + H]);
 }
 
 /// `osce_bwe_calculate_features`: `OSCE_BWE_FEATURE_DIM` features per 10 ms
@@ -431,7 +531,11 @@ pub fn osce_bwe_cross_fade_10ms(x_fadein: &mut [i16], x_fadeout: &[i16]) {
     assert!(x_fadein.len() >= 480 && x_fadeout.len() >= 480);
     let f = 1.0f32 / 3.0;
     for i in 0..160 {
-        let diff = if i == 159 { 0.0 } else { OSCE_WINDOW[i + 1] - OSCE_WINDOW[i] };
+        let diff = if i == 159 {
+            0.0
+        } else {
+            OSCE_WINDOW[i + 1] - OSCE_WINDOW[i]
+        };
         let mut w_curr = OSCE_WINDOW[i];
         for j in 0..3 {
             let n = 3 * i + j;

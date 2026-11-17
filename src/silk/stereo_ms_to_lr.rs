@@ -12,7 +12,6 @@ pub struct StereoDecState {
     pub s_side: [i16; 2],
 }
 
-
 impl StereoDecState {
     pub(crate) const DEFAULT: Self = Self {
         pred_prev_q13: [0; 2],

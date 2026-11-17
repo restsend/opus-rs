@@ -3,14 +3,16 @@
 //! channels, which are upsampled twice (2x, then 1.5x), shaped or
 //! distorted non-linearly and mixed again.
 
-use super::nndsp::{
-    adaconv_process_frame, adashape_process_frame, compute_overlap_window, AdaConvConfig, AdaConvState,
-    AdaShapeConfig, AdaShapeState,
-};
 use super::OSCE_BWE_OUTPUT_DELAY;
+use super::nndsp::{
+    AdaConvConfig, AdaConvState, AdaShapeConfig, AdaShapeState, adaconv_process_frame,
+    adashape_process_frame, compute_overlap_window,
+};
 use crate::dnn::common::{celt_log, celt_sin};
 use crate::dnn::models::bbwenet::*;
-use crate::dnn::nnet::{compute_generic_conv1d, compute_generic_dense, compute_generic_gru, Activation};
+use crate::dnn::nnet::{
+    Activation, compute_generic_conv1d, compute_generic_dense, compute_generic_gru,
+};
 
 /// libopus `BBWENet`: the layers and the overlap windows of the three
 /// adaptive filters.
@@ -65,7 +67,10 @@ pub struct BbwenetState {
 impl BbwenetState {
     /// `reset_bbwenet_state`: all zero.
     pub const fn new() -> Self {
-        const R: ResampState = ResampState { upsamp_buffer: [[0.0; 3]; 2], interpol_buffer: [0.0; 8] };
+        const R: ResampState = ResampState {
+            upsamp_buffer: [[0.0; 3]; 2],
+            interpol_buffer: [0.0; 8],
+        };
         BbwenetState {
             feature_net_conv1_state: [0.0; BBWENET_FNET_CONV1_STATE_SIZE],
             feature_net_conv2_state: [0.0; BBWENET_FNET_CONV2_STATE_SIZE],
@@ -232,7 +237,9 @@ pub fn interpol_3_2(state: &mut ResampState, x_out: &mut [f32], x_in: &[f32]) {
         o += 3;
     }
 
-    state.interpol_buffer.copy_from_slice(&buffer[n..n + DELAY_SAMPLES]);
+    state
+        .interpol_buffer
+        .copy_from_slice(&buffer[n..n + DELAY_SAMPLES]);
 }
 
 /// One allpass section of `upsamp_2x`: returns the output, updates `s`.

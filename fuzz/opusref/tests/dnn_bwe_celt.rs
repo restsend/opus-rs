@@ -49,7 +49,10 @@ fn celt_frames_after_bbwe_are_zeros() {
             let na = opus_decode_float(dec, p.as_ptr(), p.len() as i32, a.as_mut_ptr(), 960, 0);
             let nb = rs.decode(p, 960, &mut b).unwrap();
             assert_eq!(na as usize, nb, "frame {k}");
-            let d = a.iter().zip(&b).fold(0f32, |m, (x, y)| m.max((x - y).abs()));
+            let d = a
+                .iter()
+                .zip(&b)
+                .fold(0f32, |m, (x, y)| m.max((x - y).abs()));
             assert!(d <= 1e-6, "frame {k} differs by {d}");
         }
         opus_decoder_destroy(dec);

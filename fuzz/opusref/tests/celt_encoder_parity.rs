@@ -44,7 +44,9 @@ impl Default for Cfg {
 /// Encodes `frames` frames of `signal(frame, sample, channel)` with both
 /// encoders; returns per frame whether the packets are identical.
 fn identical(cfg: Cfg, frames: usize, signal: impl Fn(usize, usize, usize) -> f32) -> Vec<bool> {
-    let Cfg { fs, ch, n, bytes, .. } = cfg;
+    let Cfg {
+        fs, ch, n, bytes, ..
+    } = cfg;
     let mut e = CeltEncoder::with_sampling_rate(opus_rs::modes::default_mode(), ch, fs);
     e.set_end_band(cfg.end);
     e.set_bitrate(cfg.bitrate);
@@ -73,7 +75,8 @@ fn identical(cfg: Cfg, frames: usize, signal: impl Fn(usize, usize, usize) -> f3
             rc.done();
             let a = rc.buf[..rc.storage as usize].to_vec();
             let mut b = vec![0u8; bytes];
-            let m = unsafe { ref_celt_encode(r, pcm.as_ptr(), n as i32, b.as_mut_ptr(), bytes as i32) };
+            let m =
+                unsafe { ref_celt_encode(r, pcm.as_ptr(), n as i32, b.as_mut_ptr(), bytes as i32) };
             assert!(m > 0, "libopus returned {m}");
             a == b[..m as usize]
         })
@@ -85,7 +88,10 @@ fn identical(cfg: Cfg, frames: usize, signal: impl Fn(usize, usize, usize) -> f3
 /// Noise from a linear congruential generator, `amp` peak.
 fn noise(seed: u32, amp: f32) -> impl Fn(usize, usize, usize) -> f32 {
     move |f, i, c| {
-        let mut s = seed ^ (f as u32).wrapping_mul(0x9e37_79b9) ^ (i as u32).wrapping_mul(0x85eb_ca6b) ^ c as u32;
+        let mut s = seed
+            ^ (f as u32).wrapping_mul(0x9e37_79b9)
+            ^ (i as u32).wrapping_mul(0x85eb_ca6b)
+            ^ c as u32;
         for _ in 0..3 {
             s = s.wrapping_mul(1664525).wrapping_add(1013904223);
         }
@@ -98,7 +104,14 @@ fn noise(seed: u32, amp: f32) -> impl Fn(usize, usize, usize) -> f32 {
 /// (celt_encoder.c:2106, quant_bands.c:553-570).
 #[test]
 fn hybrid_dynalloc_sees_the_low_band_energies() {
-    let cfg = Cfg { bitrate: 48000, vbr: true, start: 17, end: 21, bytes: 400, ..Cfg::default() };
+    let cfg = Cfg {
+        bitrate: 48000,
+        vbr: true,
+        start: 17,
+        end: 21,
+        bytes: 400,
+        ..Cfg::default()
+    };
     assert_eq!(identical(cfg, 4, noise(1, 0.3)), [true; 4]);
 }
 
@@ -106,14 +119,22 @@ fn hybrid_dynalloc_sees_the_low_band_energies() {
 /// buffer holds more (celt_encoder.c:1876-1890).
 #[test]
 fn cbr_frames_take_the_rate_bytes() {
-    let cfg = Cfg { bitrate: 24000, bytes: 400, ..Cfg::default() };
+    let cfg = Cfg {
+        bitrate: 24000,
+        bytes: 400,
+        ..Cfg::default()
+    };
     assert_eq!(identical(cfg, 3, noise(1, 0.3)), [true; 3]);
 }
 
 /// A frame codes at most 1275 bytes (celt_encoder.c:1859).
 #[test]
 fn frames_code_at_most_1275_bytes() {
-    let cfg = Cfg { bytes: 1500, ch: 2, ..Cfg::default() };
+    let cfg = Cfg {
+        bytes: 1500,
+        ch: 2,
+        ..Cfg::default()
+    };
     assert_eq!(identical(cfg, 2, noise(1, 0.3)), [true; 2]);
 }
 
@@ -122,7 +143,11 @@ fn frames_code_at_most_1275_bytes() {
 /// on a very quiet onset.
 #[test]
 fn quiet_onsets_weigh_the_epsilon_like_libopus() {
-    let cfg = Cfg { n: 240, bytes: 80, ..Cfg::default() };
+    let cfg = Cfg {
+        n: 240,
+        bytes: 80,
+        ..Cfg::default()
+    };
     let chirp = |f: usize, i: usize, _| {
         let t = (f * 240 + i) as f32 / 48000.0;
         (t * t * 20000.0).sin() * 1e-6
@@ -135,7 +160,14 @@ fn quiet_onsets_weigh_the_epsilon_like_libopus() {
 /// leaves bands at the energy floor.
 #[test]
 fn intensity_stereo_weights_follow_libopus() {
-    let cfg = Cfg { fs: 16000, ch: 2, n: 320, bytes: 300, end: 17, ..Cfg::default() };
+    let cfg = Cfg {
+        fs: 16000,
+        ch: 2,
+        n: 320,
+        bytes: 300,
+        end: 17,
+        ..Cfg::default()
+    };
     assert_eq!(identical(cfg, 20, |_, _, _| 3e-7), [true; 20]);
 }
 
@@ -144,14 +176,26 @@ fn intensity_stereo_weights_follow_libopus() {
 #[test]
 fn input_beyond_65536_is_clipped() {
     let cfg = Cfg { ..Cfg::default() };
-    let loud = |f: usize, i: usize, _| ((f * 960 + i) as f32 * 0.05).sin() * if f == 1 { 1e5 } else { 1.5 };
+    let loud = |f: usize, i: usize, _| {
+        ((f * 960 + i) as f32 * 0.05).sin() * if f == 1 { 1e5 } else { 1.5 }
+    };
     assert_eq!(identical(cfg, 3, loud), [true; 3]);
 }
 
 /// A new CELT encoder runs at complexity 5 (celt_encoder.c:220).
 #[test]
 fn default_complexity_is_5() {
-    let cfg = Cfg { ch: 2, complexity: None, ..Cfg::default() };
-    let clicks = |f: usize, i: usize, c: usize| if i % 300 == 7 * c { 0.9 } else { noise(3, 0.01)(f, i, c) };
+    let cfg = Cfg {
+        ch: 2,
+        complexity: None,
+        ..Cfg::default()
+    };
+    let clicks = |f: usize, i: usize, c: usize| {
+        if i % 300 == 7 * c {
+            0.9
+        } else {
+            noise(3, 0.01)(f, i, c)
+        }
+    };
     assert_eq!(identical(cfg, 4, clicks), [true; 4]);
 }

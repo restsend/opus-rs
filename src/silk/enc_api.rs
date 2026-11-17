@@ -602,9 +602,7 @@ fn silk_lbrr_encode(
 ) {
     // Control use of inband LBRR. LBRR_SPEECH_ACTIVITY_THRES = 0.3
     // (SILK_FIX_CONST(0.3, 8) = 77).
-    if ps_enc.s_cmn.lbrr_enabled == 0
-        || ps_enc.s_cmn.speech_activity_q8 <= 77
-    {
+    if ps_enc.s_cmn.lbrr_enabled == 0 || ps_enc.s_cmn.speech_activity_q8 <= 77 {
         return;
     }
 
@@ -638,7 +636,11 @@ fn silk_lbrr_encode(
         &mut gains_lbrr,
         &indices_lbrr.gains_indices,
         &mut ps_enc.s_cmn.lbrr_prev_last_gain_index,
-        if cond_coding == CODE_CONDITIONALLY { 1 } else { 0 },
+        if cond_coding == CODE_CONDITIONALLY {
+            1
+        } else {
+            0
+        },
         ps_enc.s_cmn.nb_subfr as usize,
     );
 

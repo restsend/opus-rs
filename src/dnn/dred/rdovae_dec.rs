@@ -1,8 +1,12 @@
 //! The RDOVAE decoder (libopus `dnn/dred_rdovae_dec.c`).
 
-use super::super::models::dred_rdovae_constants::{DRED_LATENT_DIM, DRED_MAX_CONV_INPUTS, DRED_NUM_FEATURES};
+use super::super::models::dred_rdovae_constants::{
+    DRED_LATENT_DIM, DRED_MAX_CONV_INPUTS, DRED_NUM_FEATURES,
+};
 use super::super::models::dred_rdovae_dec::*;
-use super::super::nnet::{Activation, compute_generic_conv1d, compute_generic_dense, compute_generic_gru, compute_glu};
+use super::super::nnet::{
+    Activation, compute_generic_conv1d, compute_generic_dense, compute_generic_gru, compute_glu,
+};
 use super::rdovae_enc::conv1_cond_init;
 
 /// libopus `RDOVAEDecState`.
@@ -46,12 +50,30 @@ pub const DRED_QFRAME_SIZE: usize = 4 * DRED_NUM_FEATURES;
 
 /// `dred_rdovae_dec_init_states`: sets the GRU states from the
 /// `DRED_STATE_DIM` initial state.
-pub fn dred_rdovae_dec_init_states(h: &mut RdovaeDecState, model: &RdovaeDec<'_>, initial_state: &[f32]) {
+pub fn dred_rdovae_dec_init_states(
+    h: &mut RdovaeDecState,
+    model: &RdovaeDec<'_>,
+    initial_state: &[f32],
+) {
     let mut hidden = [0.0f32; DEC_HIDDEN_INIT_OUT_SIZE];
     let mut state_init = [0.0f32;
-        DEC_GRU1_STATE_SIZE + DEC_GRU2_STATE_SIZE + DEC_GRU3_STATE_SIZE + DEC_GRU4_STATE_SIZE + DEC_GRU5_STATE_SIZE];
-    compute_generic_dense(&model.dec_hidden_init, &mut hidden, initial_state, Activation::Tanh);
-    compute_generic_dense(&model.dec_gru_init, &mut state_init, &hidden, Activation::Tanh);
+        DEC_GRU1_STATE_SIZE
+            + DEC_GRU2_STATE_SIZE
+            + DEC_GRU3_STATE_SIZE
+            + DEC_GRU4_STATE_SIZE
+            + DEC_GRU5_STATE_SIZE];
+    compute_generic_dense(
+        &model.dec_hidden_init,
+        &mut hidden,
+        initial_state,
+        Activation::Tanh,
+    );
+    compute_generic_dense(
+        &model.dec_gru_init,
+        &mut state_init,
+        &hidden,
+        Activation::Tanh,
+    );
     let mut c = 0;
     for gru in [
         &mut h.gru1_state[..],
@@ -82,12 +104,22 @@ const BUFFER_SIZE: usize = DEC_DENSE1_OUT_SIZE
 /// `dred_rdovae_decode_qframe`: decodes one latent vector
 /// (`DRED_LATENT_DIM + 1` values, the last one the quantizer level) into
 /// [`DRED_QFRAME_SIZE`] feature values.
-pub fn dred_rdovae_decode_qframe(st: &mut RdovaeDecState, model: &RdovaeDec<'_>, qframe: &mut [f32], input: &[f32]) {
+pub fn dred_rdovae_decode_qframe(
+    st: &mut RdovaeDecState,
+    model: &RdovaeDec<'_>,
+    qframe: &mut [f32],
+    input: &[f32],
+) {
     let mut buffer = [0.0f32; BUFFER_SIZE];
     let mut conv_tmp = [0.0f32; DRED_MAX_CONV_INPUTS];
     let mut oi = 0;
 
-    compute_generic_dense(&model.dec_dense1, &mut buffer[oi..], input, Activation::Tanh);
+    compute_generic_dense(
+        &model.dec_dense1,
+        &mut buffer[oi..],
+        input,
+        Activation::Tanh,
+    );
     oi += DEC_DENSE1_OUT_SIZE;
 
     // Five times: a GRU, a GLU of its state, a dense layer and a convolution.
@@ -98,7 +130,14 @@ pub fn dred_rdovae_decode_qframe(st: &mut RdovaeDecState, model: &RdovaeDec<'_>,
             oi += $gn;
             conv1_cond_init(&mut st.$cs, $cin, 1, &mut st.initialized);
             compute_generic_dense(&model.$cd, &mut conv_tmp, &buffer, Activation::Tanh);
-            compute_generic_conv1d(&model.$cv, &mut buffer[oi..], &mut st.$cs, &conv_tmp, $cn, Activation::Tanh);
+            compute_generic_conv1d(
+                &model.$cv,
+                &mut buffer[oi..],
+                &mut st.$cs,
+                &conv_tmp,
+                $cn,
+                Activation::Tanh,
+            );
             oi += $cn;
         };
     }

@@ -5,7 +5,7 @@
 //! first `nb_inputs`/`nb_outputs` values are used.
 
 use super::vec::{
-    cgemv8x4, sgemv, softmax, sparse_cgemv8x4, sparse_sgemv8x4, vec_sigmoid, vec_tanh, MAX_INPUTS,
+    MAX_INPUTS, cgemv8x4, sgemv, softmax, sparse_cgemv8x4, sparse_sgemv8x4, vec_sigmoid, vec_tanh,
 };
 use super::weights::{F32s, I32s};
 
@@ -184,7 +184,12 @@ pub fn compute_activation(output: &mut [f32], input: &[f32], n: usize, activatio
 }
 
 /// `compute_generic_dense`.
-pub fn compute_generic_dense(layer: &LinearLayer<'_>, output: &mut [f32], input: &[f32], activation: Activation) {
+pub fn compute_generic_dense(
+    layer: &LinearLayer<'_>,
+    output: &mut [f32],
+    input: &[f32],
+    activation: Activation,
+) {
     compute_linear(layer, output, input);
     compute_activation_inplace(&mut output[..layer.nb_outputs], activation);
 }
@@ -320,7 +325,10 @@ fn conv2d_float(
         for m in 0..in_channels {
             for t in 0..ktime {
                 for h in 0..kheight {
-                    let w = weights.at(i * in_channels * ktime * kheight + m * ktime * kheight + t * kheight + h);
+                    let w = weights.at(i * in_channels * ktime * kheight
+                        + m * ktime * kheight
+                        + t * kheight
+                        + h);
                     let x = &input[t * in_channels * in_stride + m * in_stride + h..];
                     for j in 0..height {
                         o[j] += w * x[j];
@@ -387,9 +395,27 @@ pub fn compute_conv2d(
     mem[..hist].copy_from_slice(&in_buf[time_stride..time_stride + hist]);
     let w = conv.float_weights.expect("conv2d layer without weights");
     if conv.kheight == 3 && conv.ktime == 3 {
-        conv2d_3x3_float(out, w, conv.in_channels, conv.out_channels, &in_buf, height, hstride);
+        conv2d_3x3_float(
+            out,
+            w,
+            conv.in_channels,
+            conv.out_channels,
+            &in_buf,
+            height,
+            hstride,
+        );
     } else {
-        conv2d_float(out, w, conv.in_channels, conv.out_channels, conv.ktime, conv.kheight, &in_buf, height, hstride);
+        conv2d_float(
+            out,
+            w,
+            conv.in_channels,
+            conv.out_channels,
+            conv.ktime,
+            conv.kheight,
+            &in_buf,
+            height,
+            hstride,
+        );
     }
     if let Some(bias) = conv.bias {
         for i in 0..conv.out_channels {

@@ -32,11 +32,19 @@ impl Pair {
         };
         assert!(!c.is_null(), "libopus error {err}");
         let rs = MultistreamDecoder::new(48000, table).unwrap();
-        Self { rs, c, channels: mapping.len() }
+        Self {
+            rs,
+            c,
+            channels: mapping.len(),
+        }
     }
 
     /// Decodes with both and returns (opus-rs, libopus) results and PCM.
-    fn decode(&mut self, p: &[u8], frame_size: usize) -> (Result<usize, &'static str>, i32, Vec<f32>, Vec<f32>) {
+    fn decode(
+        &mut self,
+        p: &[u8],
+        frame_size: usize,
+    ) -> (Result<usize, &'static str>, i32, Vec<f32>, Vec<f32>) {
         self.decode_with(p, frame_size, false)
     }
 
@@ -48,9 +56,20 @@ impl Pair {
     ) -> (Result<usize, &'static str>, i32, Vec<f32>, Vec<f32>) {
         let mut o_rs = vec![0f32; frame_size * self.channels];
         let mut o_c = vec![0f32; frame_size * self.channels];
-        let ptr = if p.is_empty() { core::ptr::null() } else { p.as_ptr() };
+        let ptr = if p.is_empty() {
+            core::ptr::null()
+        } else {
+            p.as_ptr()
+        };
         let n = unsafe {
-            opus_multistream_decode_float(self.c, ptr, p.len() as i32, o_c.as_mut_ptr(), frame_size as i32, fec as i32)
+            opus_multistream_decode_float(
+                self.c,
+                ptr,
+                p.len() as i32,
+                o_c.as_mut_ptr(),
+                frame_size as i32,
+                fec as i32,
+            )
         };
         let r = if fec {
             self.rs.decode_fec(p, frame_size, &mut o_rs)
@@ -109,7 +128,10 @@ fn assert_same_with(d: &mut Pair, p: &[u8], frame_size: usize, fec: bool) {
     assert!(n > 0, "libopus {n}");
     assert_eq!(r, Ok(n as usize));
     let peak = o_c.iter().fold(1f32, |m, x| m.max(x.abs()));
-    let diff = o_rs.iter().zip(&o_c).fold(0f32, |m, (a, b)| m.max((a - b).abs()));
+    let diff = o_rs
+        .iter()
+        .zip(&o_c)
+        .fold(0f32, |m, (a, b)| m.max((a - b).abs()));
     assert!(diff <= 4e-6 * peak, "PCM differs by {diff}");
     assert_eq!(d.rs.final_range(), d.final_range(), "final range");
 }
@@ -119,11 +141,19 @@ fn assert_same_with(d: &mut Pair, p: &[u8], frame_size: usize, fec: bool) {
 fn rejected_without_state_change(bad: &[u8]) {
     const FB20: u8 = 31 << 3;
     let mut d = Pair::new(2, 0, &[0, 1]);
-    assert_same(&mut d, &two_streams(&celt(FB20, 60, 1), &celt(FB20, 60, 2)), 960);
+    assert_same(
+        &mut d,
+        &two_streams(&celt(FB20, 60, 1), &celt(FB20, 60, 2)),
+        960,
+    );
     let (r, n, ..) = d.decode(bad, 960);
     assert!(n < 0, "libopus {n}");
     assert!(r.is_err(), "opus-rs {r:?}");
-    assert_same(&mut d, &two_streams(&celt(FB20, 60, 5), &celt(FB20, 60, 6)), 960);
+    assert_same(
+        &mut d,
+        &two_streams(&celt(FB20, 60, 5), &celt(FB20, 60, 6)),
+        960,
+    );
 }
 
 #[test]
@@ -147,10 +177,18 @@ fn an_empty_last_stream_is_invalid() {
 fn an_empty_packet_conceals_every_stream() {
     const FB20: u8 = 31 << 3;
     let mut d = Pair::new(2, 0, &[1, 0]);
-    assert_same(&mut d, &two_streams(&celt(FB20, 60, 1), &celt(FB20, 60, 2)), 960);
+    assert_same(
+        &mut d,
+        &two_streams(&celt(FB20, 60, 1), &celt(FB20, 60, 2)),
+        960,
+    );
     assert_same(&mut d, &[], 960);
     assert_same(&mut d, &[], 480);
-    assert_same(&mut d, &two_streams(&celt(FB20, 60, 5), &celt(FB20, 60, 6)), 960);
+    assert_same(
+        &mut d,
+        &two_streams(&celt(FB20, 60, 5), &celt(FB20, 60, 6)),
+        960,
+    );
 }
 
 #[test]
@@ -159,7 +197,15 @@ fn fec_recovers_every_stream() {
     let (streams, coupled) = (2u8, 1u8);
     let mut err = 0;
     let enc = unsafe {
-        opus_multistream_encoder_create(48000, 3, streams as i32, coupled as i32, mapping.as_ptr(), 2048, &mut err)
+        opus_multistream_encoder_create(
+            48000,
+            3,
+            streams as i32,
+            coupled as i32,
+            mapping.as_ptr(),
+            2048,
+            &mut err,
+        )
     };
     assert!(!enc.is_null(), "libopus error {err}");
     unsafe {
@@ -176,7 +222,9 @@ fn fec_recovers_every_stream() {
             })
             .collect();
         let mut out = vec![0u8; 1500];
-        let n = unsafe { opus_multistream_encode_float(enc, pcm.as_ptr(), 960, out.as_mut_ptr(), 1500) };
+        let n = unsafe {
+            opus_multistream_encode_float(enc, pcm.as_ptr(), 960, out.as_mut_ptr(), 1500)
+        };
         assert!(n > 0);
         out.truncate(n as usize);
         packets.push(out);

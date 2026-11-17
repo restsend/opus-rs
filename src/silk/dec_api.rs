@@ -130,7 +130,8 @@ impl SilkDecoder {
         // libopus `lpcnet_plc_init` in opus_decoder_init.
         #[cfg(feature = "deep-plc")]
         {
-            let models = crate::dnn::lpcnet_plc::PlcModels::builtin().expect("built-in deep PLC models");
+            let models =
+                crate::dnn::lpcnet_plc::PlcModels::builtin().expect("built-in deep PLC models");
             self.lpcnet = Some(crate::dnn::lpcnet_plc::LpcnetPlcState::new(models));
         }
         // silk_InitDecoder loads the built-in OSCE models; silk_init_decoder
@@ -139,7 +140,10 @@ impl SilkDecoder {
         {
             self.osce_model = crate::dnn::osce::OsceModel::builtin().ok();
             self.osce = Some([crate::dnn::osce::Osce::new(), crate::dnn::osce::Osce::new()]);
-            self.osce_bwe = Some([crate::dnn::osce::OsceBwe::new(), crate::dnn::osce::OsceBwe::new()]);
+            self.osce_bwe = Some([
+                crate::dnn::osce::OsceBwe::new(),
+                crate::dnn::osce::OsceBwe::new(),
+            ]);
         }
     }
 
@@ -452,7 +456,10 @@ impl SilkDecoder {
                     if state.method != ctrl.osce_method {
                         crate::dnn::osce::osce_reset(state, ctrl.osce_method);
                     }
-                    crate::silk::decode_frame::OsceArgs { model: self.osce_model.as_ref(), state }
+                    crate::silk::decode_frame::OsceArgs {
+                        model: self.osce_model.as_ref(),
+                        state,
+                    }
                 });
                 #[cfg(not(feature = "osce"))]
                 let osce = None;
@@ -526,8 +533,8 @@ impl SilkDecoder {
         let n_dec = n_dec as usize;
         let api_channels = ctrl.n_channels_api as usize;
         // Number of output samples.
-        let n_out = n_dec * ctrl.api_sample_rate as usize
-            / (self.channel_state[0].fs_khz as usize * 1000);
+        let n_out =
+            n_dec * ctrl.api_sample_rate as usize / (self.channel_state[0].fs_khz as usize * 1000);
         let mut resampled = [0i16; 48 * MAX_FRAME_LENGTH_MS];
         let resample_out = &mut resampled[..n_out];
 
@@ -540,8 +547,8 @@ impl SilkDecoder {
             #[cfg(feature = "osce")]
             if let (Some(model), Some(bwe)) = (self.osce_model.as_ref(), self.osce_bwe.as_mut()) {
                 use crate::dnn::osce::{
-                    OSCE_MODE_HYBRID, OSCE_MODE_SILK_BBWE, OSCE_MODE_SILK_ONLY, features::osce_bwe_cross_fade_10ms,
-                    osce_bwe, osce_bwe_reset,
+                    OSCE_MODE_HYBRID, OSCE_MODE_SILK_BBWE, OSCE_MODE_SILK_ONLY,
+                    features::osce_bwe_cross_fade_10ms, osce_bwe, osce_bwe_reset,
                 };
                 let input = &self.w_silk_buf[n][1..1 + n_dec];
                 let mut resamp_buffer = [0i16; 3 * MAX_FRAME_LENGTH];
@@ -554,12 +561,18 @@ impl SilkDecoder {
                         || ctrl.prev_osce_extended_mode == OSCE_MODE_HYBRID
                     {
                         // Cross-fade with the upsampled signal.
-                        resample(&mut self.channel_state[n], &mut resamp_buffer[..n_out], input);
+                        resample(
+                            &mut self.channel_state[n],
+                            &mut resamp_buffer[..n_out],
+                            input,
+                        );
                         osce_bwe_cross_fade_10ms(resample_out, &resamp_buffer);
                     }
                 } else {
                     ret += resample(&mut self.channel_state[n], resample_out, input);
-                    if ctrl.prev_osce_extended_mode == OSCE_MODE_SILK_BBWE && ctrl.internal_sample_rate == 16000 {
+                    if ctrl.prev_osce_extended_mode == OSCE_MODE_SILK_BBWE
+                        && ctrl.internal_sample_rate == 16000
+                    {
                         // Fade out if the internal sample rate did not change.
                         osce_bwe(model, &mut bwe[n], &mut resamp_buffer[..n_out], input);
                         osce_bwe_cross_fade_10ms(resample_out, &resamp_buffer);

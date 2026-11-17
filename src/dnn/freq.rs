@@ -6,7 +6,7 @@
 use crate::compat::Math;
 
 use super::burg::silk_burg_analysis;
-use super::fft::{opus_fft, Cpx, NFFT};
+use super::fft::{Cpx, NFFT, opus_fft};
 use super::lpcnet_tables::{DCT_TABLE, HALF_WINDOW};
 
 pub const LPC_ORDER: usize = 16;
@@ -23,10 +23,13 @@ pub const FREQ_SIZE: usize = WINDOW_SIZE / 2 + 1;
 pub const NB_BANDS: usize = 18;
 pub const NB_BANDS_1: usize = NB_BANDS - 1;
 
-const EBAND5MS: [usize; 18] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 20, 24, 28, 34, 40];
+const EBAND5MS: [usize; 18] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 20, 24, 28, 34, 40,
+];
 
 const COMPENSATION: [f32; 18] = [
-    0.8, 1., 1., 1., 1., 1., 1., 1., 0.666667, 0.5, 0.5, 0.5, 0.333333, 0.25, 0.25, 0.2, 0.166667, 0.173913,
+    0.8, 1., 1., 1., 1., 1., 1., 1., 0.666667, 0.5, 0.5, 0.5, 0.333333, 0.25, 0.25, 0.2, 0.166667,
+    0.173913,
 ];
 
 /// libopus `MAX16` on doubles: `a > b ? a : b`.
@@ -144,7 +147,12 @@ fn compute_burg_cepstrum(pcm: &[f32], burg_cepstrum: &mut [f32], len: usize, ord
 /// their mean and difference.
 pub fn burg_cepstral_analysis(ceps: &mut [f32], x: &[f32]) {
     compute_burg_cepstrum(x, &mut ceps[..NB_BANDS], FRAME_SIZE / 2, LPC_ORDER);
-    compute_burg_cepstrum(&x[FRAME_SIZE / 2..], &mut ceps[NB_BANDS..2 * NB_BANDS], FRAME_SIZE / 2, LPC_ORDER);
+    compute_burg_cepstrum(
+        &x[FRAME_SIZE / 2..],
+        &mut ceps[NB_BANDS..2 * NB_BANDS],
+        FRAME_SIZE / 2,
+        LPC_ORDER,
+    );
     for i in 0..NB_BANDS {
         let c0 = ceps[i];
         let c1 = ceps[NB_BANDS + i];

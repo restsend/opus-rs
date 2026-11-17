@@ -18,7 +18,11 @@ pub const MAX_INPUTS: usize = 2048;
 /// `INT_MIN` for NaN and values out of range.
 #[inline(always)]
 pub fn c_int(x: f64) -> i32 {
-    if x > -2147483649.0 && x < 2147483648.0 { x as i32 } else { i32::MIN }
+    if x > -2147483649.0 && x < 2147483648.0 {
+        x as i32
+    } else {
+        i32::MIN
+    }
 }
 
 /// C's `(int)floor(x)` for a double.
@@ -36,7 +40,14 @@ fn quantize(x: f32) -> i8 {
 
 /// `sgemv` (all three variants sum each output in column order):
 /// `out[i] = sum_j weights[j*col_stride + i] * x[j]`.
-pub fn sgemv(out: &mut [f32], weights: F32s<'_>, rows: usize, cols: usize, col_stride: usize, x: &[f32]) {
+pub fn sgemv(
+    out: &mut [f32],
+    weights: F32s<'_>,
+    rows: usize,
+    cols: usize,
+    col_stride: usize,
+    x: &[f32],
+) {
     let out = &mut out[..rows];
     out.fill(0.0);
     for (j, &xj) in x[..cols].iter().enumerate() {
@@ -73,7 +84,14 @@ pub fn sparse_sgemv8x4(out: &mut [f32], w: F32s<'_>, idx: I32s<'_>, rows: usize,
 /// `cgemv8x4`: int8 weights in 8x4 blocks, inputs quantized to int8 and
 /// converted back to float; the four products of a block row are summed
 /// in float before they are added to the output.
-pub fn cgemv8x4(out: &mut [f32], w: &[u8], scale: F32s<'_>, rows: usize, cols: usize, x_in: &[f32]) {
+pub fn cgemv8x4(
+    out: &mut [f32],
+    w: &[u8],
+    scale: F32s<'_>,
+    rows: usize,
+    cols: usize,
+    x_in: &[f32],
+) {
     let mut x = [0i8; MAX_INPUTS];
     out[..rows].fill(0.0);
     for (q, &v) in x.iter_mut().zip(&x_in[..cols]) {
@@ -82,7 +100,12 @@ pub fn cgemv8x4(out: &mut [f32], w: &[u8], scale: F32s<'_>, rows: usize, cols: u
     let mut wp = 0;
     for i in (0..rows).step_by(8) {
         for j in (0..cols).step_by(4) {
-            let xj = [x[j] as f32, x[j + 1] as f32, x[j + 2] as f32, x[j + 3] as f32];
+            let xj = [
+                x[j] as f32,
+                x[j + 1] as f32,
+                x[j + 2] as f32,
+                x[j + 3] as f32,
+            ];
             let blk = &w[wp..wp + 32];
             for k in 0..8 {
                 let b = &blk[4 * k..4 * k + 4];
@@ -123,7 +146,12 @@ pub fn sparse_cgemv8x4(
         for _ in 0..colblocks {
             let pos = idx.at(p) as usize;
             p += 1;
-            let xj = [x[pos] as i32, x[pos + 1] as i32, x[pos + 2] as i32, x[pos + 3] as i32];
+            let xj = [
+                x[pos] as i32,
+                x[pos + 1] as i32,
+                x[pos + 2] as i32,
+                x[pos + 3] as i32,
+            ];
             let blk = &w[wp..wp + 32];
             for k in 0..8 {
                 let b = &blk[4 * k..4 * k + 4];

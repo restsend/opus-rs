@@ -9,7 +9,9 @@ use crate::range_coder::RangeCoder;
 pub fn ec_enc_icdf16(enc: &mut RangeCoder, s: usize, icdf: &[u16], ftb: u32) {
     let r = enc.rng >> ftb;
     if s > 0 {
-        enc.val = enc.val.wrapping_add(enc.rng.wrapping_sub(r.wrapping_mul(icdf[s - 1] as u32)));
+        enc.val = enc
+            .val
+            .wrapping_add(enc.rng.wrapping_sub(r.wrapping_mul(icdf[s - 1] as u32)));
         enc.rng = r.wrapping_mul((icdf[s - 1] as u32).wrapping_sub(icdf[s] as u32));
     } else {
         enc.rng = enc.rng.wrapping_sub(r.wrapping_mul(icdf[s] as u32));

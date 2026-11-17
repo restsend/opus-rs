@@ -56,7 +56,11 @@ pub fn bits2pulses(m: &CeltMode, band: usize, mut lm: i32, bits: i32) -> i32 {
         cache[lo as usize] as i32
     };
     let hi_val = cache[hi as usize] as i32;
-    if bits - lo_val <= hi_val - bits { lo } else { hi }
+    if bits - lo_val <= hi_val - bits {
+        lo
+    } else {
+        hi
+    }
 }
 
 #[inline(always)]

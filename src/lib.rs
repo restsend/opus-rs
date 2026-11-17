@@ -111,8 +111,8 @@ pub use silk::{SilkResampler, SilkResamplerDown1_3, SilkResamplerDown1_6};
 #[cfg(not(feature = "std"))]
 use crate::compat::Math;
 use crate::fixedvec::FixedVec;
-pub use celt::{CeltDecoder, CeltEncoder};
 use celt::AnalysisInfo;
+pub use celt::{CeltDecoder, CeltEncoder};
 use core::mem::MaybeUninit;
 use hp_cutoff::{dc_reject_float, hp_cutoff, hp_cutoff_float, hp_cutoff_i16};
 use range_coder::RangeCoder;
@@ -539,10 +539,8 @@ fn decide_fec(
             lbrr_rate_thres_bps += hysteresis;
         }
         // silk_SMULWB(threshold * (125 - min(loss, 25)), 0.01 in Q16)
-        lbrr_rate_thres_bps = silk_smulwb(
-            lbrr_rate_thres_bps * (125 - packet_loss_perc.min(25)),
-            655,
-        );
+        lbrr_rate_thres_bps =
+            silk_smulwb(lbrr_rate_thres_bps * (125 - packet_loss_perc.min(25)), 655);
         // If loss <= 5%, we look at whether we have enough rate to enable FEC.
         // If loss > 5%, we decrease the bandwidth until we can enable FEC.
         if rate > lbrr_rate_thres_bps {
@@ -1291,7 +1289,11 @@ impl OpusEncoder {
 
         let mode = modes::default_mode();
         #[cfg(feature = "heap")]
-        let celt_enc = Box::new(CeltEncoder::with_sampling_rate(mode, channels, sampling_rate));
+        let celt_enc = Box::new(CeltEncoder::with_sampling_rate(
+            mode,
+            channels,
+            sampling_rate,
+        ));
         #[cfg(not(feature = "heap"))]
         let celt_enc = CeltEncoder::with_sampling_rate(mode, channels, sampling_rate);
 
@@ -1873,7 +1875,8 @@ impl OpusEncoder {
         {
             let loss = self.packet_loss_perc;
             self.dred.bitrate_bps =
-                self.dred.compute_bitrate(self.rate, frame_size, fs, self.use_inband_fec, loss);
+                self.dred
+                    .compute_bitrate(self.rate, frame_size, fs, self.use_inband_fec, loss);
             self.rate -= self.dred.bitrate_bps;
         }
 
@@ -2089,7 +2092,9 @@ impl OpusEncoder {
             || frame_size > 3 * self.sampling_rate as usize / 50
         {
             let output = &mut output[..repacketize_len];
-            return self.encode_multiframe(input, frame_size, transition, lbrr_coded, equiv_rate, output);
+            return self.encode_multiframe(
+                input, frame_size, transition, lbrr_coded, equiv_rate, output,
+            );
         }
 
         let args = FrameArgs {
@@ -2217,14 +2222,14 @@ impl OpusEncoder {
             activity = i32::from(analysis_info.activity_probability >= DTX_ACTIVITY_THRESHOLD);
             if activity == 0 {
                 let noise_energy = compute_frame_energy(input, frame_size * self.channels);
-                activity =
-                    i32::from(self.peak_signal_energy < PSEUDO_SNR_THRESHOLD * noise_energy);
+                activity = i32::from(self.peak_signal_energy < PSEUDO_SNR_THRESHOLD * noise_energy);
             }
         } else if mode == OpusMode::CeltOnly {
             // Boosting peak energy a bit because we didn't just average the
             // active frames (C's HALF32).
             let noise_energy = compute_frame_energy(input, frame_size * self.channels);
-            activity = i32::from(self.peak_signal_energy < PSEUDO_SNR_THRESHOLD * (0.5 * noise_energy));
+            activity =
+                i32::from(self.peak_signal_energy < PSEUDO_SNR_THRESHOLD * (0.5 * noise_energy));
         }
 
         if mode == OpusMode::CeltOnly {
@@ -2458,7 +2463,8 @@ impl OpusEncoder {
                 stereo.smth_width_q14 = 1 << 14;
             }
             // The coded channels before this packet (`nPrevChannelsInternal`).
-            let mut prev_silk_channels = core::mem::replace(&mut self.silk_channels, coded_channels);
+            let mut prev_silk_channels =
+                core::mem::replace(&mut self.silk_channels, coded_channels);
             let silk_switch_prefill = core::mem::take(&mut self.silk_bw_switch);
             if silk_switch_prefill {
                 for enc in [&mut self.silk_enc, &mut self.silk_enc_side]
@@ -2484,19 +2490,20 @@ impl OpusEncoder {
                 self.silk_initialized = false;
             }
             let allow_switch = self.silk_enc.allow_bandwidth_switch != 0;
-            let rate_control = |enc: &mut SilkEncoderState, allow_switch: bool, can_switch: bool| {
-                let (mut ready, mut unused_max_bits) = (false, 0);
-                let fs = silk_control_audio_bandwidth(
-                    &mut enc.s_cmn,
-                    rate_limits,
-                    allow_switch,
-                    can_switch,
-                    frame_ms,
-                    &mut unused_max_bits,
-                    &mut ready,
-                );
-                (fs, ready)
-            };
+            let rate_control =
+                |enc: &mut SilkEncoderState, allow_switch: bool, can_switch: bool| {
+                    let (mut ready, mut unused_max_bits) = (false, 0);
+                    let fs = silk_control_audio_bandwidth(
+                        &mut enc.s_cmn,
+                        rate_limits,
+                        allow_switch,
+                        can_switch,
+                        frame_ms,
+                        &mut unused_max_bits,
+                        &mut ready,
+                    );
+                    (fs, ready)
+                };
             let silk_fs_khz = if !self.silk_initialized && !silk_switch_prefill {
                 // A fresh encoder starts at the desired rate.
                 rate_limits.desired_fs_hz.min(rate_limits.api_fs_hz) / 1000
@@ -2718,7 +2725,10 @@ impl OpusEncoder {
                     for i in offset.min(eb)..eb {
                         let fade = |x| prefill_fade(x, i - offset, self.sampling_rate);
                         pre[i] = if ch == 2 {
-                            let (l, r) = (self.silk_delay_buffer[2 * i], self.silk_delay_buffer[2 * i + 1]);
+                            let (l, r) = (
+                                self.silk_delay_buffer[2 * i],
+                                self.silk_delay_buffer[2 * i + 1],
+                            );
                             ((i32::from(fade(l)) + i32::from(fade(r)) + 1) >> 1) as i16
                         } else {
                             fade(self.silk_delay_buffer[i])
@@ -2812,7 +2822,12 @@ impl OpusEncoder {
                     *s = ((sum + 1) >> 1) as i16;
                 }
                 let mid = state_mut(&mut self.buf_silk_input).as_mut_slice();
-                if self.silk_resampler_enc.process(mid, &self.buf_silk_api_channel, frame_size as i32) != 0 {
+                if self.silk_resampler_enc.process(
+                    mid,
+                    &self.buf_silk_api_channel,
+                    frame_size as i32,
+                ) != 0
+                {
                     return Err("SILK input resampling failed");
                 }
                 // The first frame after two coded channels averages both
@@ -2820,7 +2835,12 @@ impl OpusEncoder {
                 if prev_silk_channels == 2 {
                     self.buf_silk_input_right.resize(silk_frame_len_samples, 0);
                     let right = state_mut(&mut self.buf_silk_input_right).as_mut_slice();
-                    if self.silk_resampler_enc_right.process(right, &self.buf_silk_api_channel, frame_size as i32) != 0 {
+                    if self.silk_resampler_enc_right.process(
+                        right,
+                        &self.buf_silk_api_channel,
+                        frame_size as i32,
+                    ) != 0
+                    {
                         return Err("SILK input resampling failed");
                     }
                     let n = self.silk_enc.s_cmn.frame_length as usize;
@@ -2887,7 +2907,9 @@ impl OpusEncoder {
             }
             let silk_use_cbr = silk_use_cbr as i32;
             #[cfg(feature = "fuzzing")]
-            fuzzing::record_silk_input(&state_ref(&self.buf_filtered)[..frame_size * self.channels]);
+            fuzzing::record_silk_input(
+                &state_ref(&self.buf_filtered)[..frame_size * self.channels],
+            );
             let ret = if coded_channels == 2 {
                 silk_encode_stereo_packet(
                     state_mut(&mut self.silk_enc),
@@ -2934,7 +2956,8 @@ impl OpusEncoder {
                         != silk::define::TYPE_NO_VOICE_ACTIVITY,
                 );
                 #[cfg(feature = "dred")]
-                self.dred.set_activity(frame_size * 400 / self.sampling_rate as usize, activity);
+                self.dred
+                    .set_activity(frame_size * 400 / self.sampling_rate as usize, activity);
             }
             // What the next bandwidth decision may do (libopus
             // `silk_mode.allowBandwidthSwitch`, `inWBmodeWithoutVariableLP`).
@@ -3026,7 +3049,8 @@ impl OpusEncoder {
         // 5 bytes (opus_encode_frame_native).
         #[cfg(feature = "dred")]
         if mode != OpusMode::SilkOnly && self.dred.duration > 0 {
-            let dred_bytes = bitrate_to_bits(self.dred_bitrate(), self.sampling_rate, frame_size) / 8;
+            let dred_bytes =
+                bitrate_to_bits(self.dred_bitrate(), self.sampling_rate, frame_size) / 8;
             let max_celt_bytes =
                 ((self.rc.tell() + 7) / 8 + 5).max(nb_compr_bytes as i32 - dred_bytes * 3 / 4);
             if max_celt_bytes < nb_compr_bytes as i32 {
@@ -3317,7 +3341,7 @@ impl OpusEncoder {
         self.range_final = self.rc.rng ^ redundant_rng;
 
         self.prev_enc_mode = Some(next_prev_mode);
-                self.prev_channels = self.stream_channels;
+        self.prev_channels = self.stream_channels;
         if mode == OpusMode::SilkOnly {
             let mut ret = silk_ret_bytes.min(self.rc.storage as usize);
             if redundancy_bytes > 0 {
@@ -3473,7 +3497,8 @@ impl OpusEncoder {
         let max_len_sum = (nb + output.len()).saturating_sub(max_header);
         let frame_bytes = (bitrate_to_bits(self.rate, self.sampling_rate, enc_frame) / 8) as usize;
         // DRED's bytes go to the first frame that is not DTX.
-        let dred_bytes = (bitrate_to_bits(self.dred_bitrate(), self.sampling_rate, frame_size) / 8) as usize;
+        let dred_bytes =
+            (bitrate_to_bits(self.dred_bitrate(), self.sampling_rate, frame_size) / 8) as usize;
         let sub_budget = frame_bytes
             .min(max_len_sum / nb)
             .min(max_len_sum.saturating_sub(dred_bytes) / nb)
@@ -3531,7 +3556,10 @@ impl OpusEncoder {
                     first_frame,
                 };
                 let bonus = if first_frame { dred_bytes } else { 0 };
-                let budget = (sub_budget + bonus).min(1276).min(max_len_sum.saturating_sub(used)).max(2);
+                let budget = (sub_budget + bonus)
+                    .min(1276)
+                    .min(max_len_sum.saturating_sub(used))
+                    .max(2);
                 let n = self.encode_subframe(sub_input, enc_frame, &mut sub[i][..budget], args)?;
                 if n == 0 {
                     return Err("Empty sub-frame");
@@ -3583,9 +3611,16 @@ impl OpusEncoder {
         #[cfg(feature = "dred")]
         {
             let subs: [&[u8]; MAX_SUB] = core::array::from_fn(|i| &sub[i][..sub_lens[i]]);
-            let frames: [&[u8]; MAX_SUB] = core::array::from_fn(|i| &sub[i][offs[i]..offs[i] + lens[i]]);
+            let frames: [&[u8]; MAX_SUB] =
+                core::array::from_fn(|i| &sub[i][offs[i]..offs[i] + lens[i]]);
             let maxlen = cbr_total.unwrap_or(output.len());
-            if let Some(ret) = dred::repacketize_extensions(output, &subs[..nb], &frames[..nb], maxlen, cbr_total.is_some()) {
+            if let Some(ret) = dred::repacketize_extensions(
+                output,
+                &subs[..nb],
+                &frames[..nb],
+                maxlen,
+                cbr_total.is_some(),
+            ) {
                 return ret;
             }
         }
@@ -3594,15 +3629,14 @@ impl OpusEncoder {
 
         let toc = sub[0][0] & 0xFC;
         let mut pos = 0usize;
-        let push =
-            |out: &mut [u8], pos: &mut usize, byte: u8| -> Result<(), &'static str> {
-                if *pos >= out.len() {
-                    return Err("Output buffer too small");
-                }
-                out[*pos] = byte;
-                *pos += 1;
-                Ok(())
-            };
+        let push = |out: &mut [u8], pos: &mut usize, byte: u8| -> Result<(), &'static str> {
+            if *pos >= out.len() {
+                return Err("Output buffer too small");
+            }
+            out[*pos] = byte;
+            *pos += 1;
+            Ok(())
+        };
         // The packet layout is libopus's repacketizer
         // (opus_repacketizer_out_range_impl, repacketizer.c:194-318): code 1
         // for two equal frames, code 2 for two different ones, code 3 for
@@ -3620,7 +3654,11 @@ impl OpusEncoder {
             0
         };
         let sum = lens[..nb].iter().sum::<usize>();
-        let code3_tot = if vbr { 2 + length_bytes + sum } else { 2 + nb * lens[0] };
+        let code3_tot = if vbr {
+            2 + length_bytes + sum
+        } else {
+            2 + nb * lens[0]
+        };
         let maxlen = cbr_total.unwrap_or(0);
         let pad = cbr_total.is_some();
         // Code 3 runs for more than two frames, and under CBR whenever the
@@ -3637,7 +3675,11 @@ impl OpusEncoder {
             pad_amount = maxlen.saturating_sub(code3_tot);
             let pad_flag = if pad_amount > 0 { 0x40 } else { 0 };
             push(output, &mut pos, toc | 0x03)?;
-            push(output, &mut pos, nb as u8 | if vbr { 0x80 } else { 0 } | pad_flag)?;
+            push(
+                output,
+                &mut pos,
+                nb as u8 | if vbr { 0x80 } else { 0 } | pad_flag,
+            )?;
             if pad_amount > 0 {
                 let nb_255s = (pad_amount - 1) / 255;
                 for _ in 0..nb_255s {
@@ -3950,8 +3992,12 @@ impl OpusDecoder {
             }
             let mut pcm_count = 0;
             loop {
-                let ret =
-                    self.decode_frame(None, &mut pcm[pcm_count * ch..], frame_size - pcm_count, false)?;
+                let ret = self.decode_frame(
+                    None,
+                    &mut pcm[pcm_count * ch..],
+                    frame_size - pcm_count,
+                    false,
+                )?;
                 pcm_count += ret;
                 if pcm_count >= frame_size {
                     break;
@@ -3985,8 +4031,7 @@ impl OpusDecoder {
             // there might be FEC.
             let duration_copy = self.last_packet_duration;
             if frame_size - packet_frame_size != 0 {
-                if let Err(e) =
-                    self.decode_native(&[], frame_size - packet_frame_size, pcm, false)
+                if let Err(e) = self.decode_native(&[], frame_size - packet_frame_size, pcm, false)
                 {
                     self.last_packet_duration = duration_copy;
                     return Err(e);
@@ -4090,7 +4135,8 @@ impl OpusDecoder {
             if audiosize > f20 {
                 let mut at = 0;
                 loop {
-                    let ret = self.decode_frame(None, &mut pcm[at * ch..], audiosize.min(f20), false)?;
+                    let ret =
+                        self.decode_frame(None, &mut pcm[at * ch..], audiosize.min(f20), false)?;
                     at += ret;
                     audiosize -= ret;
                     if audiosize == 0 {
@@ -4123,7 +4169,12 @@ impl OpusDecoder {
         }
         let transition_size = f5.min(audiosize);
         if transition && mode == OpusMode::CeltOnly {
-            let _ = self.decode_frame(None, &mut pcm_transition[..transition_size * ch], transition_size, false);
+            let _ = self.decode_frame(
+                None,
+                &mut pcm_transition[..transition_size * ch],
+                transition_size,
+                false,
+            );
         }
         if audiosize > frame_size {
             return Err("frame_size too small for packet");
@@ -4166,7 +4217,9 @@ impl OpusDecoder {
                     6 => OsceMethod::Lace,
                     _ => OsceMethod::None,
                 };
-                use crate::dnn::osce::{OSCE_MODE_CELT_ONLY, OSCE_MODE_HYBRID, OSCE_MODE_SILK_BBWE, OSCE_MODE_SILK_ONLY};
+                use crate::dnn::osce::{
+                    OSCE_MODE_CELT_ONLY, OSCE_MODE_HYBRID, OSCE_MODE_SILK_BBWE, OSCE_MODE_SILK_ONLY,
+                };
                 let c = &mut self.dec_control;
                 c.osce_extended_mode = if self.complexity >= 4
                     && c.enable_osce_bwe
@@ -4276,7 +4329,12 @@ impl OpusDecoder {
         }
 
         if transition && mode != OpusMode::CeltOnly {
-            let _ = self.decode_frame(None, &mut pcm_transition[..transition_size * ch], transition_size, false);
+            let _ = self.decode_frame(
+                None,
+                &mut pcm_transition[..transition_size * ch],
+                transition_size,
+                false,
+            );
         }
 
         if let Some(bw) = bandwidth {
@@ -4340,7 +4398,14 @@ impl OpusDecoder {
             let lpcnet = None;
             celt_ok = self
                 .celt_dec
-                .decode_with_ec_dred(celt_data, Some(&mut dec), pcm, celt_frame_size, celt_accum, lpcnet)
+                .decode_with_ec_dred(
+                    celt_data,
+                    Some(&mut dec),
+                    pcm,
+                    celt_frame_size,
+                    celt_accum,
+                    lpcnet,
+                )
                 .is_some();
             self.range_final = self.celt_dec.rng();
         } else {
@@ -4455,9 +4520,7 @@ const F10_MAX: usize = 480 * OPUS_MAX_CHANNELS;
 
 /// The frames of a packet (libopus `opus_packet_parse_impl`, not
 /// self-delimited).
-fn opus_packet_parse(
-    data: &[u8],
-) -> Result<FixedVec<&[u8], OPUS_MAX_PACKET_FRAMES>, &'static str> {
+fn opus_packet_parse(data: &[u8]) -> Result<FixedVec<&[u8], OPUS_MAX_PACKET_FRAMES>, &'static str> {
     const INVALID: &str = "Invalid packet";
     let size = |d: &[u8]| -> Result<(usize, usize), &'static str> {
         parse_frame_size(d).map_err(|_| INVALID)

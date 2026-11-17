@@ -922,7 +922,9 @@ fn bench_opus_encode_i16(c: &mut Criterion) {
         let input_f32: Vec<f32> = input_i16.iter().map(|&s| s as f32 / 32768.0).collect();
         let mut output = vec![0u8; 256];
 
-        group.throughput(Throughput::Bytes(frame_size as u64 * 2 /* i16 bytes */));
+        group.throughput(Throughput::Bytes(
+            frame_size as u64 * 2, /* i16 bytes */
+        ));
         group.bench_with_input(
             BenchmarkId::new(format!("{sample_rate}Hz/{frame_ms}ms"), "i16_voip"),
             &(sample_rate, frame_size),

@@ -8,7 +8,8 @@ use crate::compat::Math;
 
 use crate::dnn::common::{celt_log, celt_pitch_xcorr};
 use crate::dnn::nnet::{
-    compute_activation_inplace, compute_generic_conv1d, compute_generic_dense, Activation, LinearLayer,
+    Activation, LinearLayer, compute_activation_inplace, compute_generic_conv1d,
+    compute_generic_dense,
 };
 
 pub const ADACONV_MAX_KERNEL_SIZE: usize = 32;
@@ -29,7 +30,8 @@ pub const ADASHAPE_MAX_FRAME_SIZE: usize = 240;
 #[derive(Clone, Debug)]
 pub struct AdaConvState {
     pub history: [f32; ADACONV_MAX_KERNEL_SIZE * ADACONV_MAX_INPUT_CHANNELS],
-    pub last_kernel: [f32; ADACONV_MAX_KERNEL_SIZE * ADACONV_MAX_INPUT_CHANNELS * ADACONV_MAX_OUTPUT_CHANNELS],
+    pub last_kernel:
+        [f32; ADACONV_MAX_KERNEL_SIZE * ADACONV_MAX_INPUT_CHANNELS * ADACONV_MAX_OUTPUT_CHANNELS],
     pub last_gain: f32,
 }
 
@@ -56,7 +58,9 @@ impl AdaConvState {
     pub const fn new() -> Self {
         AdaConvState {
             history: [0.0; ADACONV_MAX_KERNEL_SIZE * ADACONV_MAX_INPUT_CHANNELS],
-            last_kernel: [0.0; ADACONV_MAX_KERNEL_SIZE * ADACONV_MAX_INPUT_CHANNELS * ADACONV_MAX_OUTPUT_CHANNELS],
+            last_kernel: [0.0; ADACONV_MAX_KERNEL_SIZE
+                * ADACONV_MAX_INPUT_CHANNELS
+                * ADACONV_MAX_OUTPUT_CHANNELS],
             last_gain: 0.0,
         }
     }
@@ -151,9 +155,18 @@ pub fn compute_overlap_window(window: &mut [f32]) {
 
 /// `scale_kernel`: normalizes each output channel's kernel to unit 2-norm
 /// over input channels and taps, then multiplies it by that channel's gain.
-fn scale_kernel(kernel: &mut [f32], in_channels: usize, out_channels: usize, kernel_size: usize, gain: &[f32]) {
+fn scale_kernel(
+    kernel: &mut [f32],
+    in_channels: usize,
+    out_channels: usize,
+    kernel_size: usize,
+    gain: &[f32],
+) {
     let per_out = in_channels * kernel_size;
-    for (k, &g) in kernel[..out_channels * per_out].chunks_exact_mut(per_out).zip(gain) {
+    for (k, &g) in kernel[..out_channels * per_out]
+        .chunks_exact_mut(per_out)
+        .zip(gain)
+    {
         let mut norm = 0.0f32;
         for &v in k.iter() {
             norm += v * v;
@@ -189,9 +202,18 @@ pub fn adaconv_process_frame(
     window: &[f32],
 ) {
     const IN_STRIDE_MAX: usize = ADACONV_MAX_FRAME_SIZE + ADACONV_MAX_KERNEL_SIZE;
-    let AdaConvConfig { frame_size, overlap_size, in_channels, out_channels, kernel_size, left_padding, .. } = *cfg;
+    let AdaConvConfig {
+        frame_size,
+        overlap_size,
+        in_channels,
+        out_channels,
+        kernel_size,
+        left_padding,
+        ..
+    } = *cfg;
     let mut output_buffer = [0.0f32; ADACONV_MAX_FRAME_SIZE * ADACONV_MAX_OUTPUT_CHANNELS];
-    let mut kernel_buffer = [0.0f32; ADACONV_MAX_KERNEL_SIZE * ADACONV_MAX_INPUT_CHANNELS * ADACONV_MAX_OUTPUT_CHANNELS];
+    let mut kernel_buffer = [0.0f32;
+        ADACONV_MAX_KERNEL_SIZE * ADACONV_MAX_INPUT_CHANNELS * ADACONV_MAX_OUTPUT_CHANNELS];
     let mut input_buffer = [0.0f32; ADACONV_MAX_INPUT_CHANNELS * IN_STRIDE_MAX];
     let mut channel_buffer0 = [0.0f32; ADACONV_MAX_OVERLAP_SIZE];
     let mut channel_buffer1 = [0.0f32; ADACONV_MAX_FRAME_SIZE];
@@ -202,7 +224,9 @@ pub fn adaconv_process_frame(
     assert!(kernel_size < frame_size);
     assert!(kernel_size <= ADACONV_MAX_KERNEL_SIZE && frame_size <= ADACONV_MAX_FRAME_SIZE);
     assert!(overlap_size <= ADACONV_MAX_OVERLAP_SIZE);
-    assert!(in_channels <= ADACONV_MAX_INPUT_CHANNELS && out_channels <= ADACONV_MAX_OUTPUT_CHANNELS);
+    assert!(
+        in_channels <= ADACONV_MAX_INPUT_CHANNELS && out_channels <= ADACONV_MAX_OUTPUT_CHANNELS
+    );
 
     // Each input channel: kernel_size history samples, then the frame.
     let stride = kernel_size + frame_size;
@@ -213,10 +237,25 @@ pub fn adaconv_process_frame(
             .copy_from_slice(&x_in[ch * frame_size..(ch + 1) * frame_size]);
     }
 
-    compute_generic_dense(kernel_layer, &mut kernel_buffer, features, Activation::Linear);
+    compute_generic_dense(
+        kernel_layer,
+        &mut kernel_buffer,
+        features,
+        Activation::Linear,
+    );
     compute_generic_dense(gain_layer, &mut gain_buffer, features, Activation::Tanh);
-    transform_gains(&mut gain_buffer[..out_channels], cfg.filter_gain_a, cfg.filter_gain_b);
-    scale_kernel(&mut kernel_buffer, in_channels, out_channels, kernel_size, &gain_buffer);
+    transform_gains(
+        &mut gain_buffer[..out_channels],
+        cfg.filter_gain_a,
+        cfg.filter_gain_b,
+    );
+    scale_kernel(
+        &mut kernel_buffer,
+        in_channels,
+        out_channels,
+        kernel_size,
+        &gain_buffer,
+    );
 
     for oc in 0..out_channels {
         let out = &mut output_buffer[oc * frame_size..(oc + 1) * frame_size];
@@ -228,8 +267,20 @@ pub fn adaconv_process_frame(
             kernel1[..kernel_size].copy_from_slice(&kernel_buffer[k..k + kernel_size]);
             // p_input + ic*stride - left_padding, with p_input = input_buffer + kernel_size.
             let y = &input_buffer[kernel_size + ic * stride - left_padding..];
-            celt_pitch_xcorr(&kernel0, y, &mut channel_buffer0, ADACONV_MAX_KERNEL_SIZE, overlap_size);
-            celt_pitch_xcorr(&kernel1, y, &mut channel_buffer1, ADACONV_MAX_KERNEL_SIZE, frame_size);
+            celt_pitch_xcorr(
+                &kernel0,
+                y,
+                &mut channel_buffer0,
+                ADACONV_MAX_KERNEL_SIZE,
+                overlap_size,
+            );
+            celt_pitch_xcorr(
+                &kernel1,
+                y,
+                &mut channel_buffer1,
+                ADACONV_MAX_KERNEL_SIZE,
+                frame_size,
+            );
             for i in 0..overlap_size {
                 out[i] += window[i] * channel_buffer0[i];
                 out[i] += (1.0 - window[i]) * channel_buffer1[i];
@@ -244,7 +295,8 @@ pub fn adaconv_process_frame(
 
     for ch in 0..in_channels {
         let src = ch * stride + frame_size;
-        state.history[ch * kernel_size..(ch + 1) * kernel_size].copy_from_slice(&input_buffer[src..src + kernel_size]);
+        state.history[ch * kernel_size..(ch + 1) * kernel_size]
+            .copy_from_slice(&input_buffer[src..src + kernel_size]);
     }
     let n = kernel_size * in_channels * out_channels;
     state.last_kernel[..n].copy_from_slice(&kernel_buffer[..n]);
@@ -268,7 +320,13 @@ pub fn adacomb_process_frame(
     window: &[f32],
 ) {
     const HIST: usize = ADACOMB_MAX_KERNEL_SIZE + ADACOMB_MAX_LAG;
-    let AdaCombConfig { frame_size, overlap_size, kernel_size, left_padding, .. } = *cfg;
+    let AdaCombConfig {
+        frame_size,
+        overlap_size,
+        kernel_size,
+        left_padding,
+        ..
+    } = *cfg;
     let mut output_buffer = [0.0f32; ADACOMB_MAX_FRAME_SIZE];
     let mut output_buffer_last = [0.0f32; ADACOMB_MAX_FRAME_SIZE];
     let mut kernel_buffer = [0.0f32; ADACOMB_MAX_KERNEL_SIZE];
@@ -285,11 +343,22 @@ pub fn adacomb_process_frame(
     input_buffer[..p].copy_from_slice(&state.history[..p]);
     input_buffer[p..p + frame_size].copy_from_slice(&x[..frame_size]);
 
-    compute_generic_dense(kernel_layer, &mut kernel_buffer, features, Activation::Linear);
+    compute_generic_dense(
+        kernel_layer,
+        &mut kernel_buffer,
+        features,
+        Activation::Linear,
+    );
     compute_generic_dense(gain_layer, &mut gain, features, Activation::Relu);
-    compute_generic_dense(global_gain_layer, &mut global_gain, features, Activation::Tanh);
+    compute_generic_dense(
+        global_gain_layer,
+        &mut global_gain,
+        features,
+        Activation::Tanh,
+    );
     let gain = ((cfg.log_gain_limit - gain[0]) as f64).exp() as f32;
-    let global_gain = ((cfg.filter_gain_a * global_gain[0] + cfg.filter_gain_b) as f64).exp() as f32;
+    let global_gain =
+        ((cfg.filter_gain_a * global_gain[0] + cfg.filter_gain_b) as f64).exp() as f32;
     scale_kernel(&mut kernel_buffer, 1, 1, kernel_size, &[gain]);
 
     let mut kernel = [0.0f32; ADACOMB_MAX_KERNEL_SIZE];
@@ -314,8 +383,8 @@ pub fn adacomb_process_frame(
     let last_gg = state.last_global_gain;
     let p_input = &input_buffer[p..p + frame_size];
     for i in 0..overlap_size {
-        output_buffer[i] =
-            last_gg * window[i] * output_buffer_last[i] + global_gain * (1.0 - window[i]) * output_buffer[i];
+        output_buffer[i] = last_gg * window[i] * output_buffer_last[i]
+            + global_gain * (1.0 - window[i]) * output_buffer[i];
     }
     for i in 0..overlap_size {
         output_buffer[i] += (window[i] * last_gg + (1.0 - window[i]) * global_gain) * p_input[i];
@@ -345,7 +414,12 @@ pub fn adashape_process_frame(
     alpha2: &LinearLayer<'_>,
     cfg: &AdaShapeConfig,
 ) {
-    let AdaShapeConfig { feature_dim, frame_size, avg_pool_k, interpolate_k } = *cfg;
+    let AdaShapeConfig {
+        feature_dim,
+        frame_size,
+        avg_pool_k,
+        interpolate_k,
+    } = *cfg;
     let mut in_buffer = [0.0f32; ADASHAPE_MAX_INPUT_DIM + ADASHAPE_MAX_FRAME_SIZE];
     let mut out_buffer = [0.0f32; ADASHAPE_MAX_FRAME_SIZE];
     let mut tmp_buffer = [0.0f32; ADASHAPE_MAX_FRAME_SIZE];
@@ -378,7 +452,14 @@ pub fn adashape_process_frame(
         tenv[tenv_size] = mean;
     }
 
-    compute_generic_conv1d(alpha1f, &mut out_buffer, &mut state.conv_alpha1f_state, &in_buffer, feature_dim, Activation::Linear);
+    compute_generic_conv1d(
+        alpha1f,
+        &mut out_buffer,
+        &mut state.conv_alpha1f_state,
+        &in_buffer,
+        feature_dim,
+        Activation::Linear,
+    );
     compute_generic_conv1d(
         alpha1t,
         &mut tmp_buffer,
@@ -390,14 +471,26 @@ pub fn adashape_process_frame(
     // Leaky ReLU, with the double constant 0.2.
     for i in 0..hidden_dim {
         let tmp = out_buffer[i] + tmp_buffer[i];
-        in_buffer[i] = if tmp >= 0.0 { tmp } else { (0.2f64 * tmp as f64) as f32 };
+        in_buffer[i] = if tmp >= 0.0 {
+            tmp
+        } else {
+            (0.2f64 * tmp as f64) as f32
+        };
     }
-    compute_generic_conv1d(alpha2, &mut tmp_buffer, &mut state.conv_alpha2_state, &in_buffer, hidden_dim, Activation::Linear);
+    compute_generic_conv1d(
+        alpha2,
+        &mut tmp_buffer,
+        &mut state.conv_alpha2_state,
+        &in_buffer,
+        hidden_dim,
+        Activation::Linear,
+    );
 
     for i in 0..hidden_dim {
         for k in 0..interpolate_k {
             let alpha = (k + 1) as f32 / interpolate_k as f32;
-            out_buffer[i * interpolate_k + k] = alpha * tmp_buffer[i] + (1.0 - alpha) * state.interpolate_state;
+            out_buffer[i * interpolate_k + k] =
+                alpha * tmp_buffer[i] + (1.0 - alpha) * state.interpolate_state;
         }
         state.interpolate_state = tmp_buffer[i];
     }

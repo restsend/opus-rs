@@ -173,7 +173,12 @@ impl<'a> ExtensionIterator<'a> {
         while self.repeat_frame < self.nb_frames {
             while self.src_len > 0 {
                 let mut repeat_id_byte = self.data[self.src_data];
-                self.src_len = skip_extension(self.data, &mut self.src_data, self.src_len, &mut header_size);
+                self.src_len = skip_extension(
+                    self.data,
+                    &mut self.src_data,
+                    self.src_len,
+                    &mut header_size,
+                );
                 // Skipped once before, so it fits now.
                 debug_assert!(self.src_len >= 0);
                 // Padding and frame separators are not repeated.
@@ -200,7 +205,10 @@ impl<'a> ExtensionIterator<'a> {
                 if self.curr_len < 0 {
                     return Err(INVALID_PACKET);
                 }
-                debug_assert_eq!(self.curr_data as i32, self.data.len() as i32 - self.curr_len);
+                debug_assert_eq!(
+                    self.curr_data as i32,
+                    self.data.len() as i32 - self.curr_len
+                );
                 if self.repeat_frame >= self.frame_max {
                     continue;
                 }
@@ -252,11 +260,19 @@ impl<'a> ExtensionIterator<'a> {
             let curr_data0 = self.curr_data;
             let id = self.data[curr_data0] >> 1;
             let l = self.data[curr_data0] & 1;
-            self.curr_len = skip_extension(self.data, &mut self.curr_data, self.curr_len, &mut header_size);
+            self.curr_len = skip_extension(
+                self.data,
+                &mut self.curr_data,
+                self.curr_len,
+                &mut header_size,
+            );
             if self.curr_len < 0 {
                 return Err(INVALID_PACKET);
             }
-            debug_assert_eq!(self.curr_data as i32, self.data.len() as i32 - self.curr_len);
+            debug_assert_eq!(
+                self.curr_data as i32,
+                self.data.len() as i32 - self.curr_len
+            );
             if id == 1 {
                 if l == 0 {
                     self.curr_frame += 1;
@@ -457,7 +473,12 @@ pub fn parse_packet(data: &[u8]) -> Result<PacketParts<'_>, &'static str> {
         frames[i] = &data[pos..pos + sizes[i]];
         pos += sizes[i];
     }
-    Ok(PacketParts { toc, count, frames, padding: &data[pos..pos + pad] })
+    Ok(PacketParts {
+        toc,
+        count,
+        frames,
+        padding: &data[pos..pos + pad],
+    })
 }
 
 /// `write_extension_payload`: writes the payload of `ext` at `pos` (with
@@ -523,7 +544,12 @@ fn write_extension(
     }
     debug_assert!((3..=127).contains(&ext.id));
     if let Some(d) = data {
-        d[pos] = (ext.id << 1) + if ext.id < 32 { ext.data.len() as u8 } else { u8::from(!last) };
+        d[pos] = (ext.id << 1)
+            + if ext.id < 32 {
+                ext.data.len() as u8
+            } else {
+                u8::from(!last)
+            };
     }
     write_extension_payload(data, len, pos + 1, ext, last)
 }
@@ -626,7 +652,13 @@ pub fn generate_extensions(
                 }
                 curr_frame = f;
             }
-            pos = write_extension(&mut data, len, pos, &extensions[i], written == nb_extensions - 1)?;
+            pos = write_extension(
+                &mut data,
+                len,
+                pos,
+                &extensions[i],
+                written == nb_extensions - 1,
+            )?;
             written += 1;
             if repeat_count > 0 && frame_repeat_idx[f] == i {
                 // The repeat indicator, then the repeated payloads.
@@ -740,7 +772,11 @@ pub fn write_packet(
         // Code 3, also for the padding.
         let vbr = (1..count).any(|i| len(i) != len(0));
         if vbr {
-            tot_size = 2 + (0..count - 1).map(|i| 1 + usize::from(len(i) >= 252) + len(i)).sum::<usize>() + len(count - 1);
+            tot_size = 2
+                + (0..count - 1)
+                    .map(|i| 1 + usize::from(len(i) >= 252) + len(i))
+                    .sum::<usize>()
+                + len(count - 1);
             if tot_size > maxlen {
                 return Err(BUFFER_TOO_SMALL);
             }
@@ -759,7 +795,12 @@ pub fn write_packet(
         if !extensions.is_empty() {
             ext_len = generate_extensions(None, maxlen - tot_size, extensions, count, false)?;
             if !pad {
-                pad_amount = ext_len + if ext_len != 0 { ext_len.div_ceil(254) } else { 1 };
+                pad_amount = ext_len
+                    + if ext_len != 0 {
+                        ext_len.div_ceil(254)
+                    } else {
+                        1
+                    };
             }
         }
         if pad_amount != 0 {
@@ -789,7 +830,13 @@ pub fn write_packet(
         ptr += f.len();
     }
     if ext_len > 0 {
-        let n = generate_extensions(Some(&mut out[ext_begin..ext_begin + ext_len]), ext_len, extensions, count, false)?;
+        let n = generate_extensions(
+            Some(&mut out[ext_begin..ext_begin + ext_len]),
+            ext_len,
+            extensions,
+            count,
+            false,
+        )?;
         debug_assert_eq!(n, ext_len);
     }
     out[ones_begin..ones_end].fill(0x01);
@@ -803,7 +850,10 @@ pub fn write_packet(
 mod tests {
     use super::*;
 
-    fn all(data: &[u8], nb_frames: usize) -> Result<std::vec::Vec<(u8, usize, std::vec::Vec<u8>)>, &'static str> {
+    fn all(
+        data: &[u8],
+        nb_frames: usize,
+    ) -> Result<std::vec::Vec<(u8, usize, std::vec::Vec<u8>)>, &'static str> {
         let mut it = ExtensionIterator::new(data, nb_frames);
         let mut out = std::vec::Vec::new();
         while let Some(e) = it.next()? {
@@ -817,10 +867,26 @@ mod tests {
         // A short extension 3 with one byte, a long extension 33 with
         // "ab" (L = 1, length 2), a separator, then a long extension 126
         // taking the rest (L = 0).
-        let data = [3 << 1 | 1, 7, 33 << 1 | 1, 2, b'a', b'b', 0x02, 126 << 1, b'D', 12, 1];
+        let data = [
+            3 << 1 | 1,
+            7,
+            33 << 1 | 1,
+            2,
+            b'a',
+            b'b',
+            0x02,
+            126 << 1,
+            b'D',
+            12,
+            1,
+        ];
         assert_eq!(
             all(&data, 2).unwrap(),
-            [(3, 0, vec![7]), (33, 0, b"ab".to_vec()), (126, 1, vec![b'D', 12, 1])]
+            [
+                (3, 0, vec![7]),
+                (33, 0, b"ab".to_vec()),
+                (126, 1, vec![b'D', 12, 1])
+            ]
         );
         // Without a second frame the separator is invalid.
         assert!(all(&data, 1).is_err());
@@ -834,7 +900,14 @@ mod tests {
         let data = [3 << 1, 40 << 1 | 1, 1, b'x', 0x04, 1, b'y', b'z', b'w'];
         assert_eq!(
             all(&data, 3).unwrap(),
-            [(3, 0, vec![]), (40, 0, b"x".to_vec()), (3, 1, vec![]), (40, 1, b"y".to_vec()), (3, 2, vec![]), (40, 2, b"zw".to_vec())]
+            [
+                (3, 0, vec![]),
+                (40, 0, b"x".to_vec()),
+                (3, 1, vec![]),
+                (40, 1, b"y".to_vec()),
+                (3, 2, vec![]),
+                (40, 2, b"zw".to_vec())
+            ]
         );
     }
 
@@ -843,7 +916,10 @@ mod tests {
         // Code 3, one CBR frame of 2 bytes, 3 bytes of padding.
         let p = [0x7b, 0x41, 3, 9, 9, 1, 2, 3];
         let parts = parse_packet(&p).unwrap();
-        assert_eq!((parts.count, parts.frames[0], parts.padding), (1, &[9u8, 9][..], &[1u8, 2, 3][..]));
+        assert_eq!(
+            (parts.count, parts.frames[0], parts.padding),
+            (1, &[9u8, 9][..], &[1u8, 2, 3][..])
+        );
         assert!(parse_packet(&[0x7b, 0x41, 7, 9]).is_err());
     }
 }

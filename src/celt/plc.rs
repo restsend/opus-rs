@@ -74,7 +74,11 @@ impl CeltDecoder {
 
         let periodic = self.plc_duration < 40 && start_band == 0 && !self.skip_plc;
         #[allow(unused_mut)]
-        let mut frame_type = if periodic { FRAME_PLC_PERIODIC } else { FRAME_PLC_NOISE };
+        let mut frame_type = if periodic {
+            FRAME_PLC_PERIODIC
+        } else {
+            FRAME_PLC_NOISE
+        };
         #[cfg(feature = "deep-plc")]
         if start_band == 0
             && let Some(l) = lpcnet.as_deref()
@@ -229,7 +233,12 @@ impl CeltDecoder {
 
     /// Periodic concealment: repeat the last pitch period through the LPC
     /// filter of the signal before the loss.
-    fn conceal_periodic(&mut self, n: usize, frame_type: u8, lpcnet: crate::silk::plc::DeepPlc<'_>) {
+    fn conceal_periodic(
+        &mut self,
+        n: usize,
+        frame_type: u8,
+        lpcnet: crate::silk::plc::DeepPlc<'_>,
+    ) {
         let mode = self.mode;
         let overlap = mode.overlap;
         let window = mode.window;
@@ -252,7 +261,13 @@ impl CeltDecoder {
             && !last_neural
             && let Some(l) = lpcnet.as_deref_mut()
         {
-            deep_plc::update_plc_state(l, &self.decode_mem, mem_len, &mut self.deep_plc.preemphasis_mem, cc);
+            deep_plc::update_plc_state(
+                l,
+                &self.decode_mem,
+                mem_len,
+                &mut self.deep_plc.preemphasis_mem,
+                cc,
+            );
         }
         #[cfg(not(feature = "deep-plc"))]
         let _ = lpcnet;
@@ -562,23 +577,65 @@ fn is_neural(frame_type: u8) -> bool {
 #[cfg(feature = "deep-plc")]
 pub(super) mod deep_plc {
     use super::{CeltDecoder, DECODE_BUFFER_SIZE};
+    #[cfg(not(feature = "std"))]
+    use crate::compat::Math;
     use crate::dnn::freq::{FRAME_SIZE, PREEMPHASIS};
     use crate::dnn::lpcnet_plc::LpcnetPlcState;
     use crate::dnn::vec::{max32, min32};
-    #[cfg(not(feature = "std"))]
-    use crate::compat::Math;
 
     const PLC_UPDATE_FRAMES: usize = 4;
     const PLC_UPDATE_SAMPLES: usize = PLC_UPDATE_FRAMES * FRAME_SIZE;
     const SINC_ORDER: usize = 48;
     /// `sinc_filter` of celt_decoder.c.
     const SINC_FILTER: [f32; SINC_ORDER + 1] = [
-        4.2931e-05, -0.000190293, -0.000816132, -0.000637162, 0.00141662, 0.00354764, 0.00184368, -0.00428274,
-        -0.00856105, -0.0034003, 0.00930201, 0.0159616, 0.00489785, -0.0169649, -0.0259484, -0.00596856,
-        0.0286551, 0.0405872, 0.00649994, -0.0509284, -0.0716655, -0.00665212, 0.134336, 0.278927,
-        0.339995, 0.278927, 0.134336, -0.00665212, -0.0716655, -0.0509284, 0.00649994, 0.0405872,
-        0.0286551, -0.00596856, -0.0259484, -0.0169649, 0.00489785, 0.0159616, 0.00930201, -0.0034003,
-        -0.00856105, -0.00428274, 0.00184368, 0.00354764, 0.00141662, -0.000637162, -0.000816132, -0.000190293,
+        4.2931e-05,
+        -0.000190293,
+        -0.000816132,
+        -0.000637162,
+        0.00141662,
+        0.00354764,
+        0.00184368,
+        -0.00428274,
+        -0.00856105,
+        -0.0034003,
+        0.00930201,
+        0.0159616,
+        0.00489785,
+        -0.0169649,
+        -0.0259484,
+        -0.00596856,
+        0.0286551,
+        0.0405872,
+        0.00649994,
+        -0.0509284,
+        -0.0716655,
+        -0.00665212,
+        0.134336,
+        0.278927,
+        0.339995,
+        0.278927,
+        0.134336,
+        -0.00665212,
+        -0.0716655,
+        -0.0509284,
+        0.00649994,
+        0.0405872,
+        0.0286551,
+        -0.00596856,
+        -0.0259484,
+        -0.0169649,
+        0.00489785,
+        0.0159616,
+        0.00930201,
+        -0.0034003,
+        -0.00856105,
+        -0.00428274,
+        0.00184368,
+        0.00354764,
+        0.00141662,
+        -0.000637162,
+        -0.000816132,
+        -0.000190293,
         4.2931e-05,
     ];
 
@@ -602,7 +659,10 @@ pub(super) mod deep_plc {
 
         /// `OPUS_RESET_STATE` (these fields follow `DECODER_RESET_START`).
         pub(crate) fn reset(&mut self) {
-            *self = Self { complexity: self.complexity, ..Self::EMPTY };
+            *self = Self {
+                complexity: self.complexity,
+                ..Self::EMPTY
+            };
         }
     }
 
@@ -610,7 +670,11 @@ pub(super) mod deep_plc {
     fn float2int(x: f32) -> i32 {
         let f = x.floor();
         let d = x - f;
-        (if d > 0.5 || (d == 0.5 && (f as i64) % 2 != 0) { f + 1.0 } else { f }) as i32
+        (if d > 0.5 || (d == 0.5 && (f as i64) % 2 != 0) {
+            f + 1.0
+        } else {
+            f
+        }) as i32
     }
 
     /// `update_plc_state`: feeds the last 40 ms of the decoded signal,
@@ -655,7 +719,12 @@ pub(super) mod deep_plc {
     /// Replaces the periodic concealment of the frame (and its overlap)
     /// with the deep PLC output resampled to 48 kHz, cross-fading the first
     /// overlap when the previous frame was not neural.
-    pub(super) fn synthesize(st: &mut CeltDecoder, lpcnet: &mut LpcnetPlcState<'static>, n: usize, last_neural: bool) {
+    pub(super) fn synthesize(
+        st: &mut CeltDecoder,
+        lpcnet: &mut LpcnetPlcState<'static>,
+        n: usize,
+        last_neural: bool,
+    ) {
         let overlap = st.mode.overlap;
         let window = st.mode.window;
         let cc = st.channels;
@@ -663,8 +732,9 @@ pub(super) mod deep_plc {
         let start = DECODE_BUFFER_SIZE - n;
         let mut buf_copy = [0.0f32; 2 * 120];
         for c in 0..cc {
-            buf_copy[c * overlap..(c + 1) * overlap]
-                .copy_from_slice(&st.decode_mem[c * mem_len + start..c * mem_len + start + overlap]);
+            buf_copy[c * overlap..(c + 1) * overlap].copy_from_slice(
+                &st.decode_mem[c * mem_len + start..c * mem_len + start + overlap],
+            );
         }
         let samples_needed16k = (n + SINC_ORDER + overlap) / 3;
         let m = &mut st.deep_plc;

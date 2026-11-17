@@ -2,8 +2,8 @@ use crate::bands::{
     SPREAD_AGGRESSIVE, SPREAD_NONE, SPREAD_NORMAL, compute_band_energies, denormalise_bands, haar1,
     log2amp, normalise_bands, quant_all_bands, spreading_decision,
 };
-use crate::modes::{CeltMode, SPREAD_ICDF, TAPSET_ICDF, TF_SELECT_TABLE, TRIM_ICDF};
 use crate::mathops::{celt_exp2, celt_log2};
+use crate::modes::{CeltMode, SPREAD_ICDF, TAPSET_ICDF, TF_SELECT_TABLE, TRIM_ICDF};
 use crate::quant_bands::{
     quant_coarse_energy_advanced, quant_energy_finalise, quant_fine_energy, unquant_coarse_energy,
     unquant_energy_finalise, unquant_fine_energy,
@@ -186,14 +186,11 @@ const DECODE_BUFFER_SIZE: usize = 2048;
 
 /// libopus transient_analysis inv_table (celt_encoder.c:286-294).
 const INV_TABLE: [u8; 128] = [
-    255, 255, 156, 110, 86, 70, 59, 51, 45, 40, 37, 33, 31, 28, 26, 25,
-    23, 22, 21, 20, 19, 18, 17, 16, 16, 15, 15, 14, 13, 13, 12, 12,
-    12, 12, 11, 11, 11, 10, 10, 10, 9, 9, 9, 9, 9, 9, 8, 8,
-    8, 8, 8, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6,
-    6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5, 5, 5, 5, 5, 5,
-    5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2,
+    255, 255, 156, 110, 86, 70, 59, 51, 45, 40, 37, 33, 31, 28, 26, 25, 23, 22, 21, 20, 19, 18, 17,
+    16, 16, 15, 15, 14, 13, 13, 12, 12, 12, 12, 11, 11, 11, 10, 10, 10, 9, 9, 9, 9, 9, 9, 8, 8, 8,
+    8, 8, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2,
 ];
 
 const MAX_TRANSIENT_LEN: usize = 3000;
@@ -270,7 +267,11 @@ fn compute_mdcts(
     upsample: usize,
 ) {
     let buf_stride = frame_size + overlap;
-    let (b, shift) = if short_blocks { (1 << lm, mode.max_lm) } else { (1, mode.max_lm - lm) };
+    let (b, shift) = if short_blocks {
+        (1 << lm, mode.max_lm)
+    } else {
+        (1, mode.max_lm - lm)
+    };
     let n = frame_size / b;
     for c in 0..cc {
         for i in 0..b {
@@ -430,7 +431,9 @@ fn transient_analysis(
     // tf_estimate = sqrt(max(0, 0.0069*min(163, tf_max) - 0.139))  [float build]
     let tf_max = ((27.0 * mask_metric).sqrt() - 42.0).max(0.0);
     // The product is float, the 0.139, the max and the sqrt are double.
-    *tf_estimate = (f64::from(0.0069 * tf_max.min(163.0)) - 0.139).max(0.0).sqrt() as f32;
+    *tf_estimate = (f64::from(0.0069 * tf_max.min(163.0)) - 0.139)
+        .max(0.0)
+        .sqrt() as f32;
 
     is_transient
 }
@@ -1021,7 +1024,8 @@ fn run_prefilter(
         }
         if tone_freq > 0.006148 {
             // In double: M_PI and .5 are double literals (C 1452).
-            let period = 0.5 + 2.0 * core::f64::consts::PI * f64::from(multiple) / f64::from(tone_freq);
+            let period =
+                0.5 + 2.0 * core::f64::consts::PI * f64::from(multiple) / f64::from(tone_freq);
             pitch_index = (period.floor() as usize).min(COMBFILTER_MAXPERIOD - 2);
         } else {
             pitch_index = COMBFILTER_MINPERIOD;
@@ -1475,7 +1479,7 @@ fn tone_lpc(x: &[f32], len: usize, delay: usize, lpc: &mut [f32; 2]) -> bool {
     let mut r02 = 0.0f32;
     let mut r11: f32;
     let mut r12: f32;
-    
+
     for i in 0..len - 2 * delay {
         r00 += x[i] * x[i];
         r01 += x[i] * x[i + delay];
@@ -1497,13 +1501,7 @@ fn tone_lpc(x: &[f32], len: usize, delay: usize, lpc: &mut [f32; 2]) -> bool {
     }
     r12 = r01 + edges;
     // Reverse and sum to get backward contribution (float: simple sums)
-    let (rr00, rr01, rr11, rr02, rr12) = (
-        r00 + r22,
-        r01 + r12,
-        2.0 * r11,
-        2.0 * r02,
-        r12 + r01,
-    );
+    let (rr00, rr01, rr11, rr02, rr12) = (r00 + r22, r01 + r12, 2.0 * r11, 2.0 * r02, r12 + r01);
     r00 = rr00;
     r01 = rr01;
     r11 = rr11;
@@ -2155,7 +2153,11 @@ impl CeltEncoder {
             for i in 0..frame_size {
                 let x = if i % upsample == 0 {
                     let x = pcm[c * api_frame_size + i / upsample] * 32768.0;
-                    if need_clip { x.clamp(-65536.0, 65536.0) } else { x }
+                    if need_clip {
+                        x.clamp(-65536.0, 65536.0)
+                    } else {
+                        x
+                    }
                 } else {
                     0.0
                 };
@@ -2417,7 +2419,9 @@ impl CeltEncoder {
         let second_mdct = short_blocks && self.complexity >= 8;
         let mut have_band_log_e2 = second_mdct;
         if second_mdct {
-            compute_mdcts(mode, false, in_buf, freq, channels, cc, frame_size, overlap, lm, upsample);
+            compute_mdcts(
+                mode, false, in_buf, freq, channels, cc, frame_size, overlap, lm, upsample,
+            );
             let band_e2 = &mut self.w_band_e2[..nb_ebands * channels];
             compute_band_energies(mode, freq, band_e2, end, channels, lm);
             let band_log_e2 = &mut self.w_band_log_e2[..nb_ebands * channels];
@@ -2428,7 +2432,18 @@ impl CeltEncoder {
                 }
             }
         }
-        compute_mdcts(mode, short_blocks, in_buf, freq, channels, cc, frame_size, overlap, lm, upsample);
+        compute_mdcts(
+            mode,
+            short_blocks,
+            in_buf,
+            freq,
+            channels,
+            cc,
+            frame_size,
+            overlap,
+            lm,
+            upsample,
+        );
         compute_band_energies(mode, freq, band_e, end, channels, lm);
         crate::bands::amp2log2(mode, eff_end, end, band_e, band_log_e, channels);
 
@@ -2457,7 +2472,14 @@ impl CeltEncoder {
             && !is_transient
             && self.complexity >= 5
             && !hybrid
-            && patch_transient_decision(band_log_e, &self.old_band_e, nb_ebands, start_band, end, channels)
+            && patch_transient_decision(
+                band_log_e,
+                &self.old_band_e,
+                nb_ebands,
+                start_band,
+                end,
+                channels,
+            )
         {
             is_transient = true;
             short_blocks = true;
@@ -2471,7 +2493,9 @@ impl CeltEncoder {
                 }
             }
             have_band_log_e2 = true;
-            compute_mdcts(mode, true, in_buf, freq, channels, cc, frame_size, overlap, lm, upsample);
+            compute_mdcts(
+                mode, true, in_buf, freq, channels, cc, frame_size, overlap, lm, upsample,
+            );
             compute_band_energies(mode, freq, band_e, end, channels, lm);
             crate::bands::amp2log2(mode, eff_end, end, band_e, band_log_e, channels);
             tf_estimate = 0.2;
@@ -2547,8 +2571,10 @@ impl CeltEncoder {
         // frames skip the analysis and keep `is_transient` (C 2242's
         // `toneishness < QCONST32(.98f, 29)`; float build, post-clamp
         // toneishness from C 2034).
-        let enable_tf_analysis =
-            effective_bytes >= 15 * channels && !hybrid && self.complexity >= 2 && toneishness < 0.98;
+        let enable_tf_analysis = effective_bytes >= 15 * channels
+            && !hybrid
+            && self.complexity >= 2
+            && toneishness < 0.98;
         let tf_select = if enable_tf_analysis {
             tf_analysis(
                 mode,
@@ -2637,8 +2663,7 @@ impl CeltEncoder {
         // libopus equiv_rate (celt_encoder.c:1925-1927): the packet's rate,
         // capped by the target bitrate, less the overhead of short frames.
         let overhead = (40 * channels as i32 + 20) * ((400 >> lm) - 50);
-        let mut equiv_rate =
-            ((nb_compressed_initial as i32 * 8 * 50) << (3 - lm)) - overhead;
+        let mut equiv_rate = ((nb_compressed_initial as i32 * 8 * 50) << (3 - lm)) - overhead;
         if self.bitrate != OPUS_BITRATE_MAX {
             equiv_rate = equiv_rate.min(self.bitrate - overhead);
         }
@@ -2784,12 +2809,13 @@ impl CeltEncoder {
             // Use the exact initial tell_frac captured at entry (libopus tell0_frac),
             // not tell_initial<<BITRES which loses the fractional part.
             let min_allowed = {
-                let a = ((cur_tell_frac + total_boost + (1 << (BITRES + 3)) - 1) >> (BITRES + 3)) + 2;
+                let a =
+                    ((cur_tell_frac + total_boost + (1 << (BITRES + 3)) - 1) >> (BITRES + 3)) + 2;
                 if hybrid {
-                    let b = (tell_initial_frac + (37 << BITRES) + total_boost
-                        + (1 << (BITRES + 3))
-                        - 1)
-                        >> (BITRES + 3);
+                    let b =
+                        (tell_initial_frac + (37 << BITRES) + total_boost + (1 << (BITRES + 3))
+                            - 1)
+                            >> (BITRES + 3);
                     a.max(b)
                 } else {
                     a
@@ -2798,9 +2824,22 @@ impl CeltEncoder {
             // nbCompressedBytes is current max (after first VBR bound), effectiveBytes ~ vbr_rate>>(3+BITRES) for lambda already
             dumpi!(
                 "vbr_in",
-                &[base_target, lm as i32, equiv_rate, self.last_coded_bands, channels as i32, self.intensity, self.constrained_vbr as i32, tot_boost, pitch_change as i32]
+                &[
+                    base_target,
+                    lm as i32,
+                    equiv_rate,
+                    self.last_coded_bands,
+                    channels as i32,
+                    self.intensity,
+                    self.constrained_vbr as i32,
+                    tot_boost,
+                    pitch_change as i32
+                ]
             );
-            dumpf!("vbr_inf", &[self.stereo_saving, tf_estimate, max_depth, temporal_vbr]);
+            dumpf!(
+                "vbr_inf",
+                &[self.stereo_saving, tf_estimate, max_depth, temporal_vbr]
+            );
             let mut target = if !hybrid {
                 compute_vbr(
                     mode,
@@ -3230,7 +3269,15 @@ impl CeltDecoder {
                 #[cfg(not(feature = "deep-plc"))]
                 let _ = lpcnet;
                 let (start, end) = (self.start_band, self.end_band);
-                self.decode_impl_from_rc(rc, (d.len() * 8) as i32, frame_size, pcm, start, end, layout)
+                self.decode_impl_from_rc(
+                    rc,
+                    (d.len() * 8) as i32,
+                    frame_size,
+                    pcm,
+                    start,
+                    end,
+                    layout,
+                )
             }
             _ => self.decode_lost_into(frame_size, pcm, self.start_band, layout, lpcnet),
         };
@@ -3435,7 +3482,15 @@ impl CeltDecoder {
         start_band: usize,
         end_band: usize,
     ) -> usize {
-        self.decode_impl_from_rc(rc, total_bits, frame_size, pcm, start_band, end_band, PcmLayout::Planar)
+        self.decode_impl_from_rc(
+            rc,
+            total_bits,
+            frame_size,
+            pcm,
+            start_band,
+            end_band,
+            PcmLayout::Planar,
+        )
     }
 
     /// libopus `deemphasis` of the last `n` (48 kHz) samples of each
@@ -4020,7 +4075,6 @@ impl CeltDecoder {
             }
             self.prefilter_mem[c * COMBFILTER_MAXPERIOD..(c + 1) * COMBFILTER_MAXPERIOD]
                 .copy_from_slice(&new_mem);
-
         }
         self.deemphasis(frame_size, pcm, layout);
 
@@ -4094,8 +4148,15 @@ mod tests {
     /// (celt_encoder.c:1347); this input lies between the two products.
     #[test]
     fn tone_lpc_tests_singularity_on_the_product() {
-        let x = [1065354220u32, 1065258483, 1064974314, 1064508070, 1063861141, 1063042093]
-            .map(f32::from_bits);
+        let x = [
+            1065354220u32,
+            1065258483,
+            1064974314,
+            1064508070,
+            1063861141,
+            1063042093,
+        ]
+        .map(f32::from_bits);
         assert!(tone_lpc(&x, 6, 1, &mut [0.0; 2]));
     }
 
@@ -4103,7 +4164,14 @@ mod tests {
     /// +-2 (celt_encoder.c:1354-1356); this input gives -1.9999999.
     #[test]
     fn tone_lpc_keeps_quotients_below_two() {
-        let x = [1012005056u32, 1023960200, 3156529856, 3188496314, 1052018348].map(f32::from_bits);
+        let x = [
+            1012005056u32,
+            1023960200,
+            3156529856,
+            3188496314,
+            1052018348,
+        ]
+        .map(f32::from_bits);
         let mut lpc = [0.0; 2];
         assert!(!tone_lpc(&x, 5, 1, &mut lpc));
         assert!(lpc[0] < -1.999999, "{lpc:?}");
@@ -4119,8 +4187,25 @@ mod tests {
         let run = |tone_freq: f32| {
             let (mut offsets, mut importance, mut spread_weight) = ([0; 21], [0; 21], [0; 21]);
             let r = dynalloc_analysis_simple(
-                mode, &band_log_e, None, &old, 0, 21, 1, 3, 200, false, &mut offsets, 24, true,
-                false, &AnalysisInfo::default(), &[0.0; 21], tone_freq, 0.99, &mut importance,
+                mode,
+                &band_log_e,
+                None,
+                &old,
+                0,
+                21,
+                1,
+                3,
+                200,
+                false,
+                &mut offsets,
+                24,
+                true,
+                false,
+                &AnalysisInfo::default(),
+                &[0.0; 21],
+                tone_freq,
+                0.99,
+                &mut importance,
                 &mut spread_weight,
             );
             (r, offsets, importance)
@@ -4134,15 +4219,36 @@ mod tests {
     fn tone_period_rounds_in_double() {
         let mode = modes::default_mode();
         let (n, overlap) = (960, mode.overlap);
-        let mut in_buf: Vec<f32> = (0..n + overlap).map(|i| (i as f32 * 0.3808).sin() * 1000.0).collect();
+        let mut in_buf: Vec<f32> = (0..n + overlap)
+            .map(|i| (i as f32 * 0.3808).sin() * 1000.0)
+            .collect();
         let mut mem = vec![0.0f32; COMBFILTER_MAXPERIOD];
         let mut pre = vec![0.0f32; COMBFILTER_MAXPERIOD + n];
         let mut pitch_buf = vec![0.0f32; (COMBFILTER_MAXPERIOD + n) >> 1];
         let (mut before, mut after) = ([0.0f32; 1], [0.0f32; 1]);
         let (_, _, pitch_index) = run_prefilter(
-            &mut in_buf, &mut mem, 0, 0.0, 0, 0, mode.window, 1, n, overlap, &mut pre,
-            &mut pitch_buf, &mut before, &mut after, &AnalysisInfo::default(), 0, 0.0, true, 100,
-            0.3807991147041321, 1.0, 10,
+            &mut in_buf,
+            &mut mem,
+            0,
+            0.0,
+            0,
+            0,
+            mode.window,
+            1,
+            n,
+            overlap,
+            &mut pre,
+            &mut pitch_buf,
+            &mut before,
+            &mut after,
+            &AnalysisInfo::default(),
+            0,
+            0.0,
+            true,
+            100,
+            0.3807991147041321,
+            1.0,
+            10,
         );
         assert_eq!(pitch_index, 16);
     }
@@ -4158,16 +4264,30 @@ mod tests {
         let mut input = vec![0.0f32; n + overlap];
         let mut m = 0.0f32;
         for i in 0..n {
-            let x = (i as f64 * 527.1533f32 as f64 / 48000.0 * core::f64::consts::TAU).sin() as f32 * 0.5 * 32768.0;
+            let x = (i as f64 * 527.1533f32 as f64 / 48000.0 * core::f64::consts::TAU).sin() as f32
+                * 0.5
+                * 32768.0;
             input[overlap + i] = x - m;
             m = x * mode.preemph[0];
         }
         let (mut tf_estimate, mut tf_chan, mut weak) = (0.0, 0, false);
-        let (mut tmp, mut tmp2) = (vec![0.0; MAX_TRANSIENT_LEN], vec![0.0; MAX_TRANSIENT_LEN / 2]);
+        let (mut tmp, mut tmp2) = (
+            vec![0.0; MAX_TRANSIENT_LEN],
+            vec![0.0; MAX_TRANSIENT_LEN / 2],
+        );
         let (tone_freq, toneishness) = tone_detect(&input, 1, n + overlap, 48000);
         transient_analysis(
-            &input, n + overlap, 1, &mut tf_estimate, &mut tf_chan, false, &mut weak, tone_freq,
-            toneishness, &mut tmp, &mut tmp2,
+            &input,
+            n + overlap,
+            1,
+            &mut tf_estimate,
+            &mut tf_chan,
+            false,
+            &mut weak,
+            tone_freq,
+            toneishness,
+            &mut tmp,
+            &mut tmp2,
         );
         assert_eq!(tf_estimate, 0.8355611562728882);
     }
@@ -4177,15 +4297,20 @@ mod tests {
     #[test]
     fn silent_frames_shrink_under_vbr_only() {
         let silence = [0.0f32; 960];
-        for (vbr, bitrate, is_vbr, bytes) in
-            [(true, 64000, false, 2), (false, 64000, true, 100), (true, OPUS_BITRATE_MAX, true, 100)]
-        {
+        for (vbr, bitrate, is_vbr, bytes) in [
+            (true, 64000, false, 2),
+            (false, 64000, true, 100),
+            (true, OPUS_BITRATE_MAX, true, 100),
+        ] {
             let mut enc = CeltEncoder::new(modes::default_mode(), 1);
             enc.set_vbr(vbr);
             enc.set_bitrate(bitrate);
             let mut rc = RangeCoder::new_encoder(100);
             enc.encode_with_budget_vbr(&silence, 960, &mut rc, 0, 800, is_vbr);
-            assert_eq!(rc.storage, bytes, "vbr {vbr} bitrate {bitrate} is_vbr {is_vbr}");
+            assert_eq!(
+                rc.storage, bytes,
+                "vbr {vbr} bitrate {bitrate} is_vbr {is_vbr}"
+            );
         }
     }
 
@@ -4207,7 +4332,13 @@ mod tests {
         enc.set_prediction(1);
         enc.set_prediction(3);
         assert_eq!(
-            (enc.lsb_depth, enc.loss_rate, enc.bitrate, enc.end_band, enc.stream_channels),
+            (
+                enc.lsb_depth,
+                enc.loss_rate,
+                enc.bitrate,
+                enc.end_band,
+                enc.stream_channels
+            ),
             (16, 10, 64000, 17, 1)
         );
         assert_eq!((enc.disable_pf, enc.force_intra), (true, false));

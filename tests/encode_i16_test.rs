@@ -28,13 +28,7 @@ impl SignalGen {
         // 220 Hz fundamental + harmonics, slowly drifting amplitude
         let amp = 0.35 * (0.75 + 0.25 * (self.t as f32 / (self.fs as f32 * 0.7)).sin());
         let tone = (2.0 * core::f32::consts::PI * 220.0 * self.t as f32 / self.fs as f32).sin()
-            + 0.5
-                * (2.0
-                    * core::f32::consts::PI
-                    * 660.0
-                    * self.t as f32
-                    / self.fs as f32)
-                    .sin();
+            + 0.5 * (2.0 * core::f32::consts::PI * 660.0 * self.t as f32 / self.fs as f32).sin();
         let v = amp * (0.6 * tone / 1.5 + 0.4 * noise);
         self.t += 1;
         (v * 32767.0 * 0.6).clamp(-32768.0, 32767.0) as i16
@@ -270,7 +264,9 @@ fn encode_i16_roundtrip_decodes() {
     let mut out_f32 = vec![0.0f32; frame_size];
     for _ in 0..10 {
         let pcm_i16 = signal.frame_i16(frame_size, channels);
-        let n_a = enc_a.encode(&to_f32(&pcm_i16), frame_size, &mut pkt_a).unwrap();
+        let n_a = enc_a
+            .encode(&to_f32(&pcm_i16), frame_size, &mut pkt_a)
+            .unwrap();
         let n_b = enc_b.encode_i16(&pcm_i16, frame_size, &mut pkt_b).unwrap();
         assert_eq!(n_a, n_b);
         assert_eq!(&pkt_a[..n_a], &pkt_b[..n_b]);

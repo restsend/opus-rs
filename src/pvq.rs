@@ -574,9 +574,14 @@ pub fn pvq_search(x: &[f32], y: &mut [i32], k: i32, n: usize) {
     }
     if n <= 4 {
         let (mut abs_x, mut y2) = ([0.0; 4], [0.0; 4]);
-        op_pvq_search(&x[..n], &mut y[..n], k, &mut abs_x[..n], &mut y2[..n], |a, y, xy, yy| {
-            best_pulse_position_in_order(a, y, xy, yy)
-        });
+        op_pvq_search(
+            &x[..n],
+            &mut y[..n],
+            k,
+            &mut abs_x[..n],
+            &mut y2[..n],
+            |a, y, xy, yy| best_pulse_position_in_order(a, y, xy, yy),
+        );
         return;
     }
     // Padded to whole blocks for best_pulse_position.

@@ -361,7 +361,11 @@ pub fn silk_sub_lshift32(a: i32, b: i32, shift: i32) -> i32 {
 #[inline(always)]
 pub fn silk_limit_32(a: i32, limit1: i32, limit2: i32) -> i32 {
     // silk_LIMIT (SigProc_FIX.h:577) accepts the limits in either order.
-    let (low, high) = if limit1 > limit2 { (limit2, limit1) } else { (limit1, limit2) };
+    let (low, high) = if limit1 > limit2 {
+        (limit2, limit1)
+    } else {
+        (limit1, limit2)
+    };
     if a > high {
         high
     } else if a < low {

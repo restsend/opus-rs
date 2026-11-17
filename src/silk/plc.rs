@@ -7,9 +7,7 @@ use crate::silk::decoder_structs::{SilkDecoderControl, SilkDecoderState};
 use crate::silk::define::*;
 use crate::silk::lpc_analysis::silk_lpc_inverse_pred_gain;
 use crate::silk::macros::*;
-use crate::silk::sigproc_fix::{
-    silk_bwexpander, silk_lpc_analysis_filter, silk_sum_sqr_shift,
-};
+use crate::silk::sigproc_fix::{silk_bwexpander, silk_lpc_analysis_filter, silk_sum_sqr_shift};
 
 /// The deep PLC state that SILK's first channel conceals and updates with
 /// (libopus passes `LPCNetPLCState *lpcnet`, NULL for the second channel).
@@ -359,7 +357,8 @@ fn silk_plc_conceal(
             }
             for i in 0..frame_length {
                 let v = frame[i] as f32 * (1i32 << 24) as f32 / prev_gain_q10[1] as f32;
-                s_ltp_q14[lpc_mem_start + MAX_LPC_ORDER + i] = crate::dnn::vec::c_floor(0.5 + v as f64);
+                s_ltp_q14[lpc_mem_start + MAX_LPC_ORDER + i] =
+                    crate::dnn::vec::c_floor(0.5 + v as f64);
             }
         } else {
             for k in (0..ps_dec.nb_subfr as usize).step_by(2) {
@@ -414,7 +413,6 @@ pub fn silk_plc_glue_frames(ps_dec: &mut SilkDecoderState, frame: &mut [i16], le
 
             // Fade in the energy difference.
             if energy > ps_dec.s_plc.conc_energy {
-                
                 let lz = silk_clz32(ps_dec.s_plc.conc_energy) - 1;
                 ps_dec.s_plc.conc_energy = silk_lshift(ps_dec.s_plc.conc_energy, lz);
                 energy = silk_rshift(energy, (24 - lz).max(0));

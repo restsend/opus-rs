@@ -23,10 +23,13 @@ pub mod nolace;
 use crate::dnn::builtin;
 use crate::dnn::weights::{WeightError, WeightList};
 
-use bbwenet::{bbwenet_process_frames, Bbwenet, BbwenetState};
-use features::{osce_bwe_calculate_features, osce_calculate_features, osce_cross_fade_10ms, OsceBweFeatureState, OsceFeatureState};
-use lace::{lace_process_20ms_frame, Lace, LaceState};
-use nolace::{nolace_process_20ms_frame, Nolace, NolaceState};
+use bbwenet::{Bbwenet, BbwenetState, bbwenet_process_frames};
+use features::{
+    OsceBweFeatureState, OsceFeatureState, osce_bwe_calculate_features, osce_calculate_features,
+    osce_cross_fade_10ms,
+};
+use lace::{Lace, LaceState, lace_process_20ms_frame};
+use nolace::{Nolace, NolaceState, nolace_process_20ms_frame};
 
 // osce_config.h
 pub const OSCE_FEATURES_MAX_HISTORY: usize = 350;
@@ -179,7 +182,10 @@ impl OsceBwe {
     /// The state after `silk_init_decoder`: all zero. libopus calls
     /// [`osce_bwe_reset`] before the first extended frame.
     pub fn new() -> Self {
-        OsceBwe { features: OsceBweFeatureState::new(), bbwenet: BbwenetState::new() }
+        OsceBwe {
+            features: OsceBweFeatureState::new(),
+            bbwenet: BbwenetState::new(),
+        }
     }
 }
 
@@ -194,7 +200,11 @@ impl Default for OsceBwe {
 fn float2int(x: f32) -> i32 {
     let f = x.floor();
     let d = x - f;
-    let r = if d > 0.5 || (d == 0.5 && (f as i64) % 2 != 0) { f + 1.0 } else { f };
+    let r = if d > 0.5 || (d == 0.5 && (f as i64) % 2 != 0) {
+        f + 1.0
+    } else {
+        f
+    };
     r as i32
 }
 
@@ -233,7 +243,12 @@ pub fn osce_bwe_reset(st: &mut OsceBwe) {
 /// `st.method`, or resets `st` when the frame is not 20 ms at 16 kHz.
 /// `model` is `None` when no model is loaded (libopus `model->loaded`
 /// false): the features still update and the signal passes through.
-pub fn osce_enhance_frame(model: Option<&OsceModel<'_>>, st: &mut Osce, input: &OsceFrameInput, xq: &mut [i16]) {
+pub fn osce_enhance_frame(
+    model: Option<&OsceModel<'_>>,
+    st: &mut Osce,
+    input: &OsceFrameInput,
+    xq: &mut [i16],
+) {
     let mut in_buffer = [0.0f32; 320];
     let mut out_buffer = [0.0f32; 320];
     let mut features = [0.0f32; 4 * OSCE_FEATURE_DIM];
@@ -246,17 +261,34 @@ pub fn osce_enhance_frame(model: Option<&OsceModel<'_>>, st: &mut Osce, input: &
         return;
     }
 
-    osce_calculate_features(&mut st.features, input, &mut features, &mut numbits, &mut periods, xq);
+    osce_calculate_features(
+        &mut st.features,
+        input,
+        &mut features,
+        &mut numbits,
+        &mut periods,
+        xq,
+    );
 
     for (b, &x) in in_buffer.iter_mut().zip(&xq[..320]) {
         *b = x as f32 * (1.0f32 / 32768.0f32);
     }
 
-    let method = if model.is_some() { st.method } else { OsceMethod::None };
+    let method = if model.is_some() {
+        st.method
+    } else {
+        OsceMethod::None
+    };
     match (method, model) {
-        (OsceMethod::Lace, Some(m)) => {
-            lace_process_20ms_frame(&m.lace, &mut st.lace, &mut out_buffer, &in_buffer, &features, &numbits, &periods)
-        }
+        (OsceMethod::Lace, Some(m)) => lace_process_20ms_frame(
+            &m.lace,
+            &mut st.lace,
+            &mut out_buffer,
+            &in_buffer,
+            &features,
+            &numbits,
+            &periods,
+        ),
         (OsceMethod::Nolace, Some(m)) => nolace_process_20ms_frame(
             &m.nolace,
             &mut st.nolace,
@@ -299,7 +331,14 @@ pub fn osce_bwe(model: &OsceModel<'_>, st: &mut OsceBwe, xq48: &mut [i16], xq16:
 
     osce_bwe_calculate_features(&mut st.features, &mut features, xq16);
 
-    bbwenet_process_frames(&model.bbwenet, &mut st.bbwenet, &mut out_buffer, &in_buffer, &features, num_frames);
+    bbwenet_process_frames(
+        &model.bbwenet,
+        &mut st.bbwenet,
+        &mut out_buffer,
+        &in_buffer,
+        &features,
+        num_frames,
+    );
 
     const D: usize = OSCE_BWE_OUTPUT_DELAY;
     xq48[..D].copy_from_slice(&st.bbwenet.output_buffer);
@@ -321,7 +360,13 @@ mod tests {
     fn builtin_models_run() {
         let model = OsceModel::builtin().unwrap();
         let mut st = Osce::new();
-        let input = OsceFrameInput { fs_khz: 16, nb_subfr: 4, lpc_order: 16, num_bits: 200, ..Default::default() };
+        let input = OsceFrameInput {
+            fs_khz: 16,
+            nb_subfr: 4,
+            lpc_order: 16,
+            num_bits: 200,
+            ..Default::default()
+        };
         let mut xq = [0i16; 320];
         for _ in 0..3 {
             osce_enhance_frame(Some(&model), &mut st, &input, &mut xq);

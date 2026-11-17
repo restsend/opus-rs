@@ -24,17 +24,26 @@ fn tw(k: usize) -> Cpx {
 /// `C_MUL`.
 #[inline(always)]
 fn cmul(a: Cpx, b: Cpx) -> Cpx {
-    Cpx { r: a.r * b.r - a.i * b.i, i: a.r * b.i + a.i * b.r }
+    Cpx {
+        r: a.r * b.r - a.i * b.i,
+        i: a.r * b.i + a.i * b.r,
+    }
 }
 
 #[inline(always)]
 fn cadd(a: Cpx, b: Cpx) -> Cpx {
-    Cpx { r: a.r + b.r, i: a.i + b.i }
+    Cpx {
+        r: a.r + b.r,
+        i: a.i + b.i,
+    }
 }
 
 #[inline(always)]
 fn csub(a: Cpx, b: Cpx) -> Cpx {
-    Cpx { r: a.r - b.r, i: a.i - b.i }
+    Cpx {
+        r: a.r - b.r,
+        i: a.i - b.i,
+    }
 }
 
 /// `kf_bfly4`.
@@ -48,8 +57,14 @@ fn bfly4(f: &mut [Cpx], fstride: usize, m: usize, n: usize, mm: usize) {
             f[b + 2] = csub(f[b], s1);
             f[b] = cadd(f[b], s1);
             let s1 = csub(f[b + 1], f[b + 3]);
-            f[b + 1] = Cpx { r: s0.r + s1.i, i: s0.i - s1.r };
-            f[b + 3] = Cpx { r: s0.r - s1.i, i: s0.i + s1.r };
+            f[b + 1] = Cpx {
+                r: s0.r + s1.i,
+                i: s0.i - s1.r,
+            };
+            f[b + 3] = Cpx {
+                r: s0.r - s1.i,
+                i: s0.i + s1.r,
+            };
         }
     } else {
         let (m2, m3) = (2 * m, 3 * m);
@@ -66,8 +81,14 @@ fn bfly4(f: &mut [Cpx], fstride: usize, m: usize, n: usize, mm: usize) {
                 let s4 = csub(s0, s2);
                 f[p + m2] = csub(f[p], s3);
                 f[p] = cadd(f[p], s3);
-                f[p + m] = Cpx { r: s5.r + s4.i, i: s5.i - s4.r };
-                f[p + m3] = Cpx { r: s5.r - s4.i, i: s5.i + s4.r };
+                f[p + m] = Cpx {
+                    r: s5.r + s4.i,
+                    i: s5.i - s4.r,
+                };
+                f[p + m3] = Cpx {
+                    r: s5.r - s4.i,
+                    i: s5.i + s4.r,
+                };
             }
         }
     }
@@ -80,7 +101,13 @@ fn bfly5(f: &mut [Cpx], fstride: usize, m: usize, n: usize, mm: usize) {
     for i in 0..n {
         let base = i * mm;
         for u in 0..m {
-            let (p0, p1, p2, p3, p4) = (base + u, base + u + m, base + u + 2 * m, base + u + 3 * m, base + u + 4 * m);
+            let (p0, p1, p2, p3, p4) = (
+                base + u,
+                base + u + m,
+                base + u + 2 * m,
+                base + u + 3 * m,
+                base + u + 4 * m,
+            );
             let s0 = f[p0];
             let s1 = cmul(f[p1], tw(u * fstride));
             let s2 = cmul(f[p2], tw(2 * u * fstride));
@@ -92,12 +119,24 @@ fn bfly5(f: &mut [Cpx], fstride: usize, m: usize, n: usize, mm: usize) {
             let s9 = csub(s2, s3);
             f[p0].r += s7.r + s8.r;
             f[p0].i += s7.i + s8.i;
-            let s5 = Cpx { r: s0.r + (s7.r * ya.r + s8.r * yb.r), i: s0.i + (s7.i * ya.r + s8.i * yb.r) };
-            let s6 = Cpx { r: s10.i * ya.i + s9.i * yb.i, i: -(s10.r * ya.i + s9.r * yb.i) };
+            let s5 = Cpx {
+                r: s0.r + (s7.r * ya.r + s8.r * yb.r),
+                i: s0.i + (s7.i * ya.r + s8.i * yb.r),
+            };
+            let s6 = Cpx {
+                r: s10.i * ya.i + s9.i * yb.i,
+                i: -(s10.r * ya.i + s9.r * yb.i),
+            };
             f[p1] = csub(s5, s6);
             f[p4] = cadd(s5, s6);
-            let s11 = Cpx { r: s0.r + (s7.r * yb.r + s8.r * ya.r), i: s0.i + (s7.i * yb.r + s8.i * ya.r) };
-            let s12 = Cpx { r: s9.i * ya.i - s10.i * yb.i, i: s10.r * yb.i - s9.r * ya.i };
+            let s11 = Cpx {
+                r: s0.r + (s7.r * yb.r + s8.r * ya.r),
+                i: s0.i + (s7.i * yb.r + s8.i * ya.r),
+            };
+            let s12 = Cpx {
+                r: s9.i * ya.i - s10.i * yb.i,
+                i: s10.r * yb.i - s9.r * ya.i,
+            };
             f[p2] = cadd(s11, s12);
             f[p3] = csub(s11, s12);
         }
@@ -107,7 +146,10 @@ fn bfly5(f: &mut [Cpx], fstride: usize, m: usize, n: usize, mm: usize) {
 /// `opus_fft_c(&kfft, fin, fout)`: scaled by 1/320.
 pub fn opus_fft(fin: &[Cpx; NFFT], fout: &mut [Cpx; NFFT]) {
     for (i, x) in fin.iter().enumerate() {
-        fout[FFT_BITREV[i] as usize] = Cpx { r: FFT_SCALE * x.r, i: FFT_SCALE * x.i };
+        fout[FFT_BITREV[i] as usize] = Cpx {
+            r: FFT_SCALE * x.r,
+            i: FFT_SCALE * x.i,
+        };
     }
     // opus_fft_impl with shift 0.
     let f = &FFT_FACTORS;

@@ -127,8 +127,7 @@ pub fn silk_biquad_alt_stride2(
         s[3] = silk_smlawb(s[3], b_q28[2], input_output[2 * k + 1] as i32);
 
         input_output[2 * k] = silk_sat16(silk_rshift(out32_q14_0 + (1 << 14) - 1, 14)) as i16;
-        input_output[2 * k + 1] =
-            silk_sat16(silk_rshift(out32_q14_1 + (1 << 14) - 1, 14)) as i16;
+        input_output[2 * k + 1] = silk_sat16(silk_rshift(out32_q14_1 + (1 << 14) - 1, 14)) as i16;
     }
 }
 

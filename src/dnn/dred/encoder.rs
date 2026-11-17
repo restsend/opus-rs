@@ -6,8 +6,12 @@
 use crate::compat::Math;
 
 use super::super::builtin;
-use super::super::lpcnet_enc::{LpcnetEncState, NB_TOTAL_FEATURES, lpcnet_compute_single_frame_features_float};
-use super::super::models::dred_rdovae_constants::{DRED_LATENT_DIM, DRED_NUM_FEATURES, DRED_STATE_DIM};
+use super::super::lpcnet_enc::{
+    LpcnetEncState, NB_TOTAL_FEATURES, lpcnet_compute_single_frame_features_float,
+};
+use super::super::models::dred_rdovae_constants::{
+    DRED_LATENT_DIM, DRED_NUM_FEATURES, DRED_STATE_DIM,
+};
 use super::super::models::dred_rdovae_enc::RdovaeEnc;
 use super::super::models::pitchdnn::PitchDnn;
 use super::super::nnet::{Activation, compute_activation_inplace};
@@ -17,7 +21,10 @@ use super::coding::compute_quantizer;
 use super::laplace::ec_laplace_encode_p0;
 use super::rdovae_enc::{RdovaeEncState, dred_rdovae_encode_dframe};
 use super::stats::*;
-use super::{DRED_DFRAME_SIZE, DRED_FRAME_SIZE, DRED_MAX_FRAMES, DRED_NUM_REDUNDANCY_FRAMES, DRED_SILK_ENCODER_DELAY};
+use super::{
+    DRED_DFRAME_SIZE, DRED_FRAME_SIZE, DRED_MAX_FRAMES, DRED_NUM_REDUNDANCY_FRAMES,
+    DRED_SILK_ENCODER_DELAY,
+};
 use crate::range_coder::RangeCoder;
 
 /// `RESAMPLING_ORDER`: the order of the resampling filters.
@@ -50,7 +57,10 @@ impl<'a> DredEnc<'a> {
     /// `dred_encoder_init` with the given models: an encoder for `fs` Hz
     /// (8000, 12000, 16000, 24000 or 48000) and 1 or 2 channels.
     pub fn new(model: RdovaeEnc<'a>, pitchdnn: PitchDnn<'a>, fs: i32, channels: i32) -> Self {
-        assert!(matches!(fs, 8000 | 12000 | 16000 | 24000 | 48000), "unsupported rate {fs}");
+        assert!(
+            matches!(fs, 8000 | 12000 | 16000 | 24000 | 48000),
+            "unsupported rate {fs}"
+        );
         assert!(channels == 1 || channels == 2);
         let mut enc = DredEnc {
             model,
@@ -94,13 +104,19 @@ impl<'a> DredEnc<'a> {
         let mut feature_buffer = [0.0f32; 2 * NB_TOTAL_FEATURES];
         let mut input_buffer = [0.0f32; 2 * DRED_NUM_FEATURES];
 
-        self.latents_buffer.copy_within(..(DRED_MAX_FRAMES - 1) * DRED_LATENT_DIM, DRED_LATENT_DIM);
-        self.state_buffer.copy_within(..(DRED_MAX_FRAMES - 1) * DRED_STATE_DIM, DRED_STATE_DIM);
+        self.latents_buffer
+            .copy_within(..(DRED_MAX_FRAMES - 1) * DRED_LATENT_DIM, DRED_LATENT_DIM);
+        self.state_buffer
+            .copy_within(..(DRED_MAX_FRAMES - 1) * DRED_STATE_DIM, DRED_STATE_DIM);
 
         let (f0, f1) = feature_buffer.split_at_mut(NB_TOTAL_FEATURES);
         let f0: &mut [f32; NB_TOTAL_FEATURES] = f0.try_into().unwrap();
         let f1: &mut [f32; NB_TOTAL_FEATURES] = f1.try_into().unwrap();
-        lpcnet_compute_single_frame_features_float(&mut self.lpcnet_enc_state, &self.input_buffer, f0);
+        lpcnet_compute_single_frame_features_float(
+            &mut self.lpcnet_enc_state,
+            &self.input_buffer,
+            f0,
+        );
         lpcnet_compute_single_frame_features_float(
             &mut self.lpcnet_enc_state,
             &self.input_buffer[DRED_FRAME_SIZE..],
@@ -117,7 +133,8 @@ impl<'a> DredEnc<'a> {
             &mut self.state_buffer,
             &input_buffer,
         );
-        self.latents_buffer_fill = (self.latents_buffer_fill + 1).min(DRED_NUM_REDUNDANCY_FRAMES as i32);
+        self.latents_buffer_fill =
+            (self.latents_buffer_fill + 1).min(DRED_NUM_REDUNDANCY_FRAMES as i32);
     }
 
     /// `dred_convert_to_16k`: downmixes `in_len` samples per channel of `pcm`
@@ -170,7 +187,13 @@ impl<'a> DredEnc<'a> {
                     -0.231720677804,
                     0.0,
                 ];
-                filter_df2t_inplace(&mut downmix[..n], 0.004523418224, &B, &A, &mut self.resample_mem);
+                filter_df2t_inplace(
+                    &mut downmix[..n],
+                    0.004523418224,
+                    &B,
+                    &A,
+                    &mut self.resample_mem,
+                );
                 for i in 0..out_len {
                     out[i] = downmix[3 * i];
                 }
@@ -197,7 +220,13 @@ impl<'a> DredEnc<'a> {
                     -0.334338618782,
                     0.0,
                 ];
-                filter_df2t_inplace(&mut downmix[..n], 0.002033596776, &B, &A, &mut self.resample_mem);
+                filter_df2t_inplace(
+                    &mut downmix[..n],
+                    0.002033596776,
+                    &B,
+                    &A,
+                    &mut self.resample_mem,
+                );
                 for i in 0..out_len {
                     out[i] = downmix[3 * i];
                 }
@@ -224,7 +253,14 @@ impl<'a> DredEnc<'a> {
                     -0.110359852412,
                     0.0,
                 ];
-                filter_df2t(&downmix[..out_len], &mut out[..out_len], 0.020109185709, &B, &A, &mut self.resample_mem);
+                filter_df2t(
+                    &downmix[..out_len],
+                    &mut out[..out_len],
+                    0.020109185709,
+                    &B,
+                    &A,
+                    &mut self.resample_mem,
+                );
             }
         }
     }
@@ -247,7 +283,12 @@ impl<'a> DredEnc<'a> {
             let process_size = process_size16k * self.fs / 16000;
             let fill = self.input_buffer_fill as usize;
             let mut chunk = [0.0f32; 2 * DRED_FRAME_SIZE];
-            self.convert_to_16k(&pcm[pos..], process_size as usize, &mut chunk, process_size16k as usize);
+            self.convert_to_16k(
+                &pcm[pos..],
+                process_size as usize,
+                &mut chunk,
+                process_size16k as usize,
+            );
             self.input_buffer[fill..fill + process_size16k as usize]
                 .copy_from_slice(&chunk[..process_size16k as usize]);
             self.input_buffer_fill += process_size16k;
@@ -255,7 +296,8 @@ impl<'a> DredEnc<'a> {
                 self.process_frame();
                 self.input_buffer_fill -= 2 * DRED_FRAME_SIZE as i32;
                 let fill = self.input_buffer_fill as usize;
-                self.input_buffer.copy_within(2 * DRED_FRAME_SIZE..2 * DRED_FRAME_SIZE + fill, 0);
+                self.input_buffer
+                    .copy_within(2 * DRED_FRAME_SIZE..2 * DRED_FRAME_SIZE + fill, 0);
                 // 15 ms (6*2.5 ms) is the ideal offset: the vocoder look-ahead.
                 if self.dred_offset < 6 {
                     self.dred_offset += 8;
@@ -298,7 +340,9 @@ impl<'a> DredEnc<'a> {
             delayed_dred = true;
             self.last_extra_dred_offset = 0;
         }
-        while latent_offset < self.latents_buffer_fill && !dred_voice_active(activity_mem, latent_offset) {
+        while latent_offset < self.latents_buffer_fill
+            && !dred_voice_active(activity_mem, latent_offset)
+        {
             latent_offset += 1;
             extra_dred_offset += 1;
         }
@@ -322,7 +366,11 @@ impl<'a> DredEnc<'a> {
         debug_assert!(qmax >= q0);
         if q0 < 14 && dq > 0 {
             let nvals = 15 - (q0 + 1);
-            let (fl, fh) = if qmax >= 15 { (0, nvals) } else { (nvals + qmax - (q0 + 1), nvals + qmax - q0) };
+            let (fl, fh) = if qmax >= 15 {
+                (0, nvals)
+            } else {
+                (nvals + qmax - (q0 + 1), nvals + qmax - q0)
+            };
             ec.encode(fl as u32, fh as u32, 2 * nvals as u32);
         }
         let so = q0 as usize * DRED_STATE_DIM;
@@ -384,7 +432,12 @@ impl<'a> DredEnc<'a> {
 impl DredEnc<'static> {
     /// `dred_encoder_init` with the built-in RDOVAE and PitchDNN models.
     pub fn builtin(fs: i32, channels: i32) -> Result<Self, WeightError> {
-        Ok(DredEnc::new(builtin::dred_rdovae_enc()?, builtin::pitchdnn()?, fs, channels))
+        Ok(DredEnc::new(
+            builtin::dred_rdovae_enc()?,
+            builtin::pitchdnn()?,
+            fs,
+            channels,
+        ))
     }
 }
 
@@ -427,8 +480,19 @@ fn df2t_step(xi: f32, b0: f32, b: &[f32], a: &[f32], mem: &mut [f32]) -> f32 {
 
 /// `dred_encode_latents`: quantizes `x` with a dead zone and codes it with
 /// the Laplace coder.
-fn dred_encode_latents(ec: &mut RangeCoder, x: &[f32], scale: &[u8], dzone: &[u8], r: &[u8], p0: &[u8]) {
-    const MAX_DIM: usize = if DRED_LATENT_DIM > DRED_STATE_DIM { DRED_LATENT_DIM } else { DRED_STATE_DIM };
+fn dred_encode_latents(
+    ec: &mut RangeCoder,
+    x: &[f32],
+    scale: &[u8],
+    dzone: &[u8],
+    r: &[u8],
+    p0: &[u8],
+) {
+    const MAX_DIM: usize = if DRED_LATENT_DIM > DRED_STATE_DIM {
+        DRED_LATENT_DIM
+    } else {
+        DRED_STATE_DIM
+    };
     let dim = x.len();
     let mut xq = [0.0f32; MAX_DIM];
     let mut delta = [0.0f32; MAX_DIM];

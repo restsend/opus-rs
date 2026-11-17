@@ -5,10 +5,10 @@
 use crate::compat::Math;
 
 use super::models::pitchdnn::{
-    PitchDnn, DENSE_DOWNSAMPLER_OUT_SIZE, DENSE_FINAL_UPSAMPLER_OUT_SIZE, DENSE_IF_UPSAMPLER_1_OUT_SIZE,
-    DENSE_IF_UPSAMPLER_2_OUT_SIZE, GRU_1_STATE_SIZE,
+    DENSE_DOWNSAMPLER_OUT_SIZE, DENSE_FINAL_UPSAMPLER_OUT_SIZE, DENSE_IF_UPSAMPLER_1_OUT_SIZE,
+    DENSE_IF_UPSAMPLER_2_OUT_SIZE, GRU_1_STATE_SIZE, PitchDnn,
 };
-use super::nnet::{compute_conv2d, compute_generic_dense, compute_generic_gru, Activation};
+use super::nnet::{Activation, compute_conv2d, compute_generic_dense, compute_generic_gru};
 
 pub const PITCH_MIN_PERIOD: usize = 32;
 pub const PITCH_MAX_PERIOD: usize = 256;
@@ -45,7 +45,11 @@ impl<'a> PitchDnnState<'a> {
 /// `compute_pitchdnn`: the pitch as `log2(256/period)`-like value in
 /// [-1.5, 1.5] from the instantaneous-frequency and cross-correlation
 /// features.
-pub fn compute_pitchdnn(st: &mut PitchDnnState<'_>, if_features: &[f32], xcorr_features: &[f32]) -> f32 {
+pub fn compute_pitchdnn(
+    st: &mut PitchDnnState<'_>,
+    if_features: &[f32],
+    xcorr_features: &[f32],
+) -> f32 {
     let mut if1_out = [0.0f32; DENSE_IF_UPSAMPLER_1_OUT_SIZE];
     let mut downsampler_in = [0.0f32; NB_XCORR_FEATURES + DENSE_IF_UPSAMPLER_2_OUT_SIZE];
     let mut downsampler_out = [0.0f32; DENSE_DOWNSAMPLER_OUT_SIZE];
@@ -53,7 +57,12 @@ pub fn compute_pitchdnn(st: &mut PitchDnnState<'_>, if_features: &[f32], xcorr_f
     let mut conv1_tmp2 = [0.0f32; (NB_XCORR_FEATURES + 2) * 8];
     let mut output = [0.0f32; DENSE_FINAL_UPSAMPLER_OUT_SIZE];
     let model = st.model;
-    compute_generic_dense(&model.dense_if_upsampler_1, &mut if1_out, if_features, Activation::Tanh);
+    compute_generic_dense(
+        &model.dense_if_upsampler_1,
+        &mut if1_out,
+        if_features,
+        Activation::Tanh,
+    );
     compute_generic_dense(
         &model.dense_if_upsampler_2,
         &mut downsampler_in[NB_XCORR_FEATURES..],
@@ -79,9 +88,24 @@ pub fn compute_pitchdnn(st: &mut PitchDnnState<'_>, if_features: &[f32], xcorr_f
         NB_XCORR_FEATURES,
         Activation::Tanh,
     );
-    compute_generic_dense(&model.dense_downsampler, &mut downsampler_out, &downsampler_in, Activation::Tanh);
-    compute_generic_gru(&model.gru_1_input, &model.gru_1_recurrent, &mut st.gru_state, &downsampler_out);
-    compute_generic_dense(&model.dense_final_upsampler, &mut output, &st.gru_state, Activation::Linear);
+    compute_generic_dense(
+        &model.dense_downsampler,
+        &mut downsampler_out,
+        &downsampler_in,
+        Activation::Tanh,
+    );
+    compute_generic_gru(
+        &model.gru_1_input,
+        &model.gru_1_recurrent,
+        &mut st.gru_state,
+        &downsampler_out,
+    );
+    compute_generic_dense(
+        &model.dense_final_upsampler,
+        &mut output,
+        &st.gru_state,
+        Activation::Linear,
+    );
     let mut pos = 0usize;
     let mut maxval = -1.0f32;
     for (i, &v) in output[..180].iter().enumerate() {

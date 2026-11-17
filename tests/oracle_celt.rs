@@ -269,9 +269,7 @@ fn oracle_all_sr_ch_br() {
                 let mut dec = RsDec::new(sr, ch).unwrap();
                 let mut out = vec![0.0f32; fs as usize * ch];
                 let got = dec.decode(&rs_buf[..rs_n], fs as usize, &mut out).unwrap();
-                let max = out[..got * ch]
-                    .iter()
-                    .fold(0.0f32, |a, &x| a.max(x.abs()));
+                let max = out[..got * ch].iter().fold(0.0f32, |a, &x| a.max(x.abs()));
                 assert!(
                     max.is_finite() && max < 50.0,
                     "decode huge sr {} ch {} br {} max {}",

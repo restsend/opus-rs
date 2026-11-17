@@ -3,7 +3,7 @@
 //! `OpusDecoder`; this module just demuxes and re-routes, mirroring
 //! libopus's `opus_multistream_decoder.c` (a wrapper, not a codec change).
 
-use crate::{frame_samples_from_toc, opus_packet_parse, parse_frame_size, OpusDecoder};
+use crate::{OpusDecoder, frame_samples_from_toc, opus_packet_parse, parse_frame_size};
 
 /// `channel_mapping[]` sentinel: output silence on this channel.
 const SILENT_CHANNEL: u8 = 255;
@@ -85,7 +85,9 @@ pub fn split_self_delimited<'a>(
             cursor = push_frame(data, cursor, n2, scratch)?;
         }
         _ => {
-            let fc = *data.get(cursor).ok_or("truncated code-3 frame-count byte")?;
+            let fc = *data
+                .get(cursor)
+                .ok_or("truncated code-3 frame-count byte")?;
             scratch.push(fc);
             cursor += 1;
             let vbr = fc & 0x80 != 0;
@@ -145,7 +147,12 @@ pub fn split_self_delimited<'a>(
 }
 
 #[inline]
-fn push_frame(data: &[u8], cursor: usize, n: usize, out: &mut Vec<u8>) -> Result<usize, &'static str> {
+fn push_frame(
+    data: &[u8],
+    cursor: usize,
+    n: usize,
+    out: &mut Vec<u8>,
+) -> Result<usize, &'static str> {
     let end = cursor.checked_add(n).ok_or("frame length overflow")?;
     if end > data.len() {
         return Err("truncated frame in self-delimited packet");
@@ -172,7 +179,8 @@ fn packet_validate(
         } else {
             (data, data.len())
         };
-        let frame_samples = frame_samples_from_toc(packet[0], fs).ok_or("Invalid TOC for sampling rate")?;
+        let frame_samples =
+            frame_samples_from_toc(packet[0], fs).ok_or("Invalid TOC for sampling rate")?;
         let n = opus_packet_parse(packet)?.len() * frame_samples;
         if s != 0 && n != samples {
             return Err("elementary streams differ in duration");
@@ -294,7 +302,11 @@ impl MultistreamDecoder {
         let mut rest = packet;
         let num_streams = self.decoders.len();
         for (i, decoder) in self.decoders.iter_mut().enumerate() {
-            let ch = if (i as u8) < self.table.coupled_count { 2 } else { 1 };
+            let ch = if (i as u8) < self.table.coupled_count {
+                2
+            } else {
+                1
+            };
             self.stream_scratch.clear();
             self.stream_scratch.resize(frame_size * ch, 0.0);
 
@@ -307,7 +319,8 @@ impl MultistreamDecoder {
                 decoder.decode_native(rest, frame_size, &mut self.stream_scratch, decode_fec)?
             } else {
                 let (pkt, consumed) = split_self_delimited(rest, &mut self.packet_scratch)?;
-                let n = decoder.decode_native(pkt, frame_size, &mut self.stream_scratch, decode_fec)?;
+                let n =
+                    decoder.decode_native(pkt, frame_size, &mut self.stream_scratch, decode_fec)?;
                 rest = &rest[consumed..];
                 n
             };
@@ -403,12 +416,25 @@ mod tests {
         assert_eq!(consumed, 1 + 1 + 1 + 3 + 2);
         // inline length (3, for frame 1) is kept; the extra Appendix B
         // length (2, for frame 2) is excised
-        assert_eq!(pkt, &[toc_byte(0, false, 2), 3, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE][..]);
+        assert_eq!(
+            pkt,
+            &[toc_byte(0, false, 2), 3, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE][..]
+        );
     }
 
     #[test]
     fn split_code3_cbr_three_frames() {
-        let bytes = [toc_byte(0, false, 3), 3, 2, 0x10, 0x11, 0x20, 0x21, 0x30, 0x31];
+        let bytes = [
+            toc_byte(0, false, 3),
+            3,
+            2,
+            0x10,
+            0x11,
+            0x20,
+            0x21,
+            0x30,
+            0x31,
+        ];
         let mut scratch = Vec::new();
         let (_, consumed) = split_self_delimited(&bytes, &mut scratch).unwrap();
         assert_eq!(consumed, 1 + 1 + 1 + 6);
@@ -418,9 +444,18 @@ mod tests {
     fn split_code3_cbr_with_padding() {
         let fc = 0x40 | 2u8;
         let bytes = [
-            toc_byte(0, false, 3), fc, 2, 3,
-            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
-            0x55, 0x66,
+            toc_byte(0, false, 3),
+            fc,
+            2,
+            3,
+            0xAA,
+            0xBB,
+            0xCC,
+            0xDD,
+            0xEE,
+            0xFF,
+            0x55,
+            0x66,
         ];
         let mut scratch = Vec::new();
         let (_, consumed) = split_self_delimited(&bytes, &mut scratch).unwrap();
@@ -431,22 +466,51 @@ mod tests {
     fn split_code3_vbr_three_frames() {
         let fc = 0x80 | 3u8;
         let bytes = [
-            toc_byte(0, false, 3), fc, 2, 3, 1,
-            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
+            toc_byte(0, false, 3),
+            fc,
+            2,
+            3,
+            1,
+            0xAA,
+            0xBB,
+            0xCC,
+            0xDD,
+            0xEE,
+            0xFF,
         ];
         let mut scratch = Vec::new();
         let (pkt, consumed) = split_self_delimited(&bytes, &mut scratch).unwrap();
         assert_eq!(consumed, 1 + 1 + 1 + 1 + 1 + 2 + 3 + 1);
         // inline lengths for frames 1-2 (2, 3) are kept; the extra
         // Appendix B length for frame 3 (1) is excised
-        assert_eq!(pkt, &[toc_byte(0, false, 3), fc, 2, 3, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF][..]);
+        assert_eq!(
+            pkt,
+            &[
+                toc_byte(0, false, 3),
+                fc,
+                2,
+                3,
+                0xAA,
+                0xBB,
+                0xCC,
+                0xDD,
+                0xEE,
+                0xFF
+            ][..]
+        );
     }
 
     #[test]
     fn split_two_streams_chained() {
         let bytes = [
-            toc_byte(0, false, 0), 2, 0xA0, 0xA1,
-            toc_byte(0, false, 1), 1, 0xB0, 0xB1,
+            toc_byte(0, false, 0),
+            2,
+            0xA0,
+            0xA1,
+            toc_byte(0, false, 1),
+            1,
+            0xB0,
+            0xB1,
         ];
         let mut scratch = Vec::new();
         let a_consumed = {

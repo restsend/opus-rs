@@ -328,30 +328,29 @@ impl SilkResampler {
     /// down-FIR with the per-ratio tables (resampler.c:117-150).
     fn init_down_fir(&mut self, fs_hz_in: i32, fs_hz_out: i32) -> i32 {
         if fs_hz_out < fs_hz_in {
-            let (fracs, order, coefs): (i32, usize, &'static [i16]) = if fs_hz_out * 4 == fs_hz_in * 3
-            {
-                (3, RESAMPLER_DOWN_ORDER_FIR0, &SILK_RESAMPLER_3_4_COEFS)
-            } else if fs_hz_out * 3 == fs_hz_in * 2 {
-                (2, RESAMPLER_DOWN_ORDER_FIR0, &SILK_RESAMPLER_2_3_COEFS)
-            } else if fs_hz_out * 2 == fs_hz_in {
-                (1, RESAMPLER_DOWN_ORDER_FIR1, &SILK_RESAMPLER_1_2_COEFS)
-            } else if fs_hz_out * 3 == fs_hz_in {
-                (1, RESAMPLER_DOWN_ORDER_FIR2, &SILK_RESAMPLER_1_3_COEFS)
-            } else if fs_hz_out * 4 == fs_hz_in {
-                (1, RESAMPLER_DOWN_ORDER_FIR2, &SILK_RESAMPLER_1_4_COEFS)
-            } else if fs_hz_out * 6 == fs_hz_in {
-                (1, RESAMPLER_DOWN_ORDER_FIR2, &SILK_RESAMPLER_1_6_COEFS)
-            } else {
-                return -1;
-            };
+            let (fracs, order, coefs): (i32, usize, &'static [i16]) =
+                if fs_hz_out * 4 == fs_hz_in * 3 {
+                    (3, RESAMPLER_DOWN_ORDER_FIR0, &SILK_RESAMPLER_3_4_COEFS)
+                } else if fs_hz_out * 3 == fs_hz_in * 2 {
+                    (2, RESAMPLER_DOWN_ORDER_FIR0, &SILK_RESAMPLER_2_3_COEFS)
+                } else if fs_hz_out * 2 == fs_hz_in {
+                    (1, RESAMPLER_DOWN_ORDER_FIR1, &SILK_RESAMPLER_1_2_COEFS)
+                } else if fs_hz_out * 3 == fs_hz_in {
+                    (1, RESAMPLER_DOWN_ORDER_FIR2, &SILK_RESAMPLER_1_3_COEFS)
+                } else if fs_hz_out * 4 == fs_hz_in {
+                    (1, RESAMPLER_DOWN_ORDER_FIR2, &SILK_RESAMPLER_1_4_COEFS)
+                } else if fs_hz_out * 6 == fs_hz_in {
+                    (1, RESAMPLER_DOWN_ORDER_FIR2, &SILK_RESAMPLER_1_6_COEFS)
+                } else {
+                    return -1;
+                };
             self.mode = ResamplerMode::DownFir;
             self.fir_fracs = fracs;
             self.down_order = order;
             self.down_coefs = coefs;
             // Down-FIR runs without the 2x pre-upsampling: invRatio_Q16 uses
             // up2x = 0 (resampler.c:152-158).
-            self.inv_ratio_q16 =
-                ((((fs_hz_in as i64) << 14) / fs_hz_out as i64) << 2) as i32;
+            self.inv_ratio_q16 = ((((fs_hz_in as i64) << 14) / fs_hz_out as i64) << 2) as i32;
             while silk_smulww(self.inv_ratio_q16, fs_hz_out) < fs_hz_in {
                 self.inv_ratio_q16 += 1;
             }
@@ -511,8 +510,8 @@ impl SilkResampler {
                     let out32 = self.s_iir[0].wrapping_add((input[in_pos + k] as i32) << 8);
                     buf[order + k] = out32;
                     let out_q10 = out32.wrapping_shl(2);
-                    self.s_iir[0] = self.s_iir[1]
-                        .wrapping_add(silk_smulwb(out_q10, coefs[0] as i32));
+                    self.s_iir[0] =
+                        self.s_iir[1].wrapping_add(silk_smulwb(out_q10, coefs[0] as i32));
                     self.s_iir[1] = silk_smulwb(out_q10, coefs[1] as i32);
                 }
 
@@ -573,7 +572,8 @@ impl SilkResampler {
         }
     }
 
-    fn iir_fir_resample(        &mut self,
+    fn iir_fir_resample(
+        &mut self,
         out: &mut [i16],
         first_block: &[i16],
         first_len: i32,

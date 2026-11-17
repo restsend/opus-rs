@@ -29,11 +29,7 @@ fn chirp(rate: usize, n: usize) -> Vec<f32> {
 }
 
 fn c_channels(ch: usize) -> CCh {
-    if ch == 2 {
-        CCh::Stereo
-    } else {
-        CCh::Mono
-    }
+    if ch == 2 { CCh::Stereo } else { CCh::Mono }
 }
 
 fn interleave_mono(x: &[f32], ch: usize) -> Vec<f32> {
@@ -192,8 +188,14 @@ fn restricted_low_delay_24k_is_not_garbage() {
 fn audio_48k_control() {
     let (toc, worst, rms) = rust_roundtrip(48_000, 1, Application::Audio, 64_000);
     assert_eq!(toc >> 3, 31, "48 kHz CELT FB TOC expected, got {toc:#04x}");
-    assert!(worst > 0.85, "48 kHz Audio regressed: worst window {worst:.2}");
-    assert!((0.7..1.4).contains(&rms), "48 kHz Audio level off: {rms:.2}");
+    assert!(
+        worst > 0.85,
+        "48 kHz Audio regressed: worst window {worst:.2}"
+    );
+    assert!(
+        (0.7..1.4).contains(&rms),
+        "48 kHz Audio level off: {rms:.2}"
+    );
 }
 
 #[test]

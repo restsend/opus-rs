@@ -8,17 +8,17 @@
 pub use crate::dnn::dred::OpusDred;
 use crate::dnn::dred::coding::compute_quantizer;
 use crate::dnn::dred::{
-    DRED_EXPERIMENTAL_BYTES, DRED_EXPERIMENTAL_VERSION, DRED_EXTENSION_ID, DRED_MAX_DATA_SIZE, DRED_MAX_FRAMES,
-    DRED_MIN_BYTES, DRED_NUM_REDUNDANCY_FRAMES, DredEnc,
+    DRED_EXPERIMENTAL_BYTES, DRED_EXPERIMENTAL_VERSION, DRED_EXTENSION_ID, DRED_MAX_DATA_SIZE,
+    DRED_MAX_FRAMES, DRED_MIN_BYTES, DRED_NUM_REDUNDANCY_FRAMES, DredEnc,
 };
 use crate::dnn::models::dred_rdovae_constants::DRED_NUM_FEATURES;
 use crate::dnn::models::dred_rdovae_dec::RdovaeDec;
 use crate::dnn::vec::c_floor;
 use crate::dnn::weights::WeightError;
-use crate::extensions::{ExtensionData, ExtensionIterator, parse_packet, samples_per_frame_48k, write_packet};
-use crate::{
-    FrameArgs, OpusDecoder, OpusEncoder, PcmInput, bits_to_bitrate, bitrate_to_bits,
+use crate::extensions::{
+    ExtensionData, ExtensionIterator, parse_packet, samples_per_frame_48k, write_packet,
 };
+use crate::{FrameArgs, OpusDecoder, OpusEncoder, PcmInput, bitrate_to_bits, bits_to_bitrate};
 
 /// libopus `OpusDREDDecoder`: the RDOVAE decoder model that turns the
 /// latents of a DRED payload into features.
@@ -37,8 +37,14 @@ fn dred_find_payload(data: &[u8]) -> Result<Option<(&[u8], i32)>, &'static str> 
     while let Some(ext) = iter.find(DRED_EXTENSION_ID)? {
         let dred_frame_offset = ext.frame as i32 * frame_size / 120;
         // The experimental extension starts with 'D' and its version.
-        if ext.data.len() > DRED_EXPERIMENTAL_BYTES && ext.data[0] == b'D' && ext.data[1] == DRED_EXPERIMENTAL_VERSION {
-            return Ok(Some((&ext.data[DRED_EXPERIMENTAL_BYTES..], dred_frame_offset)));
+        if ext.data.len() > DRED_EXPERIMENTAL_BYTES
+            && ext.data[0] == b'D'
+            && ext.data[1] == DRED_EXPERIMENTAL_VERSION
+        {
+            return Ok(Some((
+                &ext.data[DRED_EXPERIMENTAL_BYTES..],
+                dred_frame_offset,
+            )));
         }
     }
     Ok(None)
@@ -47,7 +53,9 @@ fn dred_find_payload(data: &[u8]) -> Result<Option<(&[u8], i32)>, &'static str> 
 impl OpusDredDecoder {
     /// `opus_dred_decoder_create`: a decoder with the built-in model.
     pub fn new() -> Result<Self, WeightError> {
-        Ok(OpusDredDecoder { model: crate::dnn::builtin::dred_rdovae_dec()? })
+        Ok(OpusDredDecoder {
+            model: crate::dnn::builtin::dred_rdovae_dec()?,
+        })
     }
 
     /// A decoder with the given model (libopus `OPUS_SET_DNN_BLOB`).
@@ -80,14 +88,16 @@ impl OpusDredDecoder {
             return Ok((0, 0));
         };
         let offset = (100 * max_dred_samples as i64 / sampling_rate as i64) as i32;
-        let min_feature_frames = (2i32.saturating_add(offset)).min(2 * DRED_NUM_REDUNDANCY_FRAMES as i32);
+        let min_feature_frames =
+            (2i32.saturating_add(offset)).min(2 * DRED_NUM_REDUNDANCY_FRAMES as i32);
         dred.ec_decode(payload, min_feature_frames, dred_frame_offset);
         if !defer_processing {
             dred.process(&self.model);
         }
         let fs = sampling_rate as i64;
         let dred_end = (-(dred.dred_offset as i64) * fs / 400).max(0) as i32;
-        let samples = (dred.nb_latents as i64 * fs / 25 - dred.dred_offset as i64 * fs / 400).max(0) as i32;
+        let samples =
+            (dred.nb_latents as i64 * fs / 25 - dred.dred_offset as i64 * fs / 400).max(0) as i32;
         Ok((samples, dred_end))
     }
 
@@ -95,7 +105,11 @@ impl OpusDredDecoder {
     /// deferred [`Self::parse`] read. An error unless `dred` holds parsed
     /// DRED data.
     pub fn process(&self, dred: &mut OpusDred) -> Result<(), &'static str> {
-        if dred.process(&self.model) { Ok(()) } else { Err("no parsed DRED data") }
+        if dred.process(&self.model) {
+            Ok(())
+        } else {
+            Err("no parsed DRED data")
+        }
     }
 }
 
@@ -135,7 +149,10 @@ impl OpusDecoder {
             return Err("Lost frame: frame_size must be a multiple of 2.5 ms");
         }
         let channels = self.channels;
-        if frame_size.checked_mul(channels).is_none_or(|n| output.len() < n) {
+        if frame_size
+            .checked_mul(channels)
+            .is_none_or(|n| output.len() < n)
+        {
             return Err("Output buffer too small for packet");
         }
         self.queue_dred_features(dred, dred_offset, frame_size);
@@ -152,7 +169,10 @@ impl OpusDecoder {
             let n = if left < f20 + 2 * f2_5 { left } else { f20 };
             let out = &mut buf[..n * channels];
             self.decode(&[], n, out)?;
-            for (o, &x) in output[pos * channels..(pos + n) * channels].iter_mut().zip(out.iter()) {
+            for (o, &x) in output[pos * channels..(pos + n) * channels]
+                .iter_mut()
+                .zip(out.iter())
+            {
                 *o = crate::float2int16(x);
             }
             pos += n;
@@ -176,8 +196,14 @@ impl OpusDecoder {
         let features_per_frame = (frame_size as i32 / f10).max(1);
         let needed_feature_frames = init_frames + features_per_frame;
         // Floored: the 5 ms overlap makes up for the missing 0.5.
-        let base = c_floor(((dred_offset as f32 + (dred.dred_offset.wrapping_mul(f10) / 4) as f32) / f10 as f32) as f64);
-        let last = (4 * dred.nb_latents.clamp(0, DRED_NUM_REDUNDANCY_FRAMES as i32 / 2) - 1) as i64;
+        let base = c_floor(
+            ((dred_offset as f32 + (dred.dred_offset.wrapping_mul(f10) / 4) as f32) / f10 as f32)
+                as f64,
+        );
+        let last = (4 * dred
+            .nb_latents
+            .clamp(0, DRED_NUM_REDUNDANCY_FRAMES as i32 / 2)
+            - 1) as i64;
         for i in 0..needed_feature_frames {
             let feature_offset = (init_frames - i - 2) as i64 + base as i64;
             if feature_offset <= last && feature_offset >= 0 {
@@ -192,13 +218,20 @@ impl OpusDecoder {
 
 /// `dred_bits_table`: the approximate bits of a latent chunk per quantizer
 /// level.
-const DRED_BITS_TABLE: [f32; 16] =
-    [73.2, 68.1, 62.5, 57.0, 51.5, 45.7, 39.9, 32.4, 26.4, 20.4, 16.3, 13.0, 9.3, 8.2, 7.2, 6.4];
+const DRED_BITS_TABLE: [f32; 16] = [
+    73.2, 68.1, 62.5, 57.0, 51.5, 45.7, 39.9, 32.4, 26.4, 20.4, 16.3, 13.0, 9.3, 8.2, 7.2, 6.4,
+];
 
 /// `estimate_dred_bitrate`: the approximate bits of a DRED payload of
 /// `duration` 10 ms frames, and the number of chunks that fit in
 /// `target_bits`.
-fn estimate_dred_bitrate(q0: i32, dq: i32, qmax: i32, duration: i32, target_bits: i32) -> (i32, i32) {
+fn estimate_dred_bitrate(
+    q0: i32,
+    dq: i32,
+    qmax: i32,
+    duration: i32,
+    target_bits: i32,
+) -> (i32, i32) {
     // Signaling DRED costs 3 bytes, the experimental header 2 more.
     let mut bits = (8 * (3 + DRED_EXPERIMENTAL_BYTES)) as f32;
     // Approximation for the size of the initial state.
@@ -254,7 +287,14 @@ impl EncoderDred {
     /// `compute_dred_bitrate`: the share of `bitrate_bps` that goes to
     /// DRED in a packet of `frame_size` samples, 0 when DRED cannot have at
     /// least two chunks. Sets the quantizers and the chunk target.
-    pub fn compute_bitrate(&mut self, bitrate_bps: i32, frame_size: usize, fs: i32, inband_fec: bool, loss: i32) -> i32 {
+    pub fn compute_bitrate(
+        &mut self,
+        bitrate_bps: i32,
+        frame_size: usize,
+        fs: i32,
+        inband_fec: bool,
+        loss: i32,
+    ) -> i32 {
         let (mut dred_frac, bitrate_offset) = if inband_fec {
             ((0.7f32).min(3.0 * loss as f32 / 100.0), 20000)
         } else if loss > 5 {
@@ -263,11 +303,16 @@ impl EncoderDred {
             (12.0 * loss as f32 / 100.0, 12000)
         };
         // Longer packets need less redundancy.
-        dred_frac = dred_frac / (dred_frac + (1.0 - dred_frac) * (frame_size as f32 * 50.0) / fs as f32);
+        dred_frac =
+            dred_frac / (dred_frac + (1.0 - dred_frac) * (frame_size as f32 * 50.0) / fs as f32);
         // An approximate fit from a few experiments.
         let ilog = 32 - (bitrate_bps - bitrate_offset).max(1).leading_zeros() as i32;
         let q0 = (51 - 3 * ilog).clamp(4, 15);
-        let dq = if bitrate_bps - bitrate_offset > 36000 { 3 } else { 5 };
+        let dq = if bitrate_bps - bitrate_offset > 36000 {
+            3
+        } else {
+            5
+        };
         let qmax = 15;
         let target_dred_bitrate = (dred_frac * (bitrate_bps - bitrate_offset) as f32) as i32;
         let target_dred_bitrate = target_dred_bitrate.max(0);
@@ -277,7 +322,8 @@ impl EncoderDred {
         } else {
             (0, 0)
         };
-        let mut dred_bitrate = target_dred_bitrate.min(bits_to_bitrate(max_dred_bits, fs, frame_size));
+        let mut dred_bitrate =
+            target_dred_bitrate.min(bits_to_bitrate(max_dred_bits, fs, frame_size));
         // Too few bits for DRED to be worth it.
         if target_chunks < 2 {
             dred_bitrate = 0;
@@ -295,9 +341,17 @@ impl EncoderDred {
     /// `extra_delay` samples, and its voice `activity` (-1 when SILK
     /// decides it later). Without DRED, the latents and the activity are
     /// cleared.
-    pub fn frame(&mut self, pcm: &[f32], frame_size: usize, extra_delay: usize, fs: i32, activity: i32) {
+    pub fn frame(
+        &mut self,
+        pcm: &[f32],
+        frame_size: usize,
+        extra_delay: usize,
+        fs: i32,
+        activity: i32,
+    ) {
         if self.duration > 0 {
-            self.enc.compute_latents(pcm, frame_size, extra_delay as i32);
+            self.enc
+                .compute_latents(pcm, frame_size, extra_delay as i32);
             let n = frame_size * 400 / fs as usize;
             self.activity_mem.copy_within(..4 * DRED_MAX_FRAMES - n, n);
             self.set_activity(n, activity);
@@ -338,7 +392,8 @@ impl EncoderDred {
         let mut buf = [0u8; DRED_MAX_DATA_SIZE];
         let mut dred_bytes = 0;
         if self.duration > 0 && with_dred {
-            let mut dred_chunks = ((self.duration + 5) / 4).min(DRED_NUM_REDUNDANCY_FRAMES as i32 / 2);
+            let mut dred_chunks =
+                ((self.duration + 5) / 4).min(DRED_NUM_REDUNDANCY_FRAMES as i32 / 2);
             if use_vbr {
                 dred_chunks = dred_chunks.min(self.target_chunks);
             }
@@ -365,7 +420,11 @@ impl EncoderDred {
             }
         }
         if dred_bytes > 0 {
-            let ext = ExtensionData { id: DRED_EXTENSION_ID, frame: 0, data: &buf[..dred_bytes] };
+            let ext = ExtensionData {
+                id: DRED_EXTENSION_ID,
+                frame: 0,
+                data: &buf[..dred_bytes],
+            };
             write_packet(packet, toc, &[&frame[..flen]], &[ext], max_bytes, !use_vbr)
         } else if !use_vbr && len < max_bytes {
             write_packet(packet, toc, &[&frame[..flen]], &[], max_bytes, true)
@@ -413,7 +472,8 @@ impl OpusEncoder {
         // multiframe packet gets its share, a packet its CBR size or the
         // buffer.
         let max_bytes = output.len();
-        self.dred.finish_packet(output, len, max_bytes, !self.use_cbr, args.first_frame)
+        self.dred
+            .finish_packet(output, len, max_bytes, !self.use_cbr, args.first_frame)
     }
 
     /// The DRED latents of a frame from its filtered input (libopus's
@@ -425,7 +485,8 @@ impl OpusEncoder {
         } else {
             let prefix = self.delay_compensation * ch;
             let pcm = &self.buf_celt_pcm[prefix..prefix + frame_size * ch];
-            self.dred.frame(pcm, frame_size, self.delay_compensation, fs, activity);
+            self.dred
+                .frame(pcm, frame_size, self.delay_compensation, fs, activity);
         }
     }
 }
@@ -442,14 +503,23 @@ pub(crate) fn repacketize_extensions(
     maxlen: usize,
     pad: bool,
 ) -> Option<Result<usize, &'static str>> {
-    let mut exts = [ExtensionData { id: 0, frame: 0, data: &[] }; 6];
+    let mut exts = [ExtensionData {
+        id: 0,
+        frame: 0,
+        data: &[],
+    }; 6];
     let mut n = 0;
     for (i, sub) in subs.iter().enumerate() {
-        let Ok(parts) = parse_packet(sub) else { continue };
+        let Ok(parts) = parse_packet(sub) else {
+            continue;
+        };
         let mut iter = ExtensionIterator::new(parts.padding, parts.count);
         while let Ok(Some(ext)) = iter.next() {
             if n < exts.len() {
-                exts[n] = ExtensionData { frame: ext.frame + i, ..ext };
+                exts[n] = ExtensionData {
+                    frame: ext.frame + i,
+                    ..ext
+                };
                 n += 1;
             }
         }
@@ -457,7 +527,14 @@ pub(crate) fn repacketize_extensions(
     if n == 0 {
         return None;
     }
-    Some(write_packet(output, subs[0][0], frames, &exts[..n], maxlen, pad))
+    Some(write_packet(
+        output,
+        subs[0][0],
+        frames,
+        &exts[..n],
+        maxlen,
+        pad,
+    ))
 }
 
 #[cfg(all(test, feature = "std"))]
@@ -486,11 +563,18 @@ mod tests {
         let mut dred = std::boxed::Box::<OpusDred>::default();
         let mut with_dred = 0;
         for k in 0..100 {
-            let pcm: std::vec::Vec<f32> =
-                (0..320).map(|i| (((k * 320 + i) as f32) * 0.07).sin() * 0.3 * (((k * 320 + i) as f32) * 0.0021).sin()).collect();
+            let pcm: std::vec::Vec<f32> = (0..320)
+                .map(|i| {
+                    (((k * 320 + i) as f32) * 0.07).sin()
+                        * 0.3
+                        * (((k * 320 + i) as f32) * 0.0021).sin()
+                })
+                .collect();
             let mut pkt = [0u8; 1500];
             let n = enc.encode(&pcm, 320, &mut pkt).unwrap();
-            let (samples, _) = dred_dec.parse(&mut dred, &pkt[..n], 16000, 16000, false).unwrap();
+            let (samples, _) = dred_dec
+                .parse(&mut dred, &pkt[..n], 16000, 16000, false)
+                .unwrap();
             let mut out = [0f32; 320];
             if samples > 0 && k % 10 == 9 {
                 with_dred += 1;

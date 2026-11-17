@@ -1,8 +1,8 @@
+use crate::silk::cng::silk_cng_reset;
 use crate::silk::decoder_structs::SilkDecoderState;
 use crate::silk::define::*;
-use crate::silk::tables_nlsf::*;
-use crate::silk::cng::silk_cng_reset;
 use crate::silk::plc::silk_plc_reset;
+use crate::silk::tables_nlsf::*;
 
 pub fn silk_decoder_set_fs(dec: &mut SilkDecoderState, fs_khz: i32, fs_api_hz: i32) -> i32 {
     if fs_khz != 8 && fs_khz != 12 && fs_khz != 16 {

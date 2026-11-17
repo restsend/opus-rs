@@ -8,11 +8,11 @@ use crate::compat::Math;
 use super::common::{celt_fir, celt_inner_prod, celt_log2, celt_pitch_xcorr};
 use super::fft::Cpx;
 use super::freq::{
-    apply_window, dct, forward_transform, lpc_from_cepstrum, lpcn_compute_band_energy, FRAME_SIZE, FREQ_SIZE,
-    LPC_ORDER, NB_BANDS, OVERLAP_SIZE, PREEMPHASIS, TRAINING_OFFSET, WINDOW_SIZE,
+    FRAME_SIZE, FREQ_SIZE, LPC_ORDER, NB_BANDS, OVERLAP_SIZE, PREEMPHASIS, TRAINING_OFFSET,
+    WINDOW_SIZE, apply_window, dct, forward_transform, lpc_from_cepstrum, lpcn_compute_band_energy,
 };
 use super::models::pitchdnn::PitchDnn;
-use super::pitchdnn::{compute_pitchdnn, PitchDnnState, PITCH_MAX_PERIOD, PITCH_MIN_PERIOD};
+use super::pitchdnn::{PITCH_MAX_PERIOD, PITCH_MIN_PERIOD, PitchDnnState, compute_pitchdnn};
 use super::vec::c_int;
 
 pub const NB_FEATURES: usize = 20;
@@ -74,11 +74,17 @@ impl<'a> LpcnetEncState<'a> {
 }
 
 /// `frame_analysis`.
-fn frame_analysis(st: &mut LpcnetEncState<'_>, x_out: &mut [Cpx; FREQ_SIZE], ex: &mut [f32; NB_BANDS], input: &[f32]) {
+fn frame_analysis(
+    st: &mut LpcnetEncState<'_>,
+    x_out: &mut [Cpx; FREQ_SIZE],
+    ex: &mut [f32; NB_BANDS],
+    input: &[f32],
+) {
     let mut x = [0.0f32; WINDOW_SIZE];
     x[..OVERLAP_SIZE].copy_from_slice(&st.analysis_mem);
     x[OVERLAP_SIZE..].copy_from_slice(&input[..FRAME_SIZE]);
-    st.analysis_mem.copy_from_slice(&input[FRAME_SIZE - OVERLAP_SIZE..FRAME_SIZE]);
+    st.analysis_mem
+        .copy_from_slice(&input[FRAME_SIZE - OVERLAP_SIZE..FRAME_SIZE]);
     apply_window(&mut x);
     forward_transform(x_out, &x);
     lpcn_compute_band_energy(ex, x_out);
@@ -124,7 +130,8 @@ pub fn compute_frame_features(st: &mut LpcnetEncState<'_>, input: &[f32]) {
     let mut ener_norm = [0.0f32; PITCH_MAX_PERIOD - PITCH_MIN_PERIOD];
     const LP_B: [f32; 2] = [-0.84946, 1.0];
     const LP_A: [f32; 2] = [-1.54220, 0.70781];
-    aligned_in[..TRAINING_OFFSET].copy_from_slice(&st.analysis_mem[OVERLAP_SIZE - TRAINING_OFFSET..]);
+    aligned_in[..TRAINING_OFFSET]
+        .copy_from_slice(&st.analysis_mem[OVERLAP_SIZE - TRAINING_OFFSET..]);
     frame_analysis(st, &mut xf, &mut ex, input);
     st.if_features[0] =
         clamp1((1.0f32 / 64.0) * (10.0f32 * celt_log10(1e-15f32 + xf[0].r * xf[0].r) - 6.0));
@@ -132,14 +139,19 @@ pub fn compute_frame_features(st: &mut LpcnetEncState<'_>, input: &[f32]) {
         let a = xf[i];
         let b = st.prev_if[i];
         // C_MULC
-        let mut prod = Cpx { r: a.r * b.r + a.i * b.i, i: a.i * b.r - a.r * b.i };
-        let norm_1 = (1.0f32 as f64 / ((1e-15f32 + prod.r * prod.r + prod.i * prod.i) as f64).sqrt()) as f32;
+        let mut prod = Cpx {
+            r: a.r * b.r + a.i * b.i,
+            i: a.i * b.r - a.r * b.i,
+        };
+        let norm_1 =
+            (1.0f32 as f64 / ((1e-15f32 + prod.r * prod.r + prod.i * prod.i) as f64).sqrt()) as f32;
         prod.r *= norm_1;
         prod.i *= norm_1;
         st.if_features[3 * i - 2] = prod.r;
         st.if_features[3 * i - 1] = prod.i;
-        st.if_features[3 * i] =
-            clamp1((1.0f32 / 64.0) * (10.0f32 * celt_log10(1e-15f32 + a.r * a.r + a.i * a.i) - 6.0));
+        st.if_features[3 * i] = clamp1(
+            (1.0f32 / 64.0) * (10.0f32 * celt_log10(1e-15f32 + a.r * a.r + a.i * a.i) - 6.0),
+        );
     }
     st.prev_if.copy_from_slice(&xf[..PITCH_IF_MAX_FREQ]);
     let mut log_max: f32 = -2.0;
@@ -160,28 +172,54 @@ pub fn compute_frame_features(st: &mut LpcnetEncState<'_>, input: &[f32]) {
     for i in 0..LPC_ORDER {
         st.features[NB_BANDS + 2 + i] = st.lpc[i];
     }
-    st.exc_buf.copy_within(FRAME_SIZE..FRAME_SIZE + PITCH_MAX_PERIOD, 0);
-    st.lp_buf.copy_within(FRAME_SIZE..FRAME_SIZE + PITCH_MAX_PERIOD, 0);
+    st.exc_buf
+        .copy_within(FRAME_SIZE..FRAME_SIZE + PITCH_MAX_PERIOD, 0);
+    st.lp_buf
+        .copy_within(FRAME_SIZE..FRAME_SIZE + PITCH_MAX_PERIOD, 0);
     aligned_in[TRAINING_OFFSET..].copy_from_slice(&input[..FRAME_SIZE - TRAINING_OFFSET]);
     x[..LPC_ORDER].copy_from_slice(&st.pitch_mem);
     x[LPC_ORDER..].copy_from_slice(&aligned_in);
-    st.pitch_mem.copy_from_slice(&aligned_in[FRAME_SIZE - LPC_ORDER..]);
-    celt_fir(&x, &st.lpc, &mut st.lp_buf[PITCH_MAX_PERIOD..], FRAME_SIZE, LPC_ORDER);
+    st.pitch_mem
+        .copy_from_slice(&aligned_in[FRAME_SIZE - LPC_ORDER..]);
+    celt_fir(
+        &x,
+        &st.lpc,
+        &mut st.lp_buf[PITCH_MAX_PERIOD..],
+        FRAME_SIZE,
+        LPC_ORDER,
+    );
     for i in 0..FRAME_SIZE {
         st.exc_buf[PITCH_MAX_PERIOD + i] = st.lp_buf[PITCH_MAX_PERIOD + i] + 0.7f32 * st.pitch_filt;
         st.pitch_filt = st.lp_buf[PITCH_MAX_PERIOD + i];
     }
-    biquad(&mut st.lp_buf[PITCH_MAX_PERIOD..], &mut st.lp_mem, &LP_B, &LP_A, FRAME_SIZE);
+    biquad(
+        &mut st.lp_buf[PITCH_MAX_PERIOD..],
+        &mut st.lp_mem,
+        &LP_B,
+        &LP_A,
+        FRAME_SIZE,
+    );
     {
         let buf = &st.exc_buf;
-        celt_pitch_xcorr(&buf[PITCH_MAX_PERIOD..], buf, &mut xcorr, FRAME_SIZE, PITCH_MAX_PERIOD - PITCH_MIN_PERIOD);
-        let ener0 = celt_inner_prod(&buf[PITCH_MAX_PERIOD..], &buf[PITCH_MAX_PERIOD..], FRAME_SIZE);
+        celt_pitch_xcorr(
+            &buf[PITCH_MAX_PERIOD..],
+            buf,
+            &mut xcorr,
+            FRAME_SIZE,
+            PITCH_MAX_PERIOD - PITCH_MIN_PERIOD,
+        );
+        let ener0 = celt_inner_prod(
+            &buf[PITCH_MAX_PERIOD..],
+            &buf[PITCH_MAX_PERIOD..],
+            FRAME_SIZE,
+        );
         let mut ener1 = celt_inner_prod(buf, buf, FRAME_SIZE) as f64;
         for i in 0..PITCH_MAX_PERIOD - PITCH_MIN_PERIOD {
             let ener = ((1.0f32 + ener0) as f64 + ener1) as f32;
             st.xcorr_features[i] = 2.0 * xcorr[i];
             ener_norm[i] = ener;
-            ener1 += buf[i + FRAME_SIZE] as f64 * buf[i + FRAME_SIZE] as f64 - buf[i] as f64 * buf[i] as f64;
+            ener1 += buf[i + FRAME_SIZE] as f64 * buf[i + FRAME_SIZE] as f64
+                - buf[i] as f64 * buf[i] as f64;
         }
         for i in 0..PITCH_MAX_PERIOD - PITCH_MIN_PERIOD {
             st.xcorr_features[i] /= ener_norm[i];
@@ -190,15 +228,24 @@ pub fn compute_frame_features(st: &mut LpcnetEncState<'_>, input: &[f32]) {
     let (iff, xcf) = (st.if_features, st.xcorr_features);
     st.dnn_pitch = compute_pitchdnn(&mut st.pitchdnn, &iff, &xcf);
     let pitch = c_int(
-        (0.5 + 256.0 / 2.0f32.powf_f64((1.0 / 60.0) * ((st.dnn_pitch as f64 + 1.5) * 60.0))).floor(),
+        (0.5 + 256.0 / 2.0f32.powf_f64((1.0 / 60.0) * ((st.dnn_pitch as f64 + 1.5) * 60.0)))
+            .floor(),
     ) as usize;
     let lp = &st.lp_buf;
     let xx = celt_inner_prod(&lp[PITCH_MAX_PERIOD..], &lp[PITCH_MAX_PERIOD..], FRAME_SIZE);
-    let yy = celt_inner_prod(&lp[PITCH_MAX_PERIOD - pitch..], &lp[PITCH_MAX_PERIOD - pitch..], FRAME_SIZE);
-    let xy = celt_inner_prod(&lp[PITCH_MAX_PERIOD..], &lp[PITCH_MAX_PERIOD - pitch..], FRAME_SIZE);
+    let yy = celt_inner_prod(
+        &lp[PITCH_MAX_PERIOD - pitch..],
+        &lp[PITCH_MAX_PERIOD - pitch..],
+        FRAME_SIZE,
+    );
+    let xy = celt_inner_prod(
+        &lp[PITCH_MAX_PERIOD..],
+        &lp[PITCH_MAX_PERIOD - pitch..],
+        FRAME_SIZE,
+    );
     let mut frame_corr = (xy as f64 / ((1.0f32 + xx * yy) as f64).sqrt()) as f32;
-    frame_corr = (((1.0f32 as f64 + ((5.0f32 * frame_corr) as f64).exp()).ln()) / (1.0 + (5.0f32 as f64).exp()).ln())
-        as f32;
+    frame_corr = (((1.0f32 as f64 + ((5.0f32 * frame_corr) as f64).exp()).ln())
+        / (1.0 + (5.0f32 as f64).exp()).ln()) as f32;
     st.features[NB_BANDS] = st.dnn_pitch;
     st.features[NB_BANDS + 1] = frame_corr - 0.5f32;
 }

@@ -376,11 +376,7 @@ fn check_fec_decodes_in_libopus(ch: usize, cbr: bool) {
         v.sort_by(|a, b| a.partial_cmp(b).unwrap());
         v[v.len() / 2]
     };
-    let above2 = fec
-        .lbrr
-        .iter()
-        .filter(|s| **s > 2.0)
-        .count();
+    let above2 = fec.lbrr.iter().filter(|s| **s > 2.0).count();
     println!(
         "opus-rs enc 20 ms {ch}ch + FEC({}) -> libopus: normal {worst:.1} dB \
          (no-FEC {plain_worst:.1} dB), LBRR median {lbrr_median:.1} dB, {above2}/{} windows > 2 dB",

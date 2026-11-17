@@ -135,7 +135,11 @@ fn parse_record(data: &[u8]) -> Option<(WeightArray<'_>, &[u8])> {
     let name_len = name.iter().position(|&c| c == 0).unwrap_or(NAME_LEN);
     let body = &data[WEIGHT_BLOCK_SIZE..];
     Some((
-        WeightArray { name: &name[..name_len], kind, data: &body[..size as usize] },
+        WeightArray {
+            name: &name[..name_len],
+            kind,
+            data: &body[..size as usize],
+        },
         &body[block_size as usize..],
     ))
 }
@@ -240,7 +244,11 @@ impl<'a> WeightList<'a> {
         nb_inputs: usize,
         nb_outputs: usize,
     ) -> Result<LinearLayer<'a>, WeightError> {
-        let mut l = LinearLayer { nb_inputs, nb_outputs, ..LinearLayer::default() };
+        let mut l = LinearLayer {
+            nb_inputs,
+            nb_outputs,
+            ..LinearLayer::default()
+        };
         if let Some(n) = bias {
             l.bias = Some(F32s::new(self.find_check(n, 4 * nb_outputs)?));
         }
@@ -254,14 +262,18 @@ impl<'a> WeightList<'a> {
                 l.weights = Some(self.find_check(n, SPARSE_BLOCK_SIZE * total)?);
             }
             if let Some(n) = float_weights {
-                l.float_weights = self.opt_check(n, 4 * SPARSE_BLOCK_SIZE * total)?.map(F32s::new);
+                l.float_weights = self
+                    .opt_check(n, 4 * SPARSE_BLOCK_SIZE * total)?
+                    .map(F32s::new);
             }
         } else {
             if let Some(n) = weights {
                 l.weights = Some(self.find_check(n, nb_inputs * nb_outputs)?);
             }
             if let Some(n) = float_weights {
-                l.float_weights = self.opt_check(n, 4 * nb_inputs * nb_outputs)?.map(F32s::new);
+                l.float_weights = self
+                    .opt_check(n, 4 * nb_inputs * nb_outputs)?
+                    .map(F32s::new);
             }
         }
         if let Some(n) = diag {
@@ -287,7 +299,13 @@ impl<'a> WeightList<'a> {
         ktime: usize,
         kheight: usize,
     ) -> Result<Conv2dLayer<'a>, WeightError> {
-        let mut c = Conv2dLayer { in_channels, out_channels, ktime, kheight, ..Conv2dLayer::default() };
+        let mut c = Conv2dLayer {
+            in_channels,
+            out_channels,
+            ktime,
+            kheight,
+            ..Conv2dLayer::default()
+        };
         if let Some(n) = bias {
             c.bias = Some(F32s::new(self.find_check(n, 4 * out_channels)?));
         }
@@ -328,6 +346,9 @@ mod tests {
         assert_eq!(f.at(1), 2.0);
         assert_eq!(list.find("b").unwrap().data, &[7, 0]);
         assert!(list.find("c").is_none());
-        assert_eq!(WeightList::parse(&blob[..100]).unwrap_err(), WeightError::InvalidBlob);
+        assert_eq!(
+            WeightList::parse(&blob[..100]).unwrap_err(),
+            WeightError::InvalidBlob
+        );
     }
 }
