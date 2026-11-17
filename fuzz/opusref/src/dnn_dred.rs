@@ -215,8 +215,7 @@ impl DredEnc {
     pub fn reset(&mut self) {
         unsafe { ref_dred_encoder_reset(self.0) }
     }
-    /// `pcm` must hold `2*frame_size` values for stereo (see
-    /// `dred_compute_latents`).
+    /// `pcm` holds `frame_size*channels` values.
     pub fn compute_latents(
         &mut self,
         pcm: &[f32],

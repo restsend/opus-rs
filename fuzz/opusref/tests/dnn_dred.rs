@@ -368,9 +368,7 @@ fn compute_latents_matches() {
                 let mut k = 0;
                 loop {
                     let frame = frame_units(kind, k) * fs as usize / 400;
-                    // libopus reads up to 2*frame values per channel pair
-                    // (see `DredEnc::compute_latents`).
-                    if (pos + 2 * frame) * channels > sig.len() {
+                    if (pos + frame) * channels > sig.len() {
                         break;
                     }
                     let pcm = &sig[pos * channels..];

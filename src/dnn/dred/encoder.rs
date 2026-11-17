@@ -268,10 +268,7 @@ impl<'a> DredEnc<'a> {
     /// `dred_compute_latents`: feeds `frame_size` samples per channel of
     /// interleaved `pcm` (in the ±1 range) into the encoder. `extra_delay`
     /// is the encoder's delay in samples at `fs`; it sets `dred_offset`.
-    ///
-    /// Between 20 ms chunks, libopus advances `pcm` by the chunk's sample
-    /// count per channel, also for stereo; this port does the same. `pcm`
-    /// needs `frame_size * channels` values.
+    /// `pcm` needs `frame_size * channels` values.
     pub fn compute_latents(&mut self, pcm: &[f32], frame_size: usize, extra_delay: i32) {
         let mut frame_size16k = frame_size as i32 * 16000 / self.fs;
         let curr_offset16k = 40 + extra_delay * 16000 / self.fs - self.input_buffer_fill;
@@ -305,7 +302,7 @@ impl<'a> DredEnc<'a> {
                     self.latent_offset += 1;
                 }
             }
-            pos += process_size as usize;
+            pos += process_size as usize * self.channels as usize;
             frame_size16k -= process_size16k;
         }
     }
