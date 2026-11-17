@@ -144,6 +144,28 @@ fn band_log_energy_matches_libopus() {
     }
 }
 
+/// compute_band_energies adds 1e-27 after the sum of squares
+/// (bands.c:160), which shows on very quiet bands.
+#[test]
+fn band_energies_add_the_floor_after_the_sum() {
+    let mode = opus_rs::modes::default_mode();
+    let mut seed = 9u32;
+    for k in 0..200 {
+        let scale = 10f32.powi(-(k % 20) - 5);
+        let x: Vec<f32> = (0..960)
+            .map(|_| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                ((seed >> 9) as f32 / (1u32 << 23) as f32 - 0.5) * scale
+            })
+            .collect();
+        let mut a = [0f32; 21];
+        let mut b = [0f32; 21];
+        opus_rs::bands::compute_band_energies(mode, &x, &mut a, 21, 1, 3);
+        unsafe { compute_band_energies(ref_celt_mode48(), x.as_ptr(), b.as_mut_ptr(), 21, 1, 3, 0) };
+        assert_eq!(a, b, "scale {scale}");
+    }
+}
+
 /// 2.5 ms frames' dynalloc reads the previous frame's energies, before
 /// the coarse energy updates them (celt_encoder.c:2248).
 #[test]

@@ -117,6 +117,15 @@ unsafe extern "C" {
         arch: c_int,
     );
     pub fn haar1(x: *mut f32, n0: c_int, stride: c_int);
+    pub fn compute_band_energies(
+        m: *const CELTMode,
+        x: *const f32,
+        band_e: *mut f32,
+        end: c_int,
+        c: c_int,
+        lm: c_int,
+        arch: c_int,
+    );
     pub fn pitch_search(
         x_lp: *const f32,
         y: *mut f32,

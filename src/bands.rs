@@ -2078,7 +2078,8 @@ pub fn compute_band_energies(
             let offset = (m.e_bands[i] as usize) << lm;
             let n = ((m.e_bands[i + 1] - m.e_bands[i]) as usize) << lm;
             let band = &ch[offset..offset + n];
-            let sum = band.iter().fold(1e-27f32, |acc, &v| acc + v * v);
+            // bands.c:160: 1e-27 after the sum of squares.
+            let sum = 1e-27 + band.iter().fold(0.0f32, |acc, &v| acc + v * v);
             band_e[c * m.nb_ebands + i] = sum.sqrt();
         }
     }
