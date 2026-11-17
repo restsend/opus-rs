@@ -52,3 +52,4 @@ d17	test:celt_fold_after_loss	-	FAILED	prefilter_and_fold crossfades the postfil
 d18	test:celt_no_saturation	-	FAILED	CELT output saturated at SIG_SAT in the float path
 d19	test:dec_uint_overflow	-	FAILED	ec_dec_uint returns values past its range
 d20	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] valid decode silk->silk	silk_lpc_inverse_pred_gain uses a wrong A_LIMIT
+e1	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	celt rate.c:418	stereo_analysis scales sumMS by 0.707107

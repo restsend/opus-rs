@@ -733,7 +733,7 @@ fn stereo_analysis(m: &CeltMode, x: &[f32], lm: i32, n0: usize) -> bool {
         }
     }
 
-    sum_ms *= core::f32::consts::FRAC_1_SQRT_2;
+    sum_ms *= 0.707107;
     let mut thetas = 13;
     if lm <= 1 {
         thetas -= 8;
