@@ -1019,8 +1019,9 @@ fn run_prefilter(
             multiple += 1.0;
         }
         if tone_freq > 0.006148 {
-            pitch_index = ((0.5 + 2.0 * core::f32::consts::PI * multiple / tone_freq) as usize)
-                .min(COMBFILTER_MAXPERIOD - 2);
+            // In double: M_PI and .5 are double literals (C 1452).
+            let period = 0.5 + 2.0 * core::f64::consts::PI * f64::from(multiple) / f64::from(tone_freq);
+            pitch_index = (period.floor() as usize).min(COMBFILTER_MAXPERIOD - 2);
         } else {
             pitch_index = COMBFILTER_MINPERIOD;
         }
@@ -4159,6 +4160,25 @@ mod tests {
             (r, offsets, importance)
         };
         assert_eq!(run(0.01308996882), run(0.0));
+    }
+
+    /// A pure tone's comb-filter period is floor(.5 + 2*M_PI*multiple/freq)
+    /// in double (celt_encoder.c:1452): 0.3807991147 rad/sample gives 16.
+    #[test]
+    fn tone_period_rounds_in_double() {
+        let mode = modes::default_mode();
+        let (n, overlap) = (960, mode.overlap);
+        let mut in_buf: Vec<f32> = (0..n + overlap).map(|i| (i as f32 * 0.3808).sin() * 1000.0).collect();
+        let mut mem = vec![0.0f32; COMBFILTER_MAXPERIOD];
+        let mut pre = vec![0.0f32; COMBFILTER_MAXPERIOD + n];
+        let mut pitch_buf = vec![0.0f32; (COMBFILTER_MAXPERIOD + n) >> 1];
+        let (mut before, mut after) = ([0.0f32; 1], [0.0f32; 1]);
+        let (_, _, pitch_index) = run_prefilter(
+            &mut in_buf, &mut mem, 0, 0.0, 0, 0, mode.window, 1, n, overlap, &mut pre,
+            &mut pitch_buf, &mut before, &mut after, &AnalysisInfo::default(), 0, 0.0, true, 100,
+            0.3807991147041321, 1.0, 10,
+        );
+        assert_eq!(pitch_index, 16);
     }
 
     #[test]
