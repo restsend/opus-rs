@@ -332,6 +332,58 @@ fn patch_transient_decision(
     mean_diff > 1.0
 }
 
+/// transient_analysis's high-pass filter, forward (post-echo) and backward
+/// (pre-echo) passes for `C` channels side by side. Each channel's chains
+/// keep libopus's order; the filter and the forward pass run in one loop and
+/// the channels in step, so the serial chains overlap. `tmp[c * len / 2..]`
+/// gets channel c's threshold; returns each channel's energy sum and peak.
+#[inline(always)]
+fn transient_thresholds<const C: usize>(
+    input: &[f32],
+    len: usize,
+    forward_decay: f32,
+    tmp: &mut [f32],
+) -> [(f32, f32); C] {
+    let len2 = len / 2;
+    let mut hp = [[0.0f32; 2]; C];
+    let mut fwd = [0.0f32; C];
+    let mut out = [(0.0f32, 0.0f32); C];
+    for i in 0..len2 {
+        for c in 0..C {
+            let mut y = [0.0f32; 2];
+            for (k, y) in y.iter_mut().enumerate() {
+                // High-pass filter: (1 - 2*z^-1 + z^-2) / (1 - z^-1 + .5*z^-2).
+                let x = input[c * len + 2 * i + k];
+                let [mem0, mem1] = hp[c];
+                *y = mem0 + x;
+                hp[c] = [mem0 - x + 0.5 * mem1, x - mem0];
+            }
+            // The first 12 outputs are cleared: the filter has no memory.
+            if i < 6 {
+                y = [0.0; 2];
+            }
+            // C float build: PSHR32 is an identity, so x2 is the plain sum of
+            // squares and mean += x2.
+            let x2 = y[0] * y[0] + y[1] * y[1];
+            out[c].0 += x2;
+            fwd[c] = x2 + (1.0 - forward_decay) * fwd[c];
+            tmp[c * len2 + i] = forward_decay * fwd[c];
+        }
+    }
+    let mut bwd = [0.0f32; C];
+    for i in (0..len2).rev() {
+        for c in 0..C {
+            let t = &mut tmp[c * len2 + i];
+            bwd[c] = *t + 0.875 * bwd[c];
+            *t = 0.125 * bwd[c];
+            if *t > out[c].1 {
+                out[c].1 = *t;
+            }
+        }
+    }
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 fn transient_analysis(
     input: &[f32],
@@ -344,7 +396,6 @@ fn transient_analysis(
     _tone_freq: f32,
     toneishness: f32,
     tmp: &mut [f32],
-    tmp2: &mut [f32],
 ) -> bool {
     let mut mask_metric = 0.0f32;
     let mut forward_decay = 0.0625f32;
@@ -356,46 +407,18 @@ fn transient_analysis(
 
     let len2 = len / 2;
     debug_assert!(len <= MAX_TRANSIENT_LEN);
+    let tmp = &mut tmp[..channels * len2];
+    let mut energy = [(0.0f32, 0.0f32); 2];
+    if channels == 2 {
+        energy = transient_thresholds::<2>(input, len, forward_decay, tmp);
+    } else {
+        [energy[0]] = transient_thresholds::<1>(input, len, forward_decay, tmp);
+    }
 
-    for c in 0..channels {
-        let mut mem0 = 0.0f32;
-        let mut mem1 = 0.0f32;
-
-        for i in 0..len {
-            let x = input[c * len + i];
-            let y = mem0 + x;
-            let mem00 = mem0;
-            mem0 = mem0 - x + 0.5 * mem1;
-            mem1 = x - mem00;
-            tmp[i] = y;
-        }
-
-        tmp[..12].fill(0.0);
-
-        let mut mean = 0.0f32;
-        mem0 = 0.0f32;
-        for i in 0..len2 {
-            // C float build: PSHR32 is an identity, so x2 is the plain sum of
-            // squares and mean += x2.
-            let x2 = tmp[2 * i] * tmp[2 * i] + tmp[2 * i + 1] * tmp[2 * i + 1];
-            mean += x2;
-            mem0 = x2 + (1.0 - forward_decay) * mem0;
-            tmp2[i] = forward_decay * mem0;
-        }
-
-        mem0 = 0.0f32;
-        let mut max_e = 0.0f32;
-        for i in (0..len2).rev() {
-            mem0 = tmp2[i] + 0.875 * mem0;
-            tmp2[i] = 0.125 * mem0;
-            if tmp2[i] > max_e {
-                max_e = tmp2[i];
-            }
-        }
-
+    for (c, (threshold, &(mean, max_e))) in tmp.chunks_exact(len2).zip(&energy).enumerate() {
         // C promotes to double here (`.5` is a double literal) and takes a
         // double sqrt: `celt_sqrt(mean * maxE*.5*len2)`.
-        mean = ((mean * max_e) as f64 * 0.5 * len2 as f64).sqrt() as f32;
+        let mean = ((mean * max_e) as f64 * 0.5 * len2 as f64).sqrt() as f32;
         // C (float build): norm = len2 / (EPSILON + mean)  [EPSILON = 1e-15f]
         let norm = (len2 as f32) / (1e-15 + mean);
 
@@ -405,7 +428,7 @@ fn transient_analysis(
         for i in (12..(len2 - 5)).step_by(4) {
             // The cast truncates toward zero; it equals floor() after the
             // clamp to 0..=127.
-            let id = (64.0 * norm * (tmp2[i] + 1e-15)) as i32;
+            let id = (64.0 * norm * (threshold[i] + 1e-15)) as i32;
             let id = id.clamp(0, 127) as usize;
             unmask += INV_TABLE[id] as i32;
         }
@@ -1312,7 +1335,6 @@ pub struct CeltEncoder {
     w_prefilter_after: FixedVec<f32, CELT_MAX_CHANNELS>,
 
     w_transient_tmp: FixedVec<f32, MAX_TRANSIENT_LEN>,
-    w_transient_tmp2: FixedVec<f32, { MAX_TRANSIENT_LEN / 2 }>,
 
     analysis: AnalysisInfo,
     /// libopus `stereo_saving`: the bits the stereo correlation saves, which
@@ -1939,7 +1961,6 @@ impl CeltEncoder {
             w_prefilter_before: FixedVec::from_value(0.0, channels),
             w_prefilter_after: FixedVec::from_value(0.0, channels),
             w_transient_tmp: FixedVec::from_value(0.0, MAX_TRANSIENT_LEN),
-            w_transient_tmp2: FixedVec::from_value(0.0, MAX_TRANSIENT_LEN / 2),
             consec_transient: 0,
 
             analysis: AnalysisInfo::default(),
@@ -2305,7 +2326,6 @@ impl CeltEncoder {
                 tone_freq,
                 toneishness,
                 &mut self.w_transient_tmp,
-                &mut self.w_transient_tmp2,
             )
         } else {
             false
@@ -4405,10 +4425,7 @@ mod tests {
             m = x * mode.preemph[0];
         }
         let (mut tf_estimate, mut tf_chan, mut weak) = (0.0, 0, false);
-        let (mut tmp, mut tmp2) = (
-            vec![0.0; MAX_TRANSIENT_LEN],
-            vec![0.0; MAX_TRANSIENT_LEN / 2],
-        );
+        let mut tmp = vec![0.0; MAX_TRANSIENT_LEN];
         let (tone_freq, toneishness) = tone_detect(&input, 1, n + overlap, 48000);
         transient_analysis(
             &input,
@@ -4421,7 +4438,6 @@ mod tests {
             tone_freq,
             toneishness,
             &mut tmp,
-            &mut tmp2,
         );
         assert_eq!(tf_estimate, 0.8355611562728882);
     }
@@ -4784,7 +4800,6 @@ mod hybrid_decision_tests {
         let mode = modes::default_mode();
         let len = 960 + mode.overlap;
         let mut tmp = vec![0.0f32; MAX_TRANSIENT_LEN];
-        let mut tmp2 = vec![0.0f32; MAX_TRANSIENT_LEN / 2];
         let mut found = false;
         for step in [1.5f32, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0] {
             let mut seed = 11;
@@ -4792,7 +4807,7 @@ mod hybrid_decision_tests {
             for v in &mut x[len / 2..] {
                 *v *= step;
             }
-            let analyse = |allow: bool, tmp: &mut [f32], tmp2: &mut [f32]| {
+            let analyse = |allow: bool, tmp: &mut [f32]| {
                 let (mut tf_estimate, mut tf_chan, mut weak) = (0.0, 0, false);
                 let transient = transient_analysis(
                     &x,
@@ -4805,13 +4820,12 @@ mod hybrid_decision_tests {
                     0.0,
                     0.0,
                     tmp,
-                    tmp2,
                 );
                 (transient, weak)
             };
-            let (transient, weak) = analyse(false, &mut tmp, &mut tmp2);
+            let (transient, weak) = analyse(false, &mut tmp);
             assert!(!weak);
-            let (allowed_transient, allowed_weak) = analyse(true, &mut tmp, &mut tmp2);
+            let (allowed_transient, allowed_weak) = analyse(true, &mut tmp);
             assert!(!(allowed_transient && allowed_weak));
             found |= transient && allowed_weak;
         }
