@@ -159,14 +159,10 @@ fn fast_atan2f(y: f32, x: f32) -> f32 {
 /// libopus `float2int`: round to the nearest integer, ties to even.
 #[inline]
 fn float2int(x: f32) -> i32 {
-    let f = x.floor();
-    let d = x - f;
-    let r = if d > 0.5 || (d == 0.5 && (f as i64) % 2 != 0) {
-        f + 1.0
-    } else {
-        f
-    };
-    r as i32
+    // Below 2^51 in magnitude, x + 1.5 * 2^52 lands where the f64 spacing
+    // is 1, so the sum rounds x to the nearest integer, ties to even.
+    const MAGIC: f64 = 6_755_399_441_055_744.0;
+    ((f64::from(x) + MAGIC) - MAGIC) as i32
 }
 
 /// libopus `MAX32` / `MIN32` (C ternaries).
@@ -1031,6 +1027,9 @@ mod tests {
             (-1.5, -2),
             (0.49, 0),
             (-0.51, -1),
+            (4_194_303.5, 4_194_304),
+            (4_194_305.5, 4_194_306),
+            (-4_194_304.5, -4_194_304),
         ] {
             assert_eq!(float2int(x), r, "{x}");
         }

@@ -403,7 +403,9 @@ fn transient_analysis(
         // unmask are opus_int32; the 64/6 scaling is an integer division).
         let mut unmask: i32 = 0;
         for i in (12..(len2 - 5)).step_by(4) {
-            let id = (64.0 * norm * (tmp2[i] + 1e-15)).floor() as i32;
+            // The cast truncates toward zero; it equals floor() after the
+            // clamp to 0..=127.
+            let id = (64.0 * norm * (tmp2[i] + 1e-15)) as i32;
             let id = id.clamp(0, 127) as usize;
             unmask += INV_TABLE[id] as i32;
         }
