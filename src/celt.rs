@@ -1831,7 +1831,7 @@ impl CeltEncoder {
             intensity: 0,
             last_coded_bands: 0,
             prefilter_mem: FixedVec::from_value(0.0, channels * COMBFILTER_MAXPERIOD),
-            prefilter_period: COMBFILTER_MINPERIOD,
+            prefilter_period: 0,
             prefilter_gain: 0.0,
             prefilter_tapset: 0,
             old_band_e2: FixedVec::from_value(0.0, nb_x_ch),
@@ -1911,7 +1911,7 @@ impl CeltEncoder {
         self.intensity = 0;
         self.last_coded_bands = 0;
         self.prefilter_mem.fill(0.0);
-        self.prefilter_period = COMBFILTER_MINPERIOD;
+        self.prefilter_period = 0;
         self.prefilter_gain = 0.0;
         self.prefilter_tapset = 0;
         self.old_band_e2.fill(-28.0);
@@ -2293,6 +2293,9 @@ impl CeltEncoder {
         dumpi!("pitch_index", &[pitch_index as i32]);
         dumpf!("gain1", &[gain1]);
         dumpf!("inpf", in_buf);
+        // run_prefilter raises the previous period to the shortest one
+        // (celt_encoder.c:1545), which the pitch-change test then reads.
+        self.prefilter_period = self.prefilter_period.max(COMBFILTER_MINPERIOD);
         // A change of pitch (celt_encoder.c:2042-2044), which the VBR target
         // pays for in tonal frames.
         let pitch_change = (gain1 > 0.4 || self.prefilter_gain > 0.4)
