@@ -90,8 +90,6 @@ const OPUS_MAX_SUBFRAME: usize = 2880;
 const OPUS_SUBFRAME_SCRATCH: usize = OPUS_MAX_SUBFRAME * OPUS_MAX_CHANNELS;
 /// High-pass filter state memory (`channels * 2`).
 const OPUS_HP_MEM: usize = OPUS_MAX_CHANNELS * 2;
-/// Decoder `w_pcm_i16` cap (`960 * max_channels`).
-const OPUS_PCM_I16: usize = 960 * OPUS_MAX_CHANNELS;
 /// Decoder `prev_pcm_tail` cap (`240 * max_channels`).
 const OPUS_PCM_TAIL: usize = 240 * OPUS_MAX_CHANNELS;
 /// Max number of frames encoded in one Opus packet (RFC 6716 caps at 48 for
@@ -3346,12 +3344,8 @@ pub struct OpusDecoder {
 
     stream_channels: usize,
 
-    silk_resampler: silk::resampler::SilkResampler,
-
-    /// Second resampler instance for stereo channel 1.
-    silk_resampler_2: silk::resampler::SilkResampler,
-
-    prev_internal_rate: i32,
+    /// What the Opus layer tells SILK (libopus `DecControl`).
+    dec_control: silk::dec_api::SilkDecControl,
 
     /// Range decoder state after the last decoded frame (libopus
     /// `OPUS_GET_FINAL_RANGE`), 0 after a concealed one.
@@ -3360,17 +3354,9 @@ pub struct OpusDecoder {
     pub hybrid_skip_celt: bool,
 
     #[cfg(not(feature = "heap"))]
-    w_pcm_i16: FixedVec<i16, OPUS_PCM_I16>,
-    #[cfg(feature = "heap")]
-    w_pcm_i16: Box<FixedVec<i16, OPUS_PCM_I16>>,
-    #[cfg(not(feature = "heap"))]
     w_silk_out: FixedVec<f32, OPUS_SUBFRAME_SCRATCH>,
     #[cfg(feature = "heap")]
     w_silk_out: Box<FixedVec<f32, OPUS_SUBFRAME_SCRATCH>>,
-    #[cfg(not(feature = "heap"))]
-    w_pcm_resampled: FixedVec<i16, OPUS_SUBFRAME_SCRATCH>,
-    #[cfg(feature = "heap")]
-    w_pcm_resampled: Box<FixedVec<i16, OPUS_SUBFRAME_SCRATCH>>,
     #[cfg(not(feature = "heap"))]
     w_celt_planar: FixedVec<f32, OPUS_SUBFRAME_SCRATCH>,
     #[cfg(feature = "heap")]
@@ -3443,14 +3429,16 @@ impl OpusDecoder {
         frame_size: 0,
         bandwidth: Bandwidth::Auto,
         stream_channels: 0,
-        silk_resampler: silk::resampler::SilkResampler::DEFAULT,
-        silk_resampler_2: silk::resampler::SilkResampler::DEFAULT,
-        prev_internal_rate: 0,
+        dec_control: silk::dec_api::SilkDecControl {
+            n_channels_api: 0,
+            n_channels_internal: 0,
+            api_sample_rate: 0,
+            internal_sample_rate: 0,
+            payload_size_ms: 0,
+        },
         range_final: 0,
         hybrid_skip_celt: false,
-        w_pcm_i16: FixedVec::new(),
         w_silk_out: FixedVec::new(),
-        w_pcm_resampled: FixedVec::new(),
         w_celt_planar: FixedVec::new(),
         w_celt_out: FixedVec::new(),
         prev_pcm_tail: FixedVec::new(),
@@ -3469,14 +3457,10 @@ impl OpusDecoder {
             frame_size: 0,
             bandwidth: Bandwidth::Auto,
             stream_channels: 0,
-            silk_resampler: silk::resampler::SilkResampler::DEFAULT,
-            silk_resampler_2: silk::resampler::SilkResampler::DEFAULT,
-            prev_internal_rate: 0,
+            dec_control: silk::dec_api::SilkDecControl::default(),
             range_final: 0,
             hybrid_skip_celt: false,
-            w_pcm_i16: Box::new(FixedVec::new()),
             w_silk_out: Box::new(FixedVec::new()),
-            w_pcm_resampled: Box::new(FixedVec::new()),
             w_celt_planar: Box::new(FixedVec::new()),
             w_celt_out: Box::new(FixedVec::new()),
             prev_pcm_tail: Box::new(FixedVec::new()),
@@ -3491,18 +3475,14 @@ impl OpusDecoder {
         self.sampling_rate = sampling_rate;
         self.channels = channels;
         self.stream_channels = channels;
-        self.w_pcm_i16.fill_to(960 * channels, 0);
         self.w_silk_out.fill_to(OPUS_MAX_SUBFRAME * channels, 0.0);
-        self.w_pcm_resampled
-            .fill_to(OPUS_MAX_SUBFRAME * channels, 0);
         self.w_celt_planar
             .fill_to(OPUS_MAX_SUBFRAME * channels, 0.0);
         self.w_celt_out.fill_to(OPUS_MAX_SUBFRAME * channels, 0.0);
         self.prev_pcm_tail.fill_to(240 * channels, 0.0);
         self.frame_size = sampling_rate as usize / 400;
-        self.silk_dec
-            .init(sampling_rate.min(16000), channels as i32);
-        self.silk_dec.channel_state[0].fs_api_hz = sampling_rate;
+        self.dec_control.api_sample_rate = sampling_rate;
+        self.dec_control.n_channels_api = channels as i32;
     }
 
     /// The range decoder's final state after the last frame decoded, like
@@ -3608,7 +3588,6 @@ impl OpusDecoder {
             // SILK starts over, as libopus's silk_ResetDecoder on a switch from CELT (its resampler too: the reset
             // clears the SILK rate, so the next set_fs initialises it again).
             self.silk_dec.reset();
-            self.prev_internal_rate = 0;
         }
         // A SILK-only frame decides its out-of-CELT bridge only after its SILK
         // layer runs: when the frame carries a redundancy tail there is nothing
@@ -3643,18 +3622,6 @@ impl OpusDecoder {
                     Bandwidth::Wideband => 16000,
                     _ => 16000,
                 };
-                if internal_sample_rate != self.prev_internal_rate
-                    || !self.silk_resampler.is_initialized()
-                {
-                    self.silk_resampler
-                        .init(internal_sample_rate, self.sampling_rate);
-                    self.silk_resampler_2
-                        .init(internal_sample_rate, self.sampling_rate);
-                }
-                // Always track the SILK internal rate so the mode-transition
-                // PLC bridge can be generated (even when no resampling is
-                // needed, e.g. 16kHz decoder + SILK WB).
-                self.prev_internal_rate = internal_sample_rate;
 
                 // 5 ms redundant frames and their crossfade window, shared by
                 // every frame of the packet. The redundant frame ends where
@@ -3863,15 +3830,6 @@ impl OpusDecoder {
                 let internal_sample_rate = 16000;
                 let celt_end_band = self.celt_end_band_from_toc(toc);
 
-                if internal_sample_rate != self.prev_internal_rate
-                    || !self.silk_resampler.is_initialized()
-                {
-                    self.silk_resampler
-                        .init(internal_sample_rate, self.sampling_rate);
-                    self.silk_resampler_2
-                        .init(internal_sample_rate, self.sampling_rate);
-                }
-                self.prev_internal_rate = internal_sample_rate;
 
                 for (fi, payload) in frame_payloads.iter().enumerate() {
                     let mut rc = RangeCoder::new_decoder(payload);
@@ -4162,12 +4120,6 @@ impl OpusDecoder {
             (OpusMode::SilkOnly, Bandwidth::Mediumband) => 12000,
             _ => 16000,
         };
-        if internal_rate != self.prev_internal_rate || !self.silk_resampler.is_initialized() {
-            self.silk_resampler.init(internal_rate, self.sampling_rate);
-            self.silk_resampler_2
-                .init(internal_rate, self.sampling_rate);
-        }
-        self.prev_internal_rate = internal_rate;
 
         // The first frame's LBRR, frame by frame; a SILK frame without LBRR
         // is concealed (silk_decode_frame).
@@ -4312,11 +4264,8 @@ impl OpusDecoder {
                         (10, f10)
                     };
                     let hybrid = prev == OpusMode::Hybrid;
-                    let rate = if hybrid {
-                        16000
-                    } else {
-                        self.prev_internal_rate
-                    };
+                    // Concealment keeps the last packet's SILK rate.
+                    let rate = self.dec_control.internal_sample_rate;
                     let mut rc = RangeCoder::new_decoder(&[]);
                     self.decode_silk_frames(
                         &mut rc,
@@ -4406,122 +4355,31 @@ impl OpusDecoder {
         internal_rate: i32,
         api_len: usize,
     ) -> Result<(), &'static str> {
-        let internal_frame_size = (duration_ms * internal_rate / 1000) as usize;
-        let pcm_i16_len = internal_frame_size * self.channels;
-        debug_assert!(pcm_i16_len <= self.w_pcm_i16.len());
-        let out_len = api_len * self.channels;
-        self.w_silk_out[..out_len].fill(0.0);
-
-        let mut frame_pos = 0usize; // internal-rate samples decoded so far
-        let mut new_packet = true;
-        while frame_pos < internal_frame_size {
-            // libopus takes the channel count from the packet only when there
-            // is data; concealment keeps the last frame's.
-            let prev_channels = self.silk_dec.n_channels_internal as usize;
-            let stream_channels = if lost_flag == silk::decode_frame::FLAG_PACKET_LOST {
-                prev_channels
-            } else {
-                self.stream_channels
+        let ch = self.channels;
+        self.w_silk_out[..api_len * ch].fill(0.0);
+        // Concealment keeps the last packet's channels and rate
+        // (opus_decode_frame 418-437).
+        if lost_flag != silk::decode_frame::FLAG_PACKET_LOST {
+            self.dec_control.n_channels_internal = self.stream_channels as i32;
+            self.dec_control.internal_sample_rate = internal_rate;
+        }
+        self.dec_control.payload_size_ms = duration_ms;
+        let ctrl = self.dec_control;
+        let mut pos = 0;
+        while pos < api_len {
+            let (ret, n) = {
+                let (silk_dec, out) = (state_mut(&mut self.silk_dec), state_mut(&mut self.w_silk_out));
+                silk_dec.silk_decode(&ctrl, lost_flag, pos == 0, rc, &mut out[pos * ch..])
             };
-            // libopus keeps a resampler per SILK channel (dec_API.c). When a
-            // stereo decoder's stream turns stereo, the right one starts from
-            // the left's. The first mono frame after stereo, at an unchanged
-            // rate, still resamples the right channel with its own; libopus
-            // resets SILK after CELT, so that frame never follows CELT there.
-            if self.channels == 2 && stream_channels == 2 && prev_channels == 1 {
-                self.silk_resampler_2 = self.silk_resampler.clone();
-            }
-            let stereo_to_mono = stream_channels == 1
-                && prev_channels == 2
-                && internal_rate == self.silk_dec.sample_rate()
-                && matches!(
-                    self.prev_mode,
-                    Some(OpusMode::SilkOnly) | Some(OpusMode::Hybrid)
-                );
-            let ret = {
-                let (silk_dec, pcm_i16) = (
-                    state_mut(&mut self.silk_dec),
-                    state_mut(&mut self.w_pcm_i16),
-                );
-                silk_dec.decode_with_channels(
-                    rc,
-                    &mut pcm_i16[..pcm_i16_len],
-                    lost_flag,
-                    new_packet,
-                    duration_ms,
-                    internal_rate,
-                    stream_channels as i32,
-                )
-            };
-            new_packet = false;
-
-            if ret < 0 {
+            if ret != 0 || n == 0 {
+                // A concealment failure leaves silence (opus_decode_frame
+                // 472-481).
+                if lost_flag != silk::decode_frame::FLAG_DECODE_NORMAL {
+                    break;
+                }
                 return Err("SILK decoding failed");
             }
-            let decoded_samples = ret as usize;
-            if decoded_samples == 0 {
-                break;
-            }
-
-            // SILK decoder outputs planar for THIS frame:
-            // ch0 at [0..fl], ch1 at [fl..2*fl].
-            //
-            // libopus always runs `silk_resampler`, even when the API and SILK
-            // internal rates are equal: the Copy path still carries the
-            // resampler's `inputDelay` (12 samples at 16k, 4 at 8k). Bypassing
-            // it made equal-rate SILK output early versus libopus (and versus
-            // opus-rs's own resampled paths).
-            let resampled_len =
-                decoded_samples * self.sampling_rate as usize / internal_rate as usize;
-            let api_pos = frame_pos * self.sampling_rate as usize / internal_rate as usize;
-            let copy_len = resampled_len.min(api_len - api_pos);
-            debug_assert!(resampled_len * self.channels <= self.w_pcm_resampled.len());
-            // Resample channel 0.
-            {
-                let (res, inp, out) = (
-                    &mut self.silk_resampler,
-                    state_ref(&self.w_pcm_i16),
-                    state_mut(&mut self.w_pcm_resampled),
-                );
-                res.process(
-                    &mut out[..resampled_len],
-                    &inp[..decoded_samples],
-                    decoded_samples as i32,
-                );
-            }
-            // Channel 1 (stereo output only). A mono stream is copied from
-            // channel 0, except on the frame that collapses stereo to mono.
-            if self.channels == 2 {
-                let (res, inp, out) = (
-                    &mut self.silk_resampler_2,
-                    state_ref(&self.w_pcm_i16),
-                    state_mut(&mut self.w_pcm_resampled),
-                );
-                if stream_channels == 2 || stereo_to_mono {
-                    let src = if stream_channels == 2 {
-                        &inp[decoded_samples..2 * decoded_samples]
-                    } else {
-                        &inp[..decoded_samples]
-                    };
-                    res.process(
-                        &mut out[resampled_len..2 * resampled_len],
-                        src,
-                        decoded_samples as i32,
-                    );
-                } else {
-                    out.copy_within(..resampled_len, resampled_len);
-                }
-            }
-            for i in 0..copy_len {
-                for ch in 0..self.channels {
-                    let v = self.w_pcm_resampled[ch * resampled_len + i] as f32 / 32768.0;
-                    let idx = (api_pos + i) * self.channels + ch;
-                    if idx < out_len {
-                        self.w_silk_out[idx] = v;
-                    }
-                }
-            }
-            frame_pos += decoded_samples;
+            pos += n;
         }
         Ok(())
     }

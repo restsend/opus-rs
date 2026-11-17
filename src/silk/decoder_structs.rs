@@ -1,4 +1,5 @@
 use crate::silk::define::*;
+use crate::silk::resampler::SilkResampler;
 use crate::silk::structs::{NLSFCodebook, SideInfoIndices};
 
 #[derive(Clone)]
@@ -97,6 +98,9 @@ pub struct SilkDecoderState {
     pub vad_flags: [i32; MAX_FRAMES_PER_PACKET],
     pub lbrr_flag: i32,
     pub lbrr_flags: [i32; MAX_FRAMES_PER_PACKET],
+    /// Resampler from `fs_khz` to `fs_api_hz` (libopus keeps it here, and
+    /// `silk_decoder_set_fs` initialises it).
+    pub resampler_state: SilkResampler,
     pub ps_nlsf_cb: Option<&'static NLSFCodebook>,
     pub indices: SideInfoIndices,
     pub s_cng: SilkCNGState,
@@ -131,6 +135,7 @@ impl SilkDecoderState {
         vad_flags: [0; MAX_FRAMES_PER_PACKET],
         lbrr_flag: 0,
         lbrr_flags: [0; MAX_FRAMES_PER_PACKET],
+        resampler_state: SilkResampler::DEFAULT,
         // Default to the WB codebook so that decoding before an explicit
         // `silk_decoder_set_fs` cannot panic on `unwrap` (issue #27
         // deep-scan). `set_fs` always overrides this on the normal path.

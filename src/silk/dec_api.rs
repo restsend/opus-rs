@@ -8,9 +8,24 @@ use crate::silk::decode_indices::{
 use crate::silk::decode_pulses::silk_decode_pulses;
 use crate::silk::decoder_structs::SilkDecoderState;
 use crate::silk::define::*;
-use crate::silk::init_decoder::{silk_decoder_set_fs, silk_init_decoder};
+use crate::silk::init_decoder::{silk_decoder_set_fs, silk_init_decoder, silk_reset_decoder};
 use crate::silk::stereo_ms_to_lr::{StereoDecState, silk_stereo_ms_to_lr};
 use crate::silk::tables::{SILK_LBRR_FLAGS_2_ICDF, SILK_LBRR_FLAGS_3_ICDF};
+
+/// libopus `silk_DecControlStruct`: what the Opus layer tells SILK.
+#[derive(Clone, Copy, Default)]
+pub struct SilkDecControl {
+    /// Output channels (1 or 2).
+    pub n_channels_api: i32,
+    /// Channels coded in the stream (1 or 2).
+    pub n_channels_internal: i32,
+    /// Output sampling rate in Hz.
+    pub api_sample_rate: i32,
+    /// SILK sampling rate in Hz (8000, 12000 or 16000).
+    pub internal_sample_rate: i32,
+    /// Duration of the packet's SILK payload: 10, 20, 40 or 60 ms.
+    pub payload_size_ms: i32,
+}
 
 pub struct SilkDecoder {
     pub channel_state: [SilkDecoderState; 2],
@@ -24,6 +39,10 @@ pub struct SilkDecoder {
     /// Persistent stereo M/S decoder state.
     pub s_stereo: StereoDecState,
 
+    /// Output rate of [`Self::decode`] and [`Self::decode_with_channels`],
+    /// set by [`Self::init`].
+    api_sample_rate: i32,
+
     /// Per-channel temp buffers for M/S → L/R conversion (frame_length + 2).
     w_silk_buf: [[i16; MAX_FRAME_LENGTH + 2]; 2],
 }
@@ -35,9 +54,12 @@ impl Default for SilkDecoder {
 }
 
 impl SilkDecoder {
+    /// A decoder for direct use: mono until [`Self::init`] says otherwise.
     pub fn new() -> Self {
         let mut decoder = Self::EMPTY;
         decoder.init_states();
+        decoder.n_channels_api = 1;
+        decoder.n_channels_internal = 1;
         decoder
     }
 
@@ -45,22 +67,30 @@ impl SilkDecoder {
     /// it can be written straight into its final memory.
     pub(crate) const EMPTY: Self = Self {
         channel_state: [SilkDecoderState::DEFAULT, SilkDecoderState::DEFAULT],
-        n_channels_api: 1,
-        n_channels_internal: 1,
+        n_channels_api: 0,
+        n_channels_internal: 0,
         prev_decode_only_middle: 0,
         s_stereo: StereoDecState::DEFAULT,
+        api_sample_rate: 0,
         w_silk_buf: [[0; MAX_FRAME_LENGTH + 2]; 2],
     };
 
-    /// Runs libopus `silk_init_decoder` on both channel states.
+    /// libopus `silk_InitDecoder`.
     pub(crate) fn init_states(&mut self) {
         for state in &mut self.channel_state {
             silk_init_decoder(state);
         }
+        self.s_stereo = StereoDecState::DEFAULT;
+        self.prev_decode_only_middle = 0;
+        self.n_channels_api = 0;
+        self.n_channels_internal = 0;
     }
 
+    /// Sets the decoder up for direct use with [`Self::decode`]: output at
+    /// `sample_rate_hz` with `channels` channels, internal rate likewise.
     pub fn init(&mut self, sample_rate_hz: i32, channels: i32) -> i32 {
         let fs_khz = sample_rate_hz / 1000;
+        self.api_sample_rate = sample_rate_hz;
         let ret = silk_decoder_set_fs(&mut self.channel_state[0], fs_khz, sample_rate_hz);
         if ret < 0 {
             return ret;
@@ -74,9 +104,6 @@ impl SilkDecoder {
 
         self.channel_state[0].n_frames_per_packet = 1;
         self.n_channels_api = channels;
-        // libopus starts the internal count at 0; starting at the API count
-        // differs only in a first call's channel switch, which then resets
-        // state that is still fresh.
         self.n_channels_internal = channels;
         ret
     }
@@ -103,9 +130,8 @@ impl SilkDecoder {
         )
     }
 
-    /// Decode one frame coded with `n_channels_internal` channels (the
-    /// packet's), for `n_channels_api` output channels (libopus
-    /// `silk_Decode`). Output is planar at the internal rate, with
+    /// Decode one frame coded with `n_channels_internal` channels at the
+    /// internal rate, without resampling. Output is planar, with
     /// `min(n_channels_api, n_channels_internal)` channels: a mono decoder
     /// gets the mid of a stereo stream, and a mono stream in a stereo decoder
     /// leaves the second channel to the caller.
@@ -120,109 +146,136 @@ impl SilkDecoder {
         internal_sample_rate: i32,
         n_channels_internal: i32,
     ) -> i32 {
-        if new_packet {
-            self.channel_state[0].n_frames_decoded = 0;
-            self.channel_state[1].n_frames_decoded = 0;
+        let ctrl = SilkDecControl {
+            n_channels_api: self.n_channels_api,
+            n_channels_internal,
+            api_sample_rate: self.api_sample_rate,
+            internal_sample_rate,
+            payload_size_ms,
+        };
+        let (ret, fl, _) = self.decode_core(&ctrl, lost_flag, new_packet, range_dec);
+        if ret < 0 {
+            return -1;
         }
-
-        // A mono -> stereo switch starts the side channel from scratch.
-        if n_channels_internal > self.n_channels_internal {
-            silk_init_decoder(&mut self.channel_state[1]);
-        }
-        let prev_channels_internal = self.n_channels_internal;
-        self.n_channels_internal = n_channels_internal;
-
-        if self.channel_state[0].n_frames_decoded == 0 {
-            let n_channels = self.n_channels_internal as usize;
-            for n in 0..n_channels {
-                match payload_size_ms {
-                    0 | 10 => {
-                        self.channel_state[n].n_frames_per_packet = 1;
-                        self.channel_state[n].nb_subfr = 2;
-                    }
-                    20 => {
-                        self.channel_state[n].n_frames_per_packet = 1;
-                        self.channel_state[n].nb_subfr = MAX_NB_SUBFR as i32;
-                    }
-                    40 => {
-                        self.channel_state[n].n_frames_per_packet = 2;
-                        self.channel_state[n].nb_subfr = MAX_NB_SUBFR as i32;
-                    }
-                    60 => {
-                        self.channel_state[n].n_frames_per_packet = 3;
-                        self.channel_state[n].nb_subfr = MAX_NB_SUBFR as i32;
-                    }
-                    _ => return -1,
-                }
-            }
-
-            let fs_khz_dec = (internal_sample_rate >> 10) + 1;
-            if fs_khz_dec != 8 && fs_khz_dec != 12 && fs_khz_dec != 16 {
+        let fl = fl as usize;
+        if ctrl.n_channels_api == 2 && n_channels_internal == 2 {
+            if output.len() < 2 * fl {
                 return -1;
             }
-            let api_sample_rate = self.channel_state[0].fs_api_hz;
-            for n in 0..n_channels {
-                let ret =
-                    silk_decoder_set_fs(&mut self.channel_state[n], fs_khz_dec, api_sample_rate);
-                if ret < 0 {
-                    return ret;
-                }
-                if payload_size_ms == 10 {
-                    self.channel_state[n].nb_subfr = 2;
-                    self.channel_state[n].frame_length = self.channel_state[n].subfr_length * 2;
-                }
+            output[..fl].copy_from_slice(&self.w_silk_buf[0][1..1 + fl]);
+            output[fl..2 * fl].copy_from_slice(&self.w_silk_buf[1][1..1 + fl]);
+        } else {
+            if output.len() < fl {
+                return -1;
+            }
+            output[..fl].copy_from_slice(&self.w_silk_buf[0][1..1 + fl]);
+        }
+        fl as i32
+    }
+
+    /// libopus `silk_Decode` up to the stereo conversion: the frame lands at
+    /// the internal rate in `w_silk_buf[n][1..=n_samples]`. Returns the error
+    /// sum, the sample count and `stereo_to_mono`.
+    fn decode_core(
+        &mut self,
+        ctrl: &SilkDecControl,
+        lost_flag: i32,
+        new_packet: bool,
+        range_dec: &mut RangeCoder,
+    ) -> (i32, i32, bool) {
+        let mut ret = 0;
+        let mut decode_only_middle = 0i32;
+        let mut ms_pred_q13 = [0i32; 2];
+        let n_internal = ctrl.n_channels_internal as usize;
+
+        // Test if first frame in payload.
+        if new_packet {
+            for n in 0..n_internal {
+                self.channel_state[n].n_frames_decoded = 0;
             }
         }
 
-        // libopus clears the stereo predictor state only when a stereo
-        // decoder's stream turns from mono to stereo (dec_API.c).
-        if self.n_channels_api == 2 && n_channels_internal == 2 && prev_channels_internal == 1 {
+        // Mono -> stereo transition in the bitstream: init the second channel.
+        if ctrl.n_channels_internal > self.n_channels_internal {
+            ret += silk_init_decoder(&mut self.channel_state[1]);
+        }
+
+        let stereo_to_mono = ctrl.n_channels_internal == 1
+            && self.n_channels_internal == 2
+            && ctrl.internal_sample_rate == 1000 * self.channel_state[0].fs_khz;
+
+        if self.channel_state[0].n_frames_decoded == 0 {
+            for n in 0..n_internal {
+                let st = &mut self.channel_state[n];
+                (st.n_frames_per_packet, st.nb_subfr) = match ctrl.payload_size_ms {
+                    0 | 10 => (1, 2),
+                    20 => (1, 4),
+                    40 => (2, 4),
+                    60 => (3, 4),
+                    _ => return (-203, 0, stereo_to_mono),
+                };
+                let fs_khz_dec = (ctrl.internal_sample_rate >> 10) + 1;
+                if fs_khz_dec != 8 && fs_khz_dec != 12 && fs_khz_dec != 16 {
+                    return (-200, 0, stereo_to_mono);
+                }
+                ret += silk_decoder_set_fs(st, fs_khz_dec, ctrl.api_sample_rate);
+            }
+        }
+
+        if ctrl.n_channels_api == 2
+            && ctrl.n_channels_internal == 2
+            && (self.n_channels_api == 1 || self.n_channels_internal == 1)
+        {
             self.s_stereo.pred_prev_q13 = [0; 2];
             self.s_stereo.s_side = [0; 2];
+            self.channel_state[1].resampler_state = self.channel_state[0].resampler_state.clone();
+        }
+        self.n_channels_api = ctrl.n_channels_api;
+        self.n_channels_internal = ctrl.n_channels_internal;
+
+        if ctrl.api_sample_rate > 48000 || ctrl.api_sample_rate < 8000 {
+            return (-200, 0, stereo_to_mono);
         }
 
         if lost_flag != FLAG_PACKET_LOST && self.channel_state[0].n_frames_decoded == 0 {
-            let n_frames_per_packet = self.channel_state[0].n_frames_per_packet.max(1);
-            let n_channels = self.n_channels_internal as usize;
-
-            for n in 0..n_channels {
-                for i in 0..n_frames_per_packet as usize {
-                    let vad = range_dec.decode_bit_logp(1);
-                    self.channel_state[n].vad_flags[i] = if vad { 1 } else { 0 };
+            // First decoder call for this payload: VAD flags and LBRR flag.
+            for n in 0..n_internal {
+                for i in 0..self.channel_state[n].n_frames_per_packet as usize {
+                    self.channel_state[n].vad_flags[i] = range_dec.decode_bit_logp(1) as i32;
                 }
-                let lbrr = range_dec.decode_bit_logp(1);
-                self.channel_state[n].lbrr_flag = if lbrr { 1 } else { 0 };
+                self.channel_state[n].lbrr_flag = range_dec.decode_bit_logp(1) as i32;
             }
-
-            for n in 0..n_channels {
-                self.channel_state[n].lbrr_flags.fill(0);
-                if self.channel_state[n].lbrr_flag != 0 {
-                    if n_frames_per_packet == 1 {
-                        self.channel_state[n].lbrr_flags[0] = 1;
+            // LBRR flags.
+            for n in 0..n_internal {
+                let st = &mut self.channel_state[n];
+                st.lbrr_flags.fill(0);
+                if st.lbrr_flag != 0 {
+                    if st.n_frames_per_packet == 1 {
+                        st.lbrr_flags[0] = 1;
                     } else {
-                        let lbrr_icdf = match n_frames_per_packet {
-                            2 => &SILK_LBRR_FLAGS_2_ICDF[..],
-                            3 => &SILK_LBRR_FLAGS_3_ICDF[..],
-                            _ => &SILK_LBRR_FLAGS_2_ICDF[..],
+                        let icdf = if st.n_frames_per_packet == 2 {
+                            &SILK_LBRR_FLAGS_2_ICDF[..]
+                        } else {
+                            &SILK_LBRR_FLAGS_3_ICDF[..]
                         };
-                        let lbrr_symbol = range_dec.decode_icdf(lbrr_icdf, 8) + 1;
-                        for i in 0..n_frames_per_packet as usize {
-                            self.channel_state[n].lbrr_flags[i] = (lbrr_symbol >> i) & 1;
+                        let lbrr_symbol = range_dec.decode_icdf(icdf, 8) + 1;
+                        for i in 0..st.n_frames_per_packet as usize {
+                            st.lbrr_flags[i] = (lbrr_symbol >> i) & 1;
                         }
                     }
                 }
             }
 
-            // Normal decoding skips the LBRR data of every frame and channel;
-            // FEC decoding (`FLAG_DECODE_LBRR`) reads it frame by frame below.
             if lost_flag == FLAG_DECODE_NORMAL {
-                for i in 0..n_frames_per_packet as usize {
-                    for n in 0..n_channels {
+                // Regular decoding: skip all LBRR data.
+                for i in 0..self.channel_state[0].n_frames_per_packet as usize {
+                    for n in 0..n_internal {
                         if self.channel_state[n].lbrr_flags[i] != 0 {
-                            if n_channels == 2 && n == 0 {
-                                let _ = silk_stereo_decode_pred(range_dec);
+                            if n_internal == 2 && n == 0 {
+                                ms_pred_q13 = silk_stereo_decode_pred(range_dec);
                                 if self.channel_state[1].lbrr_flags[i] == 0 {
-                                    let _ = silk_stereo_decode_mid_only(range_dec);
+                                    decode_only_middle =
+                                        silk_stereo_decode_mid_only(range_dec) as i32;
                                 }
                             }
                             let cond_coding =
@@ -252,41 +305,30 @@ impl SilkDecoder {
             }
         }
 
-        // Decode M/S predictors for stereo.
-        let mut ms_pred_q13 = [0i32; 2];
-        let mut decode_only_middle = 0i32;
-        let frame_index = self.channel_state[0].n_frames_decoded as usize;
-        // An LBRR frame carries its own predictor, and its own mid-only flag
-        // when the side has no LBRR; a frame without LBRR conceals with the
-        // last predictor (dec_API.c).
-        let lbrr = lost_flag == FLAG_DECODE_LBRR;
-        if self.n_channels_internal == 2 {
+        // Get MS predictor index.
+        if n_internal == 2 {
+            let k = self.channel_state[0].n_frames_decoded as usize;
             if lost_flag == FLAG_DECODE_NORMAL
-                || (lbrr && self.channel_state[0].lbrr_flags[frame_index] == 1)
+                || (lost_flag == FLAG_DECODE_LBRR && self.channel_state[0].lbrr_flags[k] == 1)
             {
                 ms_pred_q13 = silk_stereo_decode_pred(range_dec);
-                let side_coded = if lbrr {
-                    self.channel_state[1].lbrr_flags[frame_index]
+                // For LBRR data, decode the mid-only flag only if the side's
+                // LBRR flag is false.
+                if (lost_flag == FLAG_DECODE_NORMAL && self.channel_state[1].vad_flags[k] == 0)
+                    || (lost_flag == FLAG_DECODE_LBRR && self.channel_state[1].lbrr_flags[k] == 0)
+                {
+                    decode_only_middle = silk_stereo_decode_mid_only(range_dec) as i32;
                 } else {
-                    self.channel_state[1].vad_flags[frame_index]
-                };
-                if side_coded == 0 {
-                    decode_only_middle = if silk_stereo_decode_mid_only(range_dec) {
-                        1
-                    } else {
-                        0
-                    };
+                    decode_only_middle = 0;
                 }
             } else {
                 ms_pred_q13 = self.s_stereo.pred_prev_q13;
             }
         }
 
-        // Reset side-channel prediction memory when transitioning from mid-only to has-side.
-        if self.n_channels_internal == 2
-            && decode_only_middle == 0
-            && self.prev_decode_only_middle == 1
-        {
+        // Reset side channel decoder prediction memory for the first frame
+        // with side coding.
+        if n_internal == 2 && decode_only_middle == 0 && self.prev_decode_only_middle == 1 {
             let ch1 = &mut self.channel_state[1];
             ch1.out_buf.fill(0);
             ch1.s_lpc_q14_buf.fill(0);
@@ -296,76 +338,55 @@ impl SilkDecoder {
             ch1.first_frame_after_reset = 1;
         }
 
-        // A lost frame conceals the side only if the last good frame coded
-        // one; an LBRR frame also decodes a side that has LBRR (dec_API.c).
         let has_side = if lost_flag == FLAG_DECODE_NORMAL {
             decode_only_middle == 0
         } else {
             self.prev_decode_only_middle == 0
-                || (self.n_channels_internal == 2
-                    && lbrr
+                || (n_internal == 2
+                    && lost_flag == FLAG_DECODE_LBRR
                     && self.channel_state[1].lbrr_flags
                         [self.channel_state[1].n_frames_decoded as usize]
                         == 1)
         };
-        let n_channels = self.n_channels_internal as usize;
-        let frame_length = self.channel_state[0].frame_length as usize;
 
-        // Decode each channel into w_silk_buf[n][2..2+frame_length].
-        let mut n_samples_out: i32 = 0;
-        for n in 0..n_channels {
+        // Call the decoder for one frame.
+        let mut n_samples_out_dec = 0i32;
+        for n in 0..n_internal {
             if n == 0 || has_side {
-                let frame_idx = self.channel_state[0].n_frames_decoded - n as i32;
-                // LBRR frames are coded conditionally only on an LBRR frame
-                // before them; libopus indexes the side's flags with the
-                // side's offset frame index too.
-                let cond_coding = if frame_idx <= 0 {
+                let frame_index = self.channel_state[0].n_frames_decoded - n as i32;
+                // Use independent coding if no previous frame is available.
+                let cond_coding = if frame_index <= 0 {
                     CODE_INDEPENDENTLY
-                } else if lbrr {
-                    if self.channel_state[n].lbrr_flags[frame_idx as usize - 1] != 0 {
+                } else if lost_flag == FLAG_DECODE_LBRR {
+                    if self.channel_state[n].lbrr_flags[frame_index as usize - 1] != 0 {
                         CODE_CONDITIONALLY
                     } else {
                         CODE_INDEPENDENTLY
                     }
                 } else if n > 0 && self.prev_decode_only_middle != 0 {
+                    // A side frame skipped in this packet needs no LTP
+                    // scaling: the LTP state is well-defined.
                     CODE_INDEPENDENTLY_NO_LTP_SCALING
                 } else {
                     CODE_CONDITIONALLY
                 };
-
-                // Clear the overlap region before decode.
-                self.w_silk_buf[n][0] = 0;
-                self.w_silk_buf[n][1] = 0;
-
-                let mut ns = 0i32;
-                let ret = silk_decode_frame(
+                ret += silk_decode_frame(
                     &mut self.channel_state[n],
                     range_dec,
                     &mut self.w_silk_buf[n][2..],
-                    &mut ns,
+                    &mut n_samples_out_dec,
                     lost_flag,
                     cond_coding,
                 );
-                if ret < 0 {
-                    return ret;
-                }
-                if n == 0 {
-                    n_samples_out = ns;
-                }
             } else {
-                // Mid-only: zero the side channel.
-                for i in 0..frame_length {
-                    self.w_silk_buf[n][2 + i] = 0;
-                }
+                let len = n_samples_out_dec as usize;
+                self.w_silk_buf[n][2..2 + len].fill(0);
             }
             self.channel_state[n].n_frames_decoded += 1;
         }
 
-        // Convert Mid/Side → Left/Right for stereo output of a stereo
-        // stream. Otherwise buffer the mid alone: a mono decoder plays the
-        // mid of a stereo stream (dec_API.c).
-        let stereo_out = self.n_channels_api == 2 && n_channels == 2;
-        if stereo_out {
+        if ctrl.n_channels_api == 2 && n_internal == 2 {
+            // Convert Mid/Side to Left/Right.
             let (buf_l, buf_r) = self.w_silk_buf.split_at_mut(1);
             silk_stereo_ms_to_lr(
                 &mut self.s_stereo,
@@ -373,54 +394,91 @@ impl SilkDecoder {
                 &mut buf_r[0],
                 &ms_pred_q13,
                 self.channel_state[0].fs_khz,
-                n_samples_out,
+                n_samples_out_dec,
             );
         } else {
-            // Mono buffering: save overlap for next frame.
-            self.w_silk_buf[0][0] = self.s_stereo.s_mid[0];
-            self.w_silk_buf[0][1] = self.s_stereo.s_mid[1];
-            self.s_stereo.s_mid[0] = self.w_silk_buf[0][n_samples_out as usize];
-            self.s_stereo.s_mid[1] = self.w_silk_buf[0][n_samples_out as usize + 1];
+            // Buffering.
+            let n = n_samples_out_dec as usize;
+            self.w_silk_buf[0][..2].copy_from_slice(&self.s_stereo.s_mid);
+            self.s_stereo
+                .s_mid
+                .copy_from_slice(&self.w_silk_buf[0][n..n + 2]);
         }
 
-        // Copy planar output: ch0 at output[0..fl], ch1 at output[fl..2*fl].
-        // libopus (`silk/dec_API.c`) resamples mono and stereo alike from
-        // `samplesOut1_tmp[n][1]`: samples [0]/[1] are `sMid`, written just
-        // above for mono (and by MS_to_LR for stereo), so index 1 is the
-        // one-sample-delayed position. Mono used to read from [2..2+fl], which
-        // made it one internal-rate sample early versus libopus (issue #34).
-        let fl = n_samples_out as usize;
-        if stereo_out {
-            if output.len() < 2 * fl {
-                return -1;
-            }
-            output[..fl].copy_from_slice(&self.w_silk_buf[0][1..1 + fl]);
-            output[fl..2 * fl].copy_from_slice(&self.w_silk_buf[1][1..1 + fl]);
-        } else {
-            if output.len() < fl {
-                return -1;
-            }
-            output[..fl].copy_from_slice(&self.w_silk_buf[0][1..1 + fl]);
-        }
-
-
-        // A lost frame carries no mid-only flag; keep the last good one
-        // (dec_API.c).
+        // Losses carry no mid-only flag (silk_decode_frame keeps the last
+        // good one); concealment resets the gain clamping.
         if lost_flag == FLAG_PACKET_LOST {
-            // Drop the gain clamping, so the level can recover if it was
-            // falling when the loss began (dec_API.c).
-            for ch in self
-                .channel_state
-                .iter_mut()
-                .take(self.n_channels_internal as usize)
-            {
-                ch.last_gain_index = 10;
+            for n in 0..n_internal {
+                self.channel_state[n].last_gain_index = 10;
             }
         } else {
             self.prev_decode_only_middle = decode_only_middle;
         }
 
-        if n_samples_out < 0 { -1 } else { n_samples_out }
+        (ret, n_samples_out_dec, stereo_to_mono)
+    }
+
+    /// libopus `silk_Decode`: decodes one SILK frame (10 or 20 ms) and
+    /// resamples it to `ctrl.api_sample_rate`, interleaved for
+    /// `ctrl.n_channels_api` channels into `samples_out`. Returns the error
+    /// sum and the number of samples per channel written.
+    pub fn silk_decode(
+        &mut self,
+        ctrl: &SilkDecControl,
+        lost_flag: i32,
+        new_packet: bool,
+        range_dec: &mut RangeCoder,
+        samples_out: &mut [f32],
+    ) -> (i32, usize) {
+        let (mut ret, n_dec, stereo_to_mono) =
+            self.decode_core(ctrl, lost_flag, new_packet, range_dec);
+        if n_dec <= 0 {
+            return (if ret < 0 { ret } else { -1 }, 0);
+        }
+        let n_dec = n_dec as usize;
+        let api_channels = ctrl.n_channels_api as usize;
+        // Number of output samples.
+        let n_out = n_dec * ctrl.api_sample_rate as usize
+            / (self.channel_state[0].fs_khz as usize * 1000);
+        let mut resampled = [0i16; 48 * MAX_FRAME_LENGTH_MS];
+        let resample_out = &mut resampled[..n_out];
+
+        let resample = |state: &mut SilkDecoderState, out: &mut [i16], inp: &[i16]| {
+            state.resampler_state.process(out, inp, inp.len() as i32)
+        };
+        for n in 0..api_channels.min(ctrl.n_channels_internal as usize) {
+            ret += resample(
+                &mut self.channel_state[n],
+                resample_out,
+                &self.w_silk_buf[n][1..1 + n_dec],
+            );
+            // Interleave if stereo output and stereo stream.
+            for (i, &v) in resample_out.iter().enumerate() {
+                samples_out[n + api_channels * i] = v as f32 * (1.0 / 32768.0);
+            }
+        }
+
+        // Create two channel output from a mono stream.
+        if api_channels == 2 && ctrl.n_channels_internal == 1 {
+            if stereo_to_mono {
+                // Resample the right channel for a newly collapsed stereo
+                // stream, in case it was not collapsing when it switched.
+                ret += resample(
+                    &mut self.channel_state[1],
+                    resample_out,
+                    &self.w_silk_buf[0][1..1 + n_dec],
+                );
+                for (i, &v) in resample_out.iter().enumerate() {
+                    samples_out[1 + 2 * i] = v as f32 * (1.0 / 32768.0);
+                }
+            } else {
+                for i in 0..n_out {
+                    samples_out[1 + 2 * i] = samples_out[2 * i];
+                }
+            }
+        }
+
+        (ret, n_out)
     }
 
     pub fn decode_bytes(&mut self, data: &[u8], output: &mut [i16], new_packet: bool) -> i32 {
@@ -441,11 +499,13 @@ impl SilkDecoder {
         )
     }
 
+    /// libopus `silk_ResetDecoder`.
     pub fn reset(&mut self) {
-        silk_init_decoder(&mut self.channel_state[0]);
-        silk_init_decoder(&mut self.channel_state[1]);
+        for state in &mut self.channel_state {
+            silk_reset_decoder(state);
+        }
+        self.s_stereo = StereoDecState::DEFAULT;
         self.prev_decode_only_middle = 0;
-        self.s_stereo = StereoDecState::default();
     }
 
     pub fn frame_length(&self) -> i32 {
