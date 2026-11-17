@@ -48,11 +48,11 @@ fn sine_fixture_hex() -> Option<&'static str> {
 
 #[cfg(target_arch = "x86_64")]
 fn impulse_fixture_hex() -> Option<&'static str> {
-    // With the signal analysis (analysis.c), which libopus also runs at this
-    // complexity, the packet follows libopus 1.5.2's for 33 bytes on aarch64
-    // (7 before it).
+    // The packet of libopus (main at f1afc4222a and 1.6.1) built with
+    // intrinsics, at the SSE2 and AVX2 levels alike, which opus-rs's x86
+    // levels reproduce.
     Some(
-        "f87346b9c0165896519f68c91698758327739376655822edca7ba4112abfbe8e8e44a2f891f5ab3e37ec047bf7c99459e3cb9e4e8115b744661012318adec16f7ef7c4afde81ec65f3ff020ca26dc7cf053b6bdbeddab1967eb1967ed4072ed4a6d9c85d41115f3924611653bfacdcab60dc357c261f7945c3c899e131822bbb84feefa187afd104cdf41f008e3ed56572028fa2e8a25f18d75ccb482b623856",
+        "f87346b9c0165896519f68c91698758327739376655822edca7ba4112abfbe8e8e44a2f891f5ab3e37ec047bf7c99459e3cb9e4e8115b744661012318adec16f7ef7c4afde81ec65f3ff020ca26dc7cf053b6bdbeddab1967eb1967ed40738f5a6d9c85d41115f3924611653bfacdcab60dc357c261f7945c3c899e131822bbb84feefa187afd104cdf41f008e3ed56572028fa2e8a25f18d75ccb482b623856",
     )
 }
 

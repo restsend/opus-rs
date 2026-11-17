@@ -235,3 +235,28 @@ fn comb_filters() {
     }
     opus_rs::fuzzing::force_arch(None);
 }
+
+#[test]
+fn pvq_search() {
+    let mut seed = 5;
+    for (arch, c) in levels() {
+        for t in 0..4000 {
+            let n = 1 + (t * 7) % 176;
+            let k = 1 + (t * 13) % 40;
+            let mut x = noise(n, &mut seed, 2.0);
+            if t % 9 == 0 {
+                x.iter_mut().step_by(3).for_each(|v| *v = 0.0);
+            }
+            if t % 31 == 0 {
+                x.fill(0.0);
+            }
+            let mut a = vec![0i32; n];
+            opus_rs::pvq::pvq_search(&x, &mut a, k as i32, n, arch);
+            let mut b = vec![0i32; n + 3];
+            let mut cx = x.clone();
+            cx.resize(n + 3, 0.0);
+            unsafe { ref_op_pvq_search(cx.as_mut_ptr(), b.as_mut_ptr(), k as i32, n as i32, c) };
+            assert_eq!(a, b[..n], "pvq_search n={n} k={k} t={t}");
+        }
+    }
+}

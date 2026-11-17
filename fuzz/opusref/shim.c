@@ -117,4 +117,10 @@ void ref_celt_pitch_xcorr(const float *x, const float *y, float *xcorr, int len,
   (void)arch;
   celt_pitch_xcorr(x, y, xcorr, len, max_pitch, arch);
 }
+/* op_pvq_search at `arch` (op_pvq_search_sse2 where SSE2 is presumed). */
+#include "vq.h"
+float ref_op_pvq_search(float *x, int *iy, int k, int n, int arch) {
+  (void)arch;
+  return op_pvq_search(x, iy, k, n, arch);
+}
 #endif

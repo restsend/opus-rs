@@ -73,6 +73,8 @@ pub mod projection;
 pub mod packet;
 pub mod pitch;
 pub mod pvq;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+mod pvq_x86;
 pub mod quant_bands;
 pub mod range_coder;
 pub mod rate;
