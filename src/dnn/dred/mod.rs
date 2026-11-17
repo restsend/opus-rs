@@ -12,11 +12,15 @@
 //!   `dred_rdovae_stats_data.c`, `ec_laplace_*_p0` of `celt/laplace.c`).
 
 pub mod coding;
+pub mod decoder;
+pub mod encoder;
 pub mod laplace;
 pub mod rdovae_dec;
 pub mod rdovae_enc;
 pub mod stats;
 
+pub use decoder::OpusDred;
+pub use encoder::DredEnc;
 
 /// `DRED_EXTENSION_ID`: the packet extension that carries DRED data.
 pub const DRED_EXTENSION_ID: u8 = 126;
