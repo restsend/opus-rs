@@ -10,8 +10,8 @@
 //! blends with its MDCT.
 
 use super::{
-    COMBFILTER_MAXPERIOD, COMBFILTER_MINPERIOD, CeltDecoder, DECODE_BUFFER_SIZE, comb_filter,
-    comb_filter_inplace,
+    COMBFILTER_MAXPERIOD, COMBFILTER_MINPERIOD, CeltDecoder, DECODE_BUFFER_SIZE, PcmLayout,
+    comb_filter, comb_filter_inplace,
 };
 use crate::bands::{celt_lcg_rand, denormalise_bands, log2amp, renormalise_vector};
 use crate::celt_lpc::{autocorr, lpc as celt_lpc};
@@ -42,6 +42,17 @@ impl CeltDecoder {
     ///
     /// Returns `frame_size`, or 0 for a frame size CELT does not have.
     pub fn decode_lost(&mut self, frame_size: usize, pcm: &mut [f32], start_band: usize) -> usize {
+        self.decode_lost_into(frame_size, pcm, start_band, PcmLayout::Planar)
+    }
+
+    /// [`Self::decode_lost`] with the output written as `layout` says.
+    pub(crate) fn decode_lost_into(
+        &mut self,
+        frame_size: usize,
+        pcm: &mut [f32],
+        start_band: usize,
+        layout: PcmLayout,
+    ) -> usize {
         let mode = self.mode;
         let n = frame_size * self.downsample;
         let Some(lm) = (0..=mode.max_lm).find(|&lm| mode.short_mdct_size << lm == n) else {
@@ -67,9 +78,6 @@ impl CeltDecoder {
         };
 
         let mem_len = DECODE_BUFFER_SIZE + mode.overlap;
-        let out_syn = DECODE_BUFFER_SIZE - n;
-        const SIG_SAT: f32 = 536870911.0;
-        const VERY_SMALL: f32 = 1e-30;
         for c in 0..cc {
             let base = c * mem_len;
             // The postfilter memory continues from the concealed signal.
@@ -78,18 +86,8 @@ impl CeltDecoder {
                     &self.decode_mem[base + DECODE_BUFFER_SIZE - COMBFILTER_MAXPERIOD
                         ..base + DECODE_BUFFER_SIZE],
                 );
-            let coef = mode.preemph[0];
-            let mut m = self.preemph_mem[c];
-            for i in 0..n {
-                let x = self.decode_mem[base + out_syn + i];
-                let val = (x + VERY_SMALL + m).clamp(-SIG_SAT, SIG_SAT);
-                if i % self.downsample == 0 {
-                    pcm[c * frame_size + i / self.downsample] = val * (1.0 / 32768.0);
-                }
-                m = val * coef;
-            }
-            self.preemph_mem[c] = m;
         }
+        self.deemphasis(n, pcm, layout);
         frame_size
     }
 

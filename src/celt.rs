@@ -2969,6 +2969,14 @@ impl CeltEncoder {
     }
 }
 
+/// Where the CELT decoder writes its output: planar, or interleaved (libopus),
+/// optionally added onto what `pcm` holds (`accum`).
+#[derive(Clone, Copy)]
+pub(crate) enum PcmLayout {
+    Planar,
+    Interleaved { accum: bool },
+}
+
 pub struct CeltDecoder {
     mode: &'static CeltMode,
     channels: usize,
@@ -3007,7 +3015,9 @@ pub struct CeltDecoder {
     prefilter_and_fold: bool,
     /// Concealment LPC filter per channel.
     plc_lpc: [f32; plc::LPC_ORDER * CELT_MAX_CHANNELS],
-    /// End band of the last decoded frame, which noise concealment keeps.
+    /// First band decoded and concealed (libopus `CELT_SET_START_BAND`).
+    start_band: usize,
+    /// End band decoded and concealed (libopus `CELT_SET_END_BAND`).
     end_band: usize,
 
     w_tf_res: FixedVec<i32, CELT_NB_EBANDS>,
@@ -3031,10 +3041,52 @@ impl CeltDecoder {
         self.rng
     }
 
-    /// Sets the end band that concealment synthesizes up to (libopus
-    /// `CELT_SET_END_BAND`).
+    /// Sets the end band (libopus `CELT_SET_END_BAND`).
     pub(crate) fn set_end_band(&mut self, end: usize) {
         self.end_band = end;
+    }
+
+    /// Sets the start band (libopus `CELT_SET_START_BAND`).
+    pub(crate) fn set_start_band(&mut self, start: usize) {
+        self.start_band = start;
+    }
+
+    /// libopus `celt_decode_with_ec`: decodes `data` with the start and end
+    /// bands set, reading through `rc` when given (a hybrid frame's shared
+    /// range coder), or conceals the frame when `data` is `None` or at most
+    /// one byte. Output is interleaved; `accum` adds it onto `pcm`. Returns
+    /// the samples per channel, or `None` for a frame size CELT lacks.
+    pub(crate) fn decode_with_ec(
+        &mut self,
+        data: Option<&[u8]>,
+        rc: Option<&mut RangeCoder>,
+        pcm: &mut [f32],
+        frame_size: usize,
+        accum: bool,
+    ) -> Option<usize> {
+        let mode = self.mode;
+        let n = frame_size * self.downsample;
+        (0..=mode.max_lm).find(|&lm| mode.short_mdct_size << lm == n)?;
+        let layout = PcmLayout::Interleaved { accum };
+        let r = match data {
+            Some(d) if d.len() > 1 => {
+                if d.len() > 1275 {
+                    return None;
+                }
+                let mut own;
+                let rc = match rc {
+                    Some(rc) => rc,
+                    None => {
+                        own = RangeCoder::new_decoder(d);
+                        &mut own
+                    }
+                };
+                let (start, end) = (self.start_band, self.end_band);
+                self.decode_impl_from_rc(rc, (d.len() * 8) as i32, frame_size, pcm, start, end, layout)
+            }
+            _ => self.decode_lost_into(frame_size, pcm, self.start_band, layout),
+        };
+        (r == frame_size).then_some(r)
     }
 
     /// Create a CELT decoder. `sampling_rate` is the API sampling rate
@@ -3074,6 +3126,7 @@ impl CeltDecoder {
         last_pitch_index: 0,
         prefilter_and_fold: false,
         plc_lpc: [0.0; plc::LPC_ORDER * CELT_MAX_CHANNELS],
+        start_band: 0,
         end_band: 0,
         w_tf_res: FixedVec::new(),
         w_cap: FixedVec::new(),
@@ -3133,6 +3186,7 @@ impl CeltDecoder {
         self.last_pitch_index = 0;
         self.prefilter_and_fold = false;
         self.plc_lpc = [0.0; plc::LPC_ORDER * CELT_MAX_CHANNELS];
+        self.start_band = 0;
         self.end_band = mode.eff_ebands;
         self.w_tf_res.fill_to(nb_ebands, 0);
         self.w_cap.fill_to(nb_ebands, 0);
@@ -3164,8 +3218,8 @@ impl CeltDecoder {
         self.stream_channels = channels;
     }
 
-    /// Reset all decoder state (equivalent to libopus `OPUS_RESET_STATE`).
-    /// Used at SILK↔CELT mode transitions to avoid cross-mode artifacts.
+    /// Reset the decoder state (libopus `OPUS_RESET_STATE`). The stream
+    /// channels and the start and end bands are settings and stay.
     pub fn reset_state(&mut self) {
         self.decode_mem.fill(0.0);
         self.old_band_e.fill(0.0);
@@ -3189,7 +3243,6 @@ impl CeltDecoder {
         self.last_pitch_index = 0;
         self.prefilter_and_fold = false;
         self.plc_lpc = [0.0; plc::LPC_ORDER * CELT_MAX_CHANNELS];
-        self.end_band = self.mode.eff_ebands;
     }
 
     pub fn decode_with_start_band(
@@ -3217,6 +3270,7 @@ impl CeltDecoder {
             pcm,
             start_band,
             self.mode.nb_ebands,
+            PcmLayout::Planar,
         )
     }
 
@@ -3229,7 +3283,48 @@ impl CeltDecoder {
         start_band: usize,
         end_band: usize,
     ) -> usize {
-        self.decode_impl_from_rc(rc, total_bits, frame_size, pcm, start_band, end_band)
+        self.decode_impl_from_rc(rc, total_bits, frame_size, pcm, start_band, end_band, PcmLayout::Planar)
+    }
+
+    /// libopus `deemphasis` of the last `n` (48 kHz) samples of each
+    /// channel's decode memory into `pcm`, keeping every `downsample`-th.
+    pub(crate) fn deemphasis(&mut self, n: usize, pcm: &mut [f32], layout: PcmLayout) {
+        const SIG_SAT: f32 = 536870911.0;
+        const VERY_SMALL: f32 = 1e-30;
+        let cc = self.channels;
+        let ds = self.downsample;
+        let nd = n / ds;
+        let coef0 = self.mode.preemph[0];
+        let mem_len = DECODE_BUFFER_SIZE + self.mode.overlap;
+        for c in 0..cc {
+            let x = &self.decode_mem[c * mem_len + DECODE_BUFFER_SIZE - n..][..n];
+            let mut m = self.preemph_mem[c];
+            let (base, stride, accum) = match layout {
+                PcmLayout::Planar => (c * nd, 1, false),
+                PcmLayout::Interleaved { accum } => (c, cc, accum),
+            };
+            if ds == 1 && accum {
+                for (j, &xj) in x.iter().enumerate() {
+                    let tmp = (xj + VERY_SMALL + m).clamp(-SIG_SAT, SIG_SAT);
+                    m = coef0 * tmp;
+                    pcm[base + j * stride] += (1.0 / 32768.0) * tmp;
+                }
+            } else {
+                for (j, &xj) in x.iter().enumerate() {
+                    let tmp = (xj + VERY_SMALL + m).clamp(-SIG_SAT, SIG_SAT);
+                    m = coef0 * tmp;
+                    if j % ds == 0 {
+                        let y = &mut pcm[base + j / ds * stride];
+                        if accum {
+                            *y += (1.0 / 32768.0) * tmp;
+                        } else {
+                            *y = (1.0 / 32768.0) * tmp;
+                        }
+                    }
+                }
+            }
+            self.preemph_mem[c] = m;
+        }
     }
 
     fn decode_impl(
@@ -3242,7 +3337,15 @@ impl CeltDecoder {
     ) -> usize {
         let total_bits = (compressed.len() * 8) as i32;
         let mut rc = RangeCoder::new_decoder(compressed);
-        self.decode_impl_from_rc(&mut rc, total_bits, frame_size, pcm, start_band, end_band)
+        self.decode_impl_from_rc(
+            &mut rc,
+            total_bits,
+            frame_size,
+            pcm,
+            start_band,
+            end_band,
+            PcmLayout::Planar,
+        )
     }
 
     fn decode_impl_from_rc(
@@ -3253,6 +3356,7 @@ impl CeltDecoder {
         pcm: &mut [f32],
         start_band: usize,
         end_band: usize,
+        layout: PcmLayout,
     ) -> usize {
         let mode = self.mode;
         // `channels` are coded in the stream and drive the bitstream (libopus
@@ -3767,31 +3871,8 @@ impl CeltDecoder {
             self.prefilter_mem[c * COMBFILTER_MAXPERIOD..(c + 1) * COMBFILTER_MAXPERIOD]
                 .copy_from_slice(&new_mem);
 
-            let coef = mode.preemph[0];
-            let mut m = self.preemph_mem[c];
-            const VERY_SMALL: f32 = 1e-30f32;
-            let ds = self.downsample;
-            if ds == 1 {
-                for i in 0..frame_size {
-                    let x = pcm_frame[i];
-                    let val = (x + VERY_SMALL + m).clamp(-SIG_SAT, SIG_SAT);
-                    pcm[c * api_frame_size + i] = val * (1.0 / 32768.0);
-                    m = val * coef;
-                }
-            } else {
-                // Run deemphasis IIR over all internal samples, but only write
-                // every downsample-th sample (libopus deemphasis() stride).
-                for i in 0..frame_size {
-                    let x = pcm_frame[i];
-                    let val = (x + VERY_SMALL + m).clamp(-SIG_SAT, SIG_SAT);
-                    if i % ds == 0 {
-                        pcm[c * api_frame_size + i / ds] = val * (1.0 / 32768.0);
-                    }
-                    m = val * coef;
-                }
-            }
-            self.preemph_mem[c] = m;
         }
+        self.deemphasis(frame_size, pcm, layout);
 
         self.prefilter_period_old = self.prefilter_period;
         self.prefilter_gain_old = self.prefilter_gain;
