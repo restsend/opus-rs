@@ -4265,10 +4265,11 @@ impl OpusDecoder {
                 );
                 if silk_ret != 0 {
                     if lost_flag != silk::decode_frame::FLAG_DECODE_NORMAL {
-                        // PLC failure should not be fatal.
-                        silk_frame_size = frame_size;
+                        // PLC failure should not be fatal. Only fill what
+                        // is left of the frame.
+                        silk_frame_size = frame_size - decoded_samples;
                         let at = decoded_samples * ch;
-                        let end = (at + frame_size * ch).min(pcm_ptr.len());
+                        let end = (at + silk_frame_size * ch).min(pcm_ptr.len());
                         pcm_ptr[at..end].fill(0.0);
                     } else {
                         return Err("SILK decoding failed");
