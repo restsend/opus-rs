@@ -43,6 +43,7 @@ pub mod dnn;
 /// Deep redundancy in the decoder (cargo feature `dred`).
 #[cfg(feature = "dred")]
 pub mod dred;
+pub mod error;
 /// Opus packet extensions, which carry DRED (cargo feature `dred`).
 #[cfg(feature = "dred")]
 pub mod extensions;

@@ -81,6 +81,8 @@ unsafe extern "C" {
         fec: c_int,
     ) -> c_int;
 
+    pub fn opus_strerror(error: c_int) -> *const core::ffi::c_char;
+    pub fn opus_get_version_string() -> *const core::ffi::c_char;
     pub fn opus_packet_parse(
         data: *const c_uchar,
         len: i32,

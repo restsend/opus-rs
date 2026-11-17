@@ -44,6 +44,26 @@ let samples = decoder.decode(&output[..bytes], 320, &mut pcm).unwrap();
 cargo run --example wav_test
 ```
 
+## libopus API
+
+Each libopus function or control maps to an opus-rs method or function and
+is tested against libopus (`fuzz/opusref`). Constructors (`*_create`,
+`*_init`) are `new` (and `init` where a struct is built in place),
+`*_get_size` is `size_of`, and `*_destroy` is `Drop`. Functions that mirror
+a libopus function return libopus's errors as the constants of
+`opus_rs::error` (`Err(error::BAD_ARG)` for `OPUS_BAD_ARG`, and so on);
+`error::code` gives the libopus number and `error::strerror` its text.
+
+| libopus | opus-rs |
+| --- | --- |
+| `opus_strerror` | `error::strerror` |
+| `opus_get_version_string` | `error::version_string` |
+
+`opus_custom.h` is left out: libopus exports it only with
+`--enable-custom-modes`, its modes need run-time tables for other frame
+sizes and rates, and its streams carry no ToC. The standard 48 kHz mode is
+`CeltEncoder`/`CeltDecoder`.
+
 ## `#![no_std]` + no-`alloc` Support
 
 By default opus-rs runs on `std` with the **`heap` feature**: the large codec state

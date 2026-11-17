@@ -9,12 +9,7 @@
 //! extensions of 0 or 1 payload bytes, and 32 to 127 long extensions with a
 //! lacing-coded length (or, with `L` = 0, the rest of the padding).
 
-/// libopus `OPUS_INVALID_PACKET`: the error of the parsers.
-pub const INVALID_PACKET: &str = "invalid packet";
-/// libopus `OPUS_BAD_ARG`.
-pub const BAD_ARG: &str = "invalid argument";
-/// libopus `OPUS_BUFFER_TOO_SMALL`.
-pub const BUFFER_TOO_SMALL: &str = "buffer too small";
+pub use crate::error::{BAD_ARG, BUFFER_TOO_SMALL, INVALID_PACKET};
 
 /// libopus `opus_extension_data`: one extension of a packet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
