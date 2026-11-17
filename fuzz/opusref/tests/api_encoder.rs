@@ -346,6 +346,7 @@ fn setters_and_queries_match_libopus() {
         // The application changes before the first frame only.
         for a in [Application::Voip, Application::Audio, Application::RestrictedLowDelay, app] {
             assert_eq!(code(p.rs.set_application(a)), p.ctl(SET_APPLICATION, a as i32));
+            assert_eq!(p.rs.application() as i32, p.get(GET_APPLICATION));
         }
         assert_eq!(p.rs.lookahead() as i32, p.get(GET_LOOKAHEAD));
         for (k, rate) in [-1000, -1, 32000].into_iter().enumerate() {
@@ -359,6 +360,7 @@ fn setters_and_queries_match_libopus() {
         }
         for a in [Application::Voip, Application::Audio, Application::RestrictedLowDelay] {
             assert_eq!(code(p.rs.set_application(a)), p.ctl(SET_APPLICATION, a as i32));
+            assert_eq!(p.rs.application() as i32, p.get(GET_APPLICATION));
         }
         p.rs.reset();
         p.ctl(RESET_STATE, 0);
@@ -424,10 +426,12 @@ fn restricted_applications_match_libopus() {
             for rate in [12000, 32000, 96000] {
                 let mut p = Pair::new(fs, ch, app);
                 assert_eq!(p.rs.lookahead() as i32, p.get(GET_LOOKAHEAD), "{app:?} {fs}");
+                assert_eq!(p.rs.application() as i32, p.get(GET_APPLICATION), "{app:?}");
                 p.rs.set_bitrate(rate).unwrap();
                 p.ctl(SET_BITRATE, rate);
                 for a in [Application::Voip, Application::RestrictedSilk, Application::RestrictedCelt] {
                     assert_eq!(code(p.rs.set_application(a)), p.ctl(SET_APPLICATION, a as i32));
+                    assert_eq!(p.rs.application() as i32, p.get(GET_APPLICATION), "{app:?} after {a:?}");
                 }
                 for (f, units) in [8, 1, 4, 24, 48, 2, 16, 8, 40].into_iter().enumerate() {
                     let frame = fs as usize / 400 * units;
