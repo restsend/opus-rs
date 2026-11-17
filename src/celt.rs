@@ -2735,12 +2735,10 @@ impl CeltEncoder {
                 delta = 0;
             }
             // Reservoir / drift update (libopus 2502-2529)
-            if self.vbr_count < 970 {
-                self.vbr_count += 1;
-            }
             // The float build's alpha: celt_rcp is 1/x and QCONST16 the plain
             // constant (celt_encoder.c:2501-2506).
             let alpha = if self.vbr_count < 970 {
+                self.vbr_count += 1;
                 1.0 / (self.vbr_count + 20) as f32
             } else {
                 0.001
