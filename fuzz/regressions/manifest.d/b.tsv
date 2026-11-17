@@ -1,0 +1,1 @@
+b1	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	celt quant_bands.c:470	amp2Log2 floors band energies at 1e-10

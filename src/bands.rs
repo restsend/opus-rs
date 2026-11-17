@@ -2095,8 +2095,7 @@ pub fn amp2log2(
             band_log_e[c * m.nb_ebands + i] = -14.0;
         }
         for i in start..end {
-            let val = band_e[c * m.nb_ebands + i].max(1e-10);
-            band_log_e[c * m.nb_ebands + i] = celt_log2(val) - m.e_means[i];
+            band_log_e[c * m.nb_ebands + i] = celt_log2(band_e[c * m.nb_ebands + i]) - m.e_means[i];
         }
     }
 }
