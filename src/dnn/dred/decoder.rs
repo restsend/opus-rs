@@ -46,15 +46,16 @@ impl Default for OpusDred {
     }
 }
 
-/// `dred_decode_latents`: reads `x.len()` quantized values and scales them
-/// back.
+/// `dred_decode_latents`: reads `x.len()` quantized values, bounds them to
+/// +/-1024 (far beyond what an encoder produces) and scales them back.
 pub fn dred_decode_latents(dec: &mut RangeCoder, x: &mut [f32], scale: &[u8], r: &[u8], p0: &[u8]) {
     for (i, v) in x.iter_mut().enumerate() {
         let q = if r[i] == 0 || p0[i] == 255 {
             0
         } else {
             ec_laplace_decode_p0(dec, (p0[i] as u16) << 7, (r[i] as u16) << 7)
-        };
+        }
+        .clamp(-1024, 1024);
         let s = if scale[i] == 0 { 1 } else { scale[i] };
         *v = q as f32 * 256.0 / s as f32;
     }

@@ -588,6 +588,71 @@ fn ec_decode_random_bytes_matches() {
     }
 }
 
+/// A crafted payload whose state and latent values are far beyond what an
+/// encoder produces (libopus main bounds the decoded values to +/-1024).
+#[test]
+fn ec_decode_bounds_large_values() {
+    use opus_rs::dnn::models::dred_rdovae_constants::{DRED_LATENT_DIM, DRED_STATE_DIM};
+    let dec_model = builtin::dred_rdovae_dec().unwrap();
+    let cmodel = c::RdovaeDec::new();
+    let mut r = Rng(52);
+    let q0 = 5;
+    let mut enc = RangeCoder::new_encoder(2000);
+    enc.enc_uint(q0 as u32, 16);
+    enc.enc_uint(0, 8);
+    enc.enc_uint(0, 2);
+    enc.enc_uint(4, 32);
+    // One large value per vector, where the decay makes it cheapest.
+    let mut code = |n: usize, p0: &[u8], decay: &[u8], value: i32| {
+        let big = (0..n)
+            .filter(|&i| p0[i] != 255)
+            .max_by_key(|&i| decay[i])
+            .unwrap();
+        for i in 0..n {
+            if decay[i] != 0 && p0[i] != 255 {
+                let v = if i == big { value } else { 0 };
+                laplace::ec_laplace_encode_p0(
+                    &mut enc,
+                    v,
+                    (p0[i] as u16) << 7,
+                    (decay[i] as u16) << 7,
+                );
+            }
+        }
+    };
+    let so = q0 as usize * DRED_STATE_DIM;
+    code(
+        DRED_STATE_DIM,
+        &stats::DRED_STATE_P0_Q8[so..],
+        &stats::DRED_STATE_R_Q8[so..],
+        3000,
+    );
+    for k in 0..2 {
+        let lo = coding::compute_quantizer(q0, 0, 15, k) as usize * DRED_LATENT_DIM;
+        code(
+            DRED_LATENT_DIM,
+            &stats::DRED_LATENT_P0_Q8[lo..],
+            &stats::DRED_LATENT_R_Q8[lo..],
+            -2000,
+        );
+    }
+    let fill = (enc.tell() + 7) / 8;
+    enc.shrink(fill as u32);
+    enc.done();
+    assert_eq!(enc.error, 0);
+    let bytes = enc.buf[..fill as usize].to_vec();
+    check_decode(
+        &bytes,
+        10,
+        0,
+        true,
+        &mut r,
+        &cmodel,
+        &dec_model,
+        "large values",
+    );
+}
+
 #[test]
 fn decoder_constants_match() {
     assert_eq!(
