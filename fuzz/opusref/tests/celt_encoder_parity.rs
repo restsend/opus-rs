@@ -101,3 +101,18 @@ fn hybrid_dynalloc_sees_the_low_band_energies() {
     let cfg = Cfg { bitrate: 48000, vbr: true, start: 17, end: 21, bytes: 400, ..Cfg::default() };
     assert_eq!(identical(cfg, 4, noise(1, 0.3)), [true; 4]);
 }
+
+/// Under CBR with a bitrate, the frame takes the rate's bytes when the
+/// buffer holds more (celt_encoder.c:1876-1890).
+#[test]
+fn cbr_frames_take_the_rate_bytes() {
+    let cfg = Cfg { bitrate: 24000, bytes: 400, ..Cfg::default() };
+    assert_eq!(identical(cfg, 3, noise(1, 0.3)), [true; 3]);
+}
+
+/// A frame codes at most 1275 bytes (celt_encoder.c:1859).
+#[test]
+fn frames_code_at_most_1275_bytes() {
+    let cfg = Cfg { bytes: 1500, ch: 2, ..Cfg::default() };
+    assert_eq!(identical(cfg, 2, noise(1, 0.3)), [true; 2]);
+}

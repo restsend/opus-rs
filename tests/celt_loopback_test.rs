@@ -31,8 +31,8 @@ fn test_celt_loopback() {
         encoder.encode(&pcm_in, frame_size, &mut rc);
         rc.done();
 
-        let mut compressed = vec![0u8; rc_size as usize];
-        compressed.copy_from_slice(&rc.buf[..rc_size as usize]);
+        // The frame is at most 1275 bytes; the encoder shrinks the coder.
+        let compressed = rc.buf[..rc.storage as usize].to_vec();
 
         let mut pcm_out = vec![0.0f32; frame_size * channels];
         let decoded_len = decoder.decode(&compressed, frame_size, &mut pcm_out);

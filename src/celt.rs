@@ -2143,18 +2143,33 @@ impl CeltEncoder {
             );
         }
 
-        // libopus effectiveBytes (celt_encoder.c:1901-1923): under VBR the
-        // CELT share in bytes, also in unconstrained hybrid mode, where the
-        // range coder still holds the caller's full capacity; under CBR the
-        // bytes left in the packet.
+        // libopus nbCompressedBytes and effectiveBytes (celt_encoder.c:1859-1923):
+        // at most 1275 bytes, under CBR with a rate the rate's bytes. Under
+        // VBR effectiveBytes is the CELT share in bytes, also in unconstrained
+        // hybrid mode, where the range coder still holds the caller's full
+        // capacity; under CBR the bytes left in the packet.
         let hybrid = start_band != 0;
+        let tell_initial = rc.tell();
+        let nb_filled_bytes_initial = ((tell_initial + 4) >> 3).max(0) as usize;
+        let capacity = explicit_total_bits.unwrap_or_else(|| (rc.storage * 8) as i32) as usize / 8;
+        let mut nb_compressed_bytes = capacity.min(1275);
         let mut effective_bytes = if self.vbr && self.bitrate != OPUS_BITRATE_MAX {
             (bitrate_to_bits(self.bitrate, mode.fs, frame_size as i32) / 8).max(1) as usize
         } else {
-            let capacity = explicit_total_bits.unwrap_or_else(|| (rc.buf.len() * 8) as i32);
-            ((capacity / 8) as usize).saturating_sub(((rc.tell() + 4) >> 3).max(0) as usize)
+            if self.bitrate != OPUS_BITRATE_MAX {
+                let mut tmp = self.bitrate * frame_size as i32;
+                if tell_initial > 1 {
+                    tmp += tell_initial * mode.fs;
+                }
+                let rate_bytes = (tmp + 4 * mode.fs) / (8 * mode.fs);
+                nb_compressed_bytes = (nb_compressed_bytes as i32).min(rate_bytes).max(2) as usize;
+            }
+            nb_compressed_bytes.saturating_sub(nb_filled_bytes_initial)
         }
         .max(1);
+        if nb_compressed_bytes < capacity {
+            rc.shrink(nb_compressed_bytes as u32);
+        }
         // Low-rate hybrid frames code weak transients with long blocks.
         let allow_weak_transients =
             hybrid && effective_bytes < 15 && self.silk_signal_type != TYPE_VOICED;
@@ -2203,7 +2218,7 @@ impl CeltEncoder {
         // For float, tf_estimate is log-domain; clamp to [0,1]
         toneishness = toneishness.min((1.0 - tf_estimate).clamp(0.0, 1.0));
 
-        let mut total_bits = explicit_total_bits.unwrap_or_else(|| (rc.buf.len() * 8) as i32);
+        let mut total_bits = (nb_compressed_bytes * 8) as i32;
         // --- Silence detection (port of libopus celt_encoder.c: sample_max / overlap_max / lsb_depth) ---
         // libopus measures sample/overlap maxima on the API-rate `pcm`:
         // `(N-overlap)/upsample` and `overlap/upsample` samples.
@@ -2218,10 +2233,7 @@ impl CeltEncoder {
         let sample_max = sample_max.max(new_overlap_max);
         let threshold = 1.0 / ((1 << self.lsb_depth) as f32);
         let mut silence = sample_max <= threshold;
-        let tell_initial = rc.tell();
         let tell_initial_frac = rc.tell_frac();
-        let nb_filled_bytes_initial = ((tell_initial + 4) >> 3).max(0) as usize;
-        let mut nb_compressed_bytes = (total_bits / 8) as usize;
         let nb_compressed_initial = nb_compressed_bytes;
         if tell_initial == 1 {
             rc.encode_bit_logp(silence, 15);
@@ -2591,7 +2603,7 @@ impl CeltEncoder {
         // capped by the target bitrate, less the overhead of short frames.
         let overhead = (40 * channels as i32 + 20) * ((400 >> lm) - 50);
         let mut equiv_rate =
-            ((nb_compressed_initial.min(1275) as i32 * 8 * 50) << (3 - lm)) - overhead;
+            ((nb_compressed_initial as i32 * 8 * 50) << (3 - lm)) - overhead;
         if self.bitrate != OPUS_BITRATE_MAX {
             equiv_rate = equiv_rate.min(self.bitrate - overhead);
         }
