@@ -3,6 +3,7 @@ use crate::bands::{
     log2amp, normalise_bands, quant_all_bands, spreading_decision,
 };
 use crate::modes::{CeltMode, SPREAD_ICDF, TAPSET_ICDF, TF_SELECT_TABLE, TRIM_ICDF};
+use crate::mathops::{celt_exp2, celt_log2};
 use crate::quant_bands::{
     quant_coarse_energy_advanced, quant_energy_finalise, quant_fine_energy, unquant_coarse_energy,
     unquant_energy_finalise, unquant_fine_energy,
@@ -1346,8 +1347,8 @@ fn alloc_trim_analysis(
         }
         min_xc = min_xc.min(1.0);
 
-        let log_xc = (1.001 - sum * sum).log2();
-        let log_xc2 = (log_xc * 0.5).max((1.001 - min_xc * min_xc).log2());
+        let log_xc = celt_log2(1.001 - sum * sum);
+        let log_xc2 = (log_xc * 0.5).max(celt_log2(1.001 - min_xc * min_xc));
 
         trim += (-4.0f32).max(0.75 * log_xc);
         *stereo_saving = (*stereo_saving + 0.25).min(-0.5 * log_xc2);
@@ -1627,7 +1628,7 @@ fn dynalloc_analysis_simple(
     // C 1184-1191: importance = floor(0.5+13*exp2(min(follower,4)))
     for i in start..end {
         let v = follower[i].min(4.0);
-        importance[i] = (0.5 + 13.0 * (2.0f32).powf(v)).floor() as i32;
+        importance[i] = (0.5 + 13.0 * celt_exp2(v)).floor() as i32;
     }
     if (!vbr || constrained_vbr) && !is_transient {
         for i in start..end {

@@ -91,6 +91,14 @@ unsafe extern "C" {
         arch: c_int,
     );
     pub fn _celt_lpc(lpc: *mut f32, ac: *const f32, p: c_int);
+    pub fn amp2Log2(
+        m: *const CELTMode,
+        eff_end: c_int,
+        end: c_int,
+        band_e: *const f32,
+        band_log_e: *mut f32,
+        c: c_int,
+    );
     pub fn _celt_autocorr(
         x: *const f32,
         ac: *mut f32,

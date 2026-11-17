@@ -38,6 +38,7 @@ pub mod celt;
 pub mod celt_lpc;
 pub mod hp_cutoff;
 pub mod kiss_fft;
+mod mathops;
 pub mod mdct;
 pub mod modes;
 /// Multistream decode uses `Vec`-based plumbing, so it is only available

@@ -1,5 +1,6 @@
 use crate::compat::with_scratch;
 use crate::modes::CeltMode;
+use crate::mathops::celt_log2;
 use crate::pvq::*;
 use crate::range_coder::RangeCoder;
 use crate::rate::{BITRES, bits2pulses, get_pulses, pulses2bits};
@@ -2007,7 +2008,7 @@ pub fn amp2log2(
         }
         for i in start..end {
             let val = band_e[c * m.nb_ebands + i].max(1e-10);
-            band_log_e[c * m.nb_ebands + i] = val.log2() - m.e_means[i];
+            band_log_e[c * m.nb_ebands + i] = celt_log2(val) - m.e_means[i];
         }
     }
 }

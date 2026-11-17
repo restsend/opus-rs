@@ -114,3 +114,23 @@ fn free_space_stays_between_range_and_raw_bits() {
 fn transient_analysis_uses_libopus_inv_table() {
     assert_eq!(identical(1, 20, 32, 1, "noise", 1), [true]);
 }
+
+/// amp2Log2 takes celt_log2 in double precision (mathops.h:346).
+#[test]
+fn band_log_energy_matches_libopus() {
+    let mode = opus_rs::modes::default_mode();
+    let mut seed = 3u32;
+    for _ in 0..5000 {
+        let e: Vec<f32> = (0..21)
+            .map(|_| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                f32::from_bits(0x3000_0000 + (seed >> 5))
+            })
+            .collect();
+        let mut a = [0f32; 21];
+        let mut b = [0f32; 21];
+        opus_rs::bands::amp2log2(mode, 0, 21, &e, &mut a, 1);
+        unsafe { amp2Log2(ref_celt_mode48(), 21, 21, e.as_ptr(), b.as_mut_ptr(), 1) };
+        assert_eq!(a, b);
+    }
+}
