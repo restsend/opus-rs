@@ -3512,6 +3512,10 @@ pub struct OpusDecoder {
     silk_dec: Box<silk::dec_api::SilkDecoder>,
     sampling_rate: i32,
     channels: usize,
+    /// The decoder complexity, 0 to 10 (libopus `OPUS_SET_COMPLEXITY` on a
+    /// decoder). The neural network features use it: deep PLC from 5, LACE
+    /// at 6 and NoLACE from 7.
+    complexity: i32,
     /// What the Opus layer tells SILK (libopus `DecControl`).
     dec_control: silk::dec_api::SilkDecControl,
 
@@ -3586,6 +3590,7 @@ impl OpusDecoder {
         silk_dec: silk::dec_api::SilkDecoder::EMPTY,
         sampling_rate: 0,
         channels: 0,
+        complexity: 0,
         dec_control: silk::dec_api::SilkDecControl {
             n_channels_api: 0,
             n_channels_internal: 0,
@@ -3611,6 +3616,7 @@ impl OpusDecoder {
             silk_dec: Box::new(silk::dec_api::SilkDecoder::EMPTY),
             sampling_rate: 0,
             channels: 0,
+            complexity: 0,
             dec_control: silk::dec_api::SilkDecControl::default(),
             stream_channels: 0,
             bandwidth: Bandwidth::Auto,
@@ -3646,6 +3652,22 @@ impl OpusDecoder {
     /// is 0 after a frame that was concealed (lost, empty or a single byte).
     pub fn final_range(&self) -> u32 {
         self.range_final
+    }
+
+    /// Sets the decoder complexity (libopus `OPUS_SET_COMPLEXITY`), 0 to 10;
+    /// a new decoder has 0. Without the neural network features it changes
+    /// nothing.
+    pub fn set_complexity(&mut self, complexity: i32) -> Result<(), &'static str> {
+        if !(0..=10).contains(&complexity) {
+            return Err("complexity must be 0 to 10");
+        }
+        self.complexity = complexity;
+        Ok(())
+    }
+
+    /// The decoder complexity (libopus `OPUS_GET_COMPLEXITY`).
+    pub fn complexity(&self) -> i32 {
+        self.complexity
     }
 
     /// Decode one Opus packet into interleaved `f32` PCM, returning the
@@ -4631,6 +4653,17 @@ pub(crate) fn parse_frame_size(data: &[u8]) -> Result<(usize, usize), &'static s
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decoder_complexity_is_0_to_10() {
+        let mut dec = OpusDecoder::new(48000, 1).unwrap();
+        assert_eq!(dec.complexity(), 0);
+        dec.set_complexity(10).unwrap();
+        assert_eq!(dec.complexity(), 10);
+        assert!(dec.set_complexity(11).is_err());
+        assert!(dec.set_complexity(-1).is_err());
+        assert_eq!(dec.complexity(), 10);
+    }
 
     fn frame_size_from_toc(toc: u8, sampling_rate: i32) -> Option<usize> {
         let mode = mode_from_toc(toc);
