@@ -11,9 +11,12 @@ so its results do not depend on the host CPU.
   repository root (gitignored; `scripts/fetch-libopus.sh` fetches the pinned
   revision), or `OPUSREF_SRC=<dir>`.
 - Nightly Rust and `cargo-fuzz`.
-- opus-rs's `fuzzing` feature: it exposes `comb_filter` and a runtime switch
-  for the x86 AVX/FMA kernels, so each target runs opus-rs with SIMD off
-  (comparable to scalar libopus) and on (compared with SIMD off).
+- opus-rs's `fuzzing` feature: it exposes `comb_filter` and the
+  `SIMD_ENABLED` switch the targets flip between a scalar run and a SIMD
+  run. The switch has no effect yet: opus-rs's one target-specific kernel,
+  SILK's AVX2 delayed-decision filter, is chosen by runtime CPU detection
+  and gives the scalar path's integer results, which the SILK comparisons
+  with fixed-point libopus cover on AVX2 machines.
 
 ```sh
 cargo +nightly fuzz build

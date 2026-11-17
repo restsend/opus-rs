@@ -2,7 +2,8 @@
 //! low pitch, impulses, voice-like, raw) with settings that change between
 //! segments, encoded by opus-rs and by the scalar libopus reference.
 //!
-//! opus-rs runs twice: with the x86 AVX/FMA kernels off (`scalar`) and on.
+//! opus-rs runs twice, with the fuzzing SIMD switch off (`scalar`) and on;
+//! the switch has no effect yet (fuzz/DIFFERENTIAL.md).
 //! Oracles per frame:
 //! - `result`: both encoders succeed.
 //! - `decode`: libopus decodes every opus-rs packet to a full frame, and its

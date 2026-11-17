@@ -2,9 +2,9 @@
 //! functions in the scalar libopus reference, on arbitrary inputs
 //! within each function's documented domain.
 //!
-//! Each kernel runs twice in opus-rs: with the x86 AVX/FMA kernels disabled
-//! (`scalar`) and with the dispatch the CPU selects (`simd`). On aarch64 the
-//! NEON paths are compiled in unconditionally, so both runs use NEON.
+//! Each kernel runs twice in opus-rs, with the fuzzing SIMD switch off
+//! (`scalar`) and on (`simd`); the switch has no effect yet
+//! (fuzz/DIFFERENTIAL.md).
 //!
 //! Oracles per kernel:
 //! - exact: integer kernels and element-wise float kernels must match bit for bit.

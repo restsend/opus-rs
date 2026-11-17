@@ -45,8 +45,10 @@ pub fn with_scratch<T: Copy + Default, R>(n: usize, f: impl FnOnce(&mut [T]) -> 
 // Fuzzing switch
 // ---------------------------------------------------------------------------
 
-/// Switch the `fuzzing` harnesses flip to compare SIMD and scalar paths.
-/// opus-rs has no target-specific kernels, so it has no effect.
+/// Switch the `fuzzing` harnesses flip between a scalar and a SIMD run.
+/// It has no effect yet: opus-rs's one target-specific kernel, SILK's AVX2
+/// delayed-decision filter (`silk/nsq_del_dec_x86.rs`), is chosen by runtime
+/// CPU detection and gives the scalar path's integer results.
 #[cfg(feature = "fuzzing")]
 pub static SIMD_ENABLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
 
