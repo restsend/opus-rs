@@ -4098,12 +4098,6 @@ impl OpusDecoder {
         {
             return self.decode_lost(None, frame_size, output);
         }
-        // An empty first frame is concealed too, but libopus takes the
-        // packet's mode first, which the next decode_fec checks.
-        if payloads[0].len() <= 1 {
-            self.packet_mode = Some(mode);
-            return self.decode_lost(None, frame_size, output);
-        }
         let channels = self.channels;
         // checked_mul: frame_size is caller-chosen and may be absurd.
         if frame_size.checked_mul(channels).is_none_or(|n| output.len() < n) {
@@ -4113,6 +4107,18 @@ impl OpusDecoder {
         let head = frame_size - packet_frame;
         if head > 0 {
             self.decode_lost(None, head, output)?;
+        }
+        // An empty first frame is concealed too, after libopus takes the
+        // packet's mode and frame size (opus_decode_native 815-822), so the
+        // FEC part is concealed in frames of the packet's frame size.
+        if payloads[0].len() <= 1 {
+            self.packet_mode = Some(mode);
+            self.frame_size = packet_frame;
+            self.bandwidth = bandwidth_from_toc(toc);
+            self.stream_channels = channels_from_toc(toc);
+            self.celt_dec.set_stream_channels(self.stream_channels);
+            self.decode_lost(None, packet_frame, &mut output[head * channels..])?;
+            return Ok(frame_size);
         }
 
         let bandwidth = bandwidth_from_toc(toc);
