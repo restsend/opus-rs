@@ -18,9 +18,19 @@
 //!   skips this oracle, and the pair (`OPUS_RS_ARCH`, `--features simd`)
 //!   checks those levels against the reference.
 //! - Absurd frame sizes must not panic.
+//!
+//! With `--features dnn` the ops also receive DRED: `opus_dred_parse` of
+//! the last packet, of raw bytes or of the last packet with bytes changed
+//! (arbitrary maximum length, sampling rate, deferred processing),
+//! `opus_dred_process` and `opus_decoder_dred_decode(_float)` at arbitrary
+//! offsets. Oracle `dred`: the same return values and error classes as
+//! libopus, the same parsed and processed DRED data (latents, state,
+//! features, offset) bit for bit, and the concealed PCM as for losses.
 
 use crate::common::*;
 use arbitrary::Arbitrary;
+#[cfg(feature = "dnn")]
+use core::ffi::c_int;
 use opus_rs::OpusDecoder;
 use opusref as c;
 use std::hash::{Hash, Hasher};
@@ -41,6 +51,12 @@ fn discriminant(op: &Op) -> u8 {
         Op::Encoded { .. } => 4,
         Op::NewDecoder => 5,
         Op::Set(_) => 6,
+        #[cfg(feature = "dnn")]
+        Op::DredParse { .. } => 7,
+        #[cfg(feature = "dnn")]
+        Op::DredProcess => 8,
+        #[cfg(feature = "dnn")]
+        Op::DredDecode { .. } => 9,
     }
 }
 
@@ -57,6 +73,10 @@ struct Input {
     complexity: u8,
     #[cfg(feature = "dnn")]
     bwe: bool,
+    /// With the `dnn` feature: the DRED duration of the reference encoder
+    /// of `Op::Encoded` (10 ms frames, 0-104), so its packets carry DRED.
+    #[cfg(feature = "dnn")]
+    dred: u8,
     ops: Vec<Op>,
 }
 
@@ -115,6 +135,25 @@ enum Op {
     NewDecoder,
     /// A decoder setting on both sides.
     Set(Setting),
+    /// `opus_dred_parse` into both sides' DRED data.
+    #[cfg(feature = "dnn")]
+    DredParse {
+        src: DredSrc,
+        max_samples: u32,
+        rate: u32,
+        defer: bool,
+    },
+    /// `opus_dred_process` of the DRED data in place.
+    #[cfg(feature = "dnn")]
+    DredProcess,
+    /// `opus_decoder_dred_decode_float` (or `opus_decoder_dred_decode`)
+    /// with the DRED data.
+    #[cfg(feature = "dnn")]
+    DredDecode {
+        offset: i32,
+        size: Size,
+        int16: bool,
+    },
 }
 
 /// A decoder control and its libopus counterpart.
@@ -149,11 +188,13 @@ impl Format {
     }
 }
 
-/// The first five variants keep the derived encoding, which the saved
-/// reproducers use; the top sixteenth of the variant word, which selected
-/// `Reset` there, selects `NewDecoder` and, in its upper half, `Set`.
+/// The first five variants, and with `dnn` the DRED ops after them, keep
+/// the derived encoding, which the saved reproducers use; the top sixteenth
+/// of the variant word, which selected the last variant there, selects
+/// `NewDecoder` and, in its upper half, `Set`.
 impl<'a> Arbitrary<'a> for Op {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        const DERIVED: u64 = if cfg!(feature = "dnn") { 8 } else { 5 };
         let x = u32::arbitrary(u)?;
         if x >= 0xf800_0000 {
             return Ok(Op::Set(Arbitrary::arbitrary(u)?));
@@ -161,7 +202,7 @@ impl<'a> Arbitrary<'a> for Op {
         if x >= 0xf000_0000 {
             return Ok(Op::NewDecoder);
         }
-        Ok(match (u64::from(x) * 5) >> 32 {
+        Ok(match (u64::from(x) * DERIVED) >> 32 {
             0 => Op::Decode {
                 pkt: Arbitrary::arbitrary(u)?,
                 size: Arbitrary::arbitrary(u)?,
@@ -179,9 +220,37 @@ impl<'a> Arbitrary<'a> for Op {
             3 => Op::Lost {
                 size: Arbitrary::arbitrary(u)?,
             },
+            #[cfg(feature = "dnn")]
+            5 => Op::DredParse {
+                src: Arbitrary::arbitrary(u)?,
+                max_samples: Arbitrary::arbitrary(u)?,
+                rate: Arbitrary::arbitrary(u)?,
+                defer: Arbitrary::arbitrary(u)?,
+            },
+            #[cfg(feature = "dnn")]
+            6 => Op::DredProcess,
+            #[cfg(feature = "dnn")]
+            7 => Op::DredDecode {
+                offset: Arbitrary::arbitrary(u)?,
+                size: Arbitrary::arbitrary(u)?,
+                int16: Arbitrary::arbitrary(u)?,
+            },
             _ => Op::Reset,
         })
     }
+}
+
+/// The packet `Op::DredParse` reads.
+#[cfg(feature = "dnn")]
+#[derive(Arbitrary, Debug)]
+enum DredSrc {
+    /// The last packet decoded (or encoded by `Op::Encoded`).
+    Last,
+    /// Arbitrary bytes.
+    Raw(Vec<u8>),
+    /// The last packet with bytes changed: (position modulo the length,
+    /// value to XOR), so extensions and DRED payloads get garbled.
+    Garbled(Vec<(u16, u8)>),
 }
 
 #[derive(Arbitrary, Debug, Clone, Copy)]
@@ -241,7 +310,7 @@ fn call(
         Op::Decode { pkt, .. } => d.decode(pkt, fs, out),
         Op::Fec { pkt, .. } => d.decode_fec(pkt, fs, out),
         Op::Lost { .. } => d.decode(&[], fs, out),
-        Op::Reset | Op::NewDecoder | Op::Set(_) | Op::Encoded { .. } => unreachable!(),
+        _ => unreachable!(),
     }
 }
 
@@ -307,6 +376,10 @@ fn run(inp: Input) -> Result<(), Finding> {
     let mut synth = Synth::new(fs);
     let mut valid = true;
     let mut fmt = Format::F32;
+    #[cfg(feature = "dnn")]
+    let mut dred = Dred::new();
+    #[cfg(feature = "dnn")]
+    let mut last = Vec::new();
 
     if std::env::var("OFZ_DEBUG").is_ok() {
         eprintln!("script {fs} {ch}");
@@ -320,7 +393,17 @@ fn run(inp: Input) -> Result<(), Finding> {
                 ms,
                 force,
             } => {
-                let e = enc.get_or_insert_with(|| RefEnc::new(fs, ch, 2049));
+                let e = enc.get_or_insert_with(|| {
+                    #[allow(unused_mut)]
+                    let mut e = RefEnc::new(fs, ch, 2049);
+                    // OPUS_SET_DRED_DURATION, and the loss its bitrate needs.
+                    #[cfg(feature = "dnn")]
+                    if inp.dred % 105 > 0 {
+                        e.ctl(4050, (inp.dred % 105) as i32);
+                        e.ctl(opusref::SET_PACKET_LOSS_PERC, 20);
+                    }
+                    e
+                });
                 generated = Op::Decode {
                     pkt: encode(e, &mut synth, fs, ch, signal, *kbps, *ms, *force),
                     size: Size::Max,
@@ -328,6 +411,23 @@ fn run(inp: Input) -> Result<(), Finding> {
                 &generated
             }
             Op::Decode { .. } | Op::Fec { .. } if inp.valid_only => continue,
+            #[cfg(feature = "dnn")]
+            op @ (Op::DredParse { .. } | Op::DredProcess | Op::DredDecode { .. }) => {
+                if std::env::var("OFZ_DEBUG").is_ok() {
+                    eprintln!("script dred {op:?}");
+                }
+                dred_op(
+                    k,
+                    op,
+                    fs,
+                    ch,
+                    &mut dred,
+                    &last,
+                    [&mut scalar, &mut simd],
+                    &mut refd,
+                )?;
+                continue;
+            }
             op => {
                 valid &= matches!(
                     op,
@@ -336,6 +436,10 @@ fn run(inp: Input) -> Result<(), Finding> {
                 op
             }
         };
+        #[cfg(feature = "dnn")]
+        if let Op::Decode { pkt, .. } = op {
+            last.clone_from(pkt);
+        }
         if std::env::var("OFZ_DEBUG").is_ok() {
             // One line per call, replayable: `fs ch` then `d|f <hex> <n>`,
             // `l <n>`, `r`.
@@ -352,7 +456,7 @@ fn run(inp: Input) -> Result<(), Finding> {
                 Op::Reset => eprintln!("script r"),
                 Op::NewDecoder => eprintln!("script n"),
                 Op::Set(s) => eprintln!("script s {s:?}"),
-                Op::Encoded { .. } => {}
+                _ => {}
             }
         }
         let size = match op {
@@ -409,7 +513,7 @@ fn run(inp: Input) -> Result<(), Finding> {
                 continue;
             }
             Op::Decode { size, .. } | Op::Fec { size, .. } | Op::Lost { size } => *size,
-            Op::Encoded { .. } => unreachable!(),
+            _ => unreachable!(),
         };
         let frame = match size {
             Size::Max => fs as usize * 120 / 1000,
@@ -597,6 +701,316 @@ fn run(inp: Input) -> Result<(), Finding> {
                 "op {k} {kind}: |SIMD - scalar| = {d:e} at sample {at}"
             );
         }
+    }
+    Ok(())
+}
+
+/// Both sides' DRED decoders and DRED data (feature `dnn`): opus-rs's data
+/// for the scalar decoder (the pair's level) and for the SIMD one, and
+/// libopus's.
+#[cfg(feature = "dnn")]
+struct Dred {
+    rs: opus_rs::dred::OpusDredDecoder,
+    sc: opus_rs::dred::OpusDred,
+    si: opus_rs::dred::OpusDred,
+    c: *mut opusref::dnn_dred_api::OpusDREDDecoder,
+    cd: Box<opusref::dnn_dred_api::OpusDRED>,
+}
+
+#[cfg(feature = "dnn")]
+impl Dred {
+    fn new() -> Dred {
+        set_simd(false);
+        let sc = opus_rs::dred::OpusDred::default();
+        set_simd(true);
+        let si = opus_rs::dred::OpusDred::default();
+        let mut err = 0;
+        let c = unsafe { opusref::dnn_dred_api::opus_dred_decoder_create(&mut err) };
+        assert!(!c.is_null() && err == 0, "reference DRED decoder init");
+        Dred {
+            rs: opus_rs::dred::OpusDredDecoder::new().unwrap(),
+            sc,
+            si,
+            c,
+            cd: opusref::dnn_dred_api::OpusDRED::zeroed(),
+        }
+    }
+}
+
+#[cfg(feature = "dnn")]
+impl Drop for Dred {
+    fn drop(&mut self) {
+        unsafe { opusref::dnn_dred_api::opus_dred_decoder_destroy(self.c) }
+    }
+}
+
+/// Where opus-rs's DRED data differs from libopus's: the stage, latent
+/// count and offset, then the parsed latents and state and the processed
+/// features, bit for bit.
+#[cfg(feature = "dnn")]
+fn dred_diff(rs: &opus_rs::dred::OpusDred, c: &opusref::dnn_dred_api::OpusDRED) -> Option<String> {
+    use opusref::dnn_dred_api::{DRED_LATENT_DIM, DRED_NUM_FEATURES};
+    let head = (rs.process_stage, rs.nb_latents, rs.dred_offset);
+    if head != (c.process_stage, c.nb_latents, c.dred_offset) {
+        return Some(format!(
+            "(stage, latents, offset) opus-rs {head:?}, libopus {:?}",
+            (c.process_stage, c.nb_latents, c.dred_offset)
+        ));
+    }
+    if rs.process_stage < 1 {
+        return None;
+    }
+    let n = rs.nb_latents.clamp(0, 26) as usize;
+    let bits = |a: &[f32], b: &[f32]| {
+        a.iter()
+            .zip(b)
+            .position(|(x, y)| x.to_bits() != y.to_bits())
+    };
+    let parts = [
+        (
+            "latents",
+            bits(&rs.latents[..n * (DRED_LATENT_DIM + 1)], &c.latents),
+        ),
+        ("state", bits(&rs.state, &c.state)),
+        (
+            "features",
+            if rs.process_stage == 2 {
+                bits(
+                    &rs.fec_features[..n * 4 * DRED_NUM_FEATURES],
+                    &c.fec_features,
+                )
+            } else {
+                None
+            },
+        ),
+    ];
+    parts
+        .iter()
+        .find_map(|(what, at)| at.map(|i| format!("{what} differ from value {i}")))
+}
+
+/// Runs a DRED op on both sides and compares them (oracle `dred`).
+#[cfg(feature = "dnn")]
+#[allow(clippy::too_many_arguments)]
+fn dred_op(
+    k: usize,
+    op: &Op,
+    fs: i32,
+    ch: usize,
+    d: &mut Dred,
+    last: &[u8],
+    dec: [&mut OpusDecoder; 2],
+    refd: &mut RefDec,
+) -> Result<(), Finding> {
+    use opusref::dnn_dred_api as cd;
+    let [scalar, simd] = dec;
+    let bucket = |v: i64| (v.signum(), 64 - v.unsigned_abs().leading_zeros());
+    let class = |r: i32| if r < 0 { r } else { 1 };
+    match op {
+        Op::DredParse {
+            src,
+            max_samples,
+            rate,
+            defer,
+        } => {
+            let pkt: Vec<u8> = match src {
+                DredSrc::Last => last.to_vec(),
+                DredSrc::Raw(b) => b.clone(),
+                DredSrc::Garbled(edits) => {
+                    let mut p = last.to_vec();
+                    let n = p.len();
+                    for &(i, x) in edits.iter().filter(|_| n > 0) {
+                        p[i as usize % n] ^= x;
+                    }
+                    p
+                }
+            };
+            // libopus divides by the rate and multiplies the maximum by 100
+            // in 32 bits, so both stay where that does not overflow.
+            let rate = if rate % 2 == 0 {
+                RATES[(rate / 2) as usize % RATES.len()]
+            } else {
+                (rate % 192_000) as i32 + 1
+            };
+            let max = (max_samples % (1 << 24)) as i32;
+            let r_sc = d.rs.parse(&mut d.sc, &pkt, max, rate, *defer);
+            let r_si = d.rs.parse(&mut d.si, &pkt, max, rate, *defer);
+            let mut end = 0;
+            let r_c = unsafe {
+                cd::opus_dred_parse(
+                    d.c,
+                    &mut *d.cd,
+                    pkt.as_ptr(),
+                    pkt.len() as i32,
+                    max,
+                    rate,
+                    &mut end,
+                    *defer as c_int,
+                )
+            };
+            if std::env::var("OFZ_DEBUG").is_ok() {
+                eprintln!(
+                    "dred parse: opus-rs {r_sc:?}, libopus {r_c} (end {end}, latents {})",
+                    d.cd.nb_latents
+                );
+            }
+            ijon_set(hash(&(
+                "dred-parse",
+                bucket(d.cd.nb_latents as i64),
+                class(r_c),
+                *defer,
+            )));
+            match r_sc {
+                Ok((n, e)) if r_c >= 0 && (n, e) == (r_c, end) => {}
+                Err(_) if r_c < 0 => {}
+                r => fail!(
+                    "dred",
+                    format!("parse {}", if r.is_ok() { "rs-ok" } else { "rs-err" }),
+                    "op {k} parse: opus-rs {r:?}, libopus {r_c} (dred_end {end})"
+                ),
+            }
+            if r_si.is_ok() != r_sc.is_ok() && !suppressed("simd") {
+                fail!(
+                    "simd",
+                    "dred parse",
+                    "op {k} parse: SIMD {r_si:?}, scalar {r_sc:?}"
+                );
+            }
+        }
+        Op::DredProcess => {
+            let r_sc = d.rs.process(&mut d.sc);
+            let r_si = d.rs.process(&mut d.si);
+            let p: *mut cd::OpusDRED = &mut *d.cd;
+            let r_c = unsafe { cd::opus_dred_process(d.c, p, p) };
+            if std::env::var("OFZ_DEBUG").is_ok() {
+                eprintln!("dred process: opus-rs {r_sc:?}, libopus {r_c}");
+            }
+            ijon_set(hash(&("dred-process", d.cd.process_stage, class(r_c))));
+            if r_sc.is_ok() != (r_c == 0) {
+                fail!(
+                    "dred",
+                    "process",
+                    "op {k} process: opus-rs {r_sc:?}, libopus {r_c}"
+                );
+            }
+            if r_si.is_ok() != r_sc.is_ok() && !suppressed("simd") {
+                fail!(
+                    "simd",
+                    "dred process",
+                    "op {k} process: SIMD {r_si:?}, scalar {r_sc:?}"
+                );
+            }
+        }
+        Op::DredDecode {
+            offset,
+            size,
+            int16,
+        } => {
+            let frame = match *size {
+                Size::Max => fs as usize * 120 / 1000,
+                Size::Ms(m) => (m as usize % 48 + 1) * fs as usize / 400,
+                Size::Raw(r) => r as usize,
+            };
+            if frame > CAP {
+                // Only the no-panic property, as for the other calls.
+                let mut out = vec![0f32; CAP * ch];
+                set_simd(false);
+                let _ = scalar.dred_decode_float(&d.sc, *offset, &mut out, frame);
+                return Ok(());
+            }
+            let len = frame.max(1) * ch;
+            let (r_ref, r_sc, r_si, o_ref, o_sc, o_si);
+            if *int16 {
+                let (mut a, mut b, mut c) = (vec![0i16; len], vec![0i16; len], vec![0i16; len]);
+                r_ref = refd.dred_decode(&d.cd, *offset, &mut a, frame);
+                set_simd(false);
+                r_sc = scalar.dred_decode(&d.sc, *offset, &mut b, frame);
+                set_simd(true);
+                r_si = simd.dred_decode(&d.si, *offset, &mut c, frame);
+                let f = |v: Vec<i16>| {
+                    v.into_iter()
+                        .map(|x| x as f32 / 32768.0)
+                        .collect::<Vec<_>>()
+                };
+                (o_ref, o_sc, o_si) = (f(a), f(b), f(c));
+            } else {
+                let (mut a, mut b, mut c) = (vec![0f32; len], vec![0f32; len], vec![0f32; len]);
+                r_ref = refd.dred_decode_float(&d.cd, *offset, &mut a, frame);
+                set_simd(false);
+                r_sc = scalar.dred_decode_float(&d.sc, *offset, &mut b, frame);
+                set_simd(true);
+                r_si = simd.dred_decode_float(&d.si, *offset, &mut c, frame);
+                (o_ref, o_sc, o_si) = (a, b, c);
+            }
+            if std::env::var("OFZ_DEBUG").is_ok() {
+                eprintln!("dred decode: opus-rs {r_sc:?}, libopus {r_ref}");
+            }
+            let off = *offset as i64 * 400 / fs as i64;
+            ijon_set(hash(&(
+                "dred-decode",
+                bucket(d.cd.nb_latents as i64),
+                bucket(off),
+                class(r_ref),
+            )));
+            let n = match r_sc {
+                Ok(n) if r_ref >= 0 && n == r_ref as usize => n,
+                Err(_) if r_ref < 0 => {
+                    if r_si.is_ok() && !suppressed("simd") {
+                        fail!(
+                            "simd",
+                            "dred decode ok-vs-err",
+                            "op {k}: SIMD Ok, scalar Err"
+                        );
+                    }
+                    return Ok(());
+                }
+                r => fail!(
+                    "dred",
+                    format!("decode {}", if r.is_ok() { "rs-ok" } else { "rs-err" }),
+                    "op {k} dred_decode frame={frame} offset={offset}: opus-rs {r:?}, libopus {r_ref}"
+                ),
+            };
+            if r_si != r_sc && !suppressed("simd") {
+                fail!(
+                    "simd",
+                    "dred decode result",
+                    "op {k}: SIMD {r_si:?}, scalar {r_sc:?}"
+                );
+            }
+            let (rr, rs) = (refd.final_range(), scalar.final_range());
+            if rr != rs {
+                fail!(
+                    "range",
+                    "dred decode",
+                    "op {k}: opus-rs {rs:#010x}, libopus {rr:#010x}"
+                );
+            }
+            let (diff, peak, at) = max_diff(&o_sc[..n * ch], &o_ref[..n * ch]);
+            let lsb = if *int16 { 1.0 / 32768.0 } else { 0.0 };
+            let lim = (tol().plc * peak).max(lsb);
+            if !(diff <= lim) {
+                fail!(
+                    "dred",
+                    "decode pcm",
+                    "op {k} dred_decode: |opus-rs - libopus| = {diff:e} at sample {at} (opus-rs {}, libopus {}), limit {lim:e}",
+                    o_sc[at],
+                    o_ref[at]
+                );
+            }
+            let (diff, peak, at) = max_diff(&o_si[..n * ch], &o_sc[..n * ch]);
+            if !(diff <= (tol().simd * peak).max(lsb)) && !suppressed("simd") {
+                fail!(
+                    "simd",
+                    "dred decode pcm",
+                    "op {k}: |SIMD - scalar| = {diff:e} at sample {at}"
+                );
+            }
+            return Ok(());
+        }
+        _ => unreachable!(),
+    }
+    if let Some(m) = dred_diff(&d.sc, &d.cd) {
+        fail!("dred", "data", "op {k} {:?}: {m}", discriminant(op));
     }
     Ok(())
 }

@@ -253,6 +253,46 @@ impl RefDec {
         unsafe { c::opus_decoder_ctl(self.0, req, &mut v as *mut i32) };
         v
     }
+    /// `opus_decoder_dred_decode_float`: samples per channel or an error code.
+    #[cfg(feature = "dnn")]
+    pub fn dred_decode_float(
+        &mut self,
+        dred: &c::dnn_dred_api::OpusDRED,
+        offset: i32,
+        out: &mut [f32],
+        frame_size: usize,
+    ) -> i32 {
+        assert!(out.len() >= frame_size);
+        unsafe {
+            c::dnn_dred_api::opus_decoder_dred_decode_float(
+                self.0,
+                dred,
+                offset,
+                out.as_mut_ptr(),
+                frame_size as i32,
+            )
+        }
+    }
+    /// `opus_decoder_dred_decode` (16-bit output).
+    #[cfg(feature = "dnn")]
+    pub fn dred_decode(
+        &mut self,
+        dred: &c::dnn_dred_api::OpusDRED,
+        offset: i32,
+        out: &mut [i16],
+        frame_size: usize,
+    ) -> i32 {
+        assert!(out.len() >= frame_size);
+        unsafe {
+            c::dnn_dred_api::opus_decoder_dred_decode(
+                self.0,
+                dred,
+                offset,
+                out.as_mut_ptr(),
+                frame_size as i32,
+            )
+        }
+    }
 }
 impl Drop for RefDec {
     fn drop(&mut self) {
