@@ -210,6 +210,11 @@ pub struct OpusEncoder {
     sampling_rate: i32,
     channels: usize,
     bandwidth: Bandwidth,
+    /// The bitrate in b/s, as libopus `OPUS_SET_BITRATE`: 500 to 750000 per
+    /// channel, [`OpusEncoder::BITRATE_AUTO`] (the default) for
+    /// `60*Fs/frame_size + Fs*channels`, or [`OpusEncoder::BITRATE_MAX`] for
+    /// as many bits as the packet holds. Each packet codes at most what its
+    /// output buffer holds.
     pub bitrate_bps: i32,
     pub complexity: i32,
     /// Constrained VBR (see [`OpusEncoder::set_vbr_constraint`]).
@@ -1229,6 +1234,13 @@ fn state_mut<T: ?Sized>(b: &mut T) -> &mut T {
 }
 
 impl OpusEncoder {
+    /// `bitrate_bps` chosen from the frame size and channels (libopus
+    /// `OPUS_AUTO`).
+    pub const BITRATE_AUTO: i32 = -1000;
+    /// `bitrate_bps` for the most bits the packet holds (libopus
+    /// `OPUS_BITRATE_MAX`).
+    pub const BITRATE_MAX: i32 = -1;
+
     pub fn new(
         sampling_rate: i32,
         channels: usize,
@@ -1319,7 +1331,7 @@ impl OpusEncoder {
             sampling_rate,
             channels,
             bandwidth: bw,
-            bitrate_bps: 64000,
+            bitrate_bps: Self::BITRATE_AUTO,
             complexity: 9,
             vbr_constraint: true,
             use_cbr: false,
@@ -1829,7 +1841,9 @@ impl OpusEncoder {
         // Unclamped extremes overflow the bitrate arithmetic downstream
         // (bitrate*6 in celt, `equiv*(90+complexity)` in the mode
         // selection) — issue #27 deep scan.
-        self.bitrate_bps = self.bitrate_bps.clamp(500, 750_000 * self.channels as i32);
+        if !matches!(self.bitrate_bps, Self::BITRATE_AUTO | Self::BITRATE_MAX) {
+            self.bitrate_bps = self.bitrate_bps.clamp(500, 750_000 * self.channels as i32);
+        }
         self.complexity = self.complexity.clamp(0, 10);
         self.packet_loss_perc = self.packet_loss_perc.clamp(0, 100);
 
@@ -1846,16 +1860,21 @@ impl OpusEncoder {
         // are the budget; less DRED's share.
         let fs = self.sampling_rate;
         let mut max_data_bytes = output.len().min(6 * OPUS_MAX_PACKET_BYTES);
-        self.rate = self
-            .bitrate_bps
-            .min(bits_to_bitrate(max_data_bytes as i32 * 8, fs, frame_size));
+        let user_bitrate = match self.bitrate_bps {
+            Self::BITRATE_AUTO => 60 * fs / frame_size as i32 + fs * self.channels as i32,
+            Self::BITRATE_MAX => 1_500_000,
+            bitrate => bitrate,
+        };
+        self.rate = user_bitrate.min(bits_to_bitrate(max_data_bytes as i32 * 8, fs, frame_size));
         let mut repacketize_len = output.len();
         if self.use_cbr {
             let cbr_bytes =
                 ((bitrate_to_bits(self.rate, fs, frame_size) + 4) / 8).min(max_data_bytes as i32);
             self.rate = bits_to_bitrate(cbr_bytes * 8, fs, frame_size);
             max_data_bytes = cbr_bytes.max(1) as usize;
-            repacketize_len = (cbr_bytes as usize).min(output.len());
+            if self.bitrate_bps != Self::BITRATE_MAX {
+                repacketize_len = (cbr_bytes as usize).min(output.len());
+            }
         }
         #[cfg(feature = "dred")]
         {

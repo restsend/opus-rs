@@ -126,3 +126,19 @@ fn cbr_bitrate_is_whole_bytes() {
     p.cbr();
     p.check(8, 960, 1500, bytes);
 }
+
+/// The default bitrate is OPUS_AUTO: 60*Fs/frame_size + Fs*channels, here
+/// 99000 b/s for 48 kHz stereo 20 ms frames.
+#[test]
+fn default_bitrate_is_auto() {
+    let mut p = Pair::new(48000, 2, Application::Audio);
+    p.check(8, 960, 1500, bytes);
+}
+
+/// OPUS_BITRATE_MAX codes as many bits as the buffer holds.
+#[test]
+fn bitrate_max_fills_the_buffer() {
+    let mut p = Pair::new(48000, 1, Application::Audio);
+    p.bitrate(OpusEncoder::BITRATE_MAX);
+    p.check(8, 960, 200, bytes);
+}

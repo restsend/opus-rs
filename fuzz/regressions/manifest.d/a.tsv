@@ -1,2 +1,3 @@
 a1	test:encoder_packet	-	vbr_bitrate_is_capped_by_the_buffer ... FAILED	VBR bitrate not capped by the output buffer
 a2	test:encoder_packet	-	cbr_bitrate_is_whole_bytes ... FAILED	CBR bitrate not re-quantized to whole bytes
+a3	test:encoder_packet	-	default_bitrate_is_auto ... FAILED	default bitrate fixed at 64 kb/s (libopus OPUS_AUTO)
