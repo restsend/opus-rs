@@ -226,8 +226,8 @@ impl DredEnc {
         assert!(pcm.len() >= frame_size * channels);
         unsafe { ref_dred_compute_latents(self.0, pcm.as_ptr(), frame_size as c_int, extra_delay) }
     }
-    /// `dred_encode_silk_frame`; `activity_mem` must cover every byte the C
-    /// code reads (424).
+    /// `dred_encode_silk_frame`; `activity_mem` holds 4*DRED_MAX_FRAMES
+    /// (416) bytes.
     #[allow(clippy::too_many_arguments)]
     pub fn encode_silk_frame(
         &mut self,
@@ -238,7 +238,7 @@ impl DredEnc {
         qmax: i32,
         activity_mem: &mut [u8],
     ) -> Vec<u8> {
-        assert!(activity_mem.len() >= 424);
+        assert!(activity_mem.len() >= 416);
         let mut buf = vec![0u8; max_bytes.max(1) as usize];
         let n = unsafe {
             ref_dred_encode_silk_frame(

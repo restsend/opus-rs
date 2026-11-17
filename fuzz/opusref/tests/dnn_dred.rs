@@ -475,10 +475,7 @@ fn encode_silk_frame_and_ec_decode_match() {
         let sig = speechlike(fs as usize * 4, fs, channels, fs as u64, 1.0);
         let mut cenc = c::DredEnc::new(fs as i32, channels as i32);
         let mut renc = DredEnc::builtin(fs as i32, channels as i32).unwrap();
-        // libopus reads up to 8 bytes past its 416-byte activity_mem; the
-        // C side gets zeros there, the Rust side reads them as inactive.
-        let mut act_c = vec![0u8; 424];
-        let mut act_r = vec![0u8; 416];
+        let mut act = vec![0u8; 416];
         let mut pos = 0;
         let mut k = 0;
         let mut active = 1u8;
@@ -493,16 +490,15 @@ fn encode_silk_frame_and_ec_decode_match() {
             cenc.compute_latents(pcm, frame, channels, extra_delay);
             renc.compute_latents(pcm, frame, extra_delay);
             // Activity: runs with random switches, and one silence of over
-            // a second (the encoder then skips most of its latents, and
-            // libopus reads past its activity_mem).
+            // a second (the encoder then skips most of its latents and
+            // reaches the end of activity_mem).
             if r.below(if active == 1 { 12 } else { 6 }) == 0 {
                 active ^= 1;
             }
             if (60..110).contains(&k) {
                 active = 0;
             }
-            push_activity(&mut act_c, units, active);
-            push_activity(&mut act_r, units, active);
+            push_activity(&mut act, units, active);
             let max_chunks = [26, 1, 3, 13, 26, 8][k % 6];
             let max_bytes = [998, 8, 20, 60, 200, 500][(k / 3) % 6];
             let q0 = r.below(16) as i32;
@@ -516,9 +512,9 @@ fn encode_silk_frame_and_ec_decode_match() {
             } else {
                 15
             };
-            let a = cenc.encode_silk_frame(max_chunks, max_bytes, q0, dq, qmax, &mut act_c);
+            let a = cenc.encode_silk_frame(max_chunks, max_bytes, q0, dq, qmax, &mut act);
             let mut b = vec![0u8; max_bytes as usize];
-            let n = renc.encode_silk_frame(&mut b, max_chunks, max_bytes, q0, dq, qmax, &act_r);
+            let n = renc.encode_silk_frame(&mut b, max_chunks, max_bytes, q0, dq, qmax, &act);
             b.truncate(n as usize);
             let what = format!(
                 "{fs} Hz {channels} ch frame {k} ({max_chunks} {max_bytes} {q0} {dq} {qmax})"
