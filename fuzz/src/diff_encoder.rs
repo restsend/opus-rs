@@ -74,6 +74,8 @@ enum Ctl {
     ForceChannels(i8),
     /// `set_prediction_disabled` / `OPUS_SET_PREDICTION_DISABLED`.
     PredictionDisabled(bool),
+    /// `set_phase_inversion_disabled` / `OPUS_SET_PHASE_INVERSION_DISABLED`.
+    PhaseInversionDisabled(bool),
 }
 
 /// Applies `ctl` to the opus-rs encoders and the libopus one and checks
@@ -99,6 +101,12 @@ fn apply_ctl(rs: &mut [&mut OpusEncoder; 2], re: &mut RefEnc, ctl: Ctl) -> Resul
             rs.iter_mut().for_each(|e| e.set_prediction_disabled(d));
             let b = re.try_ctl(c::SET_PREDICTION_DISABLED, d as i32);
             (0, b, rs[0].prediction_disabled() as i32, re.get(c::GET_PREDICTION_DISABLED))
+        }
+        Ctl::PhaseInversionDisabled(d) => {
+            rs.iter_mut().for_each(|e| e.set_phase_inversion_disabled(d));
+            let b = re.try_ctl(c::SET_PHASE_INVERSION_DISABLED, d as i32);
+            let got = rs[0].phase_inversion_disabled() as i32;
+            (0, b, got, re.get(c::GET_PHASE_INVERSION_DISABLED))
         }
     };
     if a != b || got != want {

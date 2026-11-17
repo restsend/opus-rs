@@ -54,6 +54,20 @@ impl OpusEncoder {
         self.prediction_disabled
     }
 
+    /// Disables the phase inversion of CELT's intensity stereo (libopus
+    /// `OPUS_SET_PHASE_INVERSION_DISABLED`, off by default), which lets a
+    /// stereo stream downmix to mono without the inverted bands cancelling,
+    /// at a small cost in stereo quality.
+    pub fn set_phase_inversion_disabled(&mut self, disabled: bool) {
+        self.celt_enc.disable_inv = disabled;
+    }
+
+    /// Whether phase inversion is disabled (libopus
+    /// `OPUS_GET_PHASE_INVERSION_DISABLED`).
+    pub fn phase_inversion_disabled(&self) -> bool {
+        self.celt_enc.disable_inv
+    }
+
     /// libopus `silk_Encode` with `reducedDependency`: every channel of the
     /// input codes its next frame as the first after a reset.
     pub(crate) fn silk_reduced_dependency(&mut self) {

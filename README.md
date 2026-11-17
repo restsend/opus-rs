@@ -62,7 +62,7 @@ a libopus function return libopus's errors as the constants of
 | `OPUS_SET_PREDICTION_DISABLED`, `OPUS_GET_PREDICTION_DISABLED` | `OpusEncoder::set_prediction_disabled`, `prediction_disabled` |
 | `opus_decoder_ctl(OPUS_RESET_STATE)` | `OpusDecoder::reset` |
 | `OPUS_SET_GAIN`, `OPUS_GET_GAIN` | `OpusDecoder::set_gain`, `gain` |
-| `OPUS_SET_PHASE_INVERSION_DISABLED`, `OPUS_GET_PHASE_INVERSION_DISABLED` (decoder) | `OpusDecoder::set_phase_inversion_disabled`, `phase_inversion_disabled` |
+| `OPUS_SET_PHASE_INVERSION_DISABLED`, `OPUS_GET_PHASE_INVERSION_DISABLED` | `OpusEncoder::set_phase_inversion_disabled`, `phase_inversion_disabled`; `OpusDecoder::set_phase_inversion_disabled`, `phase_inversion_disabled` |
 | `OPUS_GET_SAMPLE_RATE`, `OPUS_GET_BANDWIDTH`, `OPUS_GET_PITCH`, `OPUS_GET_LAST_PACKET_DURATION` (decoder) | `OpusDecoder::sample_rate`, `bandwidth`, `pitch`, `last_packet_duration` |
 | `OPUS_SET_IGNORE_EXTENSIONS`, `OPUS_GET_IGNORE_EXTENSIONS` | `OpusDecoder::set_ignore_extensions`, `ignore_extensions` |
 | `opus_decode`, `opus_decode24` | `OpusDecoder::decode_i16`, `decode_fec_i16`, `decode24`, `decode_fec24` |

@@ -1329,6 +1329,9 @@ pub struct CeltEncoder {
     /// at 0 the energy is coded intra.
     disable_pf: bool,
     force_intra: bool,
+    /// No phase inversion in intensity stereo (libopus `disable_inv`,
+    /// `OPUS_SET_PHASE_INVERSION_DISABLED`).
+    pub(crate) disable_inv: bool,
     /// The last frame's allocation decisions, which unit tests inspect.
     #[cfg(test)]
     decisions: FrameDecisions,
@@ -1900,6 +1903,7 @@ impl CeltEncoder {
             silk_offset: 0,
             disable_pf: false,
             force_intra: false,
+            disable_inv: false,
             #[cfg(test)]
             decisions: FrameDecisions::default(),
         };
@@ -3054,7 +3058,7 @@ impl CeltEncoder {
             lm as i32,
             coded_bands,
             resynth,
-            false,
+            self.disable_inv,
             &mut self.rng,
         );
 

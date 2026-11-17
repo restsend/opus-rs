@@ -31,8 +31,9 @@ struct Pair {
     fs: i32,
     ch: usize,
     app: i32,
-    /// The signal's gain.
+    /// The signal's gain, and the right channel's.
     scale: f32,
+    right: f32,
     /// Encode through `encode_i16` / `opus_encode`.
     int16: bool,
 }
@@ -52,6 +53,7 @@ impl Pair {
             ch,
             app: app as i32,
             scale: 1.0,
+            right: 1.0,
             int16: false,
         }
     }
@@ -69,7 +71,11 @@ impl Pair {
 
     /// Encodes frame `f` on both and checks the packets.
     fn encode(&mut self, frame: usize, f: usize, what: &str) {
-        let pcm: Vec<f32> = signal(self.fs, self.ch, frame, f).iter().map(|x| x * self.scale).collect();
+        let pcm: Vec<f32> = signal(self.fs, self.ch, frame, f)
+            .iter()
+            .enumerate()
+            .map(|(i, x)| x * self.scale * if i % self.ch == 1 { self.right } else { 1.0 })
+            .collect();
         let (mut a, mut b) = ([0u8; 1500], [0u8; 1500]);
         let (n, m) = if self.int16 {
             let pcm: Vec<i16> = pcm.iter().map(|&x| (x * 32768.0).round().clamp(-32768.0, 32767.0) as i16).collect();
@@ -235,6 +241,30 @@ fn prediction_disabled_matches_libopus() {
                 p.ctl(SET_PREDICTION_DISABLED, 0);
             }
             p.encode(frame, f, &format!("{fs} {ch} {app:?} frame {f}"));
+        }
+    }
+}
+
+/// `OPUS_SET_PHASE_INVERSION_DISABLED`: stereo CELT streams with intensity
+/// stereo code alike either way.
+#[test]
+fn phase_inversion_matches_libopus() {
+    for disabled in [false, true] {
+        for (fs, ch, app, frame, _) in CONFIGS {
+            let mut p = Pair::new(fs, ch, app);
+            // A low rate codes the upper bands as intensity stereo.
+            p.rs.bitrate_bps = 24000;
+            p.ctl(SET_BITRATE, 24000);
+            // Out-of-phase channels.
+            p.right = -1.5;
+            assert_eq!(p.rs.phase_inversion_disabled() as i32, p.get(GET_PHASE_INVERSION_DISABLED));
+            p.rs.set_phase_inversion_disabled(disabled);
+            assert_eq!(p.ctl(SET_PHASE_INVERSION_DISABLED, disabled as i32), 0);
+            assert_eq!(p.ctl(SET_PHASE_INVERSION_DISABLED, -1), -1);
+            assert_eq!(p.rs.phase_inversion_disabled() as i32, p.get(GET_PHASE_INVERSION_DISABLED));
+            for f in 0..16 {
+                p.encode(frame, f, &format!("{fs} {ch} {app:?} disabled {disabled} frame {f}"));
+            }
         }
     }
 }
