@@ -1496,7 +1496,7 @@ fn dynalloc_analysis_simple(
     toneishness: f32,
     importance: &mut [i32],
     spread_weight: &mut [i32],
-) -> f32 {
+) -> (f32, i32) {
     offsets.fill(0);
     let nb = mode.nb_ebands;
     // celt_encoder.c:1063-1117: the noise floor, the deepest band above it,
@@ -1537,7 +1537,7 @@ fn dynalloc_analysis_simple(
         for v in importance.iter_mut() {
             *v = 13;
         }
-        return max_depth;
+        return (max_depth, 0);
     }
 
     let mut follower: FixedVec<f32, CELT_NB_X_CH> = FixedVec::from_value(0.0f32, nb * channels);
@@ -1692,6 +1692,7 @@ fn dynalloc_analysis_simple(
         {
             let cap_bits = (2 * effective_bytes as i32 / 3) << BITRES << 3;
             offsets[i] = cap_bits - tot_boost;
+            tot_boost = cap_bits;
             break;
         }
 
@@ -1706,7 +1707,7 @@ fn dynalloc_analysis_simple(
         offsets[i] = boost_count.max(0);
         tot_boost += boost_bits.max(0);
     }
-    max_depth
+    (max_depth, tot_boost)
 }
 
 impl CeltEncoder {
@@ -2407,8 +2408,9 @@ impl CeltEncoder {
         let surround_dynalloc = [0.0f32; 21];
         let mut importance = [13i32; MAX_NB_EBANDS];
         let mut spread_weight = [32i32; MAX_NB_EBANDS];
-        // The deepest band above the noise floor, for the VBR target.
-        let max_depth = dynalloc_analysis_simple(
+        // The deepest band above the noise floor and the boosts' total, for
+        // the VBR target.
+        let (max_depth, tot_boost) = dynalloc_analysis_simple(
             mode,
             band_log_e,
             band_log_e2_opt,
@@ -2674,14 +2676,13 @@ impl CeltEncoder {
             if self.constrained_vbr {
                 base_target += self.vbr_offset >> lm_diff;
             }
-            let tot_boost = total_boost;
             let cur_tell_frac = rc.tell_frac();
             // Use the exact initial tell_frac captured at entry (libopus tell0_frac),
             // not tell_initial<<BITRES which loses the fractional part.
             let min_allowed = {
-                let a = ((cur_tell_frac + tot_boost + (1 << (BITRES + 3)) - 1) >> (BITRES + 3)) + 2;
+                let a = ((cur_tell_frac + total_boost + (1 << (BITRES + 3)) - 1) >> (BITRES + 3)) + 2;
                 if hybrid {
-                    let b = (tell_initial_frac + (37 << BITRES) + tot_boost
+                    let b = (tell_initial_frac + (37 << BITRES) + total_boost
                         + (1 << (BITRES + 3))
                         - 1)
                         >> (BITRES + 3);
