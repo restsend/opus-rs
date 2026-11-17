@@ -1,4 +1,4 @@
-# Weights of the libopus 1.6.1 neural network models
+# Weights of the libopus neural network models
 
 Each `.bin` file holds the arrays of one model in libopus's weight blob
 format (the format `OPUS_SET_DNN_BLOB` reads). `src/dnn/builtin.rs` embeds
@@ -17,11 +17,13 @@ them with `include_bytes!`.
 
 ## Provenance
 
-- Source: the model data of libopus 1.6.1,
+- Source: the model data of libopus 1.6.1 and of main at f1afc4222a,
   `opus_data-a5177ec6fb7d15058e99e57029746100121f68e4890b1467d4094aa336b6013e.tar.gz`
   (SHA-256 a5177ec6fb7d15058e99e57029746100121f68e4890b1467d4094aa336b6013e,
-  the archive `autogen.sh` of libopus 1.6.1 downloads). Its `dnn/*_data.c`
-  files are identical to those shipped in the opus-1.6.1 release tarball.
+  the archive `autogen.sh` downloads). The opus-1.6.1 release tarball ships
+  its `dnn/*_data.c` files without the float debug copies of the int8 layers
+  (the `#ifndef DISABLE_DEBUG_FLOAT` arrays); built with DISABLE_DEBUG_FLOAT,
+  libopus's default, both give the same weights.
 - Generation: the reference build of `fuzz/opusref` (feature `dnn`)
   compiles those data files as libopus does by default (DISABLE_DEBUG_FLOAT,
   so int8 layers carry only their int8 weights), and
