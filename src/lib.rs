@@ -4042,14 +4042,28 @@ impl OpusDecoder {
 
         // Apply PLC-style bridging at mode transitions (libopus
         // opus_decoder.c:660-679). The first F2_5 of the output is replaced
-        // with the previous frame's tail (PLC bridge), and the next F2_5 is
-        // crossfaded between the bridge and the new frame's CELT output.
+        // with the bridge, and the next F2_5 is crossfaded between the
+        // bridge and the new frame's output.
         // F5 = Fs/200, F2_5 = Fs/400.
         let f2_5 = self.sampling_rate as usize / 400;
         let f5 = f2_5 * 2;
-        if transition && f5 > 0 && decoded_total >= f5 {
-            let window = modes::default_mode().window;
-            let inc = (48000 / self.sampling_rate) as usize;
+        let window = modes::default_mode().window;
+        let inc = (48000 / self.sampling_rate) as usize;
+        if transition && sub_frame_size < f5 {
+            // Not enough time for a clean transition: libopus fades the whole
+            // 2.5 ms frame from the bridge (opus_decode_frame 667-677).
+            let n = f2_5 * self.channels;
+            let new: FixedVec<f32, OPUS_PCM_TAIL> = FixedVec::from_slice(&output[..n]);
+            smooth_fade(
+                &pcm_transition[..n],
+                &new,
+                &mut output[..n],
+                f2_5,
+                self.channels,
+                window,
+                inc,
+            );
+        } else if transition {
             let f2_5_ch = f2_5 * self.channels;
             let f5_ch = f5 * self.channels;
             // First F2_5: the bridge concealed in the old mode.
