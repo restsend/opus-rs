@@ -1427,6 +1427,49 @@ impl OpusEncoder {
         })
     }
 
+    /// Restarts the stream, keeping the settings (libopus
+    /// `OPUS_RESET_STATE`): the signal history, the analysis and the rate
+    /// control start afresh, and the next packet is coded like the first
+    /// one of a new encoder. As in libopus, the DRED duration is cleared,
+    /// and SILK's control state (`silk_mode`: the stereo width, the
+    /// pending stereo-to-mono and rate switches) is kept.
+    pub fn reset(&mut self) {
+        self.analysis.reset();
+        self.stream_channels = self.channels;
+        self.hybrid_stereo_width_q14 = 1 << 14;
+        self.variable_hp_smth2_q15 = silk_lin2log(60) << 8;
+        self.prev_hb_gain = 1.0;
+        self.hp_mem.fill(0);
+        self.hp_mem_float = [0.0; 4];
+        self.mode = OpusMode::Hybrid;
+        self.prev_enc_mode = None;
+        self.prev_channels = 0;
+        self.bandwidth = Bandwidth::Fullband;
+        self.auto_bandwidth = Bandwidth::Fullband;
+        self.silk_bw_switch = false;
+        self.first = true;
+        self.width_mem = StereoWidthState::default();
+        self.detected_bandwidth = None;
+        self.nb_no_activity_ms_q1 = 0;
+        self.peak_signal_energy = 0.0;
+        self.nonfinal_frame = false;
+        self.range_final = 0;
+        self.delay_buffer.fill(0.0);
+        self.silk_delay_buffer.fill(0);
+        self.analysis_read_bak = None;
+        self.celt_enc.reset_state();
+        for enc in [&mut self.silk_enc, &mut self.silk_enc_side] {
+            *state_mut(enc) = SilkEncoderState::default();
+            silk_init_encoder(state_mut(enc), 0);
+        }
+        self.silk_resampler_enc = silk::resampler::SilkResampler::default();
+        self.silk_resampler_enc_right = silk::resampler::SilkResampler::default();
+        self.silk_initialized = false;
+        self.silk_channels = 1;
+        #[cfg(feature = "dred")]
+        self.dred.reset();
+    }
+
     /// The encoder's lookahead in samples at its sampling rate, like libopus
     /// `OPUS_GET_LOOKAHEAD`: the pre-skip an Ogg Opus `OpusHead` needs.
     /// `Fs/400 + Fs/250` (312 samples at 48 kHz), only `Fs/400` for

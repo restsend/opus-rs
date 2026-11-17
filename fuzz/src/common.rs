@@ -231,6 +231,10 @@ impl RefEnc {
         unsafe { c::opus_encoder_ctl(self.0, req, &mut v as *mut i32) };
         v
     }
+    /// `OPUS_RESET_STATE`.
+    pub fn reset(&mut self) {
+        unsafe { c::opus_encoder_ctl(self.0, c::RESET_STATE) };
+    }
     pub fn encode_i16(&mut self, pcm: &[i16], frame_size: usize, out: &mut [u8]) -> i32 {
         unsafe {
             c::opus_encode(

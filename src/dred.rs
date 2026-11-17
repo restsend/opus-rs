@@ -287,6 +287,18 @@ impl EncoderDred {
         }
     }
 
+    /// `dred_encoder_reset` and the DRED fields an encoder reset clears,
+    /// the duration among them.
+    pub fn reset(&mut self) {
+        self.enc.reset();
+        self.duration = 0;
+        self.q0 = 0;
+        self.dq = 0;
+        self.qmax = 0;
+        self.target_chunks = 0;
+        self.activity_mem = [0; 4 * DRED_MAX_FRAMES];
+    }
+
     /// `compute_dred_bitrate`: the share of `bitrate_bps` that goes to
     /// DRED in a packet of `frame_size` samples, 0 when DRED cannot have at
     /// least two chunks. Sets the quantizers and the chunk target.

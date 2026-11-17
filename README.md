@@ -56,6 +56,7 @@ a libopus function return libopus's errors as the constants of
 
 | libopus | opus-rs |
 | --- | --- |
+| `opus_encoder_ctl(OPUS_RESET_STATE)` | `OpusEncoder::reset` |
 | `opus_decoder_ctl(OPUS_RESET_STATE)` | `OpusDecoder::reset` |
 | `opus_strerror` | `error::strerror` |
 | `opus_get_version_string` | `error::version_string` |

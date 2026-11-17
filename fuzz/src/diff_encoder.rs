@@ -1,6 +1,7 @@
 //! Differential encoder fuzzer: generated signals (silence, DC, clipping,
 //! low pitch, impulses, voice-like, raw) with settings that change between
-//! segments, encoded by opus-rs and by the scalar libopus reference.
+//! segments, resets and new encoders, encoded by opus-rs and by the scalar
+//! libopus reference.
 //!
 //! opus-rs runs twice, with the fuzzing SIMD switch off (`scalar`) and on;
 //! the switch has no effect yet (fuzz/DIFFERENTIAL.md).
@@ -46,7 +47,7 @@ struct Seg {
 }
 
 /// How the segment's frames are encoded: API arguments that vary per call.
-#[derive(Arbitrary, Debug)]
+#[derive(Debug)]
 struct Call {
     /// A new frame duration from this segment on (index into DURATIONS).
     frame: Option<u8>,
@@ -57,6 +58,38 @@ struct Call {
     int16: bool,
     /// First try one call with an arbitrary frame size.
     bad_frame: Option<u32>,
+    /// Restart the encoders before the segment.
+    restart: Option<Restart>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Restart {
+    /// `reset()` and `OPUS_RESET_STATE`.
+    Reset,
+    /// New encoders with the current settings.
+    New,
+}
+
+/// The derived encoding, which the saved reproducers use, with `restart`
+/// in the unused bits of `int16`'s byte (a bool reads bit 0): `0xfe` and
+/// `0xff` reset, `0xfc` and `0xfd` start new encoders.
+impl<'a> Arbitrary<'a> for Call {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let frame = Arbitrary::arbitrary(u)?;
+        let budget = Arbitrary::arbitrary(u)?;
+        let b = u8::arbitrary(u)?;
+        Ok(Call {
+            frame,
+            budget,
+            int16: b & 1 == 1,
+            bad_frame: Arbitrary::arbitrary(u)?,
+            restart: match b >> 1 {
+                0x7f => Some(Restart::Reset),
+                0x7e => Some(Restart::New),
+                _ => None,
+            },
+        })
+    }
 }
 
 /// 2.5, 5, 10, 20, 40, 60, 80, 100 and 120 ms in units of 2.5 ms.
@@ -229,6 +262,22 @@ fn run(inp: Input) -> Result<(), Finding> {
     let mut total = 0;
     let mut pcm = vec![0f32; frame * ch];
     for seg in inp.segs.iter().take(12) {
+        // Both sides start from a new encoder's state again.
+        identical |= seg.call.restart.is_some();
+        match seg.call.restart {
+            Some(Restart::Reset) => {
+                e_sc.reset();
+                e_si.reset();
+                re.reset();
+            }
+            Some(Restart::New) => {
+                e_sc = OpusEncoder::new(fs, ch, app).unwrap();
+                e_si = OpusEncoder::new(fs, ch, app).unwrap();
+                re = RefEnc::new(fs, ch, capp);
+                apply(&mut [&mut e_sc, &mut e_si], &mut re, &cur);
+            }
+            None => {}
+        }
         if let Some(s) = &seg.set {
             apply(&mut [&mut e_sc, &mut e_si], &mut re, s);
             cur = s.clone();
