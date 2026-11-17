@@ -355,6 +355,10 @@ pub struct SilkEncoderState {
     /// and `timeSinceSwitchAllowed_ms`, also packet-level state).
     pub allow_bandwidth_switch: i32,
     pub time_since_switch_allowed_ms: i32,
+    /// The packet is the last stereo one before a switch to mono: its
+    /// frames collapse the stereo width (libopus `silk_EncControlStruct`
+    /// `toMono`, an input of the packet's call, read from the mid channel).
+    pub to_mono: bool,
 
     pub resampler_delay_buf: [i16; 48],
 }
@@ -375,6 +379,7 @@ impl Default for SilkEncoderState {
             n_bits_exceeded: 0,
             allow_bandwidth_switch: 0,
             time_since_switch_allowed_ms: 0,
+            to_mono: false,
             resampler_delay_buf: [0; 48],
         }
     }

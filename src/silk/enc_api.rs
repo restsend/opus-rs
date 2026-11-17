@@ -56,9 +56,10 @@ pub fn silk_reset_for_rate_switch(ps_enc: &mut SilkEncoderState) {
     s_lp.saved_fs_khz = ps_enc.s_cmn.fs_khz;
     let stereo = ps_enc.stereo.clone();
     let (n_bits_used_lbrr, n_bits_exceeded) = (ps_enc.n_bits_used_lbrr, ps_enc.n_bits_exceeded);
-    let (allow, since) = (
+    let (allow, since, to_mono) = (
         ps_enc.allow_bandwidth_switch,
         ps_enc.time_since_switch_allowed_ms,
+        ps_enc.to_mono,
     );
     *ps_enc = SilkEncoderState::default();
     crate::silk::init_encoder::silk_init_encoder(ps_enc, 0);
@@ -68,6 +69,7 @@ pub fn silk_reset_for_rate_switch(ps_enc: &mut SilkEncoderState) {
     ps_enc.n_bits_exceeded = n_bits_exceeded;
     ps_enc.allow_bandwidth_switch = allow;
     ps_enc.time_since_switch_allowed_ms = since;
+    ps_enc.to_mono = to_mono;
 }
 
 /// After each packet, allow a change of the internal rate if the speech
@@ -173,7 +175,7 @@ pub fn silk_encode_prefill_stereo(
         &mut rates,
         target_rate_bps,
         0,
-        false,
+        mid.to_mono,
         fs_khz,
         prefill_frame_length,
     );
@@ -1087,7 +1089,7 @@ pub fn silk_encode_stereo_packet(
             &mut rates,
             frame_rate_bps,
             mid.s_cmn.speech_activity_q8,
-            false,
+            mid.to_mono,
             fs_khz,
             frame_length,
         );
@@ -1382,6 +1384,48 @@ mod tests {
             1,
         );
         assert_eq!(ret, SILK_ENC_INPUT_INVALID_NO_OF_SAMPLES);
+    }
+
+    #[test]
+    fn to_mono_collapses_the_stereo_width() {
+        // Decorrelated channels at 40 kb/s code full width, unless the
+        // packet is the last before a switch to mono (stereo_LR_to_MS.c:135-140).
+        let left: Vec<i16> = (0..320)
+            .map(|i| ((i * 37 % 101) * 60 - 3000) as i16)
+            .collect();
+        let right: Vec<i16> = (0..320)
+            .map(|i| ((i * 53 % 89) * 70 - 3000) as i16)
+            .collect();
+        for to_mono in [false, true] {
+            let mut ch = [0, 1].map(|_| {
+                let mut enc = SilkEncoderState::default();
+                crate::silk::init_encoder::silk_init_encoder(&mut enc, 0);
+                crate::silk::control_codec::silk_control_encoder(&mut enc, 16, 20, 40000, 10);
+                enc.s_cmn.n_channels = 2;
+                enc
+            });
+            let [mid, side] = &mut ch;
+            mid.to_mono = to_mono;
+            let mut rc = RangeCoder::new_encoder(1275);
+            let mut n_bytes = 0;
+            let ret = silk_encode_stereo_packet(
+                mid,
+                side,
+                &left,
+                &right,
+                320,
+                &mut rc,
+                &mut n_bytes,
+                40000,
+                10000,
+                0,
+                1,
+            );
+            assert_eq!(ret, SILK_NO_ERROR);
+            let width = if to_mono { 0 } else { 1 << 14 };
+            assert_eq!(mid.stereo.width_prev_q14, width);
+            assert_eq!(mid.stereo.pred_prev_q13[0] == 0, to_mono);
+        }
     }
 
     #[test]
