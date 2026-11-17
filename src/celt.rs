@@ -1471,23 +1471,55 @@ fn median5(v: &[f32]) -> f32 {
     x[2]
 }
 
-// Port of celt_encoder.c tone_lpc / tone_detect (float path, no FIXED_POINT shifts)
-fn tone_lpc(x: &[f32], len: usize, delay: usize, lpc: &mut [f32; 2]) -> bool {
+const TONE_LAGS: [usize; 8] = [0, 1, 2, 4, 8, 16, 32, 64];
+
+/// Adds x[i]*x[i+TONE_LAGS[j]] to acc[j] for i in start..end, j < K.
+#[inline(always)]
+fn tone_sums<const K: usize>(acc: &mut [f32; 8], x: &[f32], start: usize, end: usize) {
+    for i in start..end {
+        let w = &x[i..=i + TONE_LAGS[K - 1]];
+        for j in 0..K {
+            acc[j] += w[0] * w[TONE_LAGS[j]];
+        }
+    }
+}
+
+/// tone_lpc's forward correlations [r00, r01, r02] for the delays 1 << t,
+/// t < nd: the sums of x[i]*x[i], x[i]*x[i+d] and x[i]*x[i+2d] over
+/// i < len-2d. The sum at lag k for delay k and the one for delay k/2 are
+/// prefixes of one sum, so one pass in ascending i gives every delay, each
+/// sum added in tone_lpc's order. Needs nd <= 6 and len > 2 << (nd - 1).
+fn tone_correlations(x: &[f32], nd: usize) -> [[f32; 3]; 6] {
+    let mut acc = [0.0f32; 8];
+    let mut r = [[0.0; 3]; 6];
+    let mut start = 0;
+    for t in (0..nd).rev() {
+        let end = x.len() - (2 << t);
+        // The sums at lags up to 2 << t.
+        match t {
+            0 => tone_sums::<3>(&mut acc, x, start, end),
+            1 => tone_sums::<4>(&mut acc, x, start, end),
+            2 => tone_sums::<5>(&mut acc, x, start, end),
+            3 => tone_sums::<6>(&mut acc, x, start, end),
+            4 => tone_sums::<7>(&mut acc, x, start, end),
+            _ => tone_sums::<8>(&mut acc, x, start, end),
+        }
+        r[t] = [acc[0], acc[t + 1], acc[t + 2]];
+        start = end;
+    }
+    r
+}
+
+// Port of celt_encoder.c tone_lpc / tone_detect (float path, no FIXED_POINT shifts).
+// `r` holds the first loop's r00, r01, r02 (tone_correlations).
+fn tone_lpc(x: &[f32], len: usize, delay: usize, r: [f32; 3], lpc: &mut [f32; 2]) -> bool {
     // returns true on fail
     if len <= 2 * delay {
         return true;
     }
-    let mut r00 = 0.0f32;
-    let mut r01 = 0.0f32;
-    let mut r02 = 0.0f32;
+    let [mut r00, mut r01, mut r02] = r;
     let mut r11: f32;
     let mut r12: f32;
-
-    for i in 0..len - 2 * delay {
-        r00 += x[i] * x[i];
-        r01 += x[i] * x[i + delay];
-        r02 += x[i] * x[i + 2 * delay];
-    }
     let mut edges = 0.0f32;
     for i in 0..delay {
         edges += x[len + i - 2 * delay] * x[len + i - 2 * delay] - x[i] * x[i];
@@ -1538,23 +1570,31 @@ fn tone_lpc(x: &[f32], len: usize, delay: usize, lpc: &mut [f32; 2]) -> bool {
 fn tone_detect(in_buf: &[f32], cc: usize, n: usize, fs: i32) -> (f32, f32) {
     // in_buf is at least N samples per channel, we use N = n (frame+overlap)
     // For CC==2, average channels; for float, no shift scaling.
-    // Use FixedVec to stay no_std heap-free.
-    let mut x: FixedVec<f32, 2048> = FixedVec::from_value(0.0, n);
-    if cc == 2 {
+    let mut avg;
+    let x = if cc == 2 {
+        avg = [0.0f32; 2048];
         for i in 0..n {
-            x[i] = 0.5 * (in_buf[i] + in_buf[i + n]);
+            avg[i] = 0.5 * (in_buf[i] + in_buf[i + n]);
         }
+        &avg[..n]
     } else {
-        for i in 0..n {
-            x[i] = in_buf[i];
-        }
+        &in_buf[..n]
+    };
+    // The delays the loop below can reach, 1 << t for t < nd, with len > 2*delay.
+    let mut nd = 1;
+    while 1 << (nd - 1) <= fs as usize / 3000 {
+        nd += 1;
     }
+    while nd > 0 && n <= 2 << (nd - 1) {
+        nd -= 1;
+    }
+    let r = tone_correlations(x, nd);
     let mut delay = 1usize;
     let mut lpc = [0.0f32; 2];
-    let mut fail = tone_lpc(&x[..n], n, delay, &mut lpc);
+    let mut fail = tone_lpc(x, n, delay, r[0], &mut lpc);
     while delay <= (fs as usize / 3000) && (fail || (lpc[0] > 1.0 && lpc[1] < 0.0)) {
         delay *= 2;
-        fail = tone_lpc(&x[..n], n, delay, &mut lpc);
+        fail = tone_lpc(x, n, delay, r[delay.trailing_zeros() as usize], &mut lpc);
     }
     if !fail && lpc[0] * lpc[0] + 3.999999 * lpc[1] < 0.0 {
         let toneishness = -lpc[1];
@@ -4244,7 +4284,13 @@ mod tests {
             1063042093,
         ]
         .map(f32::from_bits);
-        assert!(tone_lpc(&x, 6, 1, &mut [0.0; 2]));
+        assert!(tone_lpc(
+            &x,
+            6,
+            1,
+            tone_correlations(&x, 1)[0],
+            &mut [0.0; 2]
+        ));
     }
 
     /// tone_lpc limits lpc[0] to +-1.999999 only where num0/den reaches
@@ -4260,7 +4306,7 @@ mod tests {
         ]
         .map(f32::from_bits);
         let mut lpc = [0.0; 2];
-        assert!(!tone_lpc(&x, 5, 1, &mut lpc));
+        assert!(!tone_lpc(&x, 5, 1, tone_correlations(&x, 1)[0], &mut lpc));
         assert!(lpc[0] < -1.999999, "{lpc:?}");
     }
 
