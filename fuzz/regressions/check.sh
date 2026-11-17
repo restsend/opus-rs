@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs every reproducer in manifest.tsv against the current build and prints
+# Runs every reproducer in manifest.tsv and manifest.d/*.tsv against the current build and prints
 # whether its bug still reproduces. Build first: cargo +nightly fuzz build
 # (and the aarch64 build, see ../DIFFERENTIAL.md, for @aarch64 entries).
 set -uo pipefail
@@ -24,5 +24,5 @@ while IFS=$'\t' read -r id target env pattern desc; do
   out=$(env $env "${run[@]}" "$id.bin" 2>&1)
   if grep -qF -- "$pattern" <<<"$out"; then r=present; status=1; else r=absent; fi
   printf '%-4s %-8s %s\n' "$id" "$r" "$desc"
-done < manifest.tsv
+done < <(cat manifest.tsv manifest.d/*.tsv 2>/dev/null)
 exit $status
