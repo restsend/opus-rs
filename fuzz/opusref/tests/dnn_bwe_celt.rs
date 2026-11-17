@@ -1,7 +1,8 @@
-//! With the bandwidth extension active after a SILK wideband frame, libopus
-//! skips the CELT decode of the following CELT-only frames and writes zeros
-//! (opus_decoder.c:596, 613-620). opus-rs must write the same into an output
-//! buffer that holds earlier samples.
+//! CELT-only frames after SILK wideband frames with the bandwidth extension
+//! active: libopus main resets the extended mode to OSCE_MODE_CELT_ONLY and
+//! decodes them (1.6.1 kept OSCE_MODE_SILK_BBWE, skipped the CELT decode and
+//! wrote zeros). opus-rs must write the same into an output buffer that
+//! holds earlier samples.
 #![cfg(feature = "dnn")]
 use opusref::dnn::speechlike;
 use opusref::*;
@@ -30,7 +31,7 @@ fn encode(app: i32, bitrate: i32, bandwidth: i32, frames: usize) -> Vec<Vec<u8>>
 }
 
 #[test]
-fn celt_frames_after_bbwe_are_zeros() {
+fn celt_frames_after_bbwe_are_decoded() {
     let silk = encode(2048, 20000, 1103, 5);
     let celt = encode(2051, 48000, 1105, 5);
     assert!(silk.iter().all(|p| p[0] >> 3 == 9), "SILK WB 20 ms");

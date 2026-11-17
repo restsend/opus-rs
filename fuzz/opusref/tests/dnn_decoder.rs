@@ -328,8 +328,8 @@ fn osce_matches_libopus() {
 /// stereo (whose encoder switches to CELT) with 20 and 10 ms frames,
 /// Hybrid (whose lost frames are extended, with CELT skipped), and a
 /// stream that switches between SILK wideband, Hybrid and CELT every
-/// second (the cross-fades into and out of the extension, and libopus's
-/// skipped CELT frames after an extended SILK frame). All bit-exact with
+/// second (the cross-fades into and out of the extension, and the CELT
+/// frames after an extended SILK frame). All bit-exact with
 /// libopus, and different from the output without the extension.
 #[test]
 fn osce_bwe_matches_libopus() {

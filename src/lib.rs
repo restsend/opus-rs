@@ -4293,6 +4293,12 @@ impl OpusDecoder {
                 pcm[..frame_size * ch].copy_from_slice(&pcm_silk[..frame_size * ch]);
             }
         }
+        // CELT-only frames skip the SILK section, which sets the extended
+        // mode; a stale OSCE_MODE_SILK_BBWE would skip the CELT decode below.
+        #[cfg(feature = "osce")]
+        if mode == OpusMode::CeltOnly {
+            self.dec_control.osce_extended_mode = crate::dnn::osce::OSCE_MODE_CELT_ONLY;
+        }
 
         let mut redundancy = false;
         let mut redundancy_bytes = 0i32;
