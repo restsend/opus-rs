@@ -304,6 +304,8 @@ fn silk_noise_shape_quantizer(
             s_ltp_q15,
             a_q12,
             ar_shp_q13,
+            lag,
+            harm_shape_fir_packed_q14,
             tilt_q14,
             lf_shp_q14,
             gain_q10,
@@ -312,11 +314,24 @@ fn silk_noise_shape_quantizer(
             subfr_length,
             shaping_lpc_order,
             predict_lpc_order,
+            shp_lag_base,
         );
     }
 
     nsq.s_lpc_q14
         .copy_within(subfr_length..subfr_length + NSQ_LPC_BUF_LENGTH, 0);
+}
+
+/// Harmonic noise shaping (`n_LTP_Q13`) from the shaping states around
+/// `s_ltp_shp_q14[shp_idx - 1]`, with symmetric, packed FIR coefficients.
+#[inline(always)]
+fn harmonic_shaping(nsq: &SilkNSQState, shp_idx: usize, harm_shape_fir_packed_q14: i32) -> i32 {
+    let shp = &nsq.s_ltp_shp_q14;
+    let n_ltp_q13 = silk_smulwb(
+        silk_add_sat32(shp[shp_idx], shp[shp_idx - 2]),
+        harm_shape_fir_packed_q14,
+    );
+    silk_smlawt(n_ltp_q13, shp[shp_idx - 1], harm_shape_fir_packed_q14) << 1
 }
 
 /// Short-term prediction from the `ORDER` states ending at `s_lpc[idx]`.
@@ -439,17 +454,7 @@ fn silk_noise_shape_quantizer_voiced(
         tmp1 = (lpc_pred_q10 << 2).wrapping_sub(n_ar_q12);
         tmp1 = tmp1.wrapping_sub(n_lf_q12);
 
-        let shp_idx = shp_lag_base + i;
-        n_ltp_q13 = silk_smulwb(
-            silk_add_sat32(nsq.s_ltp_shp_q14[shp_idx], nsq.s_ltp_shp_q14[shp_idx - 2]),
-            harm_shape_fir_packed_q14,
-        );
-        n_ltp_q13 = silk_smlawt(
-            n_ltp_q13,
-            nsq.s_ltp_shp_q14[shp_idx - 1],
-            harm_shape_fir_packed_q14,
-        );
-        n_ltp_q13 <<= 1;
+        n_ltp_q13 = harmonic_shaping(nsq, shp_lag_base + i, harm_shape_fir_packed_q14);
 
         tmp2 = ltp_pred_q13 - n_ltp_q13;
         tmp1 = tmp2.wrapping_add(tmp1 << 1);
@@ -549,6 +554,8 @@ fn silk_noise_shape_quantizer_unvoiced(
     s_ltp_q15: &mut [i32],
     a_q12: &[i16],
     ar_shp_q13: &[i16],
+    lag: usize,
+    harm_shape_fir_packed_q14: i32,
     tilt_q14: i32,
     lf_shp_q14: i32,
     gain_q10: i32,
@@ -557,6 +564,7 @@ fn silk_noise_shape_quantizer_unvoiced(
     subfr_length: usize,
     shaping_lpc_order: usize,
     predict_lpc_order: usize,
+    shp_lag_base: usize,
 ) {
     let mut lpc_pred_q10: i32;
     let mut n_ar_q12: i32;
@@ -610,7 +618,14 @@ fn silk_noise_shape_quantizer_unvoiced(
         tmp1 = (lpc_pred_q10 << 2).wrapping_sub(n_ar_q12);
         tmp1 = tmp1.wrapping_sub(n_lf_q12);
 
-        tmp1 = silk_rshift_round(tmp1, 2);
+        // The harmonic shaping follows the previous frame's lag, also in
+        // unvoiced frames (NSQ.c:263-275); the LTP prediction is 0.
+        tmp1 = if lag > 0 {
+            let n_ltp_q13 = harmonic_shaping(nsq, shp_lag_base + i, harm_shape_fir_packed_q14);
+            silk_rshift_round((tmp1 << 1).wrapping_sub(n_ltp_q13), 3)
+        } else {
+            silk_rshift_round(tmp1, 2)
+        };
 
         r_q10 = x_sc_q10[i] - tmp1;
 
