@@ -331,6 +331,12 @@ pub struct OpusEncoder {
     /// the stereo width the CELT input faded to last and the one it fades to.
     hybrid_stereo_width_q14: i32,
     stereo_width_q14: i32,
+    /// libopus `stream_channels`, `prev_channels` and `silk_mode.toMono`:
+    /// the channels the rate allows coding, those of the last packet, and
+    /// the delay of a SILK stereo-to-mono switch.
+    stream_channels: usize,
+    prev_channels: usize,
+    silk_to_mono: bool,
     /// libopus `silk_mode.opusCanSwitch` and `silk_bw_switch`: SILK asked to
     /// change its internal rate, which the next packet does.
     silk_opus_can_switch: bool,
@@ -1376,6 +1382,9 @@ impl OpusEncoder {
             prev_hb_gain: 1.0,
             hybrid_stereo_width_q14: 1 << 14,
             stereo_width_q14: 0,
+            stream_channels: channels,
+            prev_channels: 0,
+            silk_to_mono: false,
             silk_opus_can_switch: false,
             silk_bw_switch: false,
             #[cfg(not(feature = "heap"))]
@@ -1682,7 +1691,7 @@ impl OpusEncoder {
         // below wideband in SILK and Hybrid, whose switches would need
         // redundancy.
         if let (Some(detected), Auto) = (self.detected_bandwidth, self.user_bandwidth) {
-            let ch = self.channels as i32;
+            let ch = self.stream_channels as i32;
             let min_detected = if equiv_rate <= 18000 * ch && mode == OpusMode::CeltOnly {
                 Narrowband
             } else if equiv_rate <= 24000 * ch && mode == OpusMode::CeltOnly {
@@ -1757,6 +1766,8 @@ impl OpusEncoder {
             return Err("Output buffer too small");
         }
         self.range_final = 0;
+        // The frames of a multiframe packet share its decisions.
+        let packet_level = self.frame_fec.is_none();
 
         let frame_rate = frame_rate_from_params(self.sampling_rate, frame_size)
             .ok_or("Invalid frame size for sampling rate")?;
@@ -1789,6 +1800,32 @@ impl OpusEncoder {
         let silk_use_dtx = self.use_dtx && !(analysis_info.valid || is_silence);
         self.silk_use_dtx = silk_use_dtx;
 
+        // The rate-dependent mono/stereo decision, once per packet
+        // (opus_encoder.c:1409-1453).
+        if packet_level {
+            self.stream_channels = if self.channels == 2 {
+                let equiv = compute_equiv_rate(
+                    self.bitrate_bps,
+                    self.channels,
+                    frame_rate,
+                    !self.use_cbr,
+                    None,
+                    self.complexity,
+                    self.packet_loss_perc,
+                );
+                let voice_est = self.voice_estimate();
+                let mut threshold = 17000 + ((voice_est * voice_est * (19000 - 17000)) >> 14);
+                if self.stream_channels == 2 {
+                    threshold -= 1000;
+                } else {
+                    threshold += 1000;
+                }
+                if equiv > threshold { 2 } else { 1 }
+            } else {
+                1
+            };
+        }
+
         // How far stereo input is from mono (libopus compute_stereo_width),
         // once per packet.
         let stereo_width = if self.channels == 2 && self.forced_mode.is_none() {
@@ -1807,7 +1844,7 @@ impl OpusEncoder {
         } else {
             let equiv = compute_equiv_rate(
                 self.bitrate_bps,
-                self.channels,
+                self.stream_channels,
                 frame_rate,
                 !self.use_cbr,
                 None,
@@ -1956,7 +1993,7 @@ impl OpusEncoder {
             None => {
                 let equiv_rate = compute_equiv_rate(
                     self.bitrate_bps,
-                    self.channels,
+                    self.stream_channels,
                     frame_rate,
                     !self.use_cbr,
                     Some(mode),
@@ -2058,7 +2095,29 @@ impl OpusEncoder {
             }
         }
 
-        let mut toc = gen_toc(mode, frame_rate, frame_bandwidth, self.channels);
+        // A SILK stereo-to-mono switch waits two frames for SILK's downmix
+        // (opus_encoder.c:1560-1570).
+        if packet_level {
+            if self.stream_channels == 1
+                && self.prev_channels == 2
+                && !self.silk_to_mono
+                && mode != OpusMode::CeltOnly
+                && self.prev_enc_mode != Some(OpusMode::CeltOnly)
+            {
+                self.silk_to_mono = true;
+                self.stream_channels = 2;
+            } else {
+                self.silk_to_mono = false;
+            }
+        }
+        // The channels coded: SILK and Hybrid frames code the input's, as
+        // opus-rs's SILK encoder has no mono coding of stereo input.
+        let coded_channels = if mode == OpusMode::CeltOnly {
+            self.stream_channels
+        } else {
+            self.channels
+        };
+        let mut toc = gen_toc(mode, frame_rate, frame_bandwidth, coded_channels);
         output[0] = toc;
 
         // C opus_encoder.c:1226-1243: a budget too small to code anything
@@ -2101,7 +2160,7 @@ impl OpusEncoder {
                 // SilkOnly is wideband at most (C: bw > OPUS_BANDWIDTH_WIDEBAND).
                 plc_bw = Bandwidth::Wideband;
             }
-            output[0] = gen_toc(toc_mode, frame_rate_adj, plc_bw, self.channels) | packet_code;
+            output[0] = gen_toc(toc_mode, frame_rate_adj, plc_bw, coded_channels) | packet_code;
             let mut ret = if packet_code <= 1 { 1 } else { 2 };
             if packet_code == 3 {
                 output[1] = num_multiframes;
@@ -2169,7 +2228,7 @@ impl OpusEncoder {
         let mut redundancy_bytes = 0usize;
         if redundancy {
             redundancy_bytes =
-                compute_redundancy_bytes(n_bytes, self.bitrate_bps, frame_rate, self.channels);
+                compute_redundancy_bytes(n_bytes, self.bitrate_bps, frame_rate, coded_channels);
             redundancy = redundancy_bytes != 0;
         }
 
@@ -2713,7 +2772,7 @@ impl OpusEncoder {
                     12 => Bandwidth::Mediumband,
                     _ => Bandwidth::Wideband,
                 };
-                toc = gen_toc(mode, frame_rate, frame_bandwidth, self.channels);
+                toc = gen_toc(mode, frame_rate, frame_bandwidth, coded_channels);
                 output[0] = toc;
             }
             // A ready switch happens at the next packet, which prefills SILK
@@ -2731,7 +2790,7 @@ impl OpusEncoder {
                 // The packet before the switch ends with redundancy
                 // (opus_encoder.c:2250-2260).
                 redundancy_bytes =
-                    compute_redundancy_bytes(n_bytes, self.bitrate_bps, frame_rate, self.channels);
+                    compute_redundancy_bytes(n_bytes, self.bitrate_bps, frame_rate, coded_channels);
                 redundancy = redundancy_bytes != 0;
                 celt_to_silk = false;
             }
@@ -2873,10 +2932,10 @@ impl OpusEncoder {
         // The stereo width (opus_encoder.c:2320-2348): from the rate, or in
         // Hybrid stereo SILK's; below full width the CELT input fades
         // towards mono.
-        if mode != OpusMode::Hybrid || ch == 1 {
+        if mode != OpusMode::Hybrid || self.stream_channels == 1 {
             let equiv_rate = compute_equiv_rate(
                 self.bitrate_bps,
-                ch,
+                self.stream_channels,
                 frame_rate,
                 !self.use_cbr,
                 Some(mode),
@@ -2910,6 +2969,7 @@ impl OpusEncoder {
             // libopus `CELT_SET_ANALYSIS`: the analysis steers CELT's
             // allocation, trim, VBR target and pitch pre-filter.
             self.celt_enc.set_analysis(&analysis_info);
+            self.celt_enc.set_stream_channels(coded_channels);
             self.celt_enc.complexity = self.complexity;
             self.celt_enc.set_end_band(match frame_bandwidth {
                 Bandwidth::Narrowband => 13,
@@ -3049,6 +3109,7 @@ impl OpusEncoder {
             let frame_ms_q1 = (2000 * frame_size as i64 / self.sampling_rate as i64) as i32;
             if decide_dtx_mode(activity != 0, &mut self.nb_no_activity_ms_q1, frame_ms_q1) {
                 self.prev_enc_mode = Some(next_prev_mode);
+                self.prev_channels = self.stream_channels;
                 output[0] = toc;
                 return Ok(1);
             }
@@ -3092,6 +3153,7 @@ impl OpusEncoder {
                         *b = 0;
                     }
                     self.prev_enc_mode = Some(next_prev_mode);
+                self.prev_channels = self.stream_channels;
                     return Ok(target_total);
                 }
                 ret = target_total.max(1);
@@ -3100,11 +3162,13 @@ impl OpusEncoder {
             output[0] = toc;
             output[1] = 0;
             self.prev_enc_mode = Some(next_prev_mode);
+                self.prev_channels = self.stream_channels;
             return Ok(ret);
         }
         self.range_final = self.rc.rng ^ redundant_rng;
 
         self.prev_enc_mode = Some(next_prev_mode);
+                self.prev_channels = self.stream_channels;
         if mode == OpusMode::SilkOnly {
             let mut ret = silk_ret_bytes.min(self.rc.storage as usize);
             if redundancy_bytes > 0 {

@@ -304,3 +304,11 @@ fn resynthesis_noise_seeds_from_the_last_range() {
 fn rising_band_energy_patches_the_transient_flag() {
     assert_eq!(identical(1, 20.0, 32, 0, "grow", 8), [true; 8]);
 }
+
+/// Below about 17-19 kb/s equivalent, stereo CELT frames code a mono
+/// stream of the channels' average (opus_encoder.c:1427-1455,
+/// celt_encoder.c:539-543).
+#[test]
+fn low_rate_stereo_codes_a_mono_stream() {
+    assert_eq!(identical(2, 10.0, 24, 2, "voice", 10), [true; 10]);
+}

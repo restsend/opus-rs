@@ -253,8 +253,9 @@ impl Default for AnalysisInfo {
     }
 }
 
-/// libopus compute_mdcts (celt_encoder.c:511-555): each channel's long MDCT
-/// or `1 << lm` short ones, interleaved, scaled for the upsampling.
+/// libopus compute_mdcts (celt_encoder.c:511-555): each input channel's
+/// long MDCT or `1 << lm` short ones, interleaved, their average for a mono
+/// stream of stereo input, scaled for the upsampling.
 #[allow(clippy::too_many_arguments)]
 fn compute_mdcts(
     mode: &CeltMode,
@@ -262,6 +263,7 @@ fn compute_mdcts(
     in_buf: &[f32],
     freq: &mut [f32],
     channels: usize,
+    cc: usize,
     frame_size: usize,
     overlap: usize,
     lm: usize,
@@ -270,7 +272,7 @@ fn compute_mdcts(
     let buf_stride = frame_size + overlap;
     let (b, shift) = if short_blocks { (1 << lm, mode.max_lm) } else { (1, mode.max_lm - lm) };
     let n = frame_size / b;
-    for c in 0..channels {
+    for c in 0..cc {
         for i in 0..b {
             mode.mdct.forward(
                 &in_buf[c * buf_stride + i * n..c * buf_stride + buf_stride],
@@ -280,6 +282,11 @@ fn compute_mdcts(
                 shift,
                 b,
             );
+        }
+    }
+    if cc == 2 && channels == 1 {
+        for i in 0..frame_size {
+            freq[i] = 0.5 * freq[i] + 0.5 * freq[frame_size + i];
         }
     }
     upsample_scale_zero(freq, frame_size, upsample, channels);
@@ -1269,6 +1276,9 @@ pub struct CeltEncoder {
     /// libopus `CELTEncoder.rng`: the last frame's final range, which seeds
     /// the resynthesis's folding noise.
     rng: u32,
+    /// libopus `CELT_SET_CHANNELS`: the channels coded, 1 for a mono stream
+    /// of stereo input.
+    stream_channels: usize,
     lsb_depth: i32,
     overlap_max: f32,
     bitrate: i32,
@@ -1830,6 +1840,7 @@ impl CeltEncoder {
             delayed_intra: 0.0,
             energy_error: [0.0; CELT_NB_X_CH],
             rng: 0,
+            stream_channels: channels,
             lsb_depth: 24,
             overlap_max: 0.0,
             bitrate: OPUS_BITRATE_MAX,
@@ -1930,6 +1941,12 @@ impl CeltEncoder {
 
     /// Set the highest coded band (`CELT_SET_END_BAND`). Must match the
     /// bandwidth the packet's TOC signals.
+    /// libopus `CELT_SET_CHANNELS`: code `channels` (1 or 2, at most the
+    /// input's) channels.
+    pub fn set_stream_channels(&mut self, channels: usize) {
+        self.stream_channels = channels.clamp(1, self.channels);
+    }
+
     pub fn set_end_band(&mut self, end: usize) {
         self.end_band = end;
     }
@@ -2014,7 +2031,10 @@ impl CeltEncoder {
         is_vbr: bool,
     ) {
         let mode = self.mode;
-        let channels = self.channels;
+        // libopus CC (input channels) and C (coded channels): a mono stream
+        // of stereo input codes the two channels' average.
+        let cc = self.channels;
+        let channels = self.stream_channels.min(cc);
         let upsample = self.upsample;
         // Internal (48 kHz) frame size; `pcm` is at the API rate.
         let frame_size = api_frame_size * upsample;
@@ -2049,12 +2069,12 @@ impl CeltEncoder {
 
         dumpf!(
             "pcm",
-            &(0..api_frame_size * channels)
-                .map(|i| pcm[(i % channels) * api_frame_size + i / channels])
+            &(0..api_frame_size * cc)
+                .map(|i| pcm[(i % cc) * api_frame_size + i / cc])
                 .collect::<Vec<f32>>()
         );
         let syn_mem_size = 2048 + overlap;
-        for c in 0..channels {
+        for c in 0..cc {
             let channel_offset = c * syn_mem_size;
 
             self.syn_mem.copy_within(
@@ -2081,8 +2101,8 @@ impl CeltEncoder {
         }
 
         let buf_stride = frame_size + overlap;
-        let in_buf = &mut self.w_in_buf[..buf_stride * channels];
-        for c in 0..channels {
+        let in_buf = &mut self.w_in_buf[..buf_stride * cc];
+        for c in 0..cc {
             let channel_offset = c * syn_mem_size;
             let in_buf_offset = c * buf_stride;
 
@@ -2098,7 +2118,7 @@ impl CeltEncoder {
         // step between head and body wherever the comb filter was active,
         // which reads as a transient on steady pitched input (issue #38).
         let max_period = COMBFILTER_MAXPERIOD;
-        for c in 0..channels {
+        for c in 0..cc {
             in_buf[c * buf_stride..c * buf_stride + overlap].copy_from_slice(
                 &self.prefilter_mem[(c + 1) * max_period - overlap..(c + 1) * max_period],
             );
@@ -2121,7 +2141,7 @@ impl CeltEncoder {
             hybrid && effective_bytes < 15 && self.silk_signal_type != TYPE_VOICED;
 
         // Tone detection (C 2022): use channel-contiguous in_buf with N+overlap, float path
-        let (tone_freq, mut toneishness) = tone_detect(&*in_buf, channels, buf_stride, mode.fs);
+        let (tone_freq, mut toneishness) = tone_detect(&*in_buf, cc, buf_stride, mode.fs);
         dumpf!("pre", in_buf);
         dumpf!("tone_freq", &[tone_freq]);
         dumpf!("toneishness", &[toneishness]);
@@ -2133,7 +2153,7 @@ impl CeltEncoder {
             transient_analysis(
                 in_buf,
                 buf_stride,
-                channels,
+                cc,
                 &mut tf_estimate,
                 &mut tf_chan,
                 allow_weak_transients,
@@ -2146,13 +2166,16 @@ impl CeltEncoder {
         } else {
             false
         };
+        if cc == 2 && channels == 1 {
+            tf_chan = 0;
+        }
         dumpi!("isTransient", &[is_transient as i32]);
         dumpf!("tf_estimate", &[tf_estimate]);
         dumpi!("tf_chan", &[tf_chan as i32]);
         // Put the prefiltered overlap back for the prefilter and the MDCT
         // (C run_prefilter: `OPUS_COPY(in, st->in_mem, overlap)`).
         let in_mem_start = syn_mem_size - frame_size - overlap;
-        for c in 0..channels {
+        for c in 0..cc {
             let src = c * syn_mem_size + in_mem_start;
             in_buf[c * buf_stride..c * buf_stride + overlap]
                 .copy_from_slice(&self.syn_mem[src..src + overlap]);
@@ -2165,32 +2188,15 @@ impl CeltEncoder {
         // --- Silence detection (port of libopus celt_encoder.c: sample_max / overlap_max / lsb_depth) ---
         // libopus measures sample/overlap maxima on the API-rate `pcm`:
         // `(N-overlap)/upsample` and `overlap/upsample` samples.
-        let api_overlap = overlap / upsample;
-        let mut sample_max = self.overlap_max;
-        let n_nonoverlap = api_frame_size.saturating_sub(api_overlap);
-        for c in 0..channels {
-            let base = c * api_frame_size;
-            for i in 0..n_nonoverlap {
-                let v = pcm[base + i].abs();
-                if v > sample_max {
-                    sample_max = v;
-                }
-            }
-        }
-        let mut new_overlap_max = 0.0f32;
-        for c in 0..channels {
-            let base = c * api_frame_size;
-            for i in n_nonoverlap..api_frame_size {
-                let v = pcm[base + i].abs();
-                if v > new_overlap_max {
-                    new_overlap_max = v;
-                }
-            }
-        }
+        // libopus counts C*(N-overlap)/upsample interleaved samples, so a
+        // mono stream of stereo input scans the first half of the frame.
+        let interleaved = |k: usize| pcm[(k % cc) * api_frame_size + k / cc].abs();
+        let head = channels * (frame_size - overlap) / upsample;
+        let tail = channels * overlap / upsample;
+        let sample_max = (0..head).map(interleaved).fold(self.overlap_max, f32::max);
+        let new_overlap_max = (head..head + tail).map(interleaved).fold(0.0f32, f32::max);
         self.overlap_max = new_overlap_max;
-        if new_overlap_max > sample_max {
-            sample_max = new_overlap_max;
-        }
+        let sample_max = sample_max.max(new_overlap_max);
         let threshold = 1.0 / ((1 << self.lsb_depth) as f32);
         let mut silence = sample_max <= threshold;
         let tell_initial = rc.tell();
@@ -2266,7 +2272,7 @@ impl CeltEncoder {
             self.prefilter_tapset,
             self.tapset_decision,
             mode.window,
-            channels,
+            cc,
             frame_size,
             overlap,
             &mut self.w_prefilter_pre,
@@ -2299,13 +2305,13 @@ impl CeltEncoder {
         // copies it to/from in[]. Here we emulate that by updating syn_mem with
         // the last overlap samples of in_buf (which were prefiltered in place).
         let syn_mem_size = 2048 + overlap;
-        for c in 0..channels {
+        for c in 0..cc {
             let channel_offset = c * syn_mem_size;
             let in_buf_offset = c * buf_stride;
             self.syn_mem[channel_offset + syn_mem_size - overlap..channel_offset + syn_mem_size]
                 .copy_from_slice(&in_buf[in_buf_offset + frame_size..in_buf_offset + buf_stride]);
         }
-        let freq = &mut self.w_freq[..frame_size * channels];
+        let freq = &mut self.w_freq[..frame_size * cc];
         let band_e = &mut self.w_band_e[..nb_ebands * channels];
         let band_log_e = &mut self.w_band_log_e[..nb_ebands * channels];
         let x_pad_end = (frame_size * channels + STRIDE_ACCESS_PAD).min(self.w_x.len());
@@ -2342,7 +2348,7 @@ impl CeltEncoder {
         let second_mdct = short_blocks && self.complexity >= 8;
         let mut have_band_log_e2 = second_mdct;
         if second_mdct {
-            compute_mdcts(mode, false, in_buf, freq, channels, frame_size, overlap, lm, upsample);
+            compute_mdcts(mode, false, in_buf, freq, channels, cc, frame_size, overlap, lm, upsample);
             let band_e2 = &mut self.w_band_e2[..nb_ebands * channels];
             compute_band_energies(mode, freq, band_e2, end, channels, lm);
             let band_log_e2 = &mut self.w_band_log_e2[..nb_ebands * channels];
@@ -2353,7 +2359,7 @@ impl CeltEncoder {
                 }
             }
         }
-        compute_mdcts(mode, short_blocks, in_buf, freq, channels, frame_size, overlap, lm, upsample);
+        compute_mdcts(mode, short_blocks, in_buf, freq, channels, cc, frame_size, overlap, lm, upsample);
         compute_band_energies(mode, freq, band_e, end, channels, lm);
         crate::bands::amp2log2(mode, start_band, end, band_e, band_log_e, channels);
 
@@ -2396,7 +2402,7 @@ impl CeltEncoder {
                 }
             }
             have_band_log_e2 = true;
-            compute_mdcts(mode, true, in_buf, freq, channels, frame_size, overlap, lm, upsample);
+            compute_mdcts(mode, true, in_buf, freq, channels, cc, frame_size, overlap, lm, upsample);
             compute_band_energies(mode, freq, band_e, end, channels, lm);
             crate::bands::amp2log2(mode, start_band, end, band_e, band_log_e, channels);
             tf_estimate = 0.2;
@@ -3025,13 +3031,18 @@ impl CeltEncoder {
             }
         }
 
+        // A mono stream's energies stand for both input channels
+        // (celt_encoder.c:2778-2780).
+        if cc == 2 && channels == 1 {
+            self.old_band_e.copy_within(..nb_ebands, nb_ebands);
+        }
         self.last_band_log_e.copy_from_slice(&self.old_band_e);
 
         if !is_transient {
             self.old_band_e3.copy_from_slice(&self.old_band_e2);
             self.old_band_e2.copy_from_slice(&self.old_band_e);
         } else {
-            for i in 0..channels * nb_ebands {
+            for i in 0..cc * nb_ebands {
                 self.old_band_e2[i] = self.old_band_e2[i].min(self.old_band_e[i]);
             }
         }
