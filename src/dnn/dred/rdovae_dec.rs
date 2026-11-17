@@ -128,7 +128,7 @@ pub fn dred_rdovae_decode_qframe(
             compute_generic_gru(&model.$gi, &model.$gr, &mut st.$gs, &buffer);
             compute_glu(&model.$glu, &mut buffer[oi..], &st.$gs);
             oi += $gn;
-            conv1_cond_init(&mut st.$cs, $cin, 1, &mut st.initialized);
+            conv1_cond_init(&mut st.$cs, $cin, 1, st.initialized);
             compute_generic_dense(&model.$cd, &mut conv_tmp, &buffer, Activation::Tanh);
             compute_generic_conv1d(
                 &model.$cv,
@@ -204,6 +204,7 @@ pub fn dred_rdovae_decode_qframe(
     debug_assert_eq!(oi, BUFFER_SIZE);
 
     compute_generic_dense(&model.dec_output, qframe, &buffer, Activation::Linear);
+    st.initialized = true;
 }
 
 /// `DRED_rdovae_decode_all`: decodes `nb_latents` latent vectors (each

@@ -46,13 +46,12 @@ impl Default for RdovaeEncState {
 }
 
 /// `conv1_cond_init`: clears `dilation` blocks of `len` values of `mem`
-/// on the first call after a reset. The flag is shared by all five
-/// convolutions, so only the first one is cleared, as in libopus.
-pub(super) fn conv1_cond_init(mem: &mut [f32], len: usize, dilation: usize, init: &mut bool) {
-    if !*init {
+/// in the first frame after a reset (`init` false). The frame sets the
+/// flag at its end, so all five convolutions are cleared.
+pub(super) fn conv1_cond_init(mem: &mut [f32], len: usize, dilation: usize, init: bool) {
+    if !init {
         mem[..dilation * len].fill(0.0);
     }
-    *init = true;
 }
 
 const BUFFER_SIZE: usize = ENC_DENSE1_OUT_SIZE
@@ -100,12 +99,7 @@ pub fn dred_rdovae_encode_dframe(
     );
     buffer[oi..oi + ENC_GRU1_OUT_SIZE].copy_from_slice(&st.gru1_state[..ENC_GRU1_OUT_SIZE]);
     oi += ENC_GRU1_OUT_SIZE;
-    conv1_cond_init(
-        &mut st.conv1_state,
-        ENC_CONV1_IN_SIZE,
-        1,
-        &mut st.initialized,
-    );
+    conv1_cond_init(&mut st.conv1_state, ENC_CONV1_IN_SIZE, 1, st.initialized);
     compute_generic_dense(
         &model.enc_conv_dense1,
         &mut conv_tmp,
@@ -128,7 +122,7 @@ pub fn dred_rdovae_encode_dframe(
             compute_generic_gru(&model.$gi, &model.$gr, &mut st.$gs, &buffer);
             buffer[oi..oi + $gn].copy_from_slice(&st.$gs[..$gn]);
             oi += $gn;
-            conv1_cond_init(&mut st.$cs, $cin, 2, &mut st.initialized);
+            conv1_cond_init(&mut st.$cs, $cin, 2, st.initialized);
             compute_generic_dense(&model.$cd, &mut conv_tmp, &buffer, Activation::Tanh);
             compute_generic_conv1d_dilation(
                 &model.$cv,
@@ -204,4 +198,5 @@ pub fn dred_rdovae_encode_dframe(
         Activation::Linear,
     );
     initial_state[..DRED_STATE_DIM].copy_from_slice(&padded_state[..DRED_STATE_DIM]);
+    st.initialized = true;
 }
