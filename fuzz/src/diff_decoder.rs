@@ -16,6 +16,7 @@
 use crate::common::*;
 use arbitrary::Arbitrary;
 use opus_rs::OpusDecoder;
+use opusref as c;
 use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 
@@ -33,6 +34,7 @@ fn discriminant(op: &Op) -> u8 {
         Op::Reset => 3,
         Op::Encoded { .. } => 4,
         Op::NewDecoder => 5,
+        Op::Set(_) => 6,
     }
 }
 
@@ -103,14 +105,28 @@ enum Op {
     Reset,
     /// New decoders on both sides.
     NewDecoder,
+    /// A decoder setting on both sides.
+    Set(Setting),
+}
+
+/// A decoder control and its libopus counterpart.
+#[derive(Arbitrary, Debug, Clone, Copy)]
+enum Setting {
+    /// `set_gain` / `OPUS_SET_GAIN`, also out of range.
+    Gain(i32),
+    /// `set_phase_inversion_disabled` / `OPUS_SET_PHASE_INVERSION_DISABLED`.
+    PhaseInversionDisabled(bool),
 }
 
 /// The first five variants keep the derived encoding, which the saved
-/// reproducers use; `NewDecoder` takes the top sixteenth of the variant
-/// word, which selected `Reset` there.
+/// reproducers use; the top sixteenth of the variant word, which selected
+/// `Reset` there, selects `NewDecoder` and, in its upper half, `Set`.
 impl<'a> Arbitrary<'a> for Op {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         let x = u32::arbitrary(u)?;
+        if x >= 0xf800_0000 {
+            return Ok(Op::Set(Arbitrary::arbitrary(u)?));
+        }
         if x >= 0xf000_0000 {
             return Ok(Op::NewDecoder);
         }
@@ -168,7 +184,7 @@ fn call(d: &mut OpusDecoder, op: &Op, fs: usize, out: &mut [f32]) -> Result<usiz
         Op::Decode { pkt, .. } => d.decode(pkt, fs, out),
         Op::Fec { pkt, .. } => d.decode_fec(pkt, fs, out),
         Op::Lost { .. } => d.decode(&[], fs, out),
-        Op::Reset | Op::NewDecoder | Op::Encoded { .. } => unreachable!(),
+        Op::Reset | Op::NewDecoder | Op::Set(_) | Op::Encoded { .. } => unreachable!(),
     }
 }
 
@@ -255,7 +271,10 @@ fn run(inp: Input) -> Result<(), Finding> {
             }
             Op::Decode { .. } | Op::Fec { .. } if inp.valid_only => continue,
             op => {
-                valid &= matches!(op, Op::Lost { .. } | Op::Reset | Op::NewDecoder);
+                valid &= matches!(
+                    op,
+                    Op::Lost { .. } | Op::Reset | Op::NewDecoder | Op::Set(_)
+                );
                 op
             }
         };
@@ -274,6 +293,7 @@ fn run(inp: Input) -> Result<(), Finding> {
                 Op::Lost { size } => eprintln!("script l {}", n(size)),
                 Op::Reset => eprintln!("script r"),
                 Op::NewDecoder => eprintln!("script n"),
+                Op::Set(s) => eprintln!("script s {s:?}"),
                 Op::Encoded { .. } => {}
             }
         }
@@ -288,6 +308,28 @@ fn run(inp: Input) -> Result<(), Finding> {
                 scalar = new_dec(fs, ch, &inp);
                 simd = new_dec(fs, ch, &inp);
                 refd = new_ref(fs, ch, &inp);
+                continue;
+            }
+            Op::Set(s) => {
+                let (r, c) = match *s {
+                    Setting::Gain(g) => {
+                        let _ = simd.set_gain(g);
+                        (scalar.set_gain(g), refd.ctl(c::SET_GAIN, g))
+                    }
+                    Setting::PhaseInversionDisabled(d) => {
+                        simd.set_phase_inversion_disabled(d);
+                        scalar.set_phase_inversion_disabled(d);
+                        (Ok(()), refd.ctl(c::SET_PHASE_INVERSION_DISABLED, d as i32))
+                    }
+                };
+                let code = r.map_or_else(|e| opus_rs::error::code(e).unwrap_or(1), |()| 0);
+                if code != c {
+                    fail!("ctl", format!("{s:?}"), "op {k}: opus-rs {r:?}, libopus {c}");
+                }
+                let (g, d) = (refd.get(c::GET_GAIN), refd.get(c::GET_PHASE_INVERSION_DISABLED));
+                if scalar.gain() != g || scalar.phase_inversion_disabled() as i32 != d {
+                    fail!("ctl", "get", "op {k}: opus-rs gain {} phase inversion disabled {}, libopus {g} {d}", scalar.gain(), scalar.phase_inversion_disabled());
+                }
                 continue;
             }
             Op::Decode { size, .. } | Op::Fec { size, .. } | Op::Lost { size } => *size,

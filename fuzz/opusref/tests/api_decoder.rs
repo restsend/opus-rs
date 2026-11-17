@@ -190,3 +190,62 @@ fn reset_keeps_the_complexity() {
     p.ctl(RESET_STATE, 0);
     assert_eq!(p.rs.complexity(), p.get(GET_COMPLEXITY));
 }
+
+/// `OPUS_SET_GAIN`: the output scales alike, and out-of-range gains are
+/// rejected and keep the gain.
+#[test]
+fn gain_matches_opus_set_gain() {
+    for (fs, ch, frame, kbps, force) in [(48000, 2, 960, 64, CELT), (16000, 1, 320, 16, SILK)] {
+        for gain in [-32768, -1536, -1, 1, 256, 1536, 32767] {
+            let mut src = Source::new(fs, ch, frame, kbps, force);
+            let mut p = Pair::new(fs, ch);
+            p.rs.set_gain(gain).unwrap();
+            assert_eq!(p.ctl(SET_GAIN, gain), 0);
+            for bad in [-32769, 32768, i32::MIN] {
+                assert_eq!(p.rs.set_gain(bad), Err(opus_rs::error::BAD_ARG));
+                assert_eq!(p.ctl(SET_GAIN, bad), -1);
+            }
+            assert_eq!(p.rs.gain(), p.get(GET_GAIN));
+            for f in 0..12 {
+                let pkt = src.next();
+                let what = format!("{fs} {ch} gain {gain} frame {f}");
+                if f % 5 == 4 {
+                    p.decode(None, frame, false, &what);
+                } else {
+                    p.decode(Some(&pkt), frame, false, &what);
+                }
+            }
+        }
+    }
+}
+
+/// `OPUS_SET_PHASE_INVERSION_DISABLED`: on by default in a mono decoder,
+/// off in a stereo one; both settings decode intensity stereo alike.
+#[test]
+fn phase_inversion_matches_libopus() {
+    for out in [1, 2] {
+        for disabled in [false, true] {
+            // Low-rate stereo CELT codes the upper bands as intensity stereo.
+            let mut src = Source::new(48000, 2, 960, 24, CELT);
+            let mut p = Pair::new(48000, out);
+            assert_eq!(
+                p.rs.phase_inversion_disabled() as i32,
+                p.get(GET_PHASE_INVERSION_DISABLED)
+            );
+            p.rs.set_phase_inversion_disabled(disabled);
+            assert_eq!(p.ctl(SET_PHASE_INVERSION_DISABLED, disabled as i32), 0);
+            assert_eq!(p.ctl(SET_PHASE_INVERSION_DISABLED, 2), -1);
+            assert_eq!(
+                p.rs.phase_inversion_disabled() as i32,
+                p.get(GET_PHASE_INVERSION_DISABLED)
+            );
+            p.rs.reset();
+            p.ctl(RESET_STATE, 0);
+            assert_eq!(p.rs.phase_inversion_disabled(), disabled);
+            for f in 0..12 {
+                let pkt = src.next();
+                p.decode(Some(&pkt), 960, false, &format!("{out} {disabled} frame {f}"));
+            }
+        }
+    }
+}

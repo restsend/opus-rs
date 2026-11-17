@@ -58,6 +58,8 @@ a libopus function return libopus's errors as the constants of
 | --- | --- |
 | `opus_encoder_ctl(OPUS_RESET_STATE)` | `OpusEncoder::reset` |
 | `opus_decoder_ctl(OPUS_RESET_STATE)` | `OpusDecoder::reset` |
+| `OPUS_SET_GAIN`, `OPUS_GET_GAIN` | `OpusDecoder::set_gain`, `gain` |
+| `OPUS_SET_PHASE_INVERSION_DISABLED`, `OPUS_GET_PHASE_INVERSION_DISABLED` (decoder) | `OpusDecoder::set_phase_inversion_disabled`, `phase_inversion_disabled` |
 | `opus_strerror` | `error::strerror` |
 | `opus_get_version_string` | `error::version_string` |
 

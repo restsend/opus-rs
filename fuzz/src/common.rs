@@ -203,9 +203,16 @@ impl RefDec {
     pub fn reset(&mut self) {
         unsafe { c::opus_decoder_ctl(self.0, c::RESET_STATE) };
     }
-    /// An integer decoder control (`opus_decoder_ctl(st, req, value)`).
-    pub fn ctl(&mut self, req: c_int, value: c_int) {
-        unsafe { c::opus_decoder_ctl(self.0, req, value) };
+    /// An integer decoder control (`opus_decoder_ctl(st, req, value)`),
+    /// returning libopus's result.
+    pub fn ctl(&mut self, req: c_int, value: c_int) -> c_int {
+        unsafe { c::opus_decoder_ctl(self.0, req, value) }
+    }
+    /// An integer decoder query (`opus_decoder_ctl(st, req, &value)`).
+    pub fn get(&mut self, req: c_int) -> i32 {
+        let mut v = 0i32;
+        unsafe { c::opus_decoder_ctl(self.0, req, &mut v as *mut i32) };
+        v
     }
 }
 impl Drop for RefDec {

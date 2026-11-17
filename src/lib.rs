@@ -3788,6 +3788,8 @@ pub struct OpusDecoder {
     complexity: i32,
     /// What the Opus layer tells SILK (libopus `DecControl`).
     dec_control: silk::dec_api::SilkDecControl,
+    /// The output gain in Q8 dB (libopus `decode_gain`, `OPUS_SET_GAIN`).
+    decode_gain: i32,
 
     // libopus clears the fields below on a reset.
     /// Channels of the last packet (libopus `stream_channels`).
@@ -3861,6 +3863,7 @@ impl OpusDecoder {
         sampling_rate: 0,
         channels: 0,
         complexity: 0,
+        decode_gain: 0,
         dec_control: silk::dec_api::SilkDecControl {
             n_channels_api: 0,
             n_channels_internal: 0,
@@ -3897,6 +3900,7 @@ impl OpusDecoder {
             sampling_rate: 0,
             channels: 0,
             complexity: 0,
+            decode_gain: 0,
             dec_control: silk::dec_api::SilkDecControl::default(),
             stream_channels: 0,
             bandwidth: Bandwidth::Auto,
@@ -3949,6 +3953,37 @@ impl OpusDecoder {
         if let Some(lpcnet) = self.silk_dec.lpcnet.as_mut() {
             lpcnet.reset();
         }
+    }
+
+    /// Sets the output gain in Q8 dB, -32768 to 32767 (libopus
+    /// `OPUS_SET_GAIN`, 0 by default): every decoded sample is scaled by
+    /// `10^(gain/(20*256))`. A value outside the range is an error and
+    /// keeps the gain.
+    pub fn set_gain(&mut self, gain: i32) -> Result<(), &'static str> {
+        if !(-32768..=32767).contains(&gain) {
+            return Err(crate::error::BAD_ARG);
+        }
+        self.decode_gain = gain;
+        Ok(())
+    }
+
+    /// The output gain in Q8 dB (libopus `OPUS_GET_GAIN`).
+    pub fn gain(&self) -> i32 {
+        self.decode_gain
+    }
+
+    /// Disables the phase inversion of CELT's intensity stereo (libopus
+    /// `OPUS_SET_PHASE_INVERSION_DISABLED`), which makes a stereo stream
+    /// downmix to mono without the inverted bands cancelling. It is
+    /// disabled by default in a mono decoder and enabled in a stereo one.
+    pub fn set_phase_inversion_disabled(&mut self, disabled: bool) {
+        self.celt_dec.disable_inv = disabled;
+    }
+
+    /// Whether phase inversion is disabled (libopus
+    /// `OPUS_GET_PHASE_INVERSION_DISABLED`).
+    pub fn phase_inversion_disabled(&self) -> bool {
+        self.celt_dec.disable_inv
     }
 
     /// The range decoder's final state after the last frame decoded, like
@@ -4571,6 +4606,13 @@ impl OpusDecoder {
                     window,
                     fs_i,
                 );
+            }
+        }
+
+        if self.decode_gain != 0 {
+            let gain = mathops::celt_exp2(6.48814081e-4 * self.decode_gain as f32);
+            for x in &mut pcm[..audiosize * ch] {
+                *x *= gain;
             }
         }
 

@@ -3189,6 +3189,9 @@ pub struct CeltDecoder {
     start_band: usize,
     /// End band decoded and concealed (libopus `CELT_SET_END_BAND`).
     end_band: usize,
+    /// No phase inversion in intensity stereo (libopus `disable_inv`,
+    /// `OPUS_SET_PHASE_INVERSION_DISABLED`); set for one output channel.
+    pub(crate) disable_inv: bool,
     /// The deep PLC fields of libopus's decoder.
     #[cfg(feature = "deep-plc")]
     pub(crate) deep_plc: plc::deep_plc::DeepPlcMem,
@@ -3330,6 +3333,7 @@ impl CeltDecoder {
         plc_lpc: [0.0; plc::LPC_ORDER * CELT_MAX_CHANNELS],
         start_band: 0,
         end_band: 0,
+        disable_inv: false,
         #[cfg(feature = "deep-plc")]
         deep_plc: plc::deep_plc::DeepPlcMem::EMPTY,
         w_tf_res: FixedVec::new(),
@@ -3389,6 +3393,7 @@ impl CeltDecoder {
         self.plc_lpc = [0.0; plc::LPC_ORDER * CELT_MAX_CHANNELS];
         self.start_band = 0;
         self.end_band = mode.eff_ebands;
+        self.disable_inv = channels == 1;
         self.w_tf_res.fill_to(nb_ebands, 0);
         self.w_cap.fill_to(nb_ebands, 0);
         self.w_offsets.fill_to(nb_ebands, 0);
@@ -3855,9 +3860,7 @@ impl CeltDecoder {
             lm as i32,
             coded_bands,
             true,
-            // libopus sets disable_inv for one output channel
-            // (celt_decoder_init), so a mono decoder ignores the inversion.
-            out_channels == 1,
+            self.disable_inv,
             &mut self.rng,
         );
         // Trace X values for comparison with C decoder
