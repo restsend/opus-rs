@@ -148,6 +148,10 @@ pub fn silk_encode_prefill_stereo(
     if left.len() < prefill_frame_length || right.len() < prefill_frame_length {
         return;
     }
+    // libopus's prefill restores channel 0's variable low-pass state into
+    // every channel (enc_API.c:223-232); after a reset without a rate
+    // switch both states are the initial one.
+    side.s_cmn.s_lp = mid.s_cmn.s_lp;
 
     let mut x1 = [0i16; MAX_FRAME_LENGTH + 2];
     let mut x2 = [0i16; MAX_FRAME_LENGTH + 2];
@@ -1350,6 +1354,27 @@ mod tests {
             .collect();
         silk_encode_prefill_stereo(mid, side, &left, &right, 40000, 1);
         assert_eq!(mid.stereo.width_prev_q14, 0);
+    }
+
+    #[test]
+    fn stereo_prefill_gives_the_side_the_mids_low_pass_state() {
+        let mut ch = [0, 1].map(|_| {
+            let mut enc = SilkEncoderState::default();
+            crate::silk::init_encoder::silk_init_encoder(&mut enc, 0);
+            crate::silk::control_codec::silk_control_encoder(&mut enc, 16, 20, 40000, 10);
+            enc
+        });
+        let [mid, side] = &mut ch;
+        // A low-pass transition the side, coding the mid only, lags in.
+        mid.s_cmn.s_lp.mode = 1;
+        mid.s_cmn.s_lp.transition_frame_no = 40;
+        side.s_cmn.s_lp.mode = 1;
+        side.s_cmn.s_lp.transition_frame_no = 10;
+        let left: Vec<i16> = (0..160)
+            .map(|i| ((i * 37 % 101) * 60 - 3000) as i16)
+            .collect();
+        silk_encode_prefill_stereo(mid, side, &left, &left, 40000, 1);
+        assert_eq!(side.s_cmn.s_lp.transition_frame_no, 41);
     }
 
     #[test]
