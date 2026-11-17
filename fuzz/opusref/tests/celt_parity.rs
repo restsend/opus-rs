@@ -274,3 +274,9 @@ fn renormalise_mismatches(scale: f32) -> usize {
 fn renormalise_uses_reciprocal_sqrt() {
     assert_eq!(renormalise_mismatches(1.0), 0);
 }
+
+/// renormalise_vector adds EPSILON after the sum of squares (vq.c:704).
+#[test]
+fn renormalise_adds_epsilon_after_the_sum() {
+    assert_eq!(renormalise_mismatches(1e-7), 0);
+}

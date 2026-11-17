@@ -779,7 +779,8 @@ pub fn extract_collapse_mask(iy: &[i32], n: usize, b: usize) -> u32 {
 
 pub fn renormalise_vector(x: &mut [f32], n: usize, gain: f32) {
     let x = &mut x[..n];
-    let e = x.iter().fold(1e-15f32, |e, &v| e + v * v);
+    // EPSILON after the sum of squares (vq.c:704).
+    let e = 1e-15 + crate::pitch::inner_prod(x, x, n);
     let g = gain * (1.0 / e.sqrt());
     for v in x.iter_mut() {
         *v *= g;
