@@ -199,9 +199,6 @@ impl RefDec {
         unsafe { c::opus_decoder_ctl(self.0, c::GET_FINAL_RANGE, &mut r as *mut u32) };
         r
     }
-    pub fn reset(&mut self) {
-        unsafe { c::opus_decoder_ctl(self.0, c::RESET_STATE) };
-    }
     /// An integer decoder control (`opus_decoder_ctl(st, req, value)`).
     pub fn ctl(&mut self, req: c_int, value: c_int) {
         unsafe { c::opus_decoder_ctl(self.0, req, value) };

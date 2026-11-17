@@ -64,6 +64,19 @@ fn new_dec(fs: i32, ch: usize, inp: &Input) -> OpusDecoder {
     d
 }
 
+/// A new libopus decoder with the input's neural network settings.
+fn new_ref(fs: i32, ch: usize, inp: &Input) -> RefDec {
+    #[allow(unused_mut)]
+    let mut d = RefDec::new(fs, ch);
+    #[cfg(feature = "dnn")]
+    {
+        d.ctl(4010, inp.complexity as i32 % 11); // OPUS_SET_COMPLEXITY
+        d.ctl(4054, inp.bwe as i32); // OPUS_SET_OSCE_BWE
+    }
+    let _ = inp;
+    d
+}
+
 #[derive(Arbitrary, Debug)]
 enum Op {
     Decode {
@@ -178,13 +191,7 @@ fn run(inp: Input) -> Result<(), Finding> {
     let ch = 1 + inp.stereo as usize;
     let mut scalar = new_dec(fs, ch, &inp);
     let mut simd = new_dec(fs, ch, &inp);
-    let mut refd = RefDec::new(fs, ch);
-    // OPUS_SET_COMPLEXITY and OPUS_SET_OSCE_BWE, which a reset keeps.
-    #[cfg(feature = "dnn")]
-    {
-        refd.ctl(4010, inp.complexity as i32 % 11);
-        refd.ctl(4054, inp.bwe as i32);
-    }
+    let mut refd = new_ref(fs, ch, &inp);
     let t = tol();
     let mut prev_cls = String::new();
     let mut enc = None;
@@ -235,10 +242,13 @@ fn run(inp: Input) -> Result<(), Finding> {
         }
         let size = match op {
             Op::Reset => {
-                // opus-rs has no reset; a new decoder is the same state.
+                // opus-rs has no reset: both sides start new decoders.
+                // libopus's OPUS_RESET_STATE keeps the FARGAN state of the
+                // deep PLC, so a reset libopus decoder conceals differently
+                // from a new one.
                 scalar = new_dec(fs, ch, &inp);
                 simd = new_dec(fs, ch, &inp);
-                refd.reset();
+                refd = new_ref(fs, ch, &inp);
                 continue;
             }
             Op::Decode { size, .. } | Op::Fec { size, .. } | Op::Lost { size } => *size,

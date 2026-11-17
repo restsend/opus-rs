@@ -1,0 +1,1 @@
+p1	diff_decoder@dnn	-	DIFF[pcm]	reset compared as a new opus-rs decoder with a reset libopus decoder, which keeps the deep PLC FARGAN state
