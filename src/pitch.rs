@@ -364,9 +364,9 @@ fn pitch_search_heap(x_lp: &[f32], y: &[f32], mut len: usize, mut max_pitch: usi
 }
 
 /// The full-rate correlations within 2 lags of the two coarse candidates,
-/// -1 elsewhere and floored at -1.
+/// floored at -1, and 0 elsewhere (pitch.c:373-386).
 fn fine_xcorr(x_lp: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, best_pitch: [usize; 2]) {
-    xcorr.fill(-1.0);
+    xcorr.fill(0.0);
     for b in best_pitch {
         let lo = (2 * b).saturating_sub(2).min(xcorr.len());
         let hi = (2 * b + 3).min(xcorr.len());

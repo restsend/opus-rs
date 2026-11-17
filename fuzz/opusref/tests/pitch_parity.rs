@@ -32,6 +32,9 @@ fn signals() -> Vec<Vec<f32>> {
                     // Quiet, then loud: the running energies cancel.
                     3 if k % 10 == 3 => if i >= split { voice * loud * 1000.0 } else { voice * 0.01 + rnd() * 1e-3 },
                     3 => if i % (60 + k % 50) == 0 { 5000.0 } else { 0.0 },
+                    // Quiet noise: correlations of order 1, where the
+                    // value outside the candidate windows weighs.
+                    4 if k % 10 == 9 => rnd() * 0.05,
                     _ => (voice + rnd()) * 1e-3,
                 }
             })
@@ -71,7 +74,9 @@ fn mismatches(long: bool) -> (usize, usize) {
     (search, doubling)
 }
 
-/// compute_pitch_gain is xy/sqrt(1+xx*yy) for any sign (pitch.c:447-450).
+/// compute_pitch_gain is xy/sqrt(1+xx*yy) for any sign (pitch.c:447-450);
+/// the fine search leaves lags outside the candidate windows at 0
+/// (pitch.c:376).
 #[test]
 fn pitch_search_and_doubling_match_libopus() {
     assert_eq!(mismatches(false), (0, 0));
@@ -82,4 +87,20 @@ fn pitch_search_and_doubling_match_libopus() {
 #[test]
 fn doubling_keeps_the_running_energy() {
     assert_eq!(mismatches(true), (0, 0));
+}
+
+/// The concealment's pitch search on a decoded history whose best lag
+/// lies at a candidate window's edge (lane D's input: concealment after
+/// a 2.5 ms CELT packet, mono 24 kHz).
+#[test]
+fn concealment_pitch_search_matches_libopus() {
+    let lp: Vec<f32> = include_bytes!("data/pitch_fine_xcorr_lp.f32")
+        .chunks(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+    let a = opus_rs::pitch::pitch_search(&lp[360..], &lp, 1328, 620);
+    let mut b = 0;
+    let mut y = lp.clone();
+    unsafe { pitch_search(lp[360..].as_ptr(), y.as_mut_ptr(), 1328, 620, &mut b, 0) };
+    assert_eq!(a, b as usize);
 }
