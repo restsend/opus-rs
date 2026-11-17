@@ -147,12 +147,14 @@ fn run(c: Cfg, pcm: &[i16]) -> Option<(usize, &'static str)> {
         let (a, b) = (&a[..la], &b[..lb as usize]);
         // Both decoders decode every packet, which keeps their states.
         let (s_rs, s_c) = (silk_symbols(d_rs, a), silk_symbols(d_c, b));
-        let kind = if a[0] != b[0] {
+        // A DTX packet of one encoder only; analysis-driven DTX decisions
+        // follow the float build in opus-rs.
+        let kind = if (a.len() == 1) != (b.len() == 1) {
+            "dtx"
+        } else if a[0] != b[0] {
             "toc"
         } else if input_rs != input_c {
             "input"
-        } else if (a.len() == 1) != (b.len() == 1) {
-            "dtx"
         } else if a[0] >> 3 >= 12 {
             // A CELT-only packet of both encoders (TOC configs 16-31).
             continue;
