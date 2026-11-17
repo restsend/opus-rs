@@ -340,6 +340,9 @@ pub struct OpusEncoder {
     stream_channels: usize,
     prev_channels: usize,
     silk_to_mono: bool,
+    /// libopus `nChannelsInternal` of the SILK encoder: the channels its
+    /// last packet coded (1 after a reset).
+    silk_channels: usize,
     /// libopus `force_channels == 1`, which a multiframe packet with a
     /// pending stereo-to-mono switch sets: stereo input is coded mono.
     force_mono: bool,
@@ -1376,6 +1379,7 @@ impl OpusEncoder {
             prev_channels: 0,
             silk_to_mono: false,
             force_mono: false,
+            silk_channels: 1,
             silk_opus_can_switch: false,
             silk_bw_switch: false,
             #[cfg(not(feature = "heap"))]
@@ -1440,7 +1444,7 @@ impl OpusEncoder {
                 enc.s_cmn.no_speech_counter >= silk::define::NB_SPEECH_FRAMES_BEFORE_DTX
             };
             quiet(state_ref(&self.silk_enc))
-                && (self.channels == 1
+                && (self.silk_channels == 1
                     || self.silk_enc.stereo.prev_decode_only_middle != 0
                     || quiet(state_ref(&self.silk_enc_side)))
         } else if self.use_dtx {
@@ -1980,6 +1984,7 @@ impl OpusEncoder {
             }
             self.silk_initialized = false;
             self.silk_opus_can_switch = false;
+            self.silk_channels = 1;
             transition.prefill = true;
         }
 
@@ -2226,13 +2231,8 @@ impl OpusEncoder {
             }
         }
 
-        // The channels coded: SILK and Hybrid frames code the input's, as
-        // opus-rs's SILK encoder has no mono coding of stereo input.
-        let coded_channels = if mode == OpusMode::CeltOnly {
-            self.stream_channels
-        } else {
-            self.channels
-        };
+        // The channels coded; SILK codes the mid of stereo input coded mono.
+        let coded_channels = self.stream_channels;
         let mut toc = gen_toc(mode, frame_rate, frame_bandwidth, coded_channels);
         output[0] = toc;
 
@@ -2416,11 +2416,27 @@ impl OpusEncoder {
             // A switch prepared by the previous packet restarts the SILK
             // encoders, keeping their low-pass state, and prefills them
             // (opus_encoder.c:1933-1940, prefill 2 in enc_API.c:215-246).
+            // A second coded channel starts afresh, from the mid's input
+            // resampler (enc_API.c:193-209).
+            let channels_change = self.silk_channels != coded_channels;
+            if coded_channels > self.silk_channels {
+                let side = state_mut(&mut self.silk_enc_side);
+                *side = SilkEncoderState::default();
+                silk_init_encoder(side, 0);
+                let stereo = &mut self.silk_enc.stereo;
+                stereo.pred_prev_q13 = [0; 2];
+                stereo.s_side = [0; 2];
+                stereo.mid_side_amp_q0 = [0, 1, 0, 1];
+                stereo.width_prev_q14 = 0;
+                stereo.smth_width_q14 = 1 << 14;
+            }
+            // The coded channels before this packet (`nPrevChannelsInternal`).
+            let mut prev_silk_channels = core::mem::replace(&mut self.silk_channels, coded_channels);
             let silk_switch_prefill = core::mem::take(&mut self.silk_bw_switch);
             if silk_switch_prefill {
                 for enc in [&mut self.silk_enc, &mut self.silk_enc_side]
                     .into_iter()
-                    .take(self.channels)
+                    .take(coded_channels)
                 {
                     silk_reset_for_rate_switch(state_mut(enc));
                 }
@@ -2448,7 +2464,7 @@ impl OpusEncoder {
                     rate_control(state_mut(&mut self.silk_enc), self.silk_opus_can_switch);
                 // The side follows the mid's rate (force_fs_kHz) but keeps
                 // its own low-pass state machine, which can be ready too.
-                let side_ready = self.channels == 2
+                let side_ready = coded_channels == 2
                     && rate_control(
                         state_mut(&mut self.silk_enc_side),
                         self.silk_opus_can_switch,
@@ -2467,7 +2483,7 @@ impl OpusEncoder {
             // needs, and drops the FEC flags of the old layout
             // (enc_API.c:207, 268-272).
             let duration_change = self.silk_enc.s_cmn.packet_size_ms != frame_ms;
-            if rate_change || duration_change {
+            if rate_change || duration_change || channels_change {
                 // A running encoder keeps its buffered input across a rate
                 // change: libopus moves it to the API rate and back through
                 // the new input resampler (silk_setup_resamplers,
@@ -2482,7 +2498,7 @@ impl OpusEncoder {
                         self.sampling_rate,
                         silk_fs_khz,
                     )?;
-                    if self.channels == 2 {
+                    if coded_channels == 2 {
                         let side = state_mut(&mut self.silk_enc_side);
                         if side.s_cmn.fs_khz != 0 {
                             silk_move_history(
@@ -2508,9 +2524,9 @@ impl OpusEncoder {
                     self.complexity,
                 );
 
-                self.silk_enc.s_cmn.n_channels = self.channels as i32;
+                self.silk_enc.s_cmn.n_channels = coded_channels as i32;
                 self.silk_initialized = true;
-                if duration_change {
+                if duration_change || channels_change {
                     self.silk_enc.s_cmn.lbrr_flags.fill(0);
                     self.silk_enc_side.s_cmn.lbrr_flags.fill(0);
                 }
@@ -2525,7 +2541,7 @@ impl OpusEncoder {
                         return Err("Unsupported SILK resampling ratio");
                     }
                 }
-                if self.channels == 2 {
+                if coded_channels == 2 {
                     if rate_change && !moved {
                         self.silk_resampler_enc_right = self.silk_resampler_enc.clone();
                     }
@@ -2542,6 +2558,11 @@ impl OpusEncoder {
                     side.s_cmn.n_channels = 2;
                 }
             }
+            // From one coded channel to two, both channels' resamplers
+            // start from the mid's (enc_API.c:290-293).
+            if coded_channels == 2 && prev_silk_channels == 1 {
+                self.silk_resampler_enc_right = self.silk_resampler_enc.clone();
+            }
 
             // SILK codes CBR only in SILK-only frames: in hybrid CBR it runs
             // as VBR under a cap, and CELT takes up the rest of the packet
@@ -2557,7 +2578,7 @@ impl OpusEncoder {
             // max(7 - 0.2*loss, 3)), for each coded channel.
             for enc in [&mut self.silk_enc, &mut self.silk_enc_side]
                 .into_iter()
-                .take(self.channels)
+                .take(coded_channels)
             {
                 enc.s_cmn.use_cbr = silk_use_cbr as i32;
                 enc.s_cmn.use_in_band_fec = if self.use_inband_fec { 1 } else { 0 };
@@ -2577,7 +2598,7 @@ impl OpusEncoder {
                     frame20ms,
                     !self.use_cbr,
                     lbrr_coded != 0,
-                    self.channels,
+                    coded_channels,
                 )
             } else {
                 // C: SILK gets all bits, at the requested rate (issue #43).
@@ -2605,7 +2626,7 @@ impl OpusEncoder {
                 // resampled prefill is at most the same length (Copy at equal
                 // rates). No allocation: this crate is heap-free without the
                 // `heap` feature.
-                if ch == 2 {
+                if coded_channels == 2 {
                     // Each channel through its own resampler, then mid/side
                     // at the internal rate, as C silk_Encode prefills two
                     // internal channels.
@@ -2633,31 +2654,47 @@ impl OpusEncoder {
                         activity,
                     );
                 } else {
+                    // Stereo input coded mono prefills its downmix.
                     let mut pre = [0i16; 480];
                     let pre = &mut pre[..eb];
                     for i in offset.min(eb)..eb {
-                        pre[i] =
-                            prefill_fade(self.silk_delay_buffer[i], i - offset, self.sampling_rate);
+                        let fade = |x| prefill_fade(x, i - offset, self.sampling_rate);
+                        pre[i] = if ch == 2 {
+                            let (l, r) = (self.silk_delay_buffer[2 * i], self.silk_delay_buffer[2 * i + 1]);
+                            ((i32::from(fade(l)) + i32::from(fade(r)) + 1) >> 1) as i16
+                        } else {
+                            fade(self.silk_delay_buffer[i])
+                        };
                     }
                     let mut pre_internal = [0i16; 480];
                     let pre_internal = &mut pre_internal[..pre_resampled_len];
                     self.silk_resampler_enc
                         .process(pre_internal, pre, eb as i32);
+                    if prev_silk_channels == 2 {
+                        let mut right = [0i16; 480];
+                        let right = &mut right[..pre_resampled_len];
+                        self.silk_resampler_enc_right.process(right, pre, eb as i32);
+                        for (a, b) in pre_internal.iter_mut().zip(right.iter()) {
+                            *a = ((i32::from(*a) + i32::from(*b)) >> 1) as i16;
+                        }
+                    }
                     silk_encode_prefill(state_mut(&mut self.silk_enc), pre_internal, activity);
                 }
             }
             if silk_prefilled {
+                // The prefill coded the packet's channels already.
+                prev_silk_channels = coded_channels;
                 // The coding call controls again, now unable to switch, and
                 // repeats the LBRR setup of the prefill call, which counts
                 // as a packet with LBRR.
                 let (_, ready) = rate_control(state_mut(&mut self.silk_enc), false);
                 let side_ready =
-                    self.channels == 2 && rate_control(state_mut(&mut self.silk_enc_side), false).1;
+                    coded_channels == 2 && rate_control(state_mut(&mut self.silk_enc_side), false).1;
                 silk_switch_room += u32::from(ready) + u32::from(side_ready);
                 silk_switch_ready = ready || side_ready;
                 for enc in [&mut self.silk_enc, &mut self.silk_enc_side]
                     .into_iter()
-                    .take(self.channels)
+                    .take(coded_channels)
                 {
                     silk_setup_lbrr(state_mut(enc), lbrr_coded);
                 }
@@ -2672,7 +2709,7 @@ impl OpusEncoder {
             // rate (enc_API.c, nChannelsInternal 2), in SILK-only and Hybrid
             // alike.
             self.buf_silk_input.resize(silk_frame_len_samples, 0);
-            if self.channels == 2 {
+            if coded_channels == 2 {
                 self.buf_silk_input_right.resize(silk_frame_len_samples, 0);
                 for c in 0..2 {
                     self.buf_silk_api_channel.resize(frame_size, 0);
@@ -2696,6 +2733,39 @@ impl OpusEncoder {
                     };
                     if resampler.process(out, &self.buf_silk_api_channel, frame_size as i32) != 0 {
                         return Err("SILK input resampling failed");
+                    }
+                }
+            } else if self.channels == 2 {
+                // Stereo input coded mono: SILK codes the downmix, rounded
+                // half the 16-bit sum (enc_API.c:315-321); the float build
+                // sums the floats and saturates to 16 bits first, the
+                // fixed-point build that VoIP follows sums the integers.
+                self.buf_silk_api_channel.resize(frame_size, 0);
+                let prefix = self.delay_compensation * 2;
+                let pcm = &self.buf_celt_pcm[prefix..prefix + 2 * frame_size];
+                for (i, s) in self.buf_silk_api_channel.iter_mut().enumerate() {
+                    let sum = if self.application == Application::Voip {
+                        i32::from(input_i16[2 * i]) + i32::from(input_i16[2 * i + 1])
+                    } else {
+                        i32::from(float2int16(pcm[2 * i] + pcm[2 * i + 1]))
+                    };
+                    *s = ((sum + 1) >> 1) as i16;
+                }
+                let mid = state_mut(&mut self.buf_silk_input).as_mut_slice();
+                if self.silk_resampler_enc.process(mid, &self.buf_silk_api_channel, frame_size as i32) != 0 {
+                    return Err("SILK input resampling failed");
+                }
+                // The first frame after two coded channels averages both
+                // channels' resamplers (enc_API.c:324-331).
+                if prev_silk_channels == 2 {
+                    self.buf_silk_input_right.resize(silk_frame_len_samples, 0);
+                    let right = state_mut(&mut self.buf_silk_input_right).as_mut_slice();
+                    if self.silk_resampler_enc_right.process(right, &self.buf_silk_api_channel, frame_size as i32) != 0 {
+                        return Err("SILK input resampling failed");
+                    }
+                    let n = self.silk_enc.s_cmn.frame_length as usize;
+                    for (a, b) in mid[..n].iter_mut().zip(&right[..n]) {
+                        *a = ((i32::from(*a) + i32::from(*b)) >> 1) as i16;
                     }
                 }
             } else {
@@ -2738,7 +2808,7 @@ impl OpusEncoder {
                         frame20ms,
                         true,
                         lbrr_coded != 0,
-                        self.channels,
+                        coded_channels,
                     );
                     max_bit_rate * frame_size as i32 / self.sampling_rate
                 }
@@ -2758,7 +2828,7 @@ impl OpusEncoder {
             let silk_use_cbr = silk_use_cbr as i32;
             #[cfg(feature = "fuzzing")]
             fuzzing::record_silk_input(&state_ref(&self.buf_filtered)[..frame_size * self.channels]);
-            let ret = if self.channels == 2 {
+            let ret = if coded_channels == 2 {
                 silk_encode_stereo_packet(
                     state_mut(&mut self.silk_enc),
                     state_mut(&mut self.silk_enc_side),
@@ -2787,6 +2857,14 @@ impl OpusEncoder {
             };
             if ret != 0 {
                 return Err("SILK encoding failed");
+            }
+            if coded_channels == 1 {
+                // libopus takes the mid-only flag of the packet's last frame
+                // index from the stereo state also for one coded channel
+                // (enc_API.c:525).
+                let stereo = &mut self.silk_enc.stereo;
+                let last = self.silk_enc.s_cmn.n_frames_per_packet as usize - 1;
+                stereo.prev_decode_only_middle = i32::from(stereo.mid_only_flags[last]);
             }
             // SILK's own VAD decides when Opus left no activity decision
             // (opus_encoder.c:2235-2241, from `silk_mode.signalType`).

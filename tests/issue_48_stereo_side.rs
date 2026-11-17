@@ -447,14 +447,15 @@ fn check(case: &Case) -> (Measured, Channels, Channels) {
     (m, rs, c)
 }
 
-/// Amplitude-panned speech at 16 kb/s: libopus codes it as panned mono, the
-/// mid with a predictor and no side. The L/R balance must survive. Coding the
+/// Amplitude-panned speech at 24 kb/s (below about 18 kb/s libopus codes
+/// stereo input in one channel): libopus codes it as panned mono, the mid
+/// with a predictor and little side. The L/R balance must survive. Coding the
 /// mid with a zero predictor decoded both channels as the mid (+0.83·mid,
 /// R at -1.7 dB). CBR, because SILK-only VBR doesn't follow the bitrate yet
 /// (#43).
 #[test]
-fn panned_speech_keeps_its_balance_at_16k() {
-    let (_, rs, _) = check(&Case::new("panned SILK WB 16k CBR", 16000, 16000, panned));
+fn panned_speech_keeps_its_balance_at_24k() {
+    let (_, rs, _) = check(&Case::new("panned SILK WB 24k CBR", 16000, 24000, panned));
     // The input is 1.5·mid and 0.5·mid; the predictor fades toward mono at
     // this rate, but L stays well above R.
     assert!(

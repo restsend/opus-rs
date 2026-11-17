@@ -14,8 +14,9 @@
 //!
 //! The tests encode all 18 s of the fixture with 16-bit input in CBR, VoIP,
 //! complexity 9, and compare with hashes of fixed-point libopus 1.6.1's
-//! packets at the same settings (voice signal, the bandwidth and the stream's
-//! channel count forced; loss rate 10% with FEC).
+//! packets at the same settings (voice signal and the bandwidth forced, the
+//! stream's channel count chosen by the encoder: stereo input at 20 and
+//! 24 kb/s codes one channel; loss rate 10% with FEC).
 
 // Only the fixture reader is used here.
 #[allow(dead_code)]
@@ -206,7 +207,7 @@ fn hybrid_cbr_silk_layer_matches_fixed_point_libopus() {
     // and opus-rs, running SILK as CBR, did not.
     let cases: [(usize, usize, usize, i32, bool, u64); 3] = [
         (24000, 20, 1, 16000, false, 0x567928009ad3872d),
-        (48000, 10, 2, 24000, false, 0xff39be8bf9e4a6e5),
+        (48000, 10, 2, 24000, false, 0xceeba16a0a780e1b),
         (48000, 20, 1, 32000, true, 0xdda780ca600b0a9c),
     ];
     for (sr, ms, channels, rate, fec, expected) in cases {
@@ -226,7 +227,7 @@ fn hybrid_celt_cbr_switches_keep_silk_like_fixed_point_libopus() {
     // 400 ms: the SILK layer of every hybrid frame, through each restart.
     let cases: [(usize, usize, usize, u64, usize); 2] = [
         (48000, 20, 1, 0xce8d84b6ef3d6144, 483),
-        (24000, 10, 2, 0xdc6674a2f2f6cedf, 943),
+        (24000, 10, 2, 0x61ae2c477a29b816, 943),
     ];
     for (sr, ms, channels, expected, layers) in cases {
         let packets = encode_cbr(sr, ms, channels, false, |at| {
@@ -247,16 +248,17 @@ fn hybrid_celt_cbr_switches_keep_silk_like_fixed_point_libopus() {
 #[test]
 fn cbr_fec_packets_match_fixed_point_libopus() {
     // With FEC at 10% loss these streams are SILK-only, and every packet is
-    // byte-identical to fixed-point libopus's, also the 15, 1 and 23 whose
+    // byte-identical to fixed-point libopus's, also the 15 and 23 whose
     // frame the LBRR section leaves too little room and that decoders
     // conceal. Before this change opus-rs dropped the LBRR section from such
     // packets instead (mono at 24 kb/s parts from libopus at packet 24), and
     // in stereo cut the cap of the packet before an internal-rate switch
-    // once where both channels' state machines cut it (from packet 24 at
-    // 20 kb/s).
+    // once where both channels' state machines cut it (from packet 24 of a
+    // stereo stream at 20 kb/s; at 20 kb/s libopus codes this input in one
+    // channel).
     let cases: [(usize, usize, usize, i32, u64, usize); 3] = [
         (24000, 10, 1, 24000, 0x00de474e3e2f5e7c, 15),
-        (24000, 20, 2, 20000, 0x0a752d6e04b25a02, 1),
+        (24000, 20, 2, 20000, 0x8c54087df60b33bc, 0),
         (48000, 10, 2, 28000, 0xac0af6e75ea8cf97, 23),
     ];
     for (sr, ms, channels, rate, expected, concealed) in cases {

@@ -524,7 +524,8 @@ const TRACE_BLOCKS: [u64; 22] = [
 ];
 
 /// libopus 1.6.1 fixed point: sample rate, frame ms, bitrate, channels and
-/// the hashes of each 200 packets.
+/// the hashes of each 200 packets. Stereo at 12 kb/s codes one SILK
+/// channel, as libopus chooses.
 const PACKET_BLOCKS: [(usize, usize, i32, usize, &[u64]); 5] = [
     (
         16000,
@@ -576,16 +577,16 @@ const PACKET_BLOCKS: [(usize, usize, i32, usize, &[u64]); 5] = [
         12000,
         2,
         &[
-            0x9d7263ec3d7d71f1,
-            0x144101e249010883,
-            0x35a7162158f70e60,
-            0xffe7c58676fce654,
-            0xb7845f2bbcfb1caa,
-            0x64cdeb84999b3b2a,
-            0xe4ce0e257f931f39,
-            0xf7fc0bae469a4d0f,
-            0x8094e69178a01237,
-            0x532d71fe70adf4f4,
+            0x9670e5d82b8170d6,
+            0x5d5acb96969b5cb3,
+            0xa86035f56e2c432c,
+            0x6b7a7dd5ada5e7c2,
+            0xc076fc63433b4bae,
+            0xbcba4c26c7db226a,
+            0x059a9f1342709083,
+            0x3e353b06ae60827a,
+            0x4aa13a526333b64a,
+            0x6559a5dee551b94d,
         ],
     ),
     (

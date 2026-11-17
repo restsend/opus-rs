@@ -226,3 +226,18 @@ fn multiframe_stereo_to_mono_switch_stays_mono() {
     p.check(1, 3840, 1500, |_, _| true);
     p.check(4, 3840, 1500, toc);
 }
+
+/// Stereo input below the stereo threshold codes one SILK channel, with a
+/// mono ToC, in SILK-only and Hybrid packets.
+#[test]
+fn low_rate_stereo_codes_one_silk_channel() {
+    for (fs, frame) in [(16000, 320), (48000, 960), (48000, 480)] {
+        let mut p = Pair::new(fs, 2, Application::Voip);
+        p.bitrate(12000);
+        p.check(10, frame, 1500, toc);
+        p.bitrate(40000);
+        p.check(10, frame, 1500, toc);
+        p.bitrate(12000);
+        p.check(10, frame, 1500, toc);
+    }
+}
