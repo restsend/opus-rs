@@ -349,9 +349,10 @@ pub struct OpusEncoder {
     /// libopus `nChannelsInternal` of the SILK encoder: the channels its
     /// last packet coded (1 after a reset).
     silk_channels: usize,
-    /// libopus `force_channels == 1`, which a multiframe packet with a
-    /// pending stereo-to-mono switch sets: stereo input is coded mono.
-    force_mono: bool,
+    /// libopus `force_channels` (`OPUS_SET_FORCE_CHANNELS`, `None` for
+    /// `OPUS_AUTO`): the channels stereo input is coded with. A multiframe
+    /// packet with a pending stereo-to-mono switch sets it to 1.
+    force_channels: Option<usize>,
     /// libopus `silk_mode.opusCanSwitch` and `silk_bw_switch`: SILK asked to
     /// change its internal rate, which the next packet does.
     silk_opus_can_switch: bool,
@@ -1417,7 +1418,7 @@ impl OpusEncoder {
             stream_channels: channels,
             prev_channels: 0,
             silk_to_mono: false,
-            force_mono: false,
+            force_channels: None,
             silk_channels: 1,
             silk_opus_can_switch: false,
             silk_bw_switch: false,
@@ -1932,7 +1933,7 @@ impl OpusEncoder {
         let (analysis_info, is_silence) = self.analyse(input, frame_size);
 
         // How far stereo input is from mono (libopus compute_stereo_width).
-        let stereo_width = if self.channels == 2 && !self.force_mono {
+        let stereo_width = if self.channels == 2 && self.force_channels != Some(1) {
             compute_stereo_width(input, frame_size, self.sampling_rate, &mut self.width_mem)
         } else {
             0.0
@@ -1953,8 +1954,8 @@ impl OpusEncoder {
         self.silk_use_dtx = silk_use_dtx;
 
         // The rate-dependent mono/stereo decision (opus_encoder.c:1409-1453).
-        self.stream_channels = if self.force_mono {
-            1
+        self.stream_channels = if let (Some(forced), 2) = (self.force_channels, self.channels) {
+            forced
         } else if self.channels == 2 {
             let equiv = compute_equiv_rate(
                 self.rate,
@@ -3575,7 +3576,7 @@ impl OpusEncoder {
         // 1836).
         let bak_to_mono = self.silk_to_mono;
         if bak_to_mono {
-            self.force_mono = true;
+            self.force_channels = Some(1);
         } else {
             self.prev_channels = self.stream_channels;
         }

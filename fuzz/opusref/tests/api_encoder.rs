@@ -193,3 +193,26 @@ fn lsb_depth_matches_libopus() {
         }
     }
 }
+
+/// `OPUS_SET_FORCE_CHANNELS`: stereo input coded mono or stereo at any
+/// rate; invalid counts are rejected.
+#[test]
+fn force_channels_matches_libopus() {
+    for (fs, ch, app, frame, _) in CONFIGS {
+        for rate in [12000, 64000] {
+            for (force, value) in [(Some(1), 1), (Some(2), 2), (None, -1000)] {
+                let mut p = Pair::new(fs, ch, app);
+                p.rs.bitrate_bps = rate;
+                p.ctl(SET_BITRATE, rate);
+                for (bad, c) in [(Some(0), 0), (Some(3), 3)] {
+                    assert_eq!(code(p.rs.set_force_channels(bad)), p.ctl(SET_FORCE_CHANNELS, c));
+                }
+                assert_eq!(code(p.rs.set_force_channels(force)), p.ctl(SET_FORCE_CHANNELS, value));
+                assert_eq!(p.rs.force_channels().map_or(-1000, |v| v as i32), p.get(GET_FORCE_CHANNELS));
+                for f in 0..12 {
+                    p.encode(frame, f, &format!("{fs} {ch} {app:?} {rate} force {force:?} frame {f}"));
+                }
+            }
+        }
+    }
+}

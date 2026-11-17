@@ -70,6 +70,8 @@ struct Call {
 enum Ctl {
     /// `set_lsb_depth` / `OPUS_SET_LSB_DEPTH`.
     LsbDepth(i8),
+    /// `set_force_channels` / `OPUS_SET_FORCE_CHANNELS`; negative is auto.
+    ForceChannels(i8),
 }
 
 /// Applies `ctl` to the opus-rs encoders and the libopus one and checks
@@ -82,6 +84,14 @@ fn apply_ctl(rs: &mut [&mut OpusEncoder; 2], re: &mut RefEnc, ctl: Ctl) -> Resul
             let a = code(rs[0].set_lsb_depth(d));
             let _ = rs[1].set_lsb_depth(d);
             (a, re.try_ctl(c::SET_LSB_DEPTH, d), rs[0].lsb_depth(), re.get(c::GET_LSB_DEPTH))
+        }
+        Ctl::ForceChannels(n) => {
+            let v = (n >= 0).then_some(n as usize);
+            let a = code(rs[0].set_force_channels(v));
+            let _ = rs[1].set_force_channels(v);
+            let b = re.try_ctl(c::SET_FORCE_CHANNELS, v.map_or(-1000, |v| v as i32));
+            let got = rs[0].force_channels().map_or(-1000, |v| v as i32);
+            (a, b, got, re.get(c::GET_FORCE_CHANNELS))
         }
     };
     if a != b || got != want {

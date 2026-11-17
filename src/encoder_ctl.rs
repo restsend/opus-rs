@@ -23,6 +23,22 @@ impl OpusEncoder {
         self.lsb_depth
     }
 
+    /// The channels to code stereo input with, 1 or 2, or `None` to choose
+    /// them from the bitrate (libopus `OPUS_SET_FORCE_CHANNELS`, `None` by
+    /// default). More channels than the input's or 0 are `error::BAD_ARG`.
+    pub fn set_force_channels(&mut self, channels: Option<usize>) -> Result<(), &'static str> {
+        if channels.is_some_and(|c| c == 0 || c > self.channels) {
+            return Err(BAD_ARG);
+        }
+        self.force_channels = channels;
+        Ok(())
+    }
+
+    /// The forced channels (libopus `OPUS_GET_FORCE_CHANNELS`).
+    pub fn force_channels(&self) -> Option<usize> {
+        self.force_channels
+    }
+
     /// The depth the encoder assumes for `input`: the set depth, at most
     /// 16 for 16-bit input (libopus `IMIN(lsb_depth, st->lsb_depth)`).
     pub(crate) fn input_depth(&self, input: PcmInput<'_>) -> i32 {
