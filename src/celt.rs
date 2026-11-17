@@ -3070,6 +3070,16 @@ impl CeltEncoder {
             }
         }
 
+        // Bands outside start..end start from zero energy when they come
+        // back (celt_encoder.c:2790-2804).
+        for c in 0..cc {
+            for i in (0..start_band).chain(end..nb_ebands) {
+                let k = c * nb_ebands + i;
+                self.old_band_e[k] = 0.0;
+                self.old_band_e2[k] = -28.0;
+                self.old_band_e3[k] = -28.0;
+            }
+        }
         self.rng = rc.rng;
 
         // libopus keeps the pitch found even when the pre-filter is off (its
