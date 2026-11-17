@@ -1,3 +1,5 @@
+![WARN: LLM GENERATED](https://img.shields.io/badge/WARN-LLM%20GENERATED-FF6347)
+
 # opus-rs
 
 A pure-Rust implementation of the [Opus audio codec](https://opus-codec.org/) (RFC 6716), ported from the reference C implementation (libopus 1.6).
@@ -629,6 +631,17 @@ C encoder, and packet framing against the C repacketizer.
 - **Performance:** unchanged vs 0.1.26 (measured within ±0.5% on `opus_real`; no per-frame allocation overhead).
 - **Conformance:** RFC 6716 1276-byte packet cap enforced on the Opus path; the standalone `RangeCoder`/CELT buffer supports up to 2048 bytes.
 - `wav_test` example now tags output files by build (`_std` / `_nostd`) for A/B listening across build modes.
+
+## AI assistance
+
+Much of opus-rs's code, tests and documentation was written by LLMs. This
+includes the libopus conformance fixes, the port to libopus main, the neural
+features (Deep PLC, DRED, OSCE, BWE), the fuzzing harnesses and the
+optimisations, which were written by Claude (Anthropic). They are checked
+against libopus with differential tests and fuzzing
+([fuzz/DIFFERENTIAL.md](fuzz/DIFFERENTIAL.md), `scripts/test-all.sh`);
+[fuzz/REGRESSIONS.md](fuzz/REGRESSIONS.md) lists every fix and the test that
+guards it. opus-rs has not had an independent security audit.
 
 ## License
 
