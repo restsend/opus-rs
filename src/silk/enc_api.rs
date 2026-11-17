@@ -154,6 +154,11 @@ pub fn silk_encode_prefill_stereo(
     x1[2..2 + prefill_frame_length].copy_from_slice(&left[..prefill_frame_length]);
     x2[2..2 + prefill_frame_length].copy_from_slice(&right[..prefill_frame_length]);
     let (mut ix, mut mid_only, mut rates) = ([[0i8; 3]; 2], 0i8, [0i32; 2]);
+    // The frame target of a 10 ms packet of one frame, without LBRR
+    // (enc_API.c:411-431 with payloadSize_ms 10).
+    let target_rate_bps = (total_rate_bps * 10 / 1000 * 100
+        - mid.n_bits_exceeded * 1000 / BITRESERVOIR_DECAY_TIME_MS)
+        .clamp(total_rate_bps.min(5000), total_rate_bps.max(5000));
     // The encoders were just reset, so the previous speech activity is 0.
     silk_stereo_lr_to_ms(
         &mut mid.stereo,
@@ -162,7 +167,7 @@ pub fn silk_encode_prefill_stereo(
         &mut ix,
         &mut mid_only,
         &mut rates,
-        total_rate_bps,
+        target_rate_bps,
         0,
         false,
         fs_khz,
@@ -1321,6 +1326,30 @@ mod tests {
         assert_eq!(silk_frame_target_rate_bps(&mut enc, 4000, 0, 0), 4000);
         enc.n_bits_exceeded = 100;
         assert_eq!(silk_frame_target_rate_bps(&mut enc, 4000, 0, 0), 4000);
+    }
+
+    #[test]
+    fn stereo_prefill_targets_a_10_ms_frame_less_the_reservoir() {
+        // libopus's prefill frame target: (40000 / 100) * 100 less a 500 ms
+        // payback of the 10000 bits over target, 20000 b/s. Less 1200 for
+        // the stereo parameters, 8 * 18800 < 13 * 11600 at 16 kHz: the
+        // frame collapses to zero width (stereo_LR_to_MS.c:142-145).
+        let mut ch = [0, 1].map(|_| {
+            let mut enc = SilkEncoderState::default();
+            crate::silk::init_encoder::silk_init_encoder(&mut enc, 0);
+            crate::silk::control_codec::silk_control_encoder(&mut enc, 16, 20, 40000, 10);
+            enc
+        });
+        let [mid, side] = &mut ch;
+        mid.n_bits_exceeded = 10000;
+        let left: Vec<i16> = (0..160)
+            .map(|i| ((i * 37 % 101) * 60 - 3000) as i16)
+            .collect();
+        let right: Vec<i16> = (0..160)
+            .map(|i| ((i * 53 % 89) * 70 - 3000) as i16)
+            .collect();
+        silk_encode_prefill_stereo(mid, side, &left, &right, 40000, 1);
+        assert_eq!(mid.stereo.width_prev_q14, 0);
     }
 
     #[test]
