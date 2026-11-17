@@ -41,7 +41,16 @@ pub fn silk_find_pred_coefs_flp(
     if i32::from(ps_enc.s_cmn.indices.signal_type) == TYPE_VOICED {
         let mut xx_ltp = [0.0f32; MAX_NB_SUBFR * LTP_ORDER * LTP_ORDER];
         let mut x_x_ltp = [0.0f32; MAX_NB_SUBFR * LTP_ORDER];
-        silk_find_ltp_flp(&mut xx_ltp, &mut x_x_ltp, res_pitch, x_frame, &ctrl.pitch_l, subfr_length, nb_subfr);
+        silk_find_ltp_flp(
+            &mut xx_ltp,
+            &mut x_x_ltp,
+            res_pitch,
+            x_frame,
+            &ctrl.pitch_l,
+            subfr_length,
+            nb_subfr,
+            ps_enc.s_cmn.arch,
+        );
 
         let cmn = &mut ps_enc.s_cmn;
         ctrl.ltp_red_cod_gain = silk_quant_ltp_gains_flp(

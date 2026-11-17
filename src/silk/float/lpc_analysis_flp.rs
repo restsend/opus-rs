@@ -26,7 +26,8 @@ pub fn silk_find_lpc_flp(
     ps_enc_c.indices.nlsf_interp_coef_q2 = 4;
 
     // Burg AR analysis of the full frame.
-    let mut res_nrg = silk_burg_modified_flp(&mut a, x, min_inv_gain, subfr_length, nb_subfr, order);
+    let arch = ps_enc_c.arch;
+    let mut res_nrg = silk_burg_modified_flp(&mut a, x, min_inv_gain, subfr_length, nb_subfr, order, arch);
 
     if ps_enc_c.use_interpolated_nlsfs != 0 && ps_enc_c.first_frame_after_reset == 0 && nb_subfr == MAX_NB_SUBFR {
         // The optimum for the last 10 ms; its residual energy is taken out
@@ -39,6 +40,7 @@ pub fn silk_find_lpc_flp(
             subfr_length,
             MAX_NB_SUBFR / 2,
             order,
+            arch,
         );
         silk_a2nlsf_flp(&mut nlsf_q15[..order], &a_tmp[..order]);
 

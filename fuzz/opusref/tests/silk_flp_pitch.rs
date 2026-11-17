@@ -69,6 +69,7 @@ fn pitch_analysis_core_matches_libopus() {
             fs_khz,
             complexity,
             nb_subfr,
+            opus_rs::Arch::Scalar,
         );
         let mut pitch_c = [0 as c_int; 4];
         let (mut lag_c, mut contour_c, mut corr_c) = (0i16, 0i8, ltp_corr0);

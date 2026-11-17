@@ -68,10 +68,19 @@ pub fn silk_energy_flp(data: &[f32]) -> f64 {
     result
 }
 
-/// libopus `silk_inner_product_FLP_c`: the inner product of `data1` and
-/// `data2[..data1.len()]` in `f64`, four at a time.
-pub fn silk_inner_product_flp(data1: &[f32], data2: &[f32]) -> f64 {
+/// libopus `silk_inner_product_FLP` at `arch`: the inner product of `data1`
+/// and `data2[..data1.len()]` in `f64`, four at a time
+/// (`silk_inner_product_FLP_c`), or at the Avx2 level with fused
+/// multiply-adds as `silk_inner_product_FLP_avx2`.
+pub fn silk_inner_product_flp(data1: &[f32], data2: &[f32], arch: crate::Arch) -> f64 {
     let data2 = &data2[..data1.len()];
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if let Some(avx2) = arch.avx2() {
+        use fearless_simd::Simd;
+        return avx2.vectorize(|| inner_product_fma(data1, data2));
+    }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    let _ = arch;
     let mut result = 0.0f64;
     let (a, a_rest) = data1.as_chunks::<4>();
     let (b, b_rest) = data2.as_chunks::<4>();
@@ -87,12 +96,44 @@ pub fn silk_inner_product_flp(data1: &[f32], data2: &[f32]) -> f64 {
     result
 }
 
+/// libopus `silk_inner_product_FLP_avx2` (silk/float/x86/): two vectors of
+/// four f64 accumulators take fused multiply-adds of eight products a
+/// step, then one vector four, then the lanes are summed as
+/// `(a0 + a2) + (a1 + a3)` and the rest added one product at a time.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[inline(always)]
+fn inner_product_fma(data1: &[f32], data2: &[f32]) -> f64 {
+    let n = data1.len();
+    let (mut acc1, mut acc2) = ([0.0f64; 4], [0.0f64; 4]);
+    let fma = |acc: &mut [f64; 4], x: &[f32], y: &[f32]| {
+        for k in 0..4 {
+            acc[k] = f64::from(x[k]).mul_add(f64::from(y[k]), acc[k]);
+        }
+    };
+    let mut i = 0;
+    while i + 8 <= n {
+        fma(&mut acc1, &data1[i..i + 4], &data2[i..i + 4]);
+        fma(&mut acc2, &data1[i + 4..i + 8], &data2[i + 4..i + 8]);
+        i += 8;
+    }
+    if i + 4 <= n {
+        fma(&mut acc1, &data1[i..i + 4], &data2[i..i + 4]);
+        i += 4;
+    }
+    let s: [f64; 4] = core::array::from_fn(|k| acc1[k] + acc2[k]);
+    let mut result = (s[0] + s[2]) + (s[1] + s[3]);
+    for (&x, &y) in data1[i..].iter().zip(&data2[i..]) {
+        result += f64::from(x) * f64::from(y);
+    }
+    result
+}
+
 /// libopus `silk_autocorrelation_FLP`: `results[i]` for the lags
 /// `0..results.len()` (at most `input.len()`).
-pub fn silk_autocorrelation_flp(results: &mut [f32], input: &[f32]) {
+pub fn silk_autocorrelation_flp(results: &mut [f32], input: &[f32], arch: crate::Arch) {
     let n = input.len();
     for (i, r) in results.iter_mut().take(n).enumerate() {
-        *r = silk_inner_product_flp(&input[..n - i], &input[i..]) as f32;
+        *r = silk_inner_product_flp(&input[..n - i], &input[i..], arch) as f32;
     }
 }
 
@@ -213,6 +254,7 @@ pub fn silk_burg_modified_flp(
     subfr_length: usize,
     nb_subfr: usize,
     d: usize,
+    arch: crate::Arch,
 ) -> f32 {
     let mut c_first_row = [0.0f64; SILK_MAX_ORDER_LPC];
     let mut caf = [0.0f64; SILK_MAX_ORDER_LPC + 1];
@@ -225,7 +267,7 @@ pub fn silk_burg_modified_flp(
     for s in 0..nb_subfr {
         let x_ptr = &x[s * subfr_length..(s + 1) * subfr_length];
         for n in 1..=d {
-            c_first_row[n - 1] += silk_inner_product_flp(&x_ptr[..subfr_length - n], &x_ptr[n..]);
+            c_first_row[n - 1] += silk_inner_product_flp(&x_ptr[..subfr_length - n], &x_ptr[n..], arch);
         }
     }
     let mut c_last_row = c_first_row;

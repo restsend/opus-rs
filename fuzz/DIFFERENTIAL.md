@@ -176,8 +176,9 @@ libopus's default and SIMD builds, and its SILK input is the float build's:
 against the default reference, SILK packets, the SILK input of every
 application and the DTX decisions are exact (`opusref/tests/silk_float.rs`
 over a grid of SILK configurations, `diff_encoder`'s `silk-input` oracle).
-At the Avx2 level the SIMD build's float SILK takes an FMA inner product,
-which opus-rs does not run yet, so `silk_float` skips the `simd` reference.
+The encoder follows the SIMD build at its levels too: `silk_float` runs
+against the `simd` reference (the Avx2 level's inner product,
+`silk_inner_product_FLP_avx2`, takes fused multiply-adds).
 
 ## Fixed-point reference
 

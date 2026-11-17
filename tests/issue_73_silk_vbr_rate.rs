@@ -76,7 +76,7 @@ fn hp_cutoff_smoothing_rounds_like_libopus() {
         for quality in [0, 16000, 30000] {
             for activity in [255, 97] {
                 let mut enc = SilkEncoderState::default();
-                silk_init_encoder(&mut enc, 0);
+                silk_init_encoder(&mut enc, opus_rs::Arch::Scalar);
                 let cmn = &mut enc.s_cmn;
                 cmn.prev_signal_type = TYPE_VOICED;
                 cmn.fs_khz = 16;
@@ -155,7 +155,7 @@ fn fixed_target_silk_symbols_and_excitation_match_libopus() {
     // and all 320 excitation pulses, as i32 LE values.
     let input = vbr::speech_pcm();
     let mut enc = SilkEncoderState::default();
-    silk_init_encoder(&mut enc, 0);
+    silk_init_encoder(&mut enc, opus_rs::Arch::Scalar);
     silk_control_encoder(&mut enc, 16, 20, 20000, 9);
     for (block, &expected) in TRACE_BLOCKS.iter().enumerate() {
         let mut hash = FNV_OFFSET;

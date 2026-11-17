@@ -198,6 +198,9 @@ pub type SilkXBufSample = f32;
 pub type SilkXBufSample = i16;
 
 pub struct SilkEncoderStateCommon {
+    /// libopus `silk_encoder_state.arch`: the level whose arithmetic the
+    /// float analysis kernels follow.
+    pub arch: crate::Arch,
     pub indices: SideInfoIndices,
     pub in_hp_state: [i32; 2],
     pub snr_db_q7: i32,
@@ -272,6 +275,7 @@ pub struct SilkEncoderStateCommon {
 impl Default for SilkEncoderStateCommon {
     fn default() -> Self {
         Self {
+            arch: crate::Arch::Scalar,
             indices: SideInfoIndices::default(),
             in_hp_state: [0; 2],
             snr_db_q7: 0,

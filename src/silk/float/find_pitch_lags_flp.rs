@@ -38,7 +38,7 @@ pub fn silk_find_pitch_lags_flp(
     silk_apply_sine_window_flp(&mut wsig[tail..], &x_win[tail..], 2, la_pitch);
 
     let mut auto_corr = [0.0f32; MAX_FIND_PITCH_LPC_ORDER + 1];
-    silk_autocorrelation_flp(&mut auto_corr[..order + 1], &wsig[..win_length]);
+    silk_autocorrelation_flp(&mut auto_corr[..order + 1], &wsig[..win_length], cmn.arch);
     // White noise as a fraction of the energy.
     auto_corr[0] += auto_corr[0] * FIND_PITCH_WHITE_NOISE_FRACTION + 1.0;
 
@@ -69,6 +69,7 @@ pub fn silk_find_pitch_lags_flp(
             cmn.fs_khz as usize,
             cmn.pitch_estimation_complexity as usize,
             cmn.nb_subfr as usize,
+            cmn.arch,
         );
         match est {
             Some(e) => {

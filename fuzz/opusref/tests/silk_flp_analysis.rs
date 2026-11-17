@@ -89,7 +89,7 @@ fn ltp_analysis_matches_libopus() {
         });
         let (mut xx_r, mut xx_c) = ([0f32; 100], [0f32; 100]);
         let (mut x_x_r, mut x_x_c) = ([0f32; 20], [0f32; 20]);
-        silk_find_ltp_flp(&mut xx_r, &mut x_x_r, &res, mem, &lag, subfr_length, nb_subfr);
+        silk_find_ltp_flp(&mut xx_r, &mut x_x_r, &res, mem, &lag, subfr_length, nb_subfr, opus_rs::Arch::Scalar);
         unsafe {
             silk_find_LTP_FLP(
                 xx_c.as_mut_ptr(),

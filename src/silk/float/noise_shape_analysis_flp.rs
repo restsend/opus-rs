@@ -176,7 +176,7 @@ pub fn silk_noise_shape_analysis_flp(
         if cmn.warping_q16 > 0 {
             silk_warped_autocorrelation_flp(&mut auto_corr, win, warping, shaping_order);
         } else {
-            silk_autocorrelation_flp(&mut auto_corr[..shaping_order + 1], win);
+            silk_autocorrelation_flp(&mut auto_corr[..shaping_order + 1], win, cmn.arch);
         }
         // White noise as a fraction of the energy.
         auto_corr[0] += auto_corr[0] * SHAPE_WHITE_NOISE_FRACTION + 1.0;

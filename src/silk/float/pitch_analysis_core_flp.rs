@@ -68,6 +68,7 @@ pub fn silk_pitch_analysis_core_flp(
     fs_khz: usize,
     complexity: usize,
     nb_subfr: usize,
+    arch: crate::Arch,
 ) -> Option<PitchEstimate> {
     let frame_length = (PE_LTP_MEM_LENGTH_MS + nb_subfr * PE_SUBFR_LENGTH_MS) * fs_khz;
     let frame_length_4khz = (PE_LTP_MEM_LENGTH_MS + nb_subfr * PE_SUBFR_LENGTH_MS) * 4;
@@ -138,7 +139,7 @@ pub fn silk_pitch_analysis_core_flp(
             &mut xcorr,
             sf_length_8khz,
             max_lag_4khz - min_lag_4khz + 1,
-            crate::Arch::Scalar,
+            arch,
         );
         let mut basis = target - min_lag_4khz;
         let cross_corr = f64::from(xcorr[max_lag_4khz - min_lag_4khz]);
@@ -227,7 +228,7 @@ pub fn silk_pitch_analysis_core_flp(
         for &d in &d_comp[..length_d_comp] {
             let d = d as usize;
             let basis_ptr = &frame_8[target - d..target - d + sf_length_8khz];
-            let cross_corr = silk_inner_product_flp(basis_ptr, target_ptr);
+            let cross_corr = silk_inner_product_flp(basis_ptr, target_ptr, arch);
             ck[d] = if cross_corr > 0.0 {
                 let energy = silk_energy_flp(basis_ptr);
                 (2.0 * cross_corr / (energy + energy_tmp)) as f32
@@ -330,7 +331,7 @@ pub fn silk_pitch_analysis_core_flp(
 
         let mut cross_corr_st3: Stage3 = [[[0.0; PE_NB_STAGE3_LAGS]; PE_NB_CBKS_STAGE3_MAX]; PE_MAX_NB_SUBFR];
         let mut energies_st3: Stage3 = [[[0.0; PE_NB_STAGE3_LAGS]; PE_NB_CBKS_STAGE3_MAX]; PE_MAX_NB_SUBFR];
-        calc_corr_st3(&mut cross_corr_st3, frame, start_lag as usize, sf_length, nb_subfr, complexity);
+        calc_corr_st3(&mut cross_corr_st3, frame, start_lag as usize, sf_length, nb_subfr, complexity, arch);
         calc_energy_st3(&mut energies_st3, frame, start_lag as usize, sf_length, nb_subfr, complexity);
 
         let contour_bias = PE_FLATCONTOUR_BIAS / lag as f32;
@@ -389,6 +390,7 @@ fn calc_corr_st3(
     sf_length: usize,
     nb_subfr: usize,
     complexity: usize,
+    arch: crate::Arch,
 ) {
     let nb_cbk_search = nb_cbk_stage3(nb_subfr, complexity);
     let mut target = sf_length << 2;
@@ -404,7 +406,7 @@ fn calc_corr_st3(
             &mut xcorr,
             sf_length,
             n,
-            crate::Arch::Scalar,
+            arch,
         );
         for (lag_counter, j) in (lag_low..=lag_high).enumerate() {
             scratch_mem[lag_counter] = xcorr[(lag_high - j) as usize];

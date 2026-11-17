@@ -2,6 +2,7 @@
 //! SigProc_FLP.h) against libopus's, bit for bit, on random inputs of the
 //! lengths and orders the encoder uses.
 #![cfg(not(feature = "fixed"))]
+use opus_rs::Arch;
 use opus_rs::silk::float::sigproc_flp::*;
 use opusref::*;
 use std::os::raw::c_int;
@@ -71,10 +72,10 @@ fn energy_and_inner_products_match_libopus() {
         let c = unsafe { silk_energy_FLP(a.as_ptr(), n as c_int) };
         assert_eq!(silk_energy_flp(&a).to_bits(), c.to_bits(), "energy n {n}");
         let c = unsafe { silk_inner_product_FLP_c(a.as_ptr(), b.as_ptr(), n as c_int) };
-        assert_eq!(silk_inner_product_flp(&a, &b).to_bits(), c.to_bits(), "inner product n {n}");
+        assert_eq!(silk_inner_product_flp(&a, &b, Arch::Scalar).to_bits(), c.to_bits(), "inner product n {n}");
         let count = 1 + r.next() as usize % 25;
         let (mut rs, mut cs) = (vec![0f32; count], vec![0f32; count]);
-        silk_autocorrelation_flp(&mut rs[..count.min(n)], &a);
+        silk_autocorrelation_flp(&mut rs[..count.min(n)], &a, Arch::Scalar);
         unsafe { silk_autocorrelation_FLP(cs.as_mut_ptr(), a.as_ptr(), n as c_int, count as c_int, 0) };
         assert_eq!(bits(&rs), bits(&cs), "autocorrelation n {n} count {count}");
     }
@@ -88,7 +89,7 @@ fn lpc_functions_match_libopus() {
         // Autocorrelation of a signal, through Schur and k2a.
         let x = r.signal(240);
         let mut ac = [0f32; 17];
-        silk_autocorrelation_flp(&mut ac[..order + 1], &x);
+        silk_autocorrelation_flp(&mut ac[..order + 1], &x, Arch::Scalar);
         ac[0] += ac[0] * 1e-3 + 1.0;
         let (mut rc_r, mut rc_c) = ([0f32; 16], [0f32; 16]);
         let nrg_r = silk_schur_flp(&mut rc_r, &ac, order);
@@ -129,7 +130,7 @@ fn burg_matches_libopus() {
         // From no limit to the limit after a reset.
         let min_inv_gain = [1e-6, 1e-4, 4e-4, 1e-2, 0.2][r.next() as usize % 5];
         let (mut a_r, mut a_c) = ([0f32; 16], [0f32; 16]);
-        let n_r = silk_burg_modified_flp(&mut a_r, &x, min_inv_gain, subfr_length, nb_subfr, d);
+        let n_r = silk_burg_modified_flp(&mut a_r, &x, min_inv_gain, subfr_length, nb_subfr, d, Arch::Scalar);
         let n_c = unsafe {
             silk_burg_modified_FLP(
                 a_c.as_mut_ptr(),
@@ -181,5 +182,28 @@ fn vector_window_and_sort_functions_match_libopus() {
         unsafe { silk_insertion_sort_decreasing_FLP(a_c.as_mut_ptr(), i_c.as_mut_ptr(), l as c_int, k as c_int) };
         let i_c: Vec<usize> = i_c.iter().map(|&i| i as usize).collect();
         assert_eq!((bits(&a_r[..k]), i_r), (bits(&a_c[..k]), i_c), "sort {l} {k}");
+    }
+}
+
+#[cfg(feature = "simd")]
+unsafe extern "C" {
+    fn silk_inner_product_FLP_avx2(a: *const f32, b: *const f32, n: c_int) -> f64;
+}
+
+/// The Avx2 level's inner product against silk_inner_product_FLP_avx2 of
+/// the reference built as x86-64 configure builds it.
+#[cfg(feature = "simd")]
+#[test]
+fn avx2_inner_product_matches_libopus() {
+    if Arch::native() < Arch::Avx2 {
+        return;
+    }
+    let mut r = Rng(8);
+    for _ in 0..20_000 {
+        let n = r.next() as usize % 400;
+        let a = r.signal(n);
+        let b = r.signal(n);
+        let c = unsafe { silk_inner_product_FLP_avx2(a.as_ptr(), b.as_ptr(), n as c_int) };
+        assert_eq!(silk_inner_product_flp(&a, &b, Arch::Avx2).to_bits(), c.to_bits(), "n {n}");
     }
 }

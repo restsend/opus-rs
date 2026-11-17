@@ -55,8 +55,9 @@ pub fn silk_reset_for_rate_switch(ps_enc: &mut SilkEncoderState) {
         ps_enc.time_since_switch_allowed_ms,
         ps_enc.to_mono,
     );
+    let arch = ps_enc.s_cmn.arch;
     *ps_enc = SilkEncoderState::default();
-    crate::silk::init_encoder::silk_init_encoder(ps_enc, 0);
+    crate::silk::init_encoder::silk_init_encoder(ps_enc, arch);
     ps_enc.s_cmn.s_lp = s_lp;
     ps_enc.stereo = stereo;
     ps_enc.n_bits_used_lbrr = n_bits_used_lbrr;
@@ -899,7 +900,7 @@ mod tests {
         // frame collapses to zero width (stereo_LR_to_MS.c:142-145).
         let mut ch = [0, 1].map(|_| {
             let mut enc = SilkEncoderState::default();
-            crate::silk::init_encoder::silk_init_encoder(&mut enc, 0);
+            crate::silk::init_encoder::silk_init_encoder(&mut enc, crate::Arch::Scalar);
             crate::silk::control_codec::silk_control_encoder(&mut enc, 16, 20, 40000, 10);
             enc
         });
@@ -921,7 +922,7 @@ mod tests {
     fn stereo_prefill_gives_the_side_the_mids_low_pass_state() {
         let mut ch = [0, 1].map(|_| {
             let mut enc = SilkEncoderState::default();
-            crate::silk::init_encoder::silk_init_encoder(&mut enc, 0);
+            crate::silk::init_encoder::silk_init_encoder(&mut enc, crate::Arch::Scalar);
             crate::silk::control_codec::silk_control_encoder(&mut enc, 16, 20, 40000, 10);
             enc
         });
@@ -942,7 +943,7 @@ mod tests {
     #[test]
     fn encode_rejects_a_partial_packet() {
         let mut enc = SilkEncoderState::default();
-        crate::silk::init_encoder::silk_init_encoder(&mut enc, 0);
+        crate::silk::init_encoder::silk_init_encoder(&mut enc, crate::Arch::Scalar);
         crate::silk::control_codec::silk_control_encoder(&mut enc, 16, 40, 20000, 10);
         let mut rc = RangeCoder::new_encoder(1275);
         let mut n_bytes = 0;
@@ -977,7 +978,7 @@ mod tests {
         for to_mono in [false, true] {
             let mut ch = [0, 1].map(|_| {
                 let mut enc = SilkEncoderState::default();
-                crate::silk::init_encoder::silk_init_encoder(&mut enc, 0);
+                crate::silk::init_encoder::silk_init_encoder(&mut enc, crate::Arch::Scalar);
                 crate::silk::control_codec::silk_control_encoder(&mut enc, 16, 20, 40000, 10);
                 enc.s_cmn.n_channels = 2;
                 enc

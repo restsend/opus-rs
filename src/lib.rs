@@ -1390,18 +1390,20 @@ impl OpusEncoder {
         #[cfg(not(feature = "heap"))]
         let celt_enc = CeltEncoder::with_sampling_rate(mode, channels, sampling_rate);
 
+        // libopus passes its arch to silk_InitEncoder (opus_encoder.c).
+        let arch = Arch::select();
         #[cfg(feature = "heap")]
         let mut silk_enc = Box::new(SilkEncoderState::default());
         #[cfg(not(feature = "heap"))]
         let mut silk_enc = SilkEncoderState::default();
-        if silk_init_encoder(state_mut(&mut silk_enc), 0) != 0 {
+        if silk_init_encoder(state_mut(&mut silk_enc), arch) != 0 {
             return Err("SILK encoder initialization failed");
         }
         #[cfg(feature = "heap")]
         let mut silk_enc_side = Box::new(SilkEncoderState::default());
         #[cfg(not(feature = "heap"))]
         let mut silk_enc_side = SilkEncoderState::default();
-        if silk_init_encoder(state_mut(&mut silk_enc_side), 0) != 0 {
+        if silk_init_encoder(state_mut(&mut silk_enc_side), arch) != 0 {
             return Err("SILK encoder initialization failed");
         }
 
@@ -1409,7 +1411,7 @@ impl OpusEncoder {
         let variable_hp_smth2_q15 = silk_lin2log(60) << 8;
 
         Ok(Self {
-            arch: Arch::select(),
+            arch,
             celt_enc,
             silk_enc,
             silk_enc_side,
@@ -1564,7 +1566,7 @@ impl OpusEncoder {
         self.celt_enc.reset_state();
         for enc in [&mut self.silk_enc, &mut self.silk_enc_side] {
             *state_mut(enc) = SilkEncoderState::default();
-            silk_init_encoder(state_mut(enc), 0);
+            silk_init_encoder(state_mut(enc), self.arch);
         }
         self.silk_resampler_enc = silk::resampler::SilkResampler::default();
         self.silk_resampler_enc_right = silk::resampler::SilkResampler::default();
@@ -2217,7 +2219,7 @@ impl OpusEncoder {
         if mode != OpusMode::CeltOnly && self.prev_enc_mode == Some(OpusMode::CeltOnly) {
             for enc in [&mut self.silk_enc, &mut self.silk_enc_side] {
                 *state_mut(enc) = SilkEncoderState::default();
-                silk_init_encoder(state_mut(enc), 0);
+                silk_init_encoder(state_mut(enc), self.arch);
             }
             self.silk_initialized = false;
             self.silk_opus_can_switch = false;
@@ -2690,7 +2692,7 @@ impl OpusEncoder {
             if coded_channels > self.silk_channels {
                 let side = state_mut(&mut self.silk_enc_side);
                 *side = SilkEncoderState::default();
-                silk_init_encoder(side, 0);
+                silk_init_encoder(side, self.arch);
                 let stereo = &mut self.silk_enc.stereo;
                 stereo.pred_prev_q13 = [0; 2];
                 stereo.s_side = [0; 2];
