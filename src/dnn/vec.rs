@@ -40,8 +40,9 @@ fn quantize(x: f32) -> i8 {
     c_int((0.5f64 + (127.0f32 * x) as f64).floor()) as i8
 }
 
-/// `sgemv` (all three variants sum each output in column order):
-/// `out[i] = sum_j weights[j*col_stride + i] * x[j]`.
+/// `sgemv` at `arch`: `out[i] = sum_j weights[j*col_stride + i] * x[j]`,
+/// each output summed in column order from +0 (every variant of vec.h and
+/// vec_avx.h), with fused multiply-adds at the Avx2 level.
 pub fn sgemv(
     out: &mut [f32],
     weights: F32s<'_>,
@@ -49,19 +50,65 @@ pub fn sgemv(
     cols: usize,
     col_stride: usize,
     x: &[f32],
+    arch: Arch,
+) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if let Some(avx2) = arch.avx2() {
+        return super::vec_x86::sgemv(avx2, out, weights, rows, cols, col_stride, x);
+    }
+    let _ = arch;
+    sgemv_by(out, weights, rows, cols, col_stride, x, |w, x, y| y + w * x);
+}
+
+/// [`sgemv`] with `madd(w, x, y)` adding a product to a sum.
+#[inline(always)]
+pub(crate) fn sgemv_by(
+    out: &mut [f32],
+    weights: F32s<'_>,
+    rows: usize,
+    cols: usize,
+    col_stride: usize,
+    x: &[f32],
+    madd: impl Fn(f32, f32, f32) -> f32,
 ) {
     let out = &mut out[..rows];
     out.fill(0.0);
     for (j, &xj) in x[..cols].iter().enumerate() {
         let w = weights.from(j * col_stride);
         for (i, y) in out.iter_mut().enumerate() {
-            *y += w.at(i) * xj;
+            *y = madd(w.at(i), xj, *y);
         }
     }
 }
 
-/// `sparse_sgemv8x4`: float weights in 8x4 blocks listed by `idx`.
-pub fn sparse_sgemv8x4(out: &mut [f32], w: F32s<'_>, idx: I32s<'_>, rows: usize, x: &[f32]) {
+/// `sparse_sgemv8x4` at `arch`: float weights in 8x4 blocks listed by
+/// `idx`, with fused multiply-adds at the Avx2 level.
+pub fn sparse_sgemv8x4(
+    out: &mut [f32],
+    w: F32s<'_>,
+    idx: I32s<'_>,
+    rows: usize,
+    x: &[f32],
+    arch: Arch,
+) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if let Some(avx2) = arch.avx2() {
+        return super::vec_x86::sparse_sgemv8x4(avx2, out, w, idx, rows, x);
+    }
+    let _ = arch;
+    sparse_sgemv8x4_by(out, w, idx, rows, x, |w, x, y| y + w * x);
+}
+
+/// [`sparse_sgemv8x4`] with `madd(w, x, y)` adding a product to a sum.
+#[inline(always)]
+pub(crate) fn sparse_sgemv8x4_by(
+    out: &mut [f32],
+    w: F32s<'_>,
+    idx: I32s<'_>,
+    rows: usize,
+    x: &[f32],
+    madd: impl Fn(f32, f32, f32) -> f32,
+) {
     out[..rows].fill(0.0);
     let mut p = 0;
     let mut wp = 0;
@@ -75,7 +122,7 @@ pub fn sparse_sgemv8x4(out: &mut [f32], w: F32s<'_>, idx: I32s<'_>, rows: usize,
             let y = &mut out[i..i + 8];
             for (c, &xc) in xj.iter().enumerate() {
                 for (k, yk) in y.iter_mut().enumerate() {
-                    *yk += w.at(wp + 8 * c + k) * xc;
+                    *yk = madd(w.at(wp + 8 * c + k), xc, *yk);
                 }
             }
             wp += 32;

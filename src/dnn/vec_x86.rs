@@ -22,9 +22,12 @@ use core::arch::x86_64::*;
 
 use fearless_simd::{Avx2, Sse2, f32x4, f32x8, prelude::*, u8x32};
 
-use super::vec::{Elem, MAX_INPUTS, c_floor};
+use super::nnet::diag_by;
+use super::vec::{Elem, MAX_INPUTS, c_floor, sgemv_by, sparse_sgemv8x4_by};
 use super::weights::{F32s, I32s};
 use crate::Arch;
+#[cfg(not(feature = "std"))]
+use crate::compat::Math;
 
 const TANH_N: [f32; 3] = [952.52801514, 96.39235687, 0.60863042];
 const TANH_D: [f32; 3] = [952.72399902, 413.36801147, 11.88600922];
@@ -321,3 +324,58 @@ pub(crate) fn cgemv8x4(
         }
     }
 }
+
+fearless_simd::kernel!(
+    /// `sgemv` with AVX2: the outputs in libopus's blocks of 16, 8 and 4
+    /// rows sum fused multiply-adds (`_mm256_fmadd_ps`, `_mm_fmadd_ps`);
+    /// the last `rows % 4` take libopus's C loop, `out[i] +=
+    /// weights[...]*x[j]`, which GCC compiles to a multiply and an add
+    /// (`vmulss`, `vaddss` in the reference's `compute_linear_avx2`).
+    pub(crate) fn sgemv(
+        simd: Avx2,
+        out: &mut [f32],
+        w: F32s<'_>,
+        rows: usize,
+        cols: usize,
+        col_stride: usize,
+        x: &[f32],
+    ) {
+        let r4 = rows & !3;
+        sgemv_by(out, w, r4, cols, col_stride, x, |w, x, y| w.mul_add(x, y));
+        let rest = rows - r4;
+        sgemv_by(
+            &mut out[r4..],
+            w.from(r4),
+            rest,
+            cols,
+            col_stride,
+            x,
+            |w, x, y| y + w * x,
+        );
+    }
+);
+
+fearless_simd::kernel!(
+    /// `sparse_sgemv8x4` with AVX2: fused multiply-adds
+    /// (`_mm256_fmadd_ps`).
+    pub(crate) fn sparse_sgemv8x4(
+        simd: Avx2,
+        out: &mut [f32],
+        w: F32s<'_>,
+        idx: I32s<'_>,
+        rows: usize,
+        x: &[f32],
+    ) {
+        sparse_sgemv8x4_by(out, w, idx, rows, x, |w, x, y| w.mul_add(x, y));
+    }
+);
+
+fearless_simd::kernel!(
+    /// The diagonal term of `compute_linear_avx2`: GCC contracts each
+    /// `out[i] += linear->diag[i]*in[i]` of nnet_arch.h to a fused
+    /// multiply-add (the three `vfmadd132ss` of the reference object;
+    /// none in a `-ffp-contract=off` build of it).
+    pub(crate) fn diag(simd: Avx2, out: &mut [f32], diag: F32s<'_>, input: &[f32], m: usize) {
+        diag_by(out, diag, input, m, |d, x, y| d.mul_add(x, y));
+    }
+);

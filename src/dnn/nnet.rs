@@ -78,8 +78,8 @@ pub fn compute_linear(linear: &LinearLayer<'_>, out: &mut [f32], input: &[f32], 
     let mut bias = linear.bias;
     if let Some(fw) = linear.float_weights {
         match linear.weights_idx {
-            Some(idx) => sparse_sgemv8x4(out, fw, idx, n, input),
-            None => sgemv(out, fw, n, m, n, input),
+            Some(idx) => sparse_sgemv8x4(out, fw, idx, n, input, arch),
+            None => sgemv(out, fw, n, m, n, input, arch),
         }
     } else if let Some(w) = linear.weights {
         let scale = linear.scale.expect("int8 layer without scale");
@@ -96,11 +96,28 @@ pub fn compute_linear(linear: &LinearLayer<'_>, out: &mut [f32], input: &[f32], 
     }
     if let Some(diag) = linear.diag {
         debug_assert_eq!(3 * m, n);
-        for i in 0..m {
-            out[i] += diag.at(i) * input[i];
-            out[i + m] += diag.at(i + m) * input[i];
-            out[i + 2 * m] += diag.at(i + 2 * m) * input[i];
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if let Some(avx2) = arch.avx2() {
+            return super::vec_x86::diag(avx2, out, diag, input, m);
         }
+        diag_by(out, diag, input, m, |d, x, y| y + d * x);
+    }
+}
+
+/// The diagonal term of a GRU's recurrent weights (`diag`, three per
+/// input), with `madd(d, x, y)` adding a product to a sum.
+#[inline(always)]
+pub(crate) fn diag_by(
+    out: &mut [f32],
+    diag: F32s<'_>,
+    input: &[f32],
+    m: usize,
+    madd: impl Fn(f32, f32, f32) -> f32,
+) {
+    for i in 0..m {
+        out[i] = madd(diag.at(i), input[i], out[i]);
+        out[i + m] = madd(diag.at(i + m), input[i], out[i + m]);
+        out[i + 2 * m] = madd(diag.at(i + 2 * m), input[i], out[i + 2 * m]);
     }
 }
 
