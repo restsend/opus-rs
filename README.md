@@ -47,17 +47,26 @@ cargo run --example wav_test
 ## libopus API
 
 Each libopus function or control maps to an opus-rs method or function and
-is tested against libopus (`fuzz/opusref`). Constructors (`*_create`,
-`*_init`) are `new` (and `init` where a struct is built in place),
-`*_get_size` is `size_of`, and `*_destroy` is `Drop`. The setters with a range return libopus's error for values outside
-it; the public fields they set keep working, and are clamped when a
-frame is coded. Functions that mirror
-a libopus function return libopus's errors as the constants of
-`opus_rs::error` (`Err(error::BAD_ARG)` for `OPUS_BAD_ARG`, and so on);
-`error::code` gives the libopus number and `error::strerror` its text.
+is tested against libopus (`fuzz/opusref`, `fuzz/DIFFERENTIAL.md`).
+Constructors (`*_create`, `*_init`) are `new` (and `init` where a struct is
+built in place), `*_get_size` is `size_of`, and `*_destroy` is `Drop`. The
+setters with a range return libopus's error for values outside it; the
+public fields they set keep working, and are clamped when a frame is coded.
+Functions that mirror a libopus function return libopus's errors as the
+constants of `opus_rs::error` (`Err(error::BAD_ARG)` for `OPUS_BAD_ARG`,
+and so on); `error::code` gives the libopus number and `error::strerror`
+its text. The multistream and projection codecs keep their stream codecs
+in a `Vec` and need `std`; everything else builds without `std` and
+`alloc`.
 
 | libopus | opus-rs |
 | --- | --- |
+| `opus_encoder_create`, `opus_decoder_create`, `opus_decoder_init` | `OpusEncoder::new`, `OpusDecoder::new`, `OpusDecoder::init` |
+| `opus_decode_float` | `OpusDecoder::decode`, `decode_fec` |
+| `OPUS_SET_BANDWIDTH`, `OPUS_SET_MAX_BANDWIDTH`, `OPUS_SET_VBR_CONSTRAINT`, `OPUS_SET_DTX`, `OPUS_SET_SIGNAL` and their queries | `OpusEncoder::set_bandwidth`, `set_max_bandwidth`, `set_vbr_constraint`, `set_dtx`, `set_signal`, `bandwidth`, `max_bandwidth`, `vbr_constraint`, `dtx`, `signal` |
+| `OPUS_GET_LOOKAHEAD`, `OPUS_GET_FINAL_RANGE`, `OPUS_GET_IN_DTX` | `OpusEncoder::lookahead`, `final_range`, `in_dtx`; `OpusDecoder::final_range` |
+| `OPUS_SET_COMPLEXITY`, `OPUS_SET_OSCE_BWE` (decoder) | `OpusDecoder::set_complexity`, `complexity`, `set_osce_bwe`, `osce_bwe` |
+| `OPUS_SET_DRED_DURATION`, `opus_dred_decoder_create`, `opus_dred_parse`, `opus_dred_process` (feature `dred`) | `OpusEncoder::set_dred_duration`, `dred::OpusDredDecoder::new`, `parse`, `process` |
 | `opus_encoder_ctl(OPUS_RESET_STATE)` | `OpusEncoder::reset` |
 | `OPUS_APPLICATION_VOIP`, `_AUDIO`, `_RESTRICTED_LOWDELAY`, `_RESTRICTED_SILK`, `_RESTRICTED_CELT` | `Application::Voip`, `Audio`, `RestrictedLowDelay`, `RestrictedSilk`, `RestrictedCelt` |
 | `OPUS_SET_APPLICATION`, `OPUS_GET_APPLICATION` | `OpusEncoder::set_application`, `application` |
@@ -102,7 +111,12 @@ The repacketizer and the padding functions keep the extensions of the
 frames they write, up to `repacketizer::MAX_EXTENSIONS` (256) per packet;
 more are `error::ALLOC_FAIL`, where libopus allocates them on its stack.
 
-`opus_custom.h` is left out: libopus exports it only with
+Left out: `OPUS_SET_QEXT` (libopus builds it only with `--enable-qext`),
+`OPUS_SET_DNN_BLOB` (only with `USE_WEIGHTS_FILE`; the models are built in,
+and `OpusDredDecoder::with_model` takes others), and libopus's private
+encoder controls (`OPUS_SET_FORCE_MODE`, `OPUS_SET_LFE`,
+`OPUS_SET_ENERGY_MASK`), which the multistream encoder uses inside the
+crate. `opus_custom.h` is left out too: libopus exports it only with
 `--enable-custom-modes`, its modes need run-time tables for other frame
 sizes and rates, and its streams carry no ToC. The standard 48 kHz mode is
 `CeltEncoder`/`CeltDecoder`.
