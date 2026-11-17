@@ -117,6 +117,24 @@ unsafe extern "C" {
         arch: c_int,
     );
     pub fn haar1(x: *mut f32, n0: c_int, stride: c_int);
+    pub fn pitch_search(
+        x_lp: *const f32,
+        y: *mut f32,
+        len: c_int,
+        max_pitch: c_int,
+        pitch: *mut c_int,
+        arch: c_int,
+    );
+    pub fn remove_doubling(
+        x: *mut f32,
+        maxperiod: c_int,
+        minperiod: c_int,
+        n: c_int,
+        t0: *mut c_int,
+        prev_period: c_int,
+        prev_gain: f32,
+        arch: c_int,
+    ) -> f32;
     pub fn exp_rotation(
         x: *mut f32,
         len: c_int,

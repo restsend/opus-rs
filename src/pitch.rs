@@ -379,10 +379,8 @@ fn fine_xcorr(x_lp: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, best_pitch
     }
 }
 
+/// pitch.c:447-450 (float build).
 fn compute_pitch_gain(xy: f32, xx: f32, yy: f32) -> f32 {
-    if xy <= 0.0 || xx <= 0.0 || yy <= 0.0 {
-        return 0.0;
-    }
     xy / (1.0 + xx * yy).sqrt()
 }
 
