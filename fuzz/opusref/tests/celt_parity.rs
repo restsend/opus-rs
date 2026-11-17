@@ -138,7 +138,7 @@ fn band_log_energy_matches_libopus() {
             .collect();
         let mut a = [0f32; 21];
         let mut b = [0f32; 21];
-        opus_rs::bands::amp2log2(mode, 0, 21, &e, &mut a, 1);
+        opus_rs::bands::amp2log2(mode, 21, 21, &e, &mut a, 1);
         unsafe { amp2Log2(ref_celt_mode48(), 21, 21, e.as_ptr(), b.as_mut_ptr(), 1) };
         assert_eq!(a, b);
     }

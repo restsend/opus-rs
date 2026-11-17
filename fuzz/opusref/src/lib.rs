@@ -92,6 +92,16 @@ unsafe extern "C" {
 
     // Internal CELT/SILK functions (non-static in libopus).
     pub fn ref_celt_mode48() -> *const CELTMode;
+    pub fn ref_celt_encoder_create(fs: i32, channels: c_int) -> *mut c_void;
+    pub fn ref_celt_encoder_destroy(st: *mut c_void);
+    pub fn ref_celt_encoder_ctl(st: *mut c_void, request: c_int, value: c_int) -> c_int;
+    pub fn ref_celt_encode(
+        st: *mut c_void,
+        pcm: *const f32,
+        frame_size: c_int,
+        out: *mut c_uchar,
+        bytes: c_int,
+    ) -> c_int;
     pub fn comb_filter(
         y: *mut f32,
         x: *mut f32,

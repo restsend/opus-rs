@@ -2044,6 +2044,7 @@ impl CeltEncoder {
         let frame_size = api_frame_size * upsample;
         let nb_ebands = mode.nb_ebands;
         let end = self.end_band.clamp(1, nb_ebands).max(start_band);
+        let eff_end = end.min(mode.eff_ebands);
         let overlap = mode.overlap;
 
         // The encoder geometry requires frame_size == short_mdct_size << lm
@@ -2373,7 +2374,7 @@ impl CeltEncoder {
             let band_e2 = &mut self.w_band_e2[..nb_ebands * channels];
             compute_band_energies(mode, freq, band_e2, end, channels, lm);
             let band_log_e2 = &mut self.w_band_log_e2[..nb_ebands * channels];
-            crate::bands::amp2log2(mode, 0, end, band_e2, band_log_e2, channels);
+            crate::bands::amp2log2(mode, eff_end, end, band_e2, band_log_e2, channels);
             for c in 0..channels {
                 for i in 0..end {
                     band_log_e2[c * nb_ebands + i] += lm as f32 * 0.5;
@@ -2382,7 +2383,7 @@ impl CeltEncoder {
         }
         compute_mdcts(mode, short_blocks, in_buf, freq, channels, cc, frame_size, overlap, lm, upsample);
         compute_band_energies(mode, freq, band_e, end, channels, lm);
-        crate::bands::amp2log2(mode, start_band, end, band_e, band_log_e, channels);
+        crate::bands::amp2log2(mode, eff_end, end, band_e, band_log_e, channels);
 
         // Temporal VBR (celt_encoder.c:2187-2203): how far this frame's
         // spectral level is above its running average.
@@ -2425,7 +2426,7 @@ impl CeltEncoder {
             have_band_log_e2 = true;
             compute_mdcts(mode, true, in_buf, freq, channels, cc, frame_size, overlap, lm, upsample);
             compute_band_energies(mode, freq, band_e, end, channels, lm);
-            crate::bands::amp2log2(mode, start_band, end, band_e, band_log_e, channels);
+            crate::bands::amp2log2(mode, eff_end, end, band_e, band_log_e, channels);
             tf_estimate = 0.2;
         }
         if transient_flag_fits {
@@ -2625,7 +2626,6 @@ impl CeltEncoder {
             } else {
                 // celt_encoder.c:2338-2340.
                 let update_hf = pf_on && !is_transient;
-                let eff_end = end.min(mode.eff_ebands);
                 self.spread_decision = spreading_decision(
                     mode,
                     x,

@@ -2082,20 +2082,22 @@ pub fn compute_band_energies(
     }
 }
 
+/// libopus `amp2Log2`: the log energies of bands `0..eff_end`, and -14 for
+/// `eff_end..end`.
 pub fn amp2log2(
     m: &CeltMode,
-    start: usize,
+    eff_end: usize,
     end: usize,
     band_e: &[f32],
     band_log_e: &mut [f32],
     channels: usize,
 ) {
     for c in 0..channels {
-        for i in 0..start {
-            band_log_e[c * m.nb_ebands + i] = -14.0;
-        }
-        for i in start..end {
+        for i in 0..eff_end {
             band_log_e[c * m.nb_ebands + i] = celt_log2(band_e[c * m.nb_ebands + i]) - m.e_means[i];
+        }
+        for i in eff_end..end {
+            band_log_e[c * m.nb_ebands + i] = -14.0;
         }
     }
 }
