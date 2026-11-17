@@ -7,7 +7,7 @@ A pure-Rust implementation of the [Opus audio codec](https://opus-codec.org/) (R
 ## Features
 
 - **Pure Rust** — no C dependencies
-- **No `unsafe`:** the crate is `#![forbid(unsafe_code)]`; its DSP loops are safe scalar code, the same on every target
+- **No `unsafe`:** the crate is `#![forbid(unsafe_code)]`. On x86 and x86-64, SILK's delayed-decision quantizer uses an AVX2 kernel through [fearless_simd](https://crates.io/crates/fearless_simd)'s safe API, chosen at run time and bit-identical to the scalar path; the rest is safe scalar code, the same on every target
 - **High Performance:** Competitive with C libopus on x64/aarch64
 - **`#![no_std]` + no `alloc`:** fully heap-free — runs on bare metal, RTOS, and WebAssembly with **no global allocator**
 
@@ -48,7 +48,8 @@ cargo run --example wav_test
 
 By default opus-rs runs on `std` with the **`heap` feature**: the large codec state
 (`OpusEncoder`/`OpusDecoder` working buffers) is allocated with `Box`, so the public
-structs are tiny (~1 KB each) and constructing them uses almost no stack.
+structs are small (about 3 KB for the encoder, under 0.1 KB for the decoder) and
+constructing them uses almost no stack.
 
 For `#![no_std]`, disable the default features. The crate then builds as
 `#![no_std]` with **no `alloc`** — fully heap-free, no global allocator required —
@@ -71,11 +72,11 @@ The public API (`OpusEncoder`/`OpusDecoder` with `encode`/`decode` writing into 
 | Feature  | Default | Description |
 |----------|---------|-------------|
 | `std`    | yes     | Links `std` for float math. Without it the crate is `#![no_std]`. |
-| `heap`   | yes     | Allocates the large codec state on the heap (`Box`), shrinking `OpusEncoder`/`OpusDecoder` to ~1 KB so they can live on ordinary stacks. Requires `std`. |
+| `heap`   | yes     | Allocates the large codec state on the heap (`Box`), shrinking `OpusEncoder`/`OpusDecoder` to about 3 KB and 0.1 KB so they can live on ordinary stacks. Requires `std`. |
 | `libm`   | no      | Required for `#![no_std]` builds — provides float math via a pure-Rust port of musl `libm`. Not needed when `std` is on. |
 | `portable-atomic` | no | No effect; kept for compatibility. The mode table is a compile-time `static`, so the crate uses no atomics and builds on targets without compare-and-swap like `thumbv6m-none-eabi` (Cortex-M0/M0+) or `riscv32imc-unknown-none-elf` (ESP32-C3). |
 
-> Runtime dependency footprint: `std` build → **0 deps**; `no_std` build → **1 dep** (`libm`, pure Rust).
+> Runtime dependencies: `libm` (pure Rust) in `no_std` builds, and `fearless_simd` (no dependencies of its own) on x86 and x86-64.
 
 ### Neural network features
 
@@ -91,11 +92,11 @@ built with them (`fuzz/opusref`, feature `dnn`).
 | `osce` | `--enable-osce` | LACE (complexity 6) and NoLACE (7+) SILK enhancement, and the BBWENet bandwidth extension (`OpusDecoder::set_osce_bwe`, complexity 4+). Turns on `deep-plc`, as the configure option does. |
 | `dred` | `--enable-dred` | Deep redundancy: `OpusEncoder::set_dred_duration`, the DRED packet extension, `OpusDredDecoder` and `OpusDecoder::dred_decode[_float]`. Turns on `deep-plc`. |
 
-The weights (`dnn-weights/`, about 4.2 MB, SHA-256 in
+The weights (`dnn-weights/`, about 4.3 MB, SHA-256 in
 `dnn-weights/SHA256SUMS`) are embedded and read in place, so the features
 need no allocator and build without `std` (with `libm`). Their states make
-the codec larger: without `heap`, `OpusDecoder` grows from about 90 KB to
-about 280 KB and `OpusEncoder` from about 320 KB to about 400 KB with
+the codec larger: without `heap`, `OpusDecoder` grows from about 64 KB to
+about 256 KB and `OpusEncoder` from about 307 KB to about 387 KB with
 `deep-plc`, `osce` and `dred`, and setting the decoder up builds the deep
 PLC state (about 65 KB) on the stack. As in libopus, compiling `deep-plc` or `osce` changes
 SILK output at every complexity in small ways (no fade-in after a 16 kHz
@@ -105,7 +106,7 @@ with a libopus without these options are ignored under the features.
 ### Notes for `no_std` users
 
 - **Large structs:** without `heap`, every working buffer is inline, so
-  `OpusEncoder`/`OpusDecoder` are large (~250 KB / ~175 KB each). Place them in a
+  `OpusEncoder`/`OpusDecoder` are large (about 307 KB and 64 KB). Place them in a
   `static` (wrap init in your own `Once`-like guard) or a dedicated buffer rather
   than on the stack. `OpusDecoder::new` still returns the decoder through the stack,
   so use `OpusDecoder::init` to build it directly in that memory:
@@ -117,7 +118,7 @@ with a libopus without these options are ignored under the features.
   ```
 
   `init` copies a constant image of an empty decoder into the slot, so the
-  image (~175 KB) is part of the binary's read-only data.
+  image (about 64 KB) is part of the binary's read-only data.
 
   Test threads use a 16 MB stack (see `.cargo/config.toml`).
 - **Packets are capped** at the RFC 6716 maximum of 1276 bytes (the heap-free range-coder buffer is sized accordingly); standalone `RangeCoder`/CELT use supports up to 2048 bytes.
