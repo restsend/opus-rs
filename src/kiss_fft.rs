@@ -1,4 +1,4 @@
-use core::f32::consts::PI;
+use core::f64::consts::PI;
 
 #[cfg(not(feature = "std"))]
 use crate::compat::Math;
@@ -147,12 +147,13 @@ fn compute_bitrev_table(
     }
 }
 
+/// libopus compute_twiddles (kiss_fft.c, float build): the phase and its
+/// cosine and sine in double precision.
 fn compute_twiddles(nfft: usize) -> FixedVec<KissCpx, KISS_MAX_N> {
-    let two_pi_over_n = -2.0 * PI / nfft as f32;
     let mut out: FixedVec<KissCpx, KISS_MAX_N> = FixedVec::new();
     for i in 0..nfft {
-        let phase = two_pi_over_n * i as f32;
-        out.push(KissCpx::new(phase.cos(), phase.sin()));
+        let phase = (-2.0 * PI / nfft as f64) * i as f64;
+        out.push(KissCpx::new(phase.cos() as f32, phase.sin() as f32));
     }
     out
 }
@@ -207,8 +208,7 @@ impl KissFftState {
         })
     }
 
-    /// A plan of the static mode, from tables built by the functions above
-    /// (see `static_modes`).
+    /// A plan of the static mode, from libopus's tables (see `static_modes`).
     pub(crate) const fn from_tables(
         nfft: usize,
         shift: i32,
@@ -226,17 +226,20 @@ impl KissFftState {
         }
     }
 
-    /// Every field, with floats as bits, for comparing plans in tests.
+    /// Every field but the twiddles, with floats as bits, for comparing
+    /// plans in tests.
     #[cfg(all(test, feature = "std"))]
     pub(crate) fn fingerprint(&self) -> impl PartialEq + core::fmt::Debug + use<> {
         (
             (self.nfft, self.scale.to_bits(), self.shift, self.factors),
             self.bitrev.iter().copied().collect::<std::vec::Vec<_>>(),
-            self.twiddles
-                .iter()
-                .map(|c| (c.r.to_bits(), c.i.to_bits()))
-                .collect::<std::vec::Vec<_>>(),
         )
+    }
+
+    /// The twiddles as (re, im) pairs, for comparing plans in tests.
+    #[cfg(all(test, feature = "std"))]
+    pub(crate) fn twiddle_values(&self) -> std::vec::Vec<f32> {
+        self.twiddles.iter().flat_map(|c| [c.r, c.i]).collect()
     }
 
     #[inline]
@@ -535,6 +538,7 @@ pub fn opus_ifft(st: &KissFftState, fin: &[KissCpx], fout: &mut [KissCpx]) {
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
+    use core::f32::consts::PI;
 
     fn almost_equal(a: f32, b: f32, tolerance: f32) -> bool {
         (a - b).abs() < tolerance

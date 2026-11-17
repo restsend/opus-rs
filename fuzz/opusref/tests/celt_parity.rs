@@ -63,3 +63,18 @@ fn identical(ch: usize, ms: usize, kbps: i32, rc: i32, sig: &str, frames: usize)
 fn rld_input_is_dc_rejected() {
     assert_eq!(identical(1, 20, 24, 2, "sine", 2), [true, true]);
 }
+
+/// The static mode's MDCT twiddles and window are libopus's
+/// static_modes_float.h literals.
+#[test]
+fn static_mode_tables_are_libopus_literals() {
+    let mode = opus_rs::modes::default_mode();
+    let trig = unsafe { std::slice::from_raw_parts(ref_mdct_trig(), 1800) };
+    let mut at = 0;
+    for shift in 0..4 {
+        let t = mode.mdct.get_trig_debug(shift);
+        assert_eq!(t, &trig[at..at + t.len()], "shift {shift}");
+        at += t.len();
+    }
+    assert_eq!(mode.window, unsafe { std::slice::from_raw_parts(ref_window(), 120) });
+}

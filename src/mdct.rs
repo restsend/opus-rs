@@ -1,5 +1,5 @@
 use crate::kiss_fft::{KissCpx, KissFftState, opus_fft_impl};
-use core::f32::consts::PI;
+use core::f64::consts::PI;
 
 #[cfg(not(feature = "std"))]
 use crate::compat::Math;
@@ -39,9 +39,10 @@ impl MdctLookup {
             }
 
             let n2 = curr_n / 2;
+            // libopus clt_mdct_init (float build): in double precision.
             for i in 0..n2 {
-                let angle = 2.0 * PI * (i as f32 + 0.125) / curr_n as f32;
-                trig.push(angle.cos());
+                let angle = 2.0 * PI * (i as f64 + 0.125) / curr_n as f64;
+                trig.push(angle.cos() as f32);
             }
 
             curr_n >>= 1;
@@ -335,17 +336,23 @@ mod mdct_tests {
     // Miri perturbs the results of cos, as libm implementations may differ.
     #[cfg_attr(miri, ignore)]
     fn static_mode_matches_computed() {
+        // libopus prints its static twiddles with 8 significant digits, so
+        // they are within an ulp of the computed ones.
+        let close = |a: &[f32], b: &[f32]| {
+            assert_eq!(a.len(), b.len());
+            for (x, y) in a.iter().zip(b) {
+                assert!((x - y).abs() <= 6e-8, "{x} vs {y}");
+            }
+        };
         let computed = MdctLookup::new(1920, 3);
         let table = &crate::modes::default_mode().mdct;
         assert_eq!((table.n, table.max_lm), (computed.n, computed.max_lm));
-        let bits = |t: &[f32]| t.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
-        assert_eq!(bits(&table.trig), bits(&computed.trig));
+        close(&table.trig, &computed.trig);
         assert_eq!(table.kfft.len(), computed.kfft.len());
         for (a, b) in table.kfft.iter().zip(computed.kfft.iter()) {
-            assert_eq!(
-                a.as_ref().unwrap().fingerprint(),
-                b.as_ref().unwrap().fingerprint()
-            );
+            let (a, b) = (a.as_ref().unwrap(), b.as_ref().unwrap());
+            assert_eq!(a.fingerprint(), b.fingerprint());
+            close(&a.twiddle_values(), &b.twiddle_values());
         }
     }
 
