@@ -50,8 +50,10 @@ dnn = []
 # concealment at decoder complexity 5 and above.
 deep-plc = ["dnn"]
 # `dred`: `--enable-dred` (ENABLE_DRED), deep redundancy: the RDOVAE encoder
-# and decoder and the DRED packet extension.
-dred = ["dnn"]
+# and decoder and the DRED packet extension. It turns on `deep-plc`, as
+# libopus's configure defines ENABLE_DEEP_PLC with `--enable-dred`: the
+# decoder conceals a loss from the DRED features through the deep PLC state.
+dred = ["deep-plc"]
 # `osce`: `--enable-osce` (ENABLE_OSCE and ENABLE_OSCE_BWE), the LACE and
 # NoLACE SILK enhancers and the BBWENet bandwidth extension.
 osce = ["dnn"]
