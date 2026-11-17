@@ -230,6 +230,17 @@ impl RefEnc {
         unsafe { c::opus_encoder_ctl(self.0, req, &mut v as *mut i32) };
         v
     }
+    pub fn encode_i16(&mut self, pcm: &[i16], frame_size: usize, out: &mut [u8]) -> i32 {
+        unsafe {
+            c::opus_encode(
+                self.0,
+                pcm.as_ptr(),
+                frame_size as c_int,
+                out.as_mut_ptr(),
+                out.len() as i32,
+            )
+        }
+    }
     pub fn encode(&mut self, pcm: &[f32], frame_size: usize, out: &mut [u8]) -> i32 {
         unsafe {
             c::opus_encode_float(

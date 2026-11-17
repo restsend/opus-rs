@@ -11,6 +11,13 @@ unsafe extern "C" {
     -> *mut OpusEncoder;
     pub fn opus_encoder_destroy(st: *mut OpusEncoder);
     pub fn opus_encoder_ctl(st: *mut OpusEncoder, req: c_int, ...) -> c_int;
+    pub fn opus_encode(
+        st: *mut OpusEncoder,
+        pcm: *const i16,
+        fs: c_int,
+        data: *mut c_uchar,
+        max: i32,
+    ) -> i32;
     pub fn opus_encode_float(
         st: *mut OpusEncoder,
         pcm: *const f32,

@@ -46,7 +46,25 @@ struct Seg {
     frames: u8,
     signal: Gen,
     set: Option<Settings>,
+    call: Call,
 }
+
+/// How the segment's frames are encoded: API arguments that vary per call.
+#[derive(Arbitrary, Debug)]
+struct Call {
+    /// A new frame duration from this segment on (index into DURATIONS).
+    frame: Option<u8>,
+    /// The output buffer size in bytes for this segment's calls (0-1599);
+    /// 1500 otherwise.
+    budget: Option<u16>,
+    /// Encode through the 16-bit entry points (`encode_i16`/`opus_encode`).
+    int16: bool,
+    /// First try one call with an arbitrary frame size.
+    bad_frame: Option<u32>,
+}
+
+/// 2.5, 5, 10, 20, 40, 60, 80, 100 and 120 ms in units of 2.5 ms.
+const DURATIONS: [usize; 9] = [1, 2, 4, 8, 16, 24, 32, 40, 48];
 
 #[derive(Arbitrary, Debug, Clone)]
 struct Settings {
@@ -184,8 +202,7 @@ fn run(inp: Input) -> Result<(), Finding> {
         (Application::Audio, 2049),
         (Application::RestrictedLowDelay, 2051),
     ][inp.app as usize % 3];
-    // 2.5, 5, 10, 20, 40, 60, 80, 100, 120 ms.
-    let frame = fs as usize / 400 * [1, 2, 4, 8, 16, 24, 32, 40, 48][inp.frame as usize % 9];
+    let mut frame = fs as usize / 400 * DURATIONS[inp.frame as usize % 9];
     let strict = std::env::var("OFZ_STRICT_BYTES").is_ok() && capp == 2051;
 
     let mut e_sc = OpusEncoder::new(fs, ch, app).unwrap();
@@ -219,6 +236,31 @@ fn run(inp: Input) -> Result<(), Finding> {
             apply(&mut [&mut e_sc, &mut e_si], &mut re, s);
             cur = s.clone();
         }
+        if let Some(f) = seg.call.frame {
+            frame = fs as usize / 400 * DURATIONS[f as usize % 9];
+            pcm.resize(frame * ch, 0.0);
+        }
+        let budget = seg.call.budget.map_or(1500, |b| b as usize % 1600);
+        // An invalid frame size must fail in both encoders without changing
+        // their state.
+        if let Some(b) = seg.call.bad_frame {
+            let bad = b as usize % 20000;
+            if !DURATIONS.iter().any(|&d| d * fs as usize / 400 == bad) {
+                let x = vec![0.1f32; bad.max(1) * ch];
+                let (mut o1, mut o2) = ([0u8; 1500], [0u8; 1500]);
+                let r = re.encode(&x, bad, &mut o1);
+                set_simd(false);
+                let rs = e_sc.encode(&x, bad, &mut o2);
+                if (r > 0) != rs.is_ok() {
+                    fail!("result", "bad frame size", "frame size {bad}: opus-rs {rs:?}, libopus {r} fs{fs} ch{ch}");
+                }
+                if r > 0 {
+                    // libopus accepted it (e.g. a multiple it supports): the
+                    // encoders' states moved on; stop comparing this input.
+                    return Ok(());
+                }
+            }
+        }
         let n = 1 + seg.frames as usize % 8;
         for i in 0..n {
             total += 1;
@@ -227,10 +269,19 @@ fn run(inp: Input) -> Result<(), Finding> {
             }
             synth.fill(&seg.signal, &mut pcm, ch, i, n);
             hist.extend_from_slice(&pcm);
-            let (mut p_sc, mut p_si, mut p_ref) = ([0u8; 1500], [0u8; 1500], [0u8; 1500]);
-            let r_ref = re.encode(&pcm, frame, &mut p_ref);
+            let (mut p_sc, mut p_si, mut p_ref) = ([0u8; 1600], [0u8; 1600], [0u8; 1600]);
+            let pcm16: Vec<i16> = pcm.iter().map(|&x| (x * 32768.0).round().clamp(-32768.0, 32767.0) as i16).collect();
+            let r_ref = if seg.call.int16 {
+                re.encode_i16(&pcm16, frame, &mut p_ref[..budget])
+            } else {
+                re.encode(&pcm, frame, &mut p_ref[..budget])
+            };
             set_simd(false);
-            let r_sc = e_sc.encode(&pcm, frame, &mut p_sc);
+            let r_sc = if seg.call.int16 {
+                e_sc.encode_i16(&pcm16, frame, &mut p_sc[..budget])
+            } else {
+                e_sc.encode(&pcm, frame, &mut p_sc[..budget])
+            };
             // `silk-input`: both encoders hand SILK the same 16-bit samples
             // (after the high-pass or DC filter and the conversion).
             let (si_rs, si_ref) = (opus_rs::fuzzing::take_silk_input(), c::take_silk_input());
@@ -248,21 +299,33 @@ fn run(inp: Input) -> Result<(), Finding> {
                 r_sc
             } else {
                 set_simd(true);
-                e_si.encode(&pcm, frame, &mut p_si)
+                if seg.call.int16 {
+                    e_si.encode_i16(&pcm16, frame, &mut p_si[..budget])
+                } else {
+                    e_si.encode(&pcm, frame, &mut p_si[..budget])
+                }
             };
             let br = bitrate(cur.bitrate);
             let ctx = format!(
-                "fs{fs} ch{ch} app{capp} {}ms rc{} br{}k",
+                "fs{fs} ch{ch} app{capp} {}ms rc{} br{}k budget{budget}{}",
                 frame * 1000 / fs as usize,
                 cur.rc % 3,
-                br / 1000
+                br / 1000,
+                if seg.call.int16 { " i16" } else { "" }
             );
-            let n_ref = match r_ref {
-                n if n > 0 => n as usize,
-                e => fail!(
+            // `result`: both encoders accept or both reject the call.
+            let n_ref = match (r_ref, &r_sc) {
+                (n, Ok(_)) if n > 0 => n as usize,
+                (n, Err(_)) if n <= 0 => {
+                    // Rejected by both (e.g. a too small buffer): nothing was
+                    // coded, so this frame leaves the history.
+                    hist.truncate(hist.len() - frame * ch);
+                    continue;
+                }
+                (n, r) => fail!(
                     "result",
-                    "libopus error",
-                    "libopus {e} at frame {total} {ctx}"
+                    format!("{} budget {}", if n > 0 { "rs-err" } else { "rs-ok" }, if budget < 3 { "tiny" } else if budget < 1275 { "short" } else { "full" }),
+                    "libopus {n}, opus-rs {r:?} at frame {total} {ctx}"
                 ),
             };
             let mut o_ref = vec![0f32; frame * ch];
