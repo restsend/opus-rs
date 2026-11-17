@@ -365,8 +365,9 @@ impl CeltDecoder {
                     attenuation *= decay;
                 }
                 buf[DECODE_BUFFER_SIZE - n + i] = attenuation * exc[extrapolation_offset + j];
-                // Energy of the decoded signal whose excitation is copied.
-                let tmp = sig[LPC_ORDER + extrapolation_offset + j];
+                // Expected energy of the attenuated signal whose excitation
+                // is copied.
+                let tmp = attenuation * sig[LPC_ORDER + extrapolation_offset + j];
                 s1 += tmp * tmp;
                 j += 1;
             }

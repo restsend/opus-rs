@@ -1,15 +1,15 @@
 //! CELT packet loss concealment against libopus: harmonic signals with
-//! pitch periods from 160 to 690 samples, bursts of 1 to 45 lost frames
-//! (periodic concealment, the switch to noise after 100 ms, consecutive
-//! losses, the first good frame after a loss), every frame size, mono and
-//! stereo. The tolerance covers CELT's float rounding, which concealment
-//! amplifies.
+//! pitch periods from 160 to 690 samples, steady or decaying notes, bursts
+//! of 1 to 45 lost frames (periodic concealment, the switch to noise after
+//! 100 ms, consecutive losses, the first good frame after a loss), every
+//! frame size, mono and stereo. The tolerance covers CELT's float rounding,
+//! which concealment amplifies.
 use opus_rs::OpusDecoder;
 use opusref::*;
 
 const BURSTS: [usize; 6] = [1, 2, 4, 9, 3, 45];
 
-fn run(frame: usize, channels: usize, f0: f32) -> Result<(), String> {
+fn run(frame: usize, channels: usize, f0: f32, notes: bool) -> Result<(), String> {
     let fs = 48000;
     let mut err = 0;
     let enc = unsafe { opus_encoder_create(fs, channels as i32, 2049, &mut err) };
@@ -30,12 +30,19 @@ fn run(frame: usize, channels: usize, f0: f32) -> Result<(), String> {
             .map(|k| {
                 let t = (f * frame + k / channels) as f32 / fs as f32;
                 let pitch = f0 * (1.0 + 0.02 * (t * 3.0).sin());
+                // Notes every 0.35 s that decay by 35 dB per second.
+                let amp = if notes {
+                    (-4.0 * (t % 0.35)).exp()
+                } else {
+                    1.0
+                };
                 (1..16)
                     .map(|h| {
                         ((h as f32) * pitch * t * 6.2832 + (k % channels) as f32).sin() / h as f32
                     })
                     .sum::<f32>()
                     * 0.2
+                    * amp
             })
             .collect();
         let mut pkt = [0u8; 1500];
@@ -63,7 +70,7 @@ fn run(frame: usize, channels: usize, f0: f32) -> Result<(), String> {
             .fold(0f32, |m, (x, y)| m.max((x - y).abs()));
         if d > 1e-3 {
             result = Err(format!(
-                "frame {frame} channels {channels} f0 {f0}: frame {f} (lost {lost}) differs by {d}"
+                "frame {frame} channels {channels} f0 {f0} notes {notes}: frame {f} (lost {lost}) differs by {d}"
             ));
             break;
         }
@@ -79,8 +86,10 @@ fn concealment_matches_libopus() {
     for frame in [120, 240, 480, 960] {
         for channels in [1, 2] {
             for f0 in [70.0, 85.0, 140.0, 300.0] {
-                if let Err(e) = run(frame, channels, f0) {
-                    failures.push(e);
+                for notes in [false, true] {
+                    if let Err(e) = run(frame, channels, f0, notes) {
+                        failures.push(e);
+                    }
                 }
             }
         }
