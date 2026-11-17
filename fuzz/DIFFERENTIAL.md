@@ -34,8 +34,10 @@ bucket count as coverage, so mode transitions and extreme values are explored.
 
 ### Locating encoder differences
 
-opus-rs and libopus produce different packets from the first non-silent frame
-in almost every configuration, so byte identity alone says little. The
+CELT-only packets are byte-identical with the scalar float reference in the
+48 kHz configurations of `opusref/examples/parity.rs` (mono and stereo,
+10/20 ms, 24-510 kb/s, VBR, CVBR and CBR) and in `opusref/tests/celt_parity.rs`;
+other sampling rates and the fuzzer's settings still find differences. The
 reference decoder records every range-decoder call with its libopus source
 line (`opusref/trace.h`). The `bytes` oracle decodes both packets and reports
 the first symbol that differs, for example `celt_decoder.c:1426` (a dynalloc
