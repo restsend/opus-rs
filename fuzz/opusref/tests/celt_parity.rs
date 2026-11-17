@@ -246,3 +246,31 @@ fn low_rate_stereo_fades_towards_mono() {
 fn pulses_resynthesise_with_reciprocal_sqrt() {
     assert_eq!(identical(2, 10.0, 96, 2, "sine", 3), [true; 3]);
 }
+
+/// How often renormalise_vector of random vectors with entries of size
+/// `scale` differs from libopus's.
+fn renormalise_mismatches(scale: f32) -> usize {
+    let mut seed = 5u32;
+    let mut bad = 0;
+    for k in 0..20000 {
+        let n = 1 + k % 24;
+        let x: Vec<f32> = (0..n)
+            .map(|_| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                ((seed >> 9) as f32 / (1u32 << 23) as f32 - 0.5) * scale
+            })
+            .collect();
+        let gain = 0.25 + (k % 7) as f32 * 0.125;
+        let mut a = x.clone();
+        let mut b = x.clone();
+        opus_rs::bands::renormalise_vector(&mut a, n, gain);
+        unsafe { renormalise_vector(b.as_mut_ptr(), n as i32, gain, 0) };
+        bad += (a != b) as usize;
+    }
+    bad
+}
+/// renormalise_vector scales by (1/sqrt(E))*gain (vq.c:704-715).
+#[test]
+fn renormalise_uses_reciprocal_sqrt() {
+    assert_eq!(renormalise_mismatches(1.0), 0);
+}

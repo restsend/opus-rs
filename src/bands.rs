@@ -2164,17 +2164,11 @@ pub fn denormalise_bands(
     }
 }
 
+/// libopus renormalise_vector (vq.c:693-718).
+pub use crate::pvq::renormalise_vector;
+
 pub fn celt_lcg_rand(seed: u32) -> u32 {
     seed.wrapping_mul(1664525).wrapping_add(1013904223)
-}
-
-pub fn renormalise_vector(x: &mut [f32], n: usize, gain: f32) {
-    let x = &mut x[..n];
-    let e = x.iter().fold(1e-15f32, |e, &v| e + v * v);
-    let norm = gain / e.sqrt();
-    for v in x.iter_mut() {
-        *v *= norm;
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
