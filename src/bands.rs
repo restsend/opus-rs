@@ -1207,8 +1207,9 @@ fn quant_band_n1(
             y_val[0] = if y_sign != 0 { -1.0 } else { 1.0 };
         }
     }
+    // libopus `SHR32(X[0], 4)`, which the float build defines as no shift.
     if let Some(l_out) = lowband_out {
-        l_out[0] = x[0] / 16.0;
+        l_out[0] = x[0];
     }
     1
 }
