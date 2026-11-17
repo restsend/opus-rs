@@ -67,6 +67,19 @@ unsafe extern "C" {
 
     pub fn ref_write_weights(list: *const WeightArray, out: *mut u8, cap: c_int) -> c_int;
     pub fn parse_weights(list: *mut *mut WeightArray, data: *const c_void, len: c_int) -> c_int;
+    pub fn linear_init(
+        layer: *mut LinearLayer,
+        arrays: *const WeightArray,
+        bias: *const c_char,
+        subias: *const c_char,
+        weights: *const c_char,
+        float_weights: *const c_char,
+        weights_idx: *const c_char,
+        diag: *const c_char,
+        scale: *const c_char,
+        nb_inputs: c_int,
+        nb_outputs: c_int,
+    ) -> c_int;
 
     pub fn ref_compute_linear(l: *const LinearLayer, out: *mut f32, input: *const f32);
     pub fn ref_compute_activation(out: *mut f32, input: *const f32, n: c_int, act: c_int);

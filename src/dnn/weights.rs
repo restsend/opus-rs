@@ -191,8 +191,7 @@ impl<'a> WeightList<'a> {
     }
 
     /// `find_idx_check`: the index table of a sparse layer and its block
-    /// count. libopus accepts negative block counts and positions, which
-    /// make its kernels read out of bounds; they are rejected here.
+    /// count.
     fn find_idx_check(
         &self,
         name: &'static str,
@@ -209,7 +208,8 @@ impl<'a> WeightList<'a> {
         while remain > 0 {
             let nb_blocks = idx.at(p);
             p += 1;
-            if nb_blocks < 0 || remain < nb_blocks as usize + 1 {
+            // Each group of 8 outputs lists at most one block per 4 inputs.
+            if nb_blocks < 0 || remain < nb_blocks as usize + 1 || nb_blocks as usize > nb_in / 4 {
                 return Err(err);
             }
             for _ in 0..nb_blocks {
