@@ -2,14 +2,16 @@
 //! without `USE_SU_BIAS`), with the same operation order: every output
 //! sums its products in the order of the C loops, starting from +0.
 //!
-//! libopus selects these kernels when no SIMD header applies. The
-//! reference build of `fuzz/opusref` (feature `dnn`) compiles `dnn/` with
-//! `-U__SSE2__` so that x86-64 uses them too.
+//! libopus selects these kernels when no SIMD header applies, opus-rs at
+//! the scalar level. The reference build of `fuzz/opusref` (feature `dnn`)
+//! compiles `dnn/` with `-U__SSE2__` so that x86-64 uses them too. The x86
+//! levels take vec_avx.h's kernels (`vec_x86`).
 
 #[cfg(not(feature = "std"))]
 use crate::compat::Math;
 
 use super::weights::{F32s, I32s};
+use crate::Arch;
 
 /// `MAX_INPUTS`: the largest input count of an int8 layer.
 pub const MAX_INPUTS: usize = 2048;
@@ -225,24 +227,33 @@ pub fn sigmoid_approx(x: f32) -> f32 {
     0.5 + 0.5 * tanh_approx(0.5 * x)
 }
 
-/// `softmax` (which only exponentiates).
-pub fn softmax(y: &mut [f32], x: &[f32]) {
-    for (o, &v) in y.iter_mut().zip(x) {
-        *o = lpcnet_exp(v);
-    }
+/// An element-wise function of vec.h: `vec_tanh`, `vec_sigmoid`, `softmax`
+/// (which only exponentiates) and `vec_swish` (each value times its
+/// sigmoid).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Elem {
+    Tanh,
+    Sigmoid,
+    Exp,
+    Swish,
 }
 
-/// `vec_tanh`.
-pub fn vec_tanh(y: &mut [f32], x: &[f32]) {
-    for (o, &v) in y.iter_mut().zip(x) {
-        *o = tanh_approx(v);
+/// `f` on every value of `x` at `arch`: the generic C functions at the
+/// scalar level, vec_avx.h's at the x86 levels.
+pub(crate) fn vec_apply(x: &mut [f32], f: Elem, arch: Arch) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if arch != Arch::Scalar {
+        return super::vec_x86::apply(f, x, arch);
     }
-}
-
-/// `vec_sigmoid`.
-pub fn vec_sigmoid(y: &mut [f32], x: &[f32]) {
-    for (o, &v) in y.iter_mut().zip(x) {
-        *o = sigmoid_approx(v);
+    let _ = arch;
+    let f = match f {
+        Elem::Tanh => tanh_approx,
+        Elem::Sigmoid => sigmoid_approx,
+        Elem::Exp => lpcnet_exp,
+        Elem::Swish => |v| v * sigmoid_approx(v),
+    };
+    for v in x.iter_mut() {
+        *v = f(*v);
     }
 }
 

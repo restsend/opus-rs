@@ -1,7 +1,8 @@
 //! The neural network code of libopus (its `dnn/` folder), in safe
 //! Rust.
 //!
-//! - `vec`, `nnet`: the generic C kernels and layer functions;
+//! - `vec`, `vec_x86`, `nnet`: the kernels (generic C and x86) and the
+//!   layer functions;
 //! - `weights`, `models`, `builtin`: weight blobs, the layers of each
 //!   model and the embedded 1.6.1 weights;
 //! - `fft`, `freq`, `burg`, `common`, `lpcnet_tables`, `pitchdnn`,
@@ -10,10 +11,12 @@
 //! - `dred`: deep redundancy (RDOVAE and its coding);
 //! - `osce`: the LACE/NoLACE enhancers and the BBWENet bandwidth extension.
 //!
-//! The arithmetic follows libopus's generic C build (no SIMD,
-//! `-ffp-contract=off`) operation for operation, including its mix of
-//! float and double. Nothing here allocates: the layers borrow their
-//! weights from a blob, and the states are fixed-size arrays.
+//! The arithmetic follows libopus operation for operation, including its
+//! mix of float and double, at the level of the state (`Arch`): its
+//! generic C build (no SIMD, `-ffp-contract=off`) at the scalar level, its
+//! x86 kernels (`nnet_sse2.c`, `nnet_sse4_1.c`, `nnet_avx2.c` with
+//! `vec_avx.h`) at the x86 levels. Nothing here allocates: the layers
+//! borrow their weights from a blob, and the states are fixed-size arrays.
 
 // The constants are copied digit for digit from libopus.
 #![allow(clippy::excessive_precision, clippy::approx_constant)]
@@ -37,4 +40,6 @@ pub mod nnet;
 pub mod osce;
 pub mod pitchdnn;
 pub mod vec;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+mod vec_x86;
 pub mod weights;

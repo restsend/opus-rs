@@ -4,9 +4,7 @@
 //! Inputs and outputs may be longer than a layer reads or writes; only the
 //! first `nb_inputs`/`nb_outputs` values are used.
 
-use super::vec::{
-    MAX_INPUTS, cgemv8x4, sgemv, softmax, sparse_cgemv8x4, sparse_sgemv8x4, vec_sigmoid, vec_tanh,
-};
+use super::vec::{Elem, MAX_INPUTS, cgemv8x4, sgemv, sparse_cgemv8x4, sparse_sgemv8x4, vec_apply};
 use super::weights::{F32s, I32s};
 use crate::Arch;
 
@@ -111,83 +109,42 @@ fn relu(x: f32) -> f32 {
     if x < 0.0 { 0.0 } else { x }
 }
 
-/// `compute_activation_c` on `x` in place.
-pub fn compute_activation_inplace(x: &mut [f32], activation: Activation, _arch: Arch) {
+/// `compute_activation` on `x` in place: libopus's `compute_activation_c`
+/// at the scalar level, `compute_activation_sse2`/`_sse4_1`/`_avx2` at the
+/// x86 levels, which differ in vec.h's element-wise functions.
+pub fn compute_activation_inplace(x: &mut [f32], activation: Activation, arch: Arch) {
     match activation {
-        Activation::Sigmoid => {
-            for v in x.iter_mut() {
-                *v = super::vec::sigmoid_approx(*v);
-            }
-        }
-        Activation::Tanh => {
-            for v in x.iter_mut() {
-                *v = super::vec::tanh_approx(*v);
-            }
-        }
-        Activation::Swish => {
-            for v in x.iter_mut() {
-                *v *= super::vec::sigmoid_approx(*v);
-            }
-        }
+        Activation::Sigmoid => vec_apply(x, Elem::Sigmoid, arch),
+        Activation::Tanh => vec_apply(x, Elem::Tanh, arch),
+        Activation::Swish => vec_apply(x, Elem::Swish, arch),
+        Activation::Exp => vec_apply(x, Elem::Exp, arch),
         Activation::Relu => {
             for v in x.iter_mut() {
                 *v = relu(*v);
             }
         }
-        Activation::Exp => {
+        Activation::Softmax => {
+            vec_apply(x, Elem::Exp, arch);
+            let sum = x.iter().fold(0.0f32, |s, &v| s + v);
+            let sum = (1.0f64 / (sum as f64 + 1e-30)) as f32;
             for v in x.iter_mut() {
-                *v = super::vec::lpcnet_exp(*v);
+                *v *= sum;
             }
         }
-        Activation::Softmax => softmax_normalized(x),
         Activation::Linear => {}
     }
 }
 
-/// The ACTIVATION_SOFTMAX branch of `compute_activation_c`.
-fn softmax_normalized(x: &mut [f32]) {
-    let mut sum = 0.0f32;
-    for v in x.iter_mut() {
-        *v = super::vec::lpcnet_exp(*v);
-        sum += *v;
-    }
-    let sum = (1.0f64 / (sum as f64 + 1e-30)) as f32;
-    for v in x.iter_mut() {
-        *v *= sum;
-    }
-}
-
-/// `compute_activation_c`: `output[..n] = activation(input[..n])`.
+/// `compute_activation`: `output[..n] = activation(input[..n])`.
 pub fn compute_activation(
     output: &mut [f32],
     input: &[f32],
     n: usize,
     activation: Activation,
-    _arch: Arch,
+    arch: Arch,
 ) {
-    let (output, input) = (&mut output[..n], &input[..n]);
-    match activation {
-        Activation::Sigmoid => vec_sigmoid(output, input),
-        Activation::Tanh => vec_tanh(output, input),
-        Activation::Swish => {
-            let mut tmp = [0.0f32; MAX_ACTIVATIONS];
-            vec_sigmoid(&mut tmp[..n], input);
-            for ((o, &x), &t) in output.iter_mut().zip(input).zip(&tmp[..n]) {
-                *o = x * t;
-            }
-        }
-        Activation::Relu => {
-            for (o, &x) in output.iter_mut().zip(input) {
-                *o = relu(x);
-            }
-        }
-        Activation::Exp => softmax(output, input),
-        Activation::Softmax => {
-            output.copy_from_slice(input);
-            softmax_normalized(output);
-        }
-        Activation::Linear => output.copy_from_slice(input),
-    }
+    output[..n].copy_from_slice(&input[..n]);
+    compute_activation_inplace(&mut output[..n], activation, arch);
 }
 
 /// `compute_generic_dense`.
