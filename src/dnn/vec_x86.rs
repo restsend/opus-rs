@@ -250,12 +250,21 @@ fn blocks<A: Copy>(
         }
         Some(idx) => {
             let (mut p, mut wp) = (0, 0);
+            let block = |pos: &[u8; 4]| -> &[u8; 4] {
+                let pos = i32::from_le_bytes(*pos) as usize;
+                x[pos..pos + 4].try_into().unwrap()
+            };
             for i in (0..rows).step_by(8) {
                 let n = idx.at(p) as usize;
+                let (p4, p_rest) = idx.bytes(p + 1, n).as_chunks::<4>();
+                let (w4, w_rest) = wb[wp..wp + n].as_chunks::<4>();
                 let mut s = zero;
-                for (k, w) in wb[wp..wp + n].iter().enumerate() {
-                    let pos = idx.at(p + 1 + k) as usize;
-                    s = add(s, prod(x[pos..pos + 4].try_into().unwrap(), w));
+                for (pos, w) in p4.iter().zip(w4) {
+                    let q = |k: usize| prod(block(&pos[k]), &w[k]);
+                    s = add(s, add(add(q(0), q(1)), add(q(2), q(3))));
+                }
+                for (pos, w) in p_rest.iter().zip(w_rest) {
+                    s = add(s, prod(block(pos), w));
                 }
                 (p, wp) = (p + 1 + n, wp + n);
                 finish(i, s);

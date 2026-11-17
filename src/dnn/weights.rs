@@ -103,6 +103,11 @@ impl<'a> I32s<'a> {
     pub fn at(&self, i: usize) -> i32 {
         i32::from_le_bytes(self.0[i])
     }
+    /// The little-endian bytes of values `start..start + n`.
+    #[inline(always)]
+    pub fn bytes(&self, start: usize, n: usize) -> &'a [[u8; 4]] {
+        &self.0[start..start + n]
+    }
 }
 
 /// One array of a blob (libopus `WeightArray`).
