@@ -74,10 +74,10 @@ pub fn celt_cos_norm2(x: f32) -> f32 {
                         + x2 * 8.581906440667808055877685546875e-04f32))))
 }
 
-/// `celt_sin`: `celt_cos_norm2((0.5f*PI)*(x) - 1.0f)` with PI a double.
+/// `celt_sin`: `celt_cos_norm2((2.f/PI)*(x) - 1.0f)` with PI a double.
 #[inline]
 pub fn celt_sin(x: f32) -> f32 {
-    celt_cos_norm2(((0.5f32 as f64 * 3.1415926535897931f64) * x as f64 - 1.0) as f32)
+    celt_cos_norm2(((2.0f32 as f64 / 3.1415926535897931f64) * x as f64 - 1.0) as f32)
 }
 
 /// `log2_approx` (`dnn/common.h`).
