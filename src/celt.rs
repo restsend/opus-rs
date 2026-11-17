@@ -1971,7 +1971,7 @@ impl CeltEncoder {
     }
 
     pub fn encode(&mut self, pcm: &[f32], frame_size: usize, rc: &mut RangeCoder) {
-        self.encode_impl(pcm, frame_size, rc, 0, None, false)
+        self.encode_impl(pcm, frame_size, rc, 0, None)
     }
 
     pub fn encode_with_start_band(
@@ -1981,7 +1981,7 @@ impl CeltEncoder {
         rc: &mut RangeCoder,
         start_band: usize,
     ) {
-        self.encode_impl(pcm, frame_size, rc, start_band, None, false)
+        self.encode_impl(pcm, frame_size, rc, start_band, None)
     }
 
     pub fn encode_with_budget(
@@ -1992,9 +1992,11 @@ impl CeltEncoder {
         start_band: usize,
         total_bits: i32,
     ) {
-        self.encode_impl(pcm, frame_size, rc, start_band, Some(total_bits), false)
+        self.encode_impl(pcm, frame_size, rc, start_band, Some(total_bits))
     }
 
+    /// As [`Self::encode_with_budget`]. `_is_vbr` has no effect: the frame is
+    /// VBR when the encoder has VBR on and a bitrate (libopus `vbr_rate`).
     pub fn encode_with_budget_vbr(
         &mut self,
         pcm: &[f32],
@@ -2002,9 +2004,9 @@ impl CeltEncoder {
         rc: &mut RangeCoder,
         start_band: usize,
         total_bits: i32,
-        is_vbr: bool,
+        _is_vbr: bool,
     ) {
-        self.encode_impl(pcm, frame_size, rc, start_band, Some(total_bits), is_vbr)
+        self.encode_impl(pcm, frame_size, rc, start_band, Some(total_bits))
     }
 
     pub fn set_lsb_depth(&mut self, depth: i32) {
@@ -2047,7 +2049,6 @@ impl CeltEncoder {
         rc: &mut RangeCoder,
         start_band: usize,
         explicit_total_bits: Option<i32>,
-        is_vbr: bool,
     ) {
         let mode = self.mode;
         // libopus CC (input channels) and C (coded channels): a mono stream
@@ -2260,7 +2261,7 @@ impl CeltEncoder {
             silence = false;
         }
         if silence {
-            if is_vbr {
+            if self.vbr && self.bitrate != OPUS_BITRATE_MAX {
                 let target_bytes = nb_filled_bytes_initial + 2;
                 if target_bytes < nb_compressed_bytes {
                     nb_compressed_bytes = target_bytes;
@@ -2297,7 +2298,7 @@ impl CeltEncoder {
         // libopus nbAvailableBytes after the VBR bound, two in a silent VBR
         // frame (celt_encoder.c:1924-1993); effectiveBytes follows the
         // silent frame's budget too.
-        let silent_vbr = silence && is_vbr;
+        let silent_vbr = silence && self.vbr && self.bitrate != OPUS_BITRATE_MAX;
         let nb_available = if silent_vbr {
             2
         } else {
@@ -4206,6 +4207,23 @@ mod tests {
             toneishness, &mut tmp, &mut tmp2,
         );
         assert_eq!(tf_estimate, 0.8355611562728882);
+    }
+
+    /// A silent frame shrinks to two bytes when the encoder has VBR on and
+    /// a bitrate (celt_encoder.c:1988-1994), through every entry point.
+    #[test]
+    fn silent_frames_shrink_under_vbr_only() {
+        let silence = [0.0f32; 960];
+        for (vbr, bitrate, is_vbr, bytes) in
+            [(true, 64000, false, 2), (false, 64000, true, 100), (true, OPUS_BITRATE_MAX, true, 100)]
+        {
+            let mut enc = CeltEncoder::new(modes::default_mode(), 1);
+            enc.set_vbr(vbr);
+            enc.set_bitrate(bitrate);
+            let mut rc = RangeCoder::new_encoder(100);
+            enc.encode_with_budget_vbr(&silence, 960, &mut rc, 0, 800, is_vbr);
+            assert_eq!(rc.storage, bytes, "vbr {vbr} bitrate {bitrate} is_vbr {is_vbr}");
+        }
     }
 
     #[test]
