@@ -629,7 +629,8 @@ pub fn silk_burg_modified_flp(
 }
 
 const QA_INV: i32 = 24;
-const A_LIMIT: i32 = 16773043;
+/// SILK_FIX_CONST(0.99975, 24) (LPC_inv_pred_gain.c:36).
+const A_LIMIT: i32 = 16773022;
 
 fn lpc_inverse_pred_gain_qa(a_qa_in: &mut [i32], order: usize) -> i32 {
     let mut inv_gain_q30 = 1 << 30;
