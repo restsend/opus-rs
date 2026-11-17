@@ -5,7 +5,6 @@ use opus_rs::{Application, OpusEncoder};
 use opusref::*;
 
 fn main() {
-    opus_rs::fuzzing::force_arch(Some(opus_rs::Arch::Scalar));
     let fs = 48000;
     for ch in [1usize, 2] {
         for ms in [10usize, 20] {

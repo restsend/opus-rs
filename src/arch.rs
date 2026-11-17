@@ -17,15 +17,21 @@ pub enum Arch {
 }
 
 impl Arch {
-    /// The level of this CPU, or the one [`crate::fuzzing::force_arch`]
-    /// set when this CPU has it.
+    /// The level codec states take: this CPU's ([`Arch::native`]). With the
+    /// `fuzzing` feature it is the one [`crate::fuzzing::force_arch`] set,
+    /// else the one the environment variable `OPUS_RS_ARCH` names
+    /// (`scalar`, `sse2`, `sse4_1`, `avx2` or `native`; unset: `scalar`, the
+    /// level of the scalar reference), at most this CPU's.
     pub fn select() -> Arch {
-        let detected = detect();
         #[cfg(feature = "fuzzing")]
-        if let Some(forced) = forced() {
-            return forced.min(detected);
-        }
-        detected
+        return forced().min(Self::native());
+        #[cfg(not(feature = "fuzzing"))]
+        Self::native()
+    }
+
+    /// This CPU's level.
+    pub fn native() -> Arch {
+        detect()
     }
 
     /// The AVX2 token at the `Avx2` level.
@@ -81,7 +87,8 @@ pub(crate) fn cpu_simd128() -> Option<fearless_simd::WasmSimd128> {
 #[cfg(feature = "fuzzing")]
 static FORCED: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
-/// The level codec states created afterwards take (`None`: the CPU's).
+/// The level codec states created afterwards take (`None`: the one
+/// `OPUS_RS_ARCH` names).
 #[cfg(feature = "fuzzing")]
 pub fn force_arch(arch: Option<Arch>) {
     let v = arch.map_or(0, |a| a as u8 + 1);
@@ -89,10 +96,16 @@ pub fn force_arch(arch: Option<Arch>) {
 }
 
 #[cfg(feature = "fuzzing")]
-fn forced() -> Option<Arch> {
+fn forced() -> Arch {
     const ALL: [Arch; 4] = [Arch::Scalar, Arch::Sse2, Arch::Sse4_1, Arch::Avx2];
     match FORCED.load(core::sync::atomic::Ordering::Relaxed) {
-        0 => None,
-        v => Some(ALL[v as usize - 1]),
+        0 => match std::env::var("OPUS_RS_ARCH").as_deref() {
+            Ok("native") => Arch::native(),
+            Ok("sse2") => Arch::Sse2,
+            Ok("sse4_1") => Arch::Sse4_1,
+            Ok("avx2") => Arch::Avx2,
+            _ => Arch::Scalar,
+        },
+        v => ALL[v as usize - 1],
     }
 }

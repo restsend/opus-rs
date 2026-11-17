@@ -70,7 +70,8 @@ pub fn report(target: &str, data: &[u8], r: Result<(), Finding>) {
 /// Codec states created afterwards take the CPU's level (`on`) or the
 /// scalar one.
 pub fn set_simd(on: bool) {
-    opus_rs::fuzzing::force_arch((!on).then_some(opus_rs::Arch::Scalar));
+    let arch = if on { opus_rs::Arch::native() } else { opus_rs::Arch::Scalar };
+    opus_rs::fuzzing::force_arch(Some(arch));
 }
 
 /// Reads a tolerance or switch from the environment once per process.

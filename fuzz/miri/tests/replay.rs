@@ -51,7 +51,8 @@ fn decoder_encoded_mode_switches() {
     // Valid streams through SILK, hybrid and CELT, including the transitions.
     let mut r = Rng(2);
     for simd in [false, true] {
-        opus_rs::fuzzing::force_arch((!simd).then_some(opus_rs::Arch::Scalar));
+        let arch = if simd { opus_rs::Arch::native() } else { opus_rs::Arch::Scalar };
+        opus_rs::fuzzing::force_arch(Some(arch));
         let (fs, ch) = (48000, 1);
         let mut e = OpusEncoder::new(fs, ch, Application::Audio).unwrap();
         let mut d = OpusDecoder::new(fs, ch).unwrap();
@@ -74,7 +75,8 @@ fn decoder_encoded_mode_switches() {
 fn encoder_settings_and_signals() {
     let mut r = Rng(3);
     for simd in [false, true] {
-        opus_rs::fuzzing::force_arch((!simd).then_some(opus_rs::Arch::Scalar));
+        let arch = if simd { opus_rs::Arch::native() } else { opus_rs::Arch::Scalar };
+        opus_rs::fuzzing::force_arch(Some(arch));
         for (fs, ch, app, ms) in [
             (48000, 2, Application::Audio, 20),
             (16000, 2, Application::Voip, 20),
@@ -136,7 +138,8 @@ fn kernels() {
     let mut r = Rng(5);
     let mode = opus_rs::modes::default_mode();
     for simd in [false, true] {
-        opus_rs::fuzzing::force_arch((!simd).then_some(opus_rs::Arch::Scalar));
+        let arch = if simd { opus_rs::Arch::native() } else { opus_rs::Arch::Scalar };
+        opus_rs::fuzzing::force_arch(Some(arch));
         for n0 in [2usize, 16, 30, 64, 128] {
             let mut x: Vec<f32> = (0..n0 * 2).map(|_| r.f()).collect();
             opus_rs::bands::haar1(&mut x, n0, 1);
