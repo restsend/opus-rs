@@ -3453,9 +3453,6 @@ impl CeltDecoder {
                 gain1 = 0.09375 * (qg as f32 + 1.0);
             }
         }
-        if start_band != 0 {
-            self.prefilter_gain = 0.0;
-        }
 
         let mut is_transient = false;
         if lm > 0 && rc.tell() + 3 <= total_bits {

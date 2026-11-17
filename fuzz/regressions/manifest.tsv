@@ -46,3 +46,4 @@ d11	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode_fec silk->dtx	d
 d12	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode_fec dtx->silk	decode_fec after CELT concealment skips the SILK reset and bridge
 d14	test:toc_only_code2	-	FAILED	ToC-only code-2 packet concealed instead of rejected
 d13	test:tiny_frames	-	FAILED	0/1-byte frames inside a packet decoded instead of concealed
+d15	test:hybrid_postfilter_carry	-	FAILED	Hybrid frames drop the postfilter gain of the frame before
