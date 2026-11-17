@@ -87,13 +87,14 @@ impl OpusDredDecoder {
         let Some((payload, dred_frame_offset)) = dred_find_payload(data)? else {
             return Ok((0, 0));
         };
-        let max_dred_features = (100 * max_dred_samples as i64 / sampling_rate as i64)
+        // Rounded up.
+        let fs = sampling_rate as i64;
+        let max_dred_features = ((100 * max_dred_samples as i64 + fs - 1) / fs)
             .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
         dred.ec_decode(payload, max_dred_features, dred_frame_offset);
         if !defer_processing {
             dred.process(&self.model);
         }
-        let fs = sampling_rate as i64;
         let dred_end = (-(dred.dred_offset as i64) * fs / 400).max(0) as i32;
         let samples =
             (dred.nb_latents as i64 * fs / 25 - dred.dred_offset as i64 * fs / 400).max(0) as i32;
