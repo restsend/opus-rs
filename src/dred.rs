@@ -17,8 +17,7 @@ use crate::dnn::vec::c_floor;
 use crate::dnn::weights::WeightError;
 use crate::extensions::{ExtensionData, ExtensionIterator, parse_packet, samples_per_frame_48k, write_packet};
 use crate::{
-    FrameArgs, OPUS_MAX_PACKET_BYTES, OpusDecoder, OpusEncoder, PcmInput, bits_to_bitrate, bitrate_to_bits,
-    frame_rate_from_params,
+    FrameArgs, OpusDecoder, OpusEncoder, PcmInput, bits_to_bitrate, bitrate_to_bits,
 };
 
 /// libopus `OpusDREDDecoder`: the RDOVAE decoder model that turns the
@@ -394,36 +393,6 @@ impl OpusEncoder {
     /// The DRED duration in 10 ms frames (libopus `OPUS_GET_DRED_DURATION`).
     pub fn dred_duration(&self) -> i32 {
         self.dred.duration
-    }
-
-    /// A packet, with DRED's share of the bitrate taken out first
-    /// (opus_encode_native's `compute_dred_bitrate`, after the CBR size).
-    pub(crate) fn encode_impl(
-        &mut self,
-        input: PcmInput<'_>,
-        frame_size: usize,
-        output: &mut [u8],
-    ) -> Result<usize, &'static str> {
-        let fs = self.sampling_rate;
-        self.bitrate_bps = self.bitrate_bps.clamp(500, 750_000 * self.channels as i32);
-        let mut dred_bitrate = 0;
-        if output.len() >= 2 && frame_rate_from_params(fs, frame_size).is_some() {
-            // user_bitrate_to_bitrate: at most what the buffer holds.
-            let max_data_bytes = output.len().min(6 * OPUS_MAX_PACKET_BYTES) as i32;
-            let mut rate = self.bitrate_bps.min(bits_to_bitrate(max_data_bytes * 8, fs, frame_size));
-            if self.use_cbr {
-                let cbr_bytes = ((bitrate_to_bits(rate, fs, frame_size) + 4) / 8).min(max_data_bytes);
-                rate = bits_to_bitrate(cbr_bytes * 8, fs, frame_size);
-            }
-            let loss = self.packet_loss_perc.clamp(0, 100);
-            dred_bitrate = self.dred.compute_bitrate(rate, frame_size, fs, self.use_inband_fec, loss);
-        }
-        self.dred.bitrate_bps = dred_bitrate;
-        let bitrate = self.bitrate_bps;
-        self.bitrate_bps -= dred_bitrate;
-        let ret = self.encode_native(input, frame_size, output);
-        self.bitrate_bps = bitrate;
-        ret
     }
 
     /// One frame (`opus_encode_frame_native`) with its DRED extension and

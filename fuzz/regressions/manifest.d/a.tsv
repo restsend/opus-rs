@@ -1,0 +1,2 @@
+a1	test:encoder_packet	-	vbr_bitrate_is_capped_by_the_buffer ... FAILED	VBR bitrate not capped by the output buffer
+a2	test:encoder_packet	-	cbr_bitrate_is_whole_bytes ... FAILED	CBR bitrate not re-quantized to whole bytes
