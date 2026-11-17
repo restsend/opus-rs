@@ -1256,7 +1256,6 @@ pub struct CeltEncoder {
     end_band: usize,
     pub complexity: i32,
     syn_mem: FixedVec<f32, CELT_SYN_MEM>,
-    enc_decode_mem: FixedVec<f32, CELT_SYN_MEM>,
     old_band_e: FixedVec<f32, CELT_NB_X_CH>,
     preemph_mem: FixedVec<f32, CELT_MAX_CHANNELS>,
     tonal_average: i32,
@@ -1307,7 +1306,6 @@ pub struct CeltEncoder {
     w_ebits: FixedVec<i32, CELT_NB_X_CH>,
     w_fine_priority: FixedVec<i32, CELT_NB_X_CH>,
     w_collapse_masks: FixedVec<u32, CELT_NB_X_CH>,
-    w_band_amp_synth: FixedVec<f32, CELT_NB_X_CH>,
     consec_transient: i32,
 
     w_prefilter_pre: FixedVec<f32, CELT_PREFILTER_PRE>,
@@ -1838,7 +1836,6 @@ impl CeltEncoder {
             // celt_encoder.c:220.
             complexity: 5,
             syn_mem: FixedVec::from_value(0.0, syn_mem_size),
-            enc_decode_mem: FixedVec::from_value(0.0, syn_mem_size),
             old_band_e: FixedVec::from_value(0.0, nb_x_ch),
             preemph_mem: FixedVec::from_value(0.0, channels),
             tonal_average: 256,
@@ -1884,7 +1881,6 @@ impl CeltEncoder {
             w_ebits: FixedVec::from_value(0, nb_x_ch),
             w_fine_priority: FixedVec::from_value(0, nb_x_ch),
             w_collapse_masks: FixedVec::from_value(0, nb_x_ch),
-            w_band_amp_synth: FixedVec::from_value(0.0, nb_x_ch),
 
             w_prefilter_pre: FixedVec::from_value(
                 0.0,
@@ -1920,7 +1916,6 @@ impl CeltEncoder {
     /// loss rate, prediction).
     pub fn reset_state(&mut self) {
         self.syn_mem.fill(0.0);
-        self.enc_decode_mem.fill(0.0);
         self.old_band_e.fill(0.0);
         self.preemph_mem.fill(0.0);
         self.tonal_average = 256;
@@ -3031,58 +3026,6 @@ impl CeltEncoder {
         if silence {
             for v in self.old_band_e[..channels * nb_ebands].iter_mut() {
                 *v = -28.0;
-            }
-        }
-
-        if resynth {
-            let band_amp_synth = &mut self.w_band_amp_synth[..nb_ebands * channels];
-            log2amp(mode, end, band_amp_synth, &self.old_band_e, channels);
-            // `w_freq` is no longer needed after analysis/quant; reuse it as the
-            // synthesis scratch (avoids a separate `w_freq_synth` buffer).
-            self.w_freq[..frame_size * channels].fill(0.0);
-            let freq_synth = &mut self.w_freq[..frame_size * channels];
-            denormalise_bands(
-                mode,
-                x,
-                freq_synth,
-                band_amp_synth,
-                start_band,
-                end,
-                channels,
-                (1 << lm) as usize,
-            );
-            let (syn_shift, syn_b) = if is_transient {
-                (mode.max_lm, 1 << lm)
-            } else {
-                (mode.max_lm - lm, 1)
-            };
-            let syn_n = frame_size / syn_b;
-            let decode_buf_size = 2048;
-
-            for c in 0..channels {
-                let co = c * syn_mem_size;
-                self.enc_decode_mem
-                    .copy_within(co + frame_size..co + decode_buf_size + overlap, co);
-            }
-
-            for c in 0..channels {
-                let co = c * syn_mem_size;
-                let out_syn_idx = decode_buf_size - frame_size;
-                for bi in 0..syn_b {
-                    let syn_stride = if is_transient {
-                        mode.short_mdct_size
-                    } else {
-                        syn_n
-                    };
-                    mode.mdct.backward(
-                        &freq_synth[c * frame_size + bi..],
-                        &mut self.enc_decode_mem[co + out_syn_idx + bi * syn_stride..],
-                        mode.window,
-                        overlap,
-                        syn_shift,
-                        syn_b,
-                    );
-                }
             }
         }
 
