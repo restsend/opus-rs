@@ -22,6 +22,9 @@ struct Cfg {
     end: usize,
     /// None keeps both encoders' default.
     complexity: Option<i32>,
+    /// Equiprobable bits in the range coder before CELT, as SILK leaves
+    /// them in a Hybrid frame.
+    prefix: usize,
 }
 
 impl Default for Cfg {
@@ -37,6 +40,7 @@ impl Default for Cfg {
             start: 0,
             end: 21,
             complexity: Some(10),
+            prefix: 0,
         }
     }
 }
@@ -82,13 +86,28 @@ fn identical_ends(
             e.set_end_band(end(f));
             unsafe { ref_celt_encoder_ctl(r, 10012, end(f) as i32) };
             let mut rc = RangeCoder::new_encoder(bytes as u32);
+            for i in 0..cfg.prefix {
+                rc.encode_bit_logp(i & 1 == 1, 1);
+            }
             let vbr = cfg.vbr && cfg.bitrate != MAX;
             e.encode_with_budget_vbr(&planar, n, &mut rc, cfg.start, (bytes * 8) as i32, vbr);
             rc.done();
             let a = rc.buf[..rc.storage as usize].to_vec();
             let mut b = vec![0u8; bytes];
-            let m =
-                unsafe { ref_celt_encode(r, pcm.as_ptr(), n as i32, b.as_mut_ptr(), bytes as i32) };
+            let m = unsafe {
+                if cfg.prefix > 0 {
+                    ref_celt_encode_after(
+                        r,
+                        pcm.as_ptr(),
+                        n as i32,
+                        b.as_mut_ptr(),
+                        bytes as i32,
+                        cfg.prefix as i32,
+                    )
+                } else {
+                    ref_celt_encode(r, pcm.as_ptr(), n as i32, b.as_mut_ptr(), bytes as i32)
+                }
+            };
             assert!(m > 0, "libopus returned {m}");
             a == b[..m as usize]
         })
@@ -222,4 +241,21 @@ fn default_complexity_is_5() {
         }
     };
     assert_eq!(identical(cfg, 4, clicks), [true; 4]);
+}
+
+/// The coarse energy's decay limit counts nbAvailableBytes, the bytes left
+/// after those already in the range coder (celt_encoder.c:2295-2297,
+/// quant_bands.c:288-290); frames that alternate between loud and quiet
+/// reach the limit.
+#[test]
+fn coarse_energy_counts_the_bytes_left_in_the_range_coder() {
+    for prefix in [80, 160, 240] {
+        let cfg = Cfg {
+            bytes: 60,
+            prefix,
+            ..Cfg::default()
+        };
+        let level = |f: usize, i, c| noise(prefix as u32, 0.3)(f, i, c) * [1.0, 1e-3][f % 2];
+        assert_eq!(identical(cfg, 6, level), [true; 6], "{prefix} bits");
+    }
 }

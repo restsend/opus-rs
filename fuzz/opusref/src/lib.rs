@@ -102,6 +102,14 @@ unsafe extern "C" {
         out: *mut c_uchar,
         bytes: c_int,
     ) -> c_int;
+    pub fn ref_celt_encode_after(
+        st: *mut c_void,
+        pcm: *const f32,
+        frame_size: c_int,
+        out: *mut c_uchar,
+        bytes: c_int,
+        prefix: c_int,
+    ) -> c_int;
     pub fn comb_filter(
         y: *mut f32,
         x: *mut f32,

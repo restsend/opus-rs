@@ -72,4 +72,13 @@ int ref_celt_encoder_ctl(void *st, int request, int value) {
 int ref_celt_encode(void *st, const float *pcm, int frame_size, unsigned char *out, int bytes) {
   return celt_encode_with_ec((CELTEncoder *)st, pcm, frame_size, out, bytes, NULL);
 }
+/* celt_encode_with_ec into a range coder that already holds `prefix`
+   equiprobable bits, as a Hybrid frame's CELT layer follows SILK. */
+int ref_celt_encode_after(void *st, const float *pcm, int frame_size, unsigned char *out,
+                          int bytes, int prefix) {
+  ec_enc enc;
+  ec_enc_init(&enc, out, bytes);
+  for (int i = 0; i < prefix; i++) ec_enc_bit_logp(&enc, i & 1, 1);
+  return celt_encode_with_ec((CELTEncoder *)st, pcm, frame_size, NULL, bytes, &enc);
+}
 #endif
