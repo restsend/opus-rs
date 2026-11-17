@@ -1783,13 +1783,14 @@ impl OpusEncoder {
         frame_size: usize,
         output: &mut [u8],
     ) -> Result<usize, &'static str> {
-        if output.len() < 2 {
-            return Err("Output buffer too small");
-        }
         self.range_final = 0;
-
         let frame_rate = frame_rate_from_params(self.sampling_rate, frame_size)
             .ok_or("Invalid frame size for sampling rate")?;
+        // A 1-byte buffer takes a ToC-only packet, except at 100 ms
+        // (opus_encoder.c:1224-1236).
+        if output.is_empty() || (output.len() == 1 && frame_rate == 10) {
+            return Err("Output buffer too small");
+        }
 
         // Clamp caller-provided control fields the way libopus's ctl
         // interface does (OPUS_SET_BITRATE clamps to [500, 750000 per
@@ -1843,6 +1844,23 @@ impl OpusEncoder {
         // libopus's signal analysis of the packet; the frames of a multiframe
         // packet read their part of it.
         let (analysis_info, is_silence) = self.analyse(input, frame_size);
+
+        // How far stereo input is from mono (libopus compute_stereo_width).
+        let stereo_width = if self.channels == 2 {
+            compute_stereo_width(input, frame_size, self.sampling_rate, &mut self.width_mem)
+        } else {
+            0.0
+        };
+
+        // A budget too small to code anything useful gives a ToC-only
+        // packet, which decoders conceal (opus_encoder.c:1340-1406).
+        if max_data_bytes < 3
+            || self.rate < 3 * frame_rate * 8
+            || (frame_rate < 50 && (max_data_bytes as i32 * frame_rate < 300 || self.rate < 2400))
+        {
+            return Ok(self.toc_only_packet(frame_rate, max_data_bytes, output));
+        }
+
         // libopus's own DTX decides where its analysis ran or the packet is
         // digital silence; SILK's DTX on the other packets.
         let silk_use_dtx = self.use_dtx && !(analysis_info.valid || is_silence);
@@ -1869,13 +1887,6 @@ impl OpusEncoder {
             if equiv > threshold { 2 } else { 1 }
         } else {
             1
-        };
-
-        // How far stereo input is from mono (libopus compute_stereo_width).
-        let stereo_width = if self.channels == 2 {
-            compute_stereo_width(input, frame_size, self.sampling_rate, &mut self.width_mem)
-        } else {
-            0.0
         };
 
         // Mode selection: match C's opus_encode_native() behavior.
@@ -2046,6 +2057,71 @@ impl OpusEncoder {
         self.encode_subframe(input, frame_size, &mut output[..max_data_bytes], args)
     }
 
+    /// The packet libopus sends for a budget too small to code anything
+    /// (opus_encoder.c:1340-1406): the ToC alone, in the mode, bandwidth
+    /// and channels of the packet before, with one, two or `50/frame_rate`
+    /// empty frames; under CBR padded to `max_data_bytes`. It leaves the
+    /// encoder's state as it was.
+    fn toc_only_packet(&self, frame_rate: i32, max_data_bytes: usize, output: &mut [u8]) -> usize {
+        let (mut mode, mut bw, mut frame_rate) = (self.mode, self.bandwidth, frame_rate);
+        let mut code = 0u8;
+        let mut num_multiframes = 0u8;
+        if frame_rate > 100 {
+            mode = OpusMode::CeltOnly;
+        }
+        // 40 ms -> 2 x 20 ms in CELT/hybrid mode.
+        if frame_rate == 25 && mode != OpusMode::SilkOnly {
+            frame_rate = 50;
+            code = 1;
+        }
+        // >= 60 ms frames: 1 x 60 ms, 2 x 40 ms, 2 x 60 ms, or 20 ms ones.
+        if frame_rate <= 16 {
+            if output.len() == 1 || (mode == OpusMode::SilkOnly && frame_rate != 10) {
+                mode = OpusMode::SilkOnly;
+                code = u8::from(frame_rate <= 12);
+                frame_rate = if frame_rate == 12 { 25 } else { 16 };
+            } else {
+                num_multiframes = (50 / frame_rate) as u8;
+                frame_rate = 50;
+                code = 3;
+            }
+        }
+        let rank = bandwidth_fec_index;
+        if mode == OpusMode::SilkOnly && rank(bw) > rank(Bandwidth::Wideband) {
+            bw = Bandwidth::Wideband;
+        } else if mode == OpusMode::CeltOnly && bw == Bandwidth::Mediumband {
+            bw = Bandwidth::Narrowband;
+        } else if mode == OpusMode::Hybrid && rank(bw) <= rank(Bandwidth::Superwideband) {
+            bw = Bandwidth::Superwideband;
+        }
+        output[0] = gen_toc(mode, frame_rate, bw, self.stream_channels) | code;
+        let ret = if code <= 1 { 1 } else { 2 };
+        if code == 3 {
+            output[1] = num_multiframes;
+        }
+        let total = max_data_bytes.max(ret);
+        if !self.use_cbr || total == ret {
+            return ret;
+        }
+        // opus_packet_pad: code 3 with the empty frames and zero padding
+        // (two bytes have no room for any).
+        output[0] |= 0x03;
+        output[1] = match code {
+            3 => num_multiframes,
+            1 => 2,
+            _ => 1,
+        };
+        if total > 2 {
+            output[1] |= 0x40;
+            let pad_amount = total - 2;
+            let nb_255s = (pad_amount - 1) / 255;
+            output[2..2 + nb_255s].fill(255);
+            output[2 + nb_255s] = (pad_amount - 255 * nb_255s - 1) as u8;
+            output[3 + nb_255s..total].fill(0);
+        }
+        total
+    }
+
     /// One frame of a packet (libopus `opus_encode_frame_native`), in the
     /// mode, bandwidth and channels the packet chose, with its decisions
     /// `args`. `output.len()` is the frame's budget (libopus
@@ -2148,89 +2224,6 @@ impl OpusEncoder {
         };
         let mut toc = gen_toc(mode, frame_rate, frame_bandwidth, coded_channels);
         output[0] = toc;
-
-        // C opus_encoder.c:1226-1243: a budget too small to code anything
-        // useful produces a TOC-only "PLC" packet — decoders conceal it as a
-        // loss. Encoding into 0-2 bytes would otherwise overflow the range
-        // coder (issue #45). Under CBR the packet is padded to the nominal
-        // size, exactly like libopus's opus_packet_pad.
-        let sub_3_bytes_per_frame =
-            (self.rate as i64) < 3 * frame_rate as i64 * 8;
-        let tiny_long_frame =
-            frame_rate < 50
-                && (n_bytes * (frame_rate as usize) < 300 || self.rate < 2400);
-        if n_bytes < 3 || sub_3_bytes_per_frame || tiny_long_frame {
-            let mut toc_mode = mode;
-            let mut packet_code = 0u8;
-            let mut num_multiframes = 0u8;
-            let mut frame_rate_adj = frame_rate;
-            if frame_rate > 100 {
-                toc_mode = OpusMode::CeltOnly;
-            }
-            // 40 ms -> 2 x 20 ms in CELT/hybrid mode.
-            if frame_rate == 25 && toc_mode != OpusMode::SilkOnly {
-                frame_rate_adj = 50;
-                packet_code = 1;
-            }
-            // >= 60 ms frames: 1 x 60 ms, or 2 x 40 ms / 2 x 60 ms multiframes.
-            if frame_rate <= 16 {
-                if n_bytes == 1 || (toc_mode == OpusMode::SilkOnly && frame_rate != 10) {
-                    toc_mode = OpusMode::SilkOnly;
-                    packet_code = if frame_rate <= 12 { 1 } else { 0 };
-                    frame_rate_adj = if frame_rate == 12 { 25 } else { 16 };
-                } else {
-                    num_multiframes = (50 / frame_rate) as u8;
-                    frame_rate_adj = 50;
-                    packet_code = 3;
-                }
-            }
-            let mut plc_bw = frame_bandwidth;
-            if toc_mode == OpusMode::SilkOnly && bandwidth_fec_index(plc_bw) > 2 {
-                // SilkOnly is wideband at most (C: bw > OPUS_BANDWIDTH_WIDEBAND).
-                plc_bw = Bandwidth::Wideband;
-            }
-            output[0] = gen_toc(toc_mode, frame_rate_adj, plc_bw, coded_channels) | packet_code;
-            let mut ret = if packet_code <= 1 { 1 } else { 2 };
-            if packet_code == 3 {
-                output[1] = num_multiframes;
-            }
-            if self.use_cbr {
-                let target_total = n_bytes.min(output.len());
-                if target_total >= 2 {
-                    // opus_packet_pad of the TOC-only packet: code 3 with
-                    // `m` empty frames and zero padding.
-                    let m: usize = if packet_code == 3 {
-                        num_multiframes as usize
-                    } else if packet_code == 1 {
-                        2
-                    } else {
-                        1
-                    };
-                    output[0] = (output[0] & 0xFC) | 0x03;
-                    // CBR, m frames, and the padding flag if there is any
-                    // padding (two bytes have none).
-                    output[1] = m as u8;
-                    if target_total > 2 {
-                        output[1] |= 0x40;
-                        let pad_amount = target_total - 2;
-                        let nb_255s = (pad_amount - 1) / 255;
-                        let mut ptr = 2;
-                        for _ in 0..nb_255s {
-                            output[ptr] = 255;
-                            ptr += 1;
-                        }
-                        output[ptr] = (pad_amount - 255 * nb_255s - 1) as u8;
-                        ptr += 1;
-                        for b in &mut output[ptr..target_total] {
-                            *b = 0;
-                        }
-                    }
-                    ret = target_total;
-                }
-            }
-            // C leaves st->prev_mode untouched on this path.
-            return Ok(ret);
-        }
 
         let init_rc_size = n_bytes - 1;
         self.rc.reset_for_encode(init_rc_size as u32);

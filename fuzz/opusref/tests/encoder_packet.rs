@@ -166,3 +166,45 @@ fn initial_bandwidth_is_fullband() {
         }
     }
 }
+
+/// A budget too small to code anything gives a ToC-only packet in the mode,
+/// bandwidth and channels of the packet before: here the initial Hybrid
+/// fullband, then SILK wideband, then CELT.
+#[test]
+fn toc_only_packets_keep_the_previous_config() {
+    let mut p = Pair::new(16000, 1, Application::Voip);
+    p.bitrate(1000);
+    p.check(2, 320, 1500, toc_len);
+    p.bitrate(16000);
+    p.check(4, 320, 1500, toc);
+    p.check(2, 320, 2, toc_len);
+    p.bitrate(64000);
+    p.ctl(c::SET_SIGNAL, 3002);
+    p.rs.set_signal(opus_rs::Signal::Music);
+    p.check(4, 320, 1500, toc);
+    p.check(2, 320, 2, toc_len);
+}
+
+/// A 1-byte buffer takes a ToC-only packet, except at 100 ms.
+#[test]
+fn one_byte_buffers_take_a_toc_only_packet() {
+    for ms in [10, 20, 40, 60, 80, 100, 120] {
+        let mut p = Pair::new(48000, 2, Application::Audio);
+        p.check(2, 48 * ms, 1, toc_len);
+    }
+}
+
+/// The starved-budget test sees the whole packet: 40 ms at 2000 b/s is a
+/// ToC-only packet of two empty frames.
+#[test]
+fn starved_multiframe_packets_are_toc_only() {
+    for app in [Application::Audio, Application::RestrictedLowDelay] {
+        for (ms, bitrate, budget) in [(40, 2000, 1500), (40, 32000, 11), (60, 2000, 1500), (120, 2300, 1500)] {
+            let mut p = Pair::new(48000, 1, app);
+            p.bitrate(bitrate);
+            p.check(3, 48 * ms, budget, toc_len);
+            p.cbr();
+            p.check(3, 48 * ms, budget, toc_len);
+        }
+    }
+}
