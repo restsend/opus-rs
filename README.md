@@ -75,6 +75,31 @@ The public API (`OpusEncoder`/`OpusDecoder` with `encode`/`decode` writing into 
 
 > Runtime dependency footprint: `std` build → **0 deps**; `no_std` build → **1 dep** (`libm`, pure Rust).
 
+### Neural network features
+
+The neural network features of libopus 1.6.1 are ported to safe Rust and
+off by default, as in libopus. They follow its generic C kernels
+operation for operation and are tested bit for bit against a libopus
+built with them (`fuzz/opusref`, feature `dnn`).
+
+| Feature | libopus option | What it adds |
+|---------|----------------|--------------|
+| `dnn` | (the shared sources) | Layer kernels, weight blobs, the built-in 1.6.1 models, LPCNet features, PitchDNN, FARGAN. No codec change alone. |
+| `deep-plc` | `--enable-deep-plc` | Deep packet loss concealment at decoder complexity 5 and above (`OpusDecoder::set_complexity`). |
+| `osce` | `--enable-osce` | LACE (complexity 6) and NoLACE (7+) SILK enhancement, and the BBWENet bandwidth extension (`OpusDecoder::set_osce_bwe`, complexity 4+). Turns on `deep-plc`, as the configure option does. |
+| `dred` | `--enable-dred` | Deep redundancy: `OpusEncoder::set_dred_duration`, the DRED packet extension, `OpusDredDecoder` and `OpusDecoder::dred_decode[_float]`. Turns on `deep-plc`. |
+
+The weights (`dnn-weights/`, about 4.2 MB, SHA-256 in
+`dnn-weights/SHA256SUMS`) are embedded and read in place, so the features
+need no allocator and build without `std` (with `libm`). Their states make
+the codec larger: without `heap`, `OpusDecoder` grows from about 90 KB to
+about 280 KB and `OpusEncoder` from about 320 KB to about 400 KB with
+`deep-plc`, `osce` and `dred`, and setting the decoder up builds the deep
+PLC state (about 65 KB) on the stack. As in libopus, compiling `deep-plc` or `osce` changes
+SILK output at every complexity in small ways (no fade-in after a 16 kHz
+loss; a clamp to ±32767 for 20 ms 16 kHz frames); the affected comparisons
+with a libopus without these options are ignored under the features.
+
 ### Notes for `no_std` users
 
 - **Large structs:** without `heap`, every working buffer is inline, so
