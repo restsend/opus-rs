@@ -3,6 +3,7 @@
 //! `OpusDecoder`; this module just demuxes and re-routes, mirroring
 //! libopus's `opus_multistream_decoder.c` (a wrapper, not a codec change).
 
+use crate::decode_int::IntSample;
 use crate::{OpusDecoder, frame_samples_from_toc, opus_packet_parse, parse_frame_size};
 
 /// `channel_mapping[]` sentinel: output silence on this channel.
@@ -241,7 +242,7 @@ impl MultistreamDecoder {
         frame_size: usize,
         out: &mut [f32],
     ) -> Result<usize, &'static str> {
-        self.decode_native(packet, frame_size, out, false)
+        self.decode_native(packet, frame_size, out, false, false)
     }
 
     /// Rebuilds a lost packet from the in-band FEC of the packet after it,
@@ -253,7 +254,7 @@ impl MultistreamDecoder {
         frame_size: usize,
         out: &mut [f32],
     ) -> Result<usize, &'static str> {
-        self.decode_native(packet, frame_size, out, true)
+        self.decode_native(packet, frame_size, out, true, false)
     }
 
     /// The XOR of every stream decoder's final range (libopus
@@ -262,13 +263,116 @@ impl MultistreamDecoder {
         self.decoders.iter().fold(0, |r, d| r ^ d.final_range())
     }
 
-    /// libopus `opus_multistream_decode_native`.
+    /// Decodes into interleaved 16-bit PCM, soft clipped per stream
+    /// (libopus `opus_multistream_decode` of the float build).
+    pub fn decode_i16(&mut self, packet: &[u8], frame_size: usize, out: &mut [i16]) -> Result<usize, &'static str> {
+        self.decode_int(packet, frame_size, out, false, true)
+    }
+
+    /// [`Self::decode_i16`] with in-band FEC.
+    pub fn decode_fec_i16(&mut self, packet: &[u8], frame_size: usize, out: &mut [i16]) -> Result<usize, &'static str> {
+        self.decode_int(packet, frame_size, out, true, true)
+    }
+
+    /// Decodes into interleaved 24-bit PCM in 32-bit integers (libopus
+    /// `opus_multistream_decode24`).
+    pub fn decode24(&mut self, packet: &[u8], frame_size: usize, out: &mut [i32]) -> Result<usize, &'static str> {
+        self.decode_int(packet, frame_size, out, false, false)
+    }
+
+    /// [`Self::decode24`] with in-band FEC.
+    pub fn decode_fec24(&mut self, packet: &[u8], frame_size: usize, out: &mut [i32]) -> Result<usize, &'static str> {
+        self.decode_int(packet, frame_size, out, true, false)
+    }
+
+    fn decode_int<T: IntSample>(
+        &mut self,
+        packet: &[u8],
+        frame_size: usize,
+        out: &mut [T],
+        decode_fec: bool,
+        soft_clip: bool,
+    ) -> Result<usize, &'static str> {
+        let mut buf = vec![0.0f32; out.len()];
+        let n = self.decode_native(packet, frame_size, &mut buf, decode_fec, soft_clip)?;
+        let len = n * self.table.channels as usize;
+        for (o, &x) in out.iter_mut().zip(&buf[..len]) {
+            *o = T::from_float(x);
+        }
+        Ok(n)
+    }
+
+    /// Restarts every stream (libopus `OPUS_RESET_STATE`).
+    pub fn reset(&mut self) {
+        self.decoders.iter_mut().for_each(OpusDecoder::reset);
+    }
+
+    /// Sets the output gain of every stream (libopus `OPUS_SET_GAIN`).
+    pub fn set_gain(&mut self, gain: i32) -> Result<(), &'static str> {
+        self.decoders.iter_mut().try_for_each(|d| d.set_gain(gain))
+    }
+
+    /// Sets the complexity of every stream (libopus
+    /// `OPUS_SET_COMPLEXITY`).
+    pub fn set_complexity(&mut self, complexity: i32) -> Result<(), &'static str> {
+        self.decoders.iter_mut().try_for_each(|d| d.set_complexity(complexity))
+    }
+
+    /// Sets phase inversion of every stream (libopus
+    /// `OPUS_SET_PHASE_INVERSION_DISABLED`).
+    pub fn set_phase_inversion_disabled(&mut self, disabled: bool) {
+        self.decoders
+            .iter_mut()
+            .for_each(|d| d.set_phase_inversion_disabled(disabled));
+    }
+
+    /// The gain. This and the queries below report the first stream's
+    /// value, as libopus's multistream queries do.
+    pub fn gain(&self) -> i32 {
+        self.decoders[0].gain()
+    }
+
+    /// The complexity (libopus `OPUS_GET_COMPLEXITY`).
+    pub fn complexity(&self) -> i32 {
+        self.decoders[0].complexity()
+    }
+
+    /// Whether phase inversion is disabled.
+    pub fn phase_inversion_disabled(&self) -> bool {
+        self.decoders[0].phase_inversion_disabled()
+    }
+
+    /// The bandwidth of the last packet.
+    pub fn bandwidth(&self) -> Option<crate::Bandwidth> {
+        self.decoders[0].bandwidth()
+    }
+
+    /// The sampling rate.
+    pub fn sample_rate(&self) -> i32 {
+        self.decoders[0].sample_rate()
+    }
+
+    /// The duration of the last packet.
+    pub fn last_packet_duration(&self) -> usize {
+        self.decoders[0].last_packet_duration()
+    }
+
+    /// The decoder of stream `stream` (libopus
+    /// `OPUS_MULTISTREAM_GET_DECODER_STATE`), `error::BAD_ARG` past the
+    /// last stream.
+    pub fn decoder_state(&mut self, stream: usize) -> Result<&mut OpusDecoder, &'static str> {
+        self.decoders.get_mut(stream).ok_or(crate::error::BAD_ARG)
+    }
+
+    /// libopus `opus_multistream_decode_native`, soft clipping each stream
+    /// with `soft_clip`.
     fn decode_native(
         &mut self,
         packet: &[u8],
         frame_size: usize,
         out: &mut [f32],
         decode_fec: bool,
+        soft_clip: bool,
     ) -> Result<usize, &'static str> {
         // libopus limits frame_size to 120 ms.
         let frame_size = frame_size.min(self.decoders[0].sampling_rate as usize / 25 * 3);
@@ -316,11 +420,11 @@ impl MultistreamDecoder {
             // strips the injected Appendix B length field(s)). An empty
             // packet is a loss: every stream conceals frame_size samples.
             let n = if packet.is_empty() || i + 1 == num_streams {
-                decoder.decode_native(rest, frame_size, &mut self.stream_scratch, decode_fec, false)?
+                decoder.decode_native(rest, frame_size, &mut self.stream_scratch, decode_fec, soft_clip)?
             } else {
                 let (pkt, consumed) = split_self_delimited(rest, &mut self.packet_scratch)?;
                 let n =
-                    decoder.decode_native(pkt, frame_size, &mut self.stream_scratch, decode_fec, false)?;
+                    decoder.decode_native(pkt, frame_size, &mut self.stream_scratch, decode_fec, soft_clip)?;
                 rest = &rest[consumed..];
                 n
             };

@@ -134,7 +134,7 @@ pub enum Format {
 
 impl Format {
     /// One step of the integer output, as a float.
-    fn step(self) -> f32 {
+    pub fn step(self) -> f32 {
         match self {
             Format::F32 => 0.0,
             Format::I16 => 1.0 / 32768.0,

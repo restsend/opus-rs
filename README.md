@@ -76,6 +76,9 @@ a libopus function return libopus's errors as the constants of
 | `OPUS_SET_IGNORE_EXTENSIONS`, `OPUS_GET_IGNORE_EXTENSIONS` | `OpusDecoder::set_ignore_extensions`, `ignore_extensions` |
 | `opus_encode`, `opus_encode_float`, `opus_encode24` | `OpusEncoder::encode_i16`, `encode`, `encode24` |
 | `opus_decode`, `opus_decode24` | `OpusDecoder::decode_i16`, `decode_fec_i16`, `decode24`, `decode_fec24` |
+| `opus_multistream_decoder_create`, `opus_multistream_decode_float` | `multistream::MultistreamDecoder::new`, `decode`, `decode_fec` |
+| `opus_multistream_decode`, `opus_multistream_decode24` | `MultistreamDecoder::decode_i16`, `decode_fec_i16`, `decode24`, `decode_fec24` |
+| `opus_multistream_decoder_ctl` | `MultistreamDecoder::reset`, `set_gain`, `set_complexity`, `set_phase_inversion_disabled`, the queries (`gain`, `complexity`, `phase_inversion_disabled`, `bandwidth`, `sample_rate`, `last_packet_duration`, `final_range`) and `decoder_state` (`OPUS_MULTISTREAM_GET_DECODER_STATE`) |
 | `opus_packet_parse` | `packet::parse` |
 | `opus_packet_get_bandwidth`, `opus_packet_get_nb_channels`, `opus_packet_get_samples_per_frame` | `packet::bandwidth`, `nb_channels`, `samples_per_frame` (of the ToC byte) |
 | `opus_packet_get_nb_frames`, `opus_packet_get_nb_samples`, `opus_packet_has_lbrr` | `packet::nb_frames`, `nb_samples`, `has_lbrr` |

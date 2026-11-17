@@ -241,3 +241,90 @@ fn fec_recovers_every_stream() {
         assert_same(&mut d, p, 960);
     }
 }
+
+/// libopus-encoded multistream packets of a 5.1-like layout.
+fn encoded(ch: usize, streams: i32, coupled: i32, count: usize) -> Vec<Vec<u8>> {
+    let mapping: Vec<u8> = (0..ch as u8).collect();
+    let mut err = 0;
+    let enc = unsafe {
+        opus_multistream_encoder_create(48000, ch as i32, streams, coupled, mapping.as_ptr(), 2049, &mut err)
+    };
+    assert!(!enc.is_null());
+    unsafe { opus_multistream_encoder_ctl(enc, SET_BITRATE, 48000 * streams) };
+    let out = (0..count)
+        .map(|f| {
+            let pcm: Vec<f32> = (0..960 * ch)
+                .map(|i| ((f * 960 + i / ch) as f32 * 0.01 * (1 + i % ch) as f32).sin() * 0.9)
+                .collect();
+            let mut p = vec![0u8; 4000];
+            let n = unsafe { opus_multistream_encode_float(enc, pcm.as_ptr(), 960, p.as_mut_ptr(), 4000) };
+            p.truncate(n as usize);
+            p
+        })
+        .collect();
+    unsafe { opus_multistream_encoder_destroy(enc) };
+    out
+}
+
+/// The controls, queries, reset and integer outputs of the multistream
+/// decoder against libopus's: gain, complexity and phase inversion reach
+/// every stream and survive a reset, and the queries report the first
+/// stream.
+#[test]
+fn controls_queries_and_integer_output_match_libopus() {
+    let mut d = Pair::new(4, 2, &[0, 1, 2, 3, 4, 5]);
+    let pkts = encoded(6, 4, 2, 12);
+    let get = |d: &Pair, req| {
+        let mut v = 0i32;
+        unsafe { opus_multistream_decoder_ctl(d.c, req, &mut v as *mut i32) };
+        v
+    };
+    let code = |r: Result<(), &str>| r.map_or_else(|e| opus_rs::error::code(e).unwrap(), |()| 0);
+    assert_eq!(code(d.rs.set_gain(40000)), unsafe { opus_multistream_decoder_ctl(d.c, SET_GAIN, 40000) });
+    assert_eq!(code(d.rs.set_gain(-700)), unsafe { opus_multistream_decoder_ctl(d.c, SET_GAIN, -700) });
+    assert_eq!(code(d.rs.set_complexity(6)), unsafe { opus_multistream_decoder_ctl(d.c, SET_COMPLEXITY, 6) });
+    d.rs.set_phase_inversion_disabled(true);
+    unsafe { opus_multistream_decoder_ctl(d.c, SET_PHASE_INVERSION_DISABLED, 1) };
+    for (f, p) in pkts.iter().enumerate() {
+        if f == 6 {
+            d.rs.reset();
+            unsafe { opus_multistream_decoder_ctl(d.c, RESET_STATE) };
+        }
+        // 16-bit and 24-bit output in turn, as integers within one step
+        // of the float tolerance.
+        let (a, b, x, y): (_, _, Vec<i64>, Vec<i64>) = if f % 2 == 0 {
+            let (mut x, mut y) = (vec![0i16; 960 * 6], vec![0i16; 960 * 6]);
+            let a = d.rs.decode_i16(p, 960, &mut x);
+            let b = unsafe { opus_multistream_decode(d.c, p.as_ptr(), p.len() as i32, y.as_mut_ptr(), 960, 0) };
+            (a, b, x.iter().map(|&v| v as i64).collect(), y.iter().map(|&v| v as i64).collect())
+        } else {
+            let (mut x, mut y) = (vec![0i32; 960 * 6], vec![0i32; 960 * 6]);
+            let a = d.rs.decode24(p, 960, &mut x);
+            let b = unsafe { opus_multistream_decode24(d.c, p.as_ptr(), p.len() as i32, y.as_mut_ptr(), 960, 0) };
+            (a, b, x.iter().map(|&v| v as i64 / 256).collect(), y.iter().map(|&v| v as i64 / 256).collect())
+        };
+        assert_eq!(a, Ok(b as usize), "frame {f}");
+        let worst = x.iter().zip(&y).map(|(a, b)| (a - b).abs()).max().unwrap();
+        assert!(worst <= 1, "frame {f}: {worst}");
+        assert_eq!(d.rs.final_range(), d.final_range(), "frame {f}");
+        let got = (
+            d.rs.gain(),
+            d.rs.complexity(),
+            d.rs.phase_inversion_disabled() as i32,
+            d.rs.bandwidth().map_or(0, |b| b as i32),
+            d.rs.sample_rate(),
+            d.rs.last_packet_duration() as i32,
+        );
+        let want = (
+            get(&d, GET_GAIN),
+            get(&d, GET_COMPLEXITY),
+            get(&d, GET_PHASE_INVERSION_DISABLED),
+            get(&d, GET_BANDWIDTH),
+            get(&d, GET_SAMPLE_RATE),
+            get(&d, GET_LAST_PACKET_DURATION),
+        );
+        assert_eq!(got, want, "frame {f}");
+    }
+    assert!(d.rs.decoder_state(3).is_ok());
+    assert_eq!(d.rs.decoder_state(4).err(), Some(opus_rs::error::BAD_ARG));
+}
