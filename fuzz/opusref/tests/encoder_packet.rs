@@ -180,6 +180,17 @@ fn bitrate_is_capped_at_750_kbps_per_channel() {
     p.check(4, 120, 1500, toc_len);
 }
 
+/// A CBR packet takes its size, min((bits + 4)/8, buffer), also above the
+/// 1276 bytes a frame codes: libopus pads it (opus_encoder.c:2602,
+/// 2646-2653), here from 1276 to 1500 bytes.
+#[test]
+fn cbr_packets_pad_beyond_1276_bytes() {
+    let mut p = Pair::new(48000, 1, Application::RestrictedLowDelay);
+    p.bitrate(600_000);
+    p.cbr();
+    p.check(3, 960, 1500, toc_len);
+}
+
 /// OPUS_BITRATE_MAX codes as many bits as the buffer holds.
 #[test]
 fn bitrate_max_fills_the_buffer() {
