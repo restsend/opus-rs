@@ -659,7 +659,7 @@ fn lpc_inverse_pred_gain_qa(a_qa_in: &mut [i32], order: usize) -> i32 {
             };
 
             let tmp64_1 = silk_rshift_round64(
-                silk_smull(tmp1.wrapping_sub(mul_q(tmp2, rc_q31, 31)), rc_mult2),
+                silk_smull(tmp1.saturating_sub(mul_q(tmp2, rc_q31, 31)), rc_mult2),
                 mult2q,
             );
             if tmp64_1 > i32::MAX as i64 || tmp64_1 < i32::MIN as i64 {
@@ -668,7 +668,7 @@ fn lpc_inverse_pred_gain_qa(a_qa_in: &mut [i32], order: usize) -> i32 {
             a_qa_in[n] = tmp64_1 as i32;
 
             let tmp64_2 = silk_rshift_round64(
-                silk_smull(tmp2.wrapping_sub(mul_q(tmp1, rc_q31, 31)), rc_mult2),
+                silk_smull(tmp2.saturating_sub(mul_q(tmp1, rc_q31, 31)), rc_mult2),
                 mult2q,
             );
             if tmp64_2 > i32::MAX as i64 || tmp64_2 < i32::MIN as i64 {
