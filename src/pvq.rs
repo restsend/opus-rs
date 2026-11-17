@@ -230,103 +230,105 @@ pub fn icwrs(n: u32, _k: u32, y: &[i32]) -> u32 {
     i
 }
 
+/// Whether `U(n', k')` for every `n' <= n`, `k' <= k` is a plain lookup in
+/// `CELT_PVQ_U_DATA` (`CELT_PVQ_U_CMAX` does not grow with the row).
 #[inline(always)]
-pub fn cwrsi(n: u32, k: u32, mut i: u32, y: &mut [i32]) {
-    debug_assert!(k > 0, "cwrsi: k must be > 0");
+fn in_table(n: u32, k: u32) -> bool {
+    let r = n.min(k) as usize;
+    r < CELT_PVQ_U_ROW.len() && n.max(k) as usize <= CELT_PVQ_U_CMAX[r]
+}
 
+/// The pulses of codeword `i` of `V(n, k)` (cwrs.c cwrsi).
+#[inline(always)]
+pub fn cwrsi(n: u32, k: u32, i: u32, y: &mut [i32]) {
+    debug_assert!(k > 0, "cwrsi: k must be > 0");
     if n == 1 {
         let s = -(i as i32);
         y[0] = ((k as i32) + s) ^ s;
-        return;
+    } else if in_table(n, k + 1) {
+        // `U(r, c)` with `r <= c`, as libopus's `CELT_PVQ_U_ROW[r][c]`.
+        cwrsi_rows(n, k, i, y, |r, c| {
+            CELT_PVQ_U_DATA[CELT_PVQ_U_ROW[r as usize] as usize + c as usize]
+        });
+    } else {
+        cwrsi_rows(n, k, i, y, celt_pvq_u_lookup);
     }
+}
 
-    let mut curr_n = n;
+/// Lowers `k` to the largest value below it with `U(k, n) <= i` and returns
+/// that `U(k, n)` (`do p=CELT_PVQ_U_ROW[--_k][_n]; while(p>_i);`).
+#[inline(always)]
+fn down(k: &mut u32, n: u32, i: u32, u: &impl Fn(u32, u32) -> u32) -> u32 {
+    // U(0, n) = 0 ends the search at k = 0.
+    while *k > 0 {
+        *k -= 1;
+        let p = u(*k, n);
+        if p <= i {
+            return p;
+        }
+    }
+    0
+}
 
-    let mut curr_k = k as i32;
-    let mut j = 0usize;
-
-    while curr_n > 2 {
-        if curr_k >= curr_n as i32 {
-            let p_kp1 = celt_pvq_u_lookup(curr_n, (curr_k + 1) as u32);
-            let s: i32 = if i >= p_kp1 {
-                i -= p_kp1;
-                -1
+/// cwrsi for `n >= 2`, with `u(r, c)` = `U(r, c)` for `r <= c`.
+#[inline(always)]
+fn cwrsi_rows(mut n: u32, mut k: u32, mut i: u32, y: &mut [i32], u: impl Fn(u32, u32) -> u32) {
+    let mut j = 0;
+    while n > 2 {
+        if k >= n {
+            // Lots of pulses: are the pulses in this dimension negative?
+            let p = u(n, k + 1);
+            let s = -((i >= p) as i32);
+            i -= p & s as u32;
+            // Count how many pulses were placed in this dimension.
+            let k0 = k;
+            let mut p = u(n, n);
+            if p > i {
+                k = n;
+                p = down(&mut k, n, i, &u);
             } else {
-                0
-            };
-            let k0 = curr_k;
-            let q = celt_pvq_u_lookup(curr_n, curr_n);
-            let mut p;
-            if q > i {
-                curr_k = curr_n as i32;
                 loop {
-                    curr_k -= 1;
-                    p = celt_pvq_u_lookup(curr_n, curr_k.max(0) as u32);
-                    if p <= i || curr_k <= 0 {
+                    p = u(n, k);
+                    if p <= i {
                         break;
                     }
-                }
-            } else {
-                p = celt_pvq_u_lookup(curr_n, curr_k as u32);
-                while p > i && curr_k > 0 {
-                    curr_k -= 1;
-                    p = celt_pvq_u_lookup(curr_n, curr_k as u32);
+                    k -= 1;
                 }
             }
             i -= p;
-            let val = k0 - curr_k;
-            y[j] = (val + s) ^ s;
+            y[j] = (k0 as i32 - k as i32 + s) ^ s;
         } else {
-            let p_k = celt_pvq_u_lookup(curr_k as u32, curr_n);
-            let p_kp1 = celt_pvq_u_lookup((curr_k + 1) as u32, curr_n);
-            if p_k <= i && i < p_kp1 {
-                i -= p_k;
+            // Lots of dimensions: are there any pulses in this dimension?
+            let p = u(k, n);
+            let q = u(k + 1, n);
+            if p <= i && i < q {
+                i -= p;
                 y[j] = 0;
-                j += 1;
-                curr_n -= 1;
-                continue;
-            }
-            let s: i32 = if i >= p_kp1 {
-                i -= p_kp1;
-                -1
             } else {
-                0
-            };
-            let k0 = curr_k;
-
-            let mut p;
-            loop {
-                curr_k -= 1;
-                p = celt_pvq_u_lookup(curr_k.max(0) as u32, curr_n);
-                if p <= i || curr_k <= 0 {
-                    break;
-                }
+                let s = -((i >= q) as i32);
+                i -= q & s as u32;
+                let k0 = k;
+                let p = down(&mut k, n, i, &u);
+                i -= p;
+                y[j] = (k0 as i32 - k as i32 + s) ^ s;
             }
-            i -= p;
-            let val = k0 - curr_k;
-            y[j] = (val + s) ^ s;
         }
         j += 1;
-        curr_n -= 1;
+        n -= 1;
     }
-
-    let p2 = (2u32).wrapping_mul(curr_k as u32).wrapping_add(1);
-    let s2: i32 = if i >= p2 {
-        i -= p2;
-        -1
-    } else {
-        0
-    };
-    let k0 = curr_k;
-    curr_k = ((i + 1) >> 1) as i32;
-    if curr_k > 0 {
-        i -= 2 * curr_k as u32 - 1;
+    // n == 2
+    let p = k.wrapping_mul(2).wrapping_add(1);
+    let s = -((i >= p) as i32);
+    i -= p & s as u32;
+    let k0 = k;
+    k = (i + 1) >> 1;
+    if k > 0 {
+        i -= 2 * k - 1;
     }
-    y[j] = ((k0 - curr_k) + s2) ^ s2;
-    j += 1;
-
-    let s1 = -(i as i32);
-    y[j] = (curr_k + s1) ^ s1;
+    y[j] = (k0 as i32 - k as i32 + s) ^ s;
+    // n == 1
+    let s = -(i as i32);
+    y[j + 1] = (k as i32 + s) ^ s;
 }
 
 #[inline(always)]
