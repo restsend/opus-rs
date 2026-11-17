@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Writes src/dnn/models/*.rs from the model data files of libopus 1.6.1.
 
-Usage: python3 -I scripts/gen_dnn_models.py <opus-1.6.1 source dir> <out dir>
+Usage: python3 -I scripts/gen_dnn_models.py <libopus source dir with model data> <out dir>
 
 Each model module gets the constants of its `dnn/<model>_data.h`, the
 layer struct and an `init` that does what the model's `init_*` function in

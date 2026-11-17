@@ -1,4 +1,4 @@
-//! The neural network code of libopus 1.6.1 (its `dnn/` folder), in safe
+//! The neural network code of libopus (its `dnn/` folder), in safe
 //! Rust.
 //!
 //! - `vec`, `nnet`: the generic C kernels and layer functions;

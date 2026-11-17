@@ -1,6 +1,6 @@
 //! Differential decoder fuzzer: sequences of API calls (decode, decode_fec,
 //! loss concealment, reset) with arbitrary packets and frame sizes, run on
-//! opus-rs and on the scalar libopus 1.6.1 reference.
+//! opus-rs and on the scalar libopus reference.
 //!
 //! Oracles, after every call:
 //! - `result`: same success/error and sample count as libopus.

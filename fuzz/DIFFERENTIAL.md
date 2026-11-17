@@ -1,14 +1,15 @@
 # Differential fuzzing against libopus
 
-These targets compare opus-rs with libopus 1.6.1 instead of only looking for
+These targets compare opus-rs with libopus (main at f1afc4222a) instead of only looking for
 crashes. The reference is built from source by `fuzz/opusref` as a float,
 scalar-C library (no intrinsics, no runtime CPU dispatch, `-ffp-contract=off`),
 so its results do not depend on the host CPU.
 
 ## Setup
 
-- libopus 1.6.1 sources in `opus-1.6.1/` at the repository root (gitignored;
-  the existing interop tests use the same place), or `OPUSREF_SRC=<dir>`.
+- The libopus sources with their neural model data in `libopus/` at the
+  repository root (gitignored; `scripts/fetch-libopus.sh` fetches the pinned
+  revision), or `OPUSREF_SRC=<dir>`.
 - Nightly Rust and `cargo-fuzz`.
 - opus-rs's `fuzzing` feature: it exposes `comb_filter` and a runtime switch
   for the x86 AVX/FMA kernels, so each target runs opus-rs with SIMD off
@@ -37,8 +38,8 @@ summary; it exits non-zero if a step fails:
 `scripts/test-all.sh --fuzz` also builds the targets with `cargo fuzz build`
 (nightly cargo and cargo-fuzz on `PATH`) and runs `regressions/check.sh`.
 The script needs stable cargo, a C and C++ compiler, pkg-config, cmake,
-libopus (for the interop dev-dependencies) and the libopus 1.6.1 sources
-(`OPUSREF_SRC` or `opus-1.6.1/`); the dev shell provides them.
+libopus (for the interop dev-dependencies) and the pinned libopus sources
+(`OPUSREF_SRC` or `libopus/`); the dev shell provides them.
 
 ## Regression reproducers
 
@@ -91,7 +92,7 @@ energies, allocation, ...) under `OFZ_DUMP=1`: opus-rs through `dumpf!`/
 libopus instrumented by `opusref/dump/instrument.py`:
 
 ```sh
-opusref/dump/instrument.py ../opus-1.6.1 /tmp/ref-dump
+opusref/dump/instrument.py ../libopus /tmp/ref-dump
 cd opusref && OPUSREF_SRC=/tmp/ref-dump CARGO_TARGET_DIR=<separate dir> \
   cargo build --release --example encdiff
 OFZ_DUMP=1 <dir>/release/examples/encdiff 1 20 64 0 voice 3 2>dump.txt

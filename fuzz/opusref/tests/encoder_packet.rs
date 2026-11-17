@@ -1,4 +1,4 @@
-//! Packet-level decisions of the Opus encoder against libopus 1.6.1
+//! Packet-level decisions of the Opus encoder against libopus
 //! (opus_encode_native): the packet's bitrate and budget, the ToC-only
 //! packets of starved budgets, the mono/stereo decision and multiframe
 //! packets. Each test codes the same audio with the same settings in both

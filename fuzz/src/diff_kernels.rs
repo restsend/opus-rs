@@ -1,5 +1,5 @@
 //! Differential kernel fuzzer: opus-rs DSP functions against the same
-//! functions in the scalar libopus 1.6.1 reference, on arbitrary inputs
+//! functions in the scalar libopus reference, on arbitrary inputs
 //! within each function's documented domain.
 //!
 //! Each kernel runs twice in opus-rs: with the x86 AVX/FMA kernels disabled

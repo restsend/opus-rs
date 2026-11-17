@@ -1,4 +1,5 @@
-//! Builds libopus 1.6.1 (float, scalar C only) as the reference.
+//! Builds libopus (main at f1afc4222a, `scripts/fetch-libopus.sh`; float,
+//! scalar C only) as the reference.
 //! `-ffp-contract=off` and no intrinsics/RTCD, so results are reproducible
 //! and match a straightforward float port operation for operation. With the
 //! feature `fixed` it builds the fixed-point libopus (FIXED_POINT, SILK from
@@ -35,7 +36,7 @@ fn manifest_dir() -> String {
 
 fn main() {
     let src = PathBuf::from(
-        env::var("OPUSREF_SRC").unwrap_or_else(|_| format!("{}/../../opus-1.6.1", manifest_dir())),
+        env::var("OPUSREF_SRC").unwrap_or_else(|_| format!("{}/../../libopus", manifest_dir())),
     );
     println!("cargo:rerun-if-env-changed=OPUSREF_SRC");
     println!("cargo:rerun-if-changed=shim.c");
@@ -113,7 +114,7 @@ fn main() {
         .define("VAR_ARRAYS", None)
         .define("HAVE_LRINTF", None)
         .define("HAVE_LRINT", None)
-        .define("PACKAGE_VERSION", "\"1.6.1-ref\"")
+        .define("PACKAGE_VERSION", "\"f1afc4222a-ref\"")
         .opt_level(2)
         .flag("-ffp-contract=off")
         .flag("-fno-fast-math")

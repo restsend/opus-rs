@@ -1,4 +1,4 @@
-//! FFI to the reference libopus 1.6.1 build (float, scalar C).
+//! FFI to the reference libopus build (float, scalar C).
 #![allow(non_camel_case_types, clippy::missing_safety_doc)]
 use core::ffi::{c_int, c_uchar, c_void};
 

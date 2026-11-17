@@ -1,6 +1,6 @@
 //! Differential encoder fuzzer: generated signals (silence, DC, clipping,
 //! low pitch, impulses, voice-like, raw) with settings that change between
-//! segments, encoded by opus-rs and by the scalar libopus 1.6.1 reference.
+//! segments, encoded by opus-rs and by the scalar libopus reference.
 //!
 //! opus-rs runs twice: with the x86 AVX/FMA kernels off (`scalar`) and on.
 //! Oracles per frame:

@@ -1,5 +1,5 @@
 //! Shared pieces of the differential harnesses: safe wrappers around the
-//! reference libopus 1.6.1 build (`opusref`), failure reporting and the
+//! reference libopus build (`opusref`), failure reporting and the
 //! signal generators for encoder inputs.
 #![allow(dead_code)]
 

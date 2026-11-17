@@ -7,8 +7,8 @@
 #                                and runs fuzz/regressions/check.sh
 #
 # Needs: stable cargo, a C/C++ compiler, pkg-config, cmake, libopus (the
-# interop dev-dependencies), and the libopus 1.6.1 sources for fuzz/opusref:
-# OPUSREF_SRC=<dir> or opus-1.6.1/ in the repository root. The flake's dev
+# interop dev-dependencies), and the pinned libopus sources for fuzz/opusref:
+# OPUSREF_SRC=<dir> or libopus/ in the repository root (scripts/fetch-libopus.sh). The flake's dev
 # shell provides all of them: nix develop -c scripts/test-all.sh
 #
 # Steps:
@@ -26,7 +26,7 @@
 # Known failure, skipped: oracle_celt_sine_48k_mono_64k (tests/oracle_celt.rs)
 # compares with packet bytes recorded from a libopus build with SSE2/AVX2
 # kernels; opus-rs follows the scalar C code, and its packet for that input
-# is byte-identical with scalar libopus 1.6.1 (fuzz/opusref).
+# is byte-identical with scalar libopus (fuzz/opusref).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

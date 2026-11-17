@@ -2,7 +2,7 @@
 
 # opus-rs
 
-A pure-Rust implementation of the [Opus audio codec](https://opus-codec.org/) (RFC 6716), ported from the reference C implementation (libopus 1.6).
+A pure-Rust implementation of the [Opus audio codec](https://opus-codec.org/) (RFC 6716), ported from the reference C implementation, libopus. It tracks libopus main at f1afc4222a (after 1.6.1) and is tested bit for bit against it: CELT against the scalar float build, SILK against the fixed-point build ([fuzz/DIFFERENTIAL.md](fuzz/DIFFERENTIAL.md)).
 
 ## Features
 
@@ -79,7 +79,7 @@ The public API (`OpusEncoder`/`OpusDecoder` with `encode`/`decode` writing into 
 
 ### Neural network features
 
-The neural network features of libopus 1.6.1 are ported to safe Rust and
+The neural network features of libopus are ported to safe Rust and
 off by default, as in libopus. They follow its generic C kernels
 operation for operation and are tested bit for bit against a libopus
 built with them (`fuzz/opusref`, feature `dnn`).

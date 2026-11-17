@@ -8,6 +8,7 @@ license = "BSD-3-Clause"
 repository = "https://github.com/restsend/opus-rs"
 exclude = [
     "opus-1.6.1/",
+    "libopus/",
     "fuzz/",
     "fixtures/",
 ]
@@ -38,7 +39,7 @@ portable-atomic = []
 # Exposes internals to the differential fuzz harnesses in `fuzz/`.
 fuzzing = ["std"]
 
-# Neural network features of libopus 1.6.1 (its `dnn/` folder), all off by
+# Neural network features of libopus (its `dnn/` folder), all off by
 # default as in libopus. They mirror libopus's configure options:
 #
 # `dnn`: the code every neural feature needs (the layer kernels, the weight
