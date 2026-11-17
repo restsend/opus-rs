@@ -89,8 +89,6 @@ fn run(inp: Input) -> Result<(), Finding> {
     let (mut rs, rd) = match (rs, rd.is_null()) {
         (Ok(d), false) => (d, RefMsDec(rd)),
         (Err(_), true) => return Ok(()),
-        // Known: opus-rs accepts layouts libopus rejects (fuzz/DIFFERENTIAL.md).
-        (Ok(_), true) if suppressed("ms-layout") => return Ok(()),
         (r, null) => fail!(
             "layout",
             if null { "rs-accepts" } else { "rs-rejects" },

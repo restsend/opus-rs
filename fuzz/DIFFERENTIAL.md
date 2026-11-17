@@ -89,7 +89,6 @@ find the next one:
 | `toc` | The ToC comparison in `diff_encoder` |
 | `simd` | The SIMD encoder in `diff_encoder` |
 | `rate`, `icdf` | Those calls in `api_args` |
-| `ms-layout` | Layouts opus-rs accepts and libopus rejects, in `diff_multistream` |
 | `ms-empty` | Empty multistream packets, which opus-rs rejects and libopus conceals |
 
 Tolerances: `OFZ_DEC_TOL`, `OFZ_PLC_TOL`, `OFZ_SIMD_TOL`, `OFZ_KTOL`.

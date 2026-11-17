@@ -1,0 +1,2 @@
+# Lane D fix round (multistream and decoders); same columns as ../manifest.tsv.
+m1	diff_multistream	-	DIFF[layout]	MultistreamDecoder accepts a layout with zero streams

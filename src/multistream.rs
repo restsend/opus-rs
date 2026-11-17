@@ -165,8 +165,17 @@ impl MultistreamDecoder {
         if table.mapping.len() != table.channels as usize {
             return Err("channel mapping table length does not match declared channel count");
         }
-        if table.coupled_count > table.stream_count {
-            return Err("coupled_count exceeds stream_count");
+        // libopus opus_multistream_decoder_init and validate_layout.
+        let (streams, coupled) = (table.stream_count as usize, table.coupled_count as usize);
+        if table.channels < 1 || coupled > streams || streams < 1 || streams > 255 - coupled {
+            return Err("invalid stream or channel count");
+        }
+        if table
+            .mapping
+            .iter()
+            .any(|&m| m as usize >= streams + coupled && m != SILENT_CHANNEL)
+        {
+            return Err("channel mapping entry exceeds the decoded channels");
         }
 
         let mut decoders = Vec::with_capacity(table.stream_count as usize);
@@ -392,6 +401,27 @@ mod tests {
             mapping: vec![0, 1],
         };
         assert!(MultistreamDecoder::new(48000, table).is_err());
+    }
+
+    #[test]
+    fn multistream_decoder_rejects_invalid_layouts() {
+        let layout = |channels, stream_count, coupled_count, mapping: &[u8]| ChannelMappingTable {
+            channels,
+            stream_count,
+            coupled_count,
+            mapping: mapping.to_vec(),
+        };
+        for table in [
+            layout(0, 1, 0, &[]),
+            layout(1, 0, 0, &[0]),
+            layout(1, 200, 100, &[0]),
+            layout(3, 1, 1, &[0, 1, 2]),
+            layout(3, 1, 1, &[0, 1, 7]),
+        ] {
+            assert!(MultistreamDecoder::new(48000, table).is_err());
+        }
+        assert!(MultistreamDecoder::new(48000, layout(3, 1, 1, &[0, 1, 255])).is_ok());
+        assert!(MultistreamDecoder::new(48000, layout(1, 2, 1, &[2])).is_ok());
     }
 
     #[test]
