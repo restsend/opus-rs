@@ -1,6 +1,16 @@
-//! FFI to the neural network core of the reference (feature `dnn`): the
-//! layers and the generic layer functions (`dnn_shim.c`).
-use core::ffi::c_int;
+//! FFI to the neural network core of the reference (feature `dnn`):
+//! weight lists, layers and the generic layer functions (`dnn_shim.c`).
+use core::ffi::{c_char, c_int, c_void};
+
+/// `WeightArray`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WeightArray {
+    pub name: *const c_char,
+    pub kind: c_int,
+    pub size: c_int,
+    pub data: *const c_void,
+}
 
 /// `LinearLayer`.
 #[repr(C)]
@@ -46,6 +56,18 @@ impl Default for LinearLayer {
 }
 
 unsafe extern "C" {
+    pub static pitchdnn_arrays: [WeightArray; 0];
+    pub static fargan_arrays: [WeightArray; 0];
+    pub static plcmodel_arrays: [WeightArray; 0];
+    pub static rdovaeenc_arrays: [WeightArray; 0];
+    pub static rdovaedec_arrays: [WeightArray; 0];
+    pub static lacelayers_arrays: [WeightArray; 0];
+    pub static nolacelayers_arrays: [WeightArray; 0];
+    pub static bbwenetlayers_arrays: [WeightArray; 0];
+
+    pub fn ref_write_weights(list: *const WeightArray, out: *mut u8, cap: c_int) -> c_int;
+    pub fn parse_weights(list: *mut *mut WeightArray, data: *const c_void, len: c_int) -> c_int;
+
     pub fn ref_compute_linear(l: *const LinearLayer, out: *mut f32, input: *const f32);
     pub fn ref_compute_activation(out: *mut f32, input: *const f32, n: c_int, act: c_int);
     pub fn ref_compute_generic_dense(l: *const LinearLayer, out: *mut f32, input: *const f32, act: c_int);
@@ -77,6 +99,17 @@ unsafe extern "C" {
         hs: c_int,
         act: c_int,
     );
+}
+
+/// The blob that libopus's record writer makes of a compiled array list.
+pub fn blob_of(list: *const WeightArray) -> Vec<u8> {
+    unsafe {
+        let n = ref_write_weights(list, core::ptr::null_mut(), 0);
+        let mut v = vec![0u8; n as usize];
+        let m = ref_write_weights(list, v.as_mut_ptr(), n);
+        assert_eq!(m, n);
+        v
+    }
 }
 
 /// A small deterministic generator for test inputs (xorshift64*).
