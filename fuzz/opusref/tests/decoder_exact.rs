@@ -59,6 +59,14 @@ fn assert_exact(fs: i32, ch: usize, frame: usize, kbps: i32, force: i32, loss: u
 
 const CELT: i32 = 1002;
 
+/// CELT's periodic concealment synthesises through celt_iir's grouping of
+/// four outputs (celt_lpc.c:221-276).
+#[test]
+fn celt_concealment_filters_like_celt_iir() {
+    assert_exact(48000, 1, 960, 64, CELT, 7);
+    assert_exact(48000, 2, 480, 96, CELT, 5);
+}
+
 /// denormalise_bands and anti_collapse take 2^x as the float build's
 /// celt_exp2, exp() in double (mathops.h:347-350).
 #[test]
