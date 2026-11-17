@@ -463,14 +463,11 @@ pub fn silk_pitch_analysis_core(
             cc_max_new_b -= prev_lag_bias_q13;
         }
 
-        let lag_cb_ptr_curr_0: &[i8] = if nb_subfr == PE_MAX_NB_SUBFR {
-            &SILK_CB_LAGS_STAGE2[0]
-        } else {
-            &SILK_CB_LAGS_STAGE2_10_MS[0]
-        };
+        // libopus's lag range test compares the 20 ms codebook offset with
+        // MIN_LAG_8KHZ, which always holds (pitch_analysis_core_FIX.c:434).
         if cc_max_new_b > cc_max_b
             && cc0_max_new > silk_smulbb(nb_subfr as i32, search_thres2_q13)
-            && (d + lag_cb_ptr_curr_0[cb_i_max_new] as i32) >= MIN_LAG_8KHZ as i32
+            && SILK_CB_LAGS_STAGE2[0][cb_i_max_new] as i32 <= MIN_LAG_8KHZ as i32
         {
             cc_max_b = cc_max_new_b;
             cc_max = cc0_max_new;
