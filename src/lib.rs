@@ -3730,6 +3730,12 @@ impl OpusDecoder {
             enable_deep_plc: false,
             #[cfg(feature = "osce")]
             osce_method: crate::dnn::osce::OsceMethod::None,
+            #[cfg(feature = "osce")]
+            enable_osce_bwe: false,
+            #[cfg(feature = "osce")]
+            osce_extended_mode: 0,
+            #[cfg(feature = "osce")]
+            prev_osce_extended_mode: 0,
         },
         stream_channels: 0,
         bandwidth: Bandwidth::Auto,
@@ -3806,6 +3812,21 @@ impl OpusDecoder {
     /// The decoder complexity (libopus `OPUS_GET_COMPLEXITY`).
     pub fn complexity(&self) -> i32 {
         self.complexity
+    }
+
+    /// Switches the blind bandwidth extension of SILK wideband to 48 kHz
+    /// (BBWENet) on or off (libopus `OPUS_SET_OSCE_BWE`). It runs on a
+    /// 48 kHz decoder at complexity 4 and above, for SILK-only and lost
+    /// frames whose SILK layer is wideband.
+    #[cfg(feature = "osce")]
+    pub fn set_osce_bwe(&mut self, enable: bool) {
+        self.dec_control.enable_osce_bwe = enable;
+    }
+
+    /// Whether the bandwidth extension is on (libopus `OPUS_GET_OSCE_BWE`).
+    #[cfg(feature = "osce")]
+    pub fn osce_bwe(&self) -> bool {
+        self.dec_control.enable_osce_bwe
     }
 
     /// Decode one Opus packet into interleaved `f32` PCM, returning the
@@ -4099,6 +4120,25 @@ impl OpusDecoder {
                     6 => OsceMethod::Lace,
                     _ => OsceMethod::None,
                 };
+                use crate::dnn::osce::{OSCE_MODE_CELT_ONLY, OSCE_MODE_HYBRID, OSCE_MODE_SILK_BBWE, OSCE_MODE_SILK_ONLY};
+                let c = &mut self.dec_control;
+                c.osce_extended_mode = if self.complexity >= 4
+                    && c.enable_osce_bwe
+                    && self.sampling_rate == 48000
+                    && c.internal_sample_rate == 16000
+                    && (mode == OpusMode::SilkOnly || data.is_none())
+                {
+                    // Request the WB -> FB signal extension.
+                    OSCE_MODE_SILK_BBWE
+                } else if mode == OpusMode::SilkOnly {
+                    OSCE_MODE_SILK_ONLY
+                } else {
+                    OSCE_MODE_HYBRID
+                };
+                if self.prev_mode == Some(OpusMode::CeltOnly) {
+                    // The extended mode of a CELT -> SILK transition.
+                    c.prev_osce_extended_mode = OSCE_MODE_CELT_ONLY;
+                }
             }
 
             let lost_flag = if data.is_none() {
@@ -4108,7 +4148,8 @@ impl OpusDecoder {
             } else {
                 silk::decode_frame::FLAG_DECODE_NORMAL
             };
-            let ctrl = self.dec_control;
+            #[allow(unused_mut)]
+            let mut ctrl = self.dec_control;
             let pcm_ptr: &mut [f32] = if pcm_too_small { &mut pcm_silk } else { pcm };
             let mut decoded_samples = 0;
             loop {
@@ -4132,10 +4173,19 @@ impl OpusDecoder {
                         return Err("SILK decoding failed");
                     }
                 }
+                // silk_Decode's last step.
+                #[cfg(feature = "osce")]
+                if silk_frame_size > 0 {
+                    ctrl.prev_osce_extended_mode = ctrl.osce_extended_mode;
+                }
                 decoded_samples += silk_frame_size;
                 if decoded_samples >= frame_size {
                     break;
                 }
+            }
+            #[cfg(feature = "osce")]
+            {
+                self.dec_control.prev_osce_extended_mode = ctrl.prev_osce_extended_mode;
             }
             if pcm_too_small {
                 pcm[..frame_size * ch].copy_from_slice(&pcm_silk[..frame_size * ch]);
@@ -4222,7 +4272,11 @@ impl OpusDecoder {
         self.celt_dec.set_start_band(start_band);
 
         let mut celt_ok = true;
-        if mode != OpusMode::SilkOnly {
+        #[cfg(feature = "osce")]
+        let bbwe = self.dec_control.osce_extended_mode == crate::dnn::osce::OSCE_MODE_SILK_BBWE;
+        #[cfg(not(feature = "osce"))]
+        let bbwe = false;
+        if mode != OpusMode::SilkOnly && !bbwe {
             let celt_frame_size = f20.min(frame_size);
             // Make sure to discard any previous CELT state.
             if self.prev_mode.is_some_and(|prev| prev != mode) && !self.prev_redundancy {

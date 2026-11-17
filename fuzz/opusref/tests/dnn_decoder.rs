@@ -60,15 +60,24 @@ pub fn encode(s: Setup, seconds: usize, seed: u64) -> Vec<Vec<u8>> {
 /// returns the largest difference and the index of the first frame that
 /// differs.
 pub fn compare(s: Setup, packets: &[Option<Vec<u8>>], complexity: i32) -> (f32, Option<usize>) {
+    compare_bwe(s, packets, complexity, false)
+}
+
+const OPUS_SET_OSCE_BWE: i32 = 4054;
+
+/// `compare` with the bandwidth extension switched on or off.
+pub fn compare_bwe(s: Setup, packets: &[Option<Vec<u8>>], complexity: i32, bwe: bool) -> (f32, Option<usize>) {
     let frame = s.fs as usize * s.frame_ms / 1000;
     let mut rs = opus_rs::OpusDecoder::new(s.fs, s.channels).unwrap();
     rs.set_complexity(complexity).unwrap();
+    rs.set_osce_bwe(bwe);
     let mut maxd = 0f32;
     let mut first = None;
     unsafe {
         let mut err = 0;
         let dec = opus_decoder_create(s.fs, s.channels as i32, &mut err);
         opus_decoder_ctl(dec, OPUS_SET_COMPLEXITY, complexity);
+        opus_decoder_ctl(dec, OPUS_SET_OSCE_BWE, bwe as i32);
         for (k, p) in packets.iter().enumerate() {
             let mut a = vec![0f32; frame * s.channels];
             let mut b = vec![0f32; frame * s.channels];
@@ -226,3 +235,53 @@ fn osce_matches_libopus() {
         }
     }
 }
+
+/// The bandwidth extension at 48 kHz, at complexity 4 and at 7 (with
+/// NoLACE and deep PLC), with random loss bursts: SILK wideband mono and
+/// stereo (whose encoder switches to CELT) with 20 and 10 ms frames,
+/// Hybrid (whose lost frames are extended, with CELT skipped), and a
+/// stream that switches between SILK wideband, Hybrid and CELT every
+/// second (the cross-fades into and out of the extension, and libopus's
+/// skipped CELT frames after an extended SILK frame). All bit-exact with
+/// libopus, and different from the output without the extension.
+#[test]
+fn osce_bwe_matches_libopus() {
+    let silk = encode(SILK_WB_48K, 6, 9);
+    let hybrid = encode(HYBRID_48K, 6, 9);
+    let celt = encode(CELT_48K, 6, 9);
+    let switching: Vec<Vec<u8>> = (0..300)
+        .map(|k| match (k / 50) % 3 {
+            0 => silk[k].clone(),
+            1 => hybrid[k].clone(),
+            _ => celt[k].clone(),
+        })
+        .collect();
+    let streams: [(&str, Setup, Vec<Vec<u8>>); 5] = [
+        ("silk wb 48k", SILK_WB_48K, silk.clone()),
+        ("silk wb 48k 10ms", Setup { frame_ms: 10, ..SILK_WB_48K }, encode(Setup { frame_ms: 10, ..SILK_WB_48K }, 6, 9)),
+        ("silk wb 48k stereo", Setup { channels: 2, bitrate: 32000, ..SILK_WB_48K }, encode(Setup { channels: 2, bitrate: 32000, ..SILK_WB_48K }, 6, 9)),
+        ("hybrid 48k", HYBRID_48K, hybrid.clone()),
+        ("switching 48k", SILK_WB_48K, switching),
+    ];
+    for (name, s, packets) in streams {
+        let packets = with_losses(packets, 5, 12, 6, s.frame_ms);
+        for c in [4, 7] {
+            assert_eq!(compare_bwe(s, &packets, c, true), (0.0, None), "{name} complexity {c}");
+        }
+        let frame = s.fs as usize * s.frame_ms / 1000;
+        let mut on = opus_rs::OpusDecoder::new(s.fs, s.channels).unwrap();
+        let mut off = opus_rs::OpusDecoder::new(s.fs, s.channels).unwrap();
+        on.set_complexity(4).unwrap();
+        off.set_complexity(4).unwrap();
+        on.set_osce_bwe(true);
+        let mut d = 0f32;
+        for p in &packets {
+            let (mut a, mut b) = (vec![0f32; frame * s.channels], vec![0f32; frame * s.channels]);
+            on.decode(p.as_deref().unwrap_or(&[]), frame, &mut a).unwrap();
+            off.decode(p.as_deref().unwrap_or(&[]), frame, &mut b).unwrap();
+            d = a.iter().zip(&b).fold(d, |m, (x, y)| m.max((x - y).abs()));
+        }
+        assert!(d > 0.01, "{name}: the bandwidth extension did not run");
+    }
+}
+

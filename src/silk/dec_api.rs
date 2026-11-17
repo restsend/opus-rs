@@ -32,6 +32,17 @@ pub struct SilkDecControl {
     /// complexity 6, NoLACE from 7.
     #[cfg(feature = "osce")]
     pub osce_method: crate::dnn::osce::OsceMethod,
+    /// The bandwidth extension is switched on (libopus `enable_osce_bwe`,
+    /// `OPUS_SET_OSCE_BWE`).
+    #[cfg(feature = "osce")]
+    pub enable_osce_bwe: bool,
+    /// libopus `osce_extended_mode`: `OSCE_MODE_SILK_BBWE` when BBWENet
+    /// extends this frame to 48 kHz.
+    #[cfg(feature = "osce")]
+    pub osce_extended_mode: i32,
+    /// libopus `prev_osce_extended_mode`.
+    #[cfg(feature = "osce")]
+    pub prev_osce_extended_mode: i32,
 }
 
 pub struct SilkDecoder {
@@ -65,6 +76,10 @@ pub struct SilkDecoder {
     /// created by [`Self::init_states`].
     #[cfg(feature = "osce")]
     pub osce: Option<[crate::dnn::osce::Osce; 2]>,
+    /// The bandwidth extension state of each channel (libopus
+    /// `channel_state[n].osce_bwe`), which silk_reset_decoder leaves alone.
+    #[cfg(feature = "osce")]
+    pub osce_bwe: Option<[crate::dnn::osce::OsceBwe; 2]>,
 }
 
 impl Default for SilkDecoder {
@@ -99,6 +114,8 @@ impl SilkDecoder {
         osce_model: None,
         #[cfg(feature = "osce")]
         osce: None,
+        #[cfg(feature = "osce")]
+        osce_bwe: None,
     };
 
     /// libopus `silk_InitDecoder`.
@@ -122,6 +139,7 @@ impl SilkDecoder {
         {
             self.osce_model = crate::dnn::osce::OsceModel::builtin().ok();
             self.osce = Some([crate::dnn::osce::Osce::new(), crate::dnn::osce::Osce::new()]);
+            self.osce_bwe = Some([crate::dnn::osce::OsceBwe::new(), crate::dnn::osce::OsceBwe::new()]);
         }
     }
 
@@ -241,6 +259,12 @@ impl SilkDecoder {
             #[cfg(feature = "osce")]
             if let Some(states) = self.osce.as_mut() {
                 crate::dnn::osce::osce_reset(&mut states[1], crate::dnn::osce::OSCE_DEFAULT_METHOD);
+            }
+            // silk_init_decoder clears the whole channel state, the
+            // bandwidth extension's included.
+            #[cfg(feature = "osce")]
+            if let Some(bwe) = self.osce_bwe.as_mut() {
+                bwe[1] = crate::dnn::osce::OsceBwe::new();
             }
         }
 
@@ -511,11 +535,51 @@ impl SilkDecoder {
             state.resampler_state.process(out, inp, inp.len() as i32)
         };
         for n in 0..api_channels.min(ctrl.n_channels_internal as usize) {
-            ret += resample(
-                &mut self.channel_state[n],
-                resample_out,
-                &self.w_silk_buf[n][1..1 + n_dec],
-            );
+            // Resample or extend the decoded signal to the API rate
+            // (ENABLE_OSCE_BWE).
+            #[cfg(feature = "osce")]
+            if let (Some(model), Some(bwe)) = (self.osce_model.as_ref(), self.osce_bwe.as_mut()) {
+                use crate::dnn::osce::{
+                    OSCE_MODE_HYBRID, OSCE_MODE_SILK_BBWE, OSCE_MODE_SILK_ONLY, features::osce_bwe_cross_fade_10ms,
+                    osce_bwe, osce_bwe_reset,
+                };
+                let input = &self.w_silk_buf[n][1..1 + n_dec];
+                let mut resamp_buffer = [0i16; 3 * MAX_FRAME_LENGTH];
+                if ctrl.osce_extended_mode == OSCE_MODE_SILK_BBWE {
+                    if ctrl.prev_osce_extended_mode != OSCE_MODE_SILK_BBWE {
+                        osce_bwe_reset(&mut bwe[n]);
+                    }
+                    osce_bwe(model, &mut bwe[n], resample_out, input);
+                    if ctrl.prev_osce_extended_mode == OSCE_MODE_SILK_ONLY
+                        || ctrl.prev_osce_extended_mode == OSCE_MODE_HYBRID
+                    {
+                        // Cross-fade with the upsampled signal.
+                        resample(&mut self.channel_state[n], &mut resamp_buffer[..n_out], input);
+                        osce_bwe_cross_fade_10ms(resample_out, &resamp_buffer);
+                    }
+                } else {
+                    ret += resample(&mut self.channel_state[n], resample_out, input);
+                    if ctrl.prev_osce_extended_mode == OSCE_MODE_SILK_BBWE && ctrl.internal_sample_rate == 16000 {
+                        // Fade out if the internal sample rate did not change.
+                        osce_bwe(model, &mut bwe[n], &mut resamp_buffer[..n_out], input);
+                        osce_bwe_cross_fade_10ms(resample_out, &resamp_buffer);
+                    }
+                }
+            } else {
+                ret += resample(
+                    &mut self.channel_state[n],
+                    resample_out,
+                    &self.w_silk_buf[n][1..1 + n_dec],
+                );
+            }
+            #[cfg(not(feature = "osce"))]
+            {
+                ret += resample(
+                    &mut self.channel_state[n],
+                    resample_out,
+                    &self.w_silk_buf[n][1..1 + n_dec],
+                );
+            }
             // Interleave if stereo output and stereo stream.
             for (i, &v) in resample_out.iter().enumerate() {
                 samples_out[n + api_channels * i] = v as f32 * (1.0 / 32768.0);
