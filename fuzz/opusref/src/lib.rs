@@ -213,3 +213,7 @@ unsafe extern "C" {
     pub fn ref_mdct_trig() -> *const f32;
     pub fn ref_window() -> *const f32;
 }
+
+/// The neural network functions of the reference (feature `dnn`).
+#[cfg(feature = "dnn")]
+pub mod dnn;

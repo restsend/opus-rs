@@ -64,6 +64,16 @@ fn main() {
     println!("cargo:rerun-if-changed=trace.c");
     println!("cargo:rerun-if-changed=trace.h");
     println!("cargo:rerun-if-changed=silk_hook.h");
+    let dnn = env::var_os("CARGO_FEATURE_DNN").is_some();
+    if dnn {
+        b.objects(build_dnn(&src));
+        // libopus's `--enable-deep-plc --enable-dred --enable-osce`: these
+        // change the CELT, SILK and Opus layers too.
+        for d in DNN_DEFINES {
+            b.define(d, None);
+        }
+        b.include(src.join("dnn"));
+    }
     b.file("trace.c")
         .include(&src)
         .include(env!("CARGO_MANIFEST_DIR"))
@@ -84,4 +94,76 @@ fn main() {
         .flag("-fwrapv")
         .warnings(false);
     b.compile("opusref");
+}
+
+/// The configure defines of a libopus built with `--enable-deep-plc
+/// --enable-dred --enable-osce` (which also sets ENABLE_OSCE_BWE).
+/// DISABLE_DEBUG_FLOAT is libopus's default (`--enable-dnn-debug-float` is
+/// off): the int8 layers keep only their int8 weights.
+const DNN_DEFINES: [&str; 5] = [
+    "ENABLE_DEEP_PLC",
+    "ENABLE_DRED",
+    "ENABLE_OSCE",
+    "ENABLE_OSCE_BWE",
+    "DISABLE_DEBUG_FLOAT",
+];
+
+/// Compiles libopus's `dnn/` sources (DEEP_PLC, DRED and OSCE lists of
+/// lpcnet_sources.mk) with the model data. `-U__SSE2__` makes `dnn/vec.h`
+/// use its generic C kernels: x86-64 compilers always define `__SSE2__`,
+/// which would select `vec_avx.h` (SSE intrinsics, unsigned int8 inputs
+/// with `USE_SU_BIAS`). A file with a `wrap/dnn/<name>` counterpart is
+/// compiled through it, so tests can call its static functions. The
+/// objects go into the one `opusref` archive.
+fn build_dnn(src: &PathBuf) -> Vec<PathBuf> {
+    let mut d = cc::Build::new();
+    for var in ["DEEP_PLC_SOURCES", "DRED_SOURCES", "OSCE_SOURCES"] {
+        for f in list(src, "lpcnet_sources.mk", var) {
+            let name = f.file_name().unwrap().to_str().unwrap().to_owned();
+            let wrapped = PathBuf::from(format!("wrap/dnn/{name}"));
+            if wrapped.exists() {
+                d.file(wrapped);
+            } else {
+                d.file(f);
+            }
+        }
+    }
+    println!("cargo:rerun-if-changed=wrap/dnn");
+    // dnn_shim.c and one dnn_shim_<component>.c per component.
+    let mut shims: Vec<PathBuf> = fs::read_dir(env!("CARGO_MANIFEST_DIR"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| {
+            let n = p.file_name().unwrap().to_str().unwrap();
+            n.starts_with("dnn_shim") && n.ends_with(".c")
+        })
+        .collect();
+    shims.sort();
+    for s in &shims {
+        println!("cargo:rerun-if-changed={}", s.display());
+        d.file(s);
+    }
+    println!("cargo:rerun-if-changed=.");
+    for def in DNN_DEFINES {
+        d.define(def, None);
+    }
+    d
+        .include(src)
+        .include(src.join("include"))
+        .include(src.join("celt"))
+        .include(src.join("silk"))
+        .include(src.join("silk/float"))
+        .include(src.join("src"))
+        .include(src.join("dnn"))
+        .define("OPUS_BUILD", None)
+        .define("VAR_ARRAYS", None)
+        .define("HAVE_LRINTF", None)
+        .define("HAVE_LRINT", None)
+        .opt_level(2)
+        .flag("-U__SSE2__")
+        .flag("-ffp-contract=off")
+        .flag("-fno-fast-math")
+        .flag("-fwrapv")
+        .warnings(false);
+    d.compile_intermediates()
 }

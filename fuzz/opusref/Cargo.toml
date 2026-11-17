@@ -10,3 +10,9 @@ cc = "1"
 
 [dev-dependencies]
 opus-rs = { path = "../..", features = ["fuzzing"] }
+
+[features]
+# Builds the reference as libopus configured with `--enable-deep-plc
+# --enable-dred --enable-osce` (see build.rs) and opus-rs with its matching
+# features, for the neural network tests in `tests/dnn_*.rs`.
+dnn = ["opus-rs/deep-plc", "opus-rs/dred", "opus-rs/osce"]
