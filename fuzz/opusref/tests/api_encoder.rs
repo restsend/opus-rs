@@ -31,6 +31,10 @@ struct Pair {
     fs: i32,
     ch: usize,
     app: i32,
+    /// The signal's gain.
+    scale: f32,
+    /// Encode through `encode_i16` / `opus_encode`.
+    int16: bool,
 }
 
 impl Pair {
@@ -47,6 +51,8 @@ impl Pair {
             fs,
             ch,
             app: app as i32,
+            scale: 1.0,
+            int16: false,
         }
     }
 
@@ -63,10 +69,18 @@ impl Pair {
 
     /// Encodes frame `f` on both and checks the packets.
     fn encode(&mut self, frame: usize, f: usize, what: &str) {
-        let pcm = signal(self.fs, self.ch, frame, f);
+        let pcm: Vec<f32> = signal(self.fs, self.ch, frame, f).iter().map(|x| x * self.scale).collect();
         let (mut a, mut b) = ([0u8; 1500], [0u8; 1500]);
-        let n = self.rs.encode(&pcm, frame, &mut a);
-        let m = unsafe { opus_encode_float(self.c, pcm.as_ptr(), frame as i32, b.as_mut_ptr(), 1500) };
+        let (n, m) = if self.int16 {
+            let pcm: Vec<i16> = pcm.iter().map(|&x| (x * 32768.0).round().clamp(-32768.0, 32767.0) as i16).collect();
+            let n = self.rs.encode_i16(&pcm, frame, &mut a);
+            let m = unsafe { opus_encode(self.c, pcm.as_ptr(), frame as i32, b.as_mut_ptr(), 1500) };
+            (n, m)
+        } else {
+            let n = self.rs.encode(&pcm, frame, &mut a);
+            let m = unsafe { opus_encode_float(self.c, pcm.as_ptr(), frame as i32, b.as_mut_ptr(), 1500) };
+            (n, m)
+        };
         assert_eq!(n.is_ok(), m > 0, "{what}: {n:?} vs {m}");
         let Ok(n) = n else { return };
         self.check(&a[..n], &b[..m as usize], frame, what);
@@ -148,5 +162,34 @@ fn reset_codes_like_a_new_encoder() {
         let n = a.encode(&pcm, frame, &mut out).unwrap();
         let m = b.encode(&pcm, frame, &mut out2).unwrap();
         assert_eq!(out[..n], out2[..m], "frame {f}");
+    }
+}
+
+fn code(r: Result<(), &str>) -> i32 {
+    r.map_or_else(|e| opus_rs::error::code(e).unwrap(), |()| 0)
+}
+
+/// `OPUS_SET_LSB_DEPTH`: quiet signals code alike at every depth, through
+/// both entry points; out-of-range depths are rejected.
+#[test]
+fn lsb_depth_matches_libopus() {
+    for (fs, ch, app, frame, rate) in CONFIGS {
+        for depth in [8, 11, 16, 20, 24] {
+            for int16 in [false, true] {
+                let mut p = Pair::new(fs, ch, app);
+                p.rs.bitrate_bps = rate;
+                p.ctl(SET_BITRATE, rate);
+                p.scale = 0.004;
+                p.int16 = int16;
+                for bad in [7, 25, -1] {
+                    assert_eq!(code(p.rs.set_lsb_depth(bad)), p.ctl(SET_LSB_DEPTH, bad));
+                }
+                assert_eq!(code(p.rs.set_lsb_depth(depth)), p.ctl(SET_LSB_DEPTH, depth));
+                assert_eq!(p.rs.lsb_depth(), p.get(GET_LSB_DEPTH));
+                for f in 0..12 {
+                    p.encode(frame, f, &format!("{fs} {ch} {app:?} depth {depth} i16 {int16} frame {f}"));
+                }
+            }
+        }
     }
 }

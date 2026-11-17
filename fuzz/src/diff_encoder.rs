@@ -1,11 +1,12 @@
 //! Differential encoder fuzzer: generated signals (silence, DC, clipping,
 //! low pitch, impulses, voice-like, raw) with settings that change between
-//! segments, resets and new encoders, encoded by opus-rs and by the scalar
-//! libopus reference.
+//! segments, encoder controls, resets and new encoders, encoded by opus-rs
+//! and by the scalar libopus reference.
 //!
 //! opus-rs runs twice, with the fuzzing SIMD switch off (`scalar`) and on;
 //! the switch has no effect yet (fuzz/DIFFERENTIAL.md).
 //! Oracles per frame:
+//! - `ctl`: a control has libopus's result and leaves the same value.
 //! - `result`: both encoders succeed.
 //! - `decode`: libopus decodes every opus-rs packet to a full frame, and its
 //!   final range equals the opus-rs encoder's.
@@ -60,6 +61,33 @@ struct Call {
     bad_frame: Option<u32>,
     /// Restart the encoders before the segment.
     restart: Option<Restart>,
+    /// An encoder control before the segment.
+    ctl: Option<Ctl>,
+}
+
+/// An encoder control with the setters' arguments, including invalid ones.
+#[derive(Arbitrary, Debug, Clone, Copy)]
+enum Ctl {
+    /// `set_lsb_depth` / `OPUS_SET_LSB_DEPTH`.
+    LsbDepth(i8),
+}
+
+/// Applies `ctl` to the opus-rs encoders and the libopus one and checks
+/// that they accept or reject it alike and report the same value.
+fn apply_ctl(rs: &mut [&mut OpusEncoder; 2], re: &mut RefEnc, ctl: Ctl) -> Result<(), Finding> {
+    let code = |r: Result<(), &str>| r.map_or_else(|e| opus_rs::error::code(e).unwrap_or(1), |()| 0);
+    let (a, b, got, want) = match ctl {
+        Ctl::LsbDepth(d) => {
+            let d = d as i32;
+            let a = code(rs[0].set_lsb_depth(d));
+            let _ = rs[1].set_lsb_depth(d);
+            (a, re.try_ctl(c::SET_LSB_DEPTH, d), rs[0].lsb_depth(), re.get(c::GET_LSB_DEPTH))
+        }
+    };
+    if a != b || got != want {
+        fail!("ctl", format!("{ctl:?}"), "opus-rs {a} value {got}, libopus {b} value {want}");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -72,22 +100,25 @@ enum Restart {
 
 /// The derived encoding, which the saved reproducers use, with `restart`
 /// in the unused bits of `int16`'s byte (a bool reads bit 0): `0xfe` and
-/// `0xff` reset, `0xfc` and `0xfd` start new encoders.
+/// `0xff` reset, `0xfc` and `0xfd` start new encoders, and after `0xfa`
+/// and `0xfb` a control follows.
 impl<'a> Arbitrary<'a> for Call {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         let frame = Arbitrary::arbitrary(u)?;
         let budget = Arbitrary::arbitrary(u)?;
         let b = u8::arbitrary(u)?;
+        let bad_frame = Arbitrary::arbitrary(u)?;
         Ok(Call {
             frame,
             budget,
             int16: b & 1 == 1,
-            bad_frame: Arbitrary::arbitrary(u)?,
+            bad_frame,
             restart: match b >> 1 {
                 0x7f => Some(Restart::Reset),
                 0x7e => Some(Restart::New),
                 _ => None,
             },
+            ctl: if b >> 1 == 0x7d { Some(Arbitrary::arbitrary(u)?) } else { None },
         })
     }
 }
@@ -259,6 +290,7 @@ fn run(inp: Input) -> Result<(), Finding> {
     let mut hist: Vec<f32> = vec![0.0; la * ch];
     let mut identical = true;
     let mut cur = Settings::default();
+    let mut ctls = Vec::new();
     let mut total = 0;
     let mut pcm = vec![0f32; frame * ch];
     for seg in inp.segs.iter().take(12) {
@@ -275,8 +307,15 @@ fn run(inp: Input) -> Result<(), Finding> {
                 e_si = OpusEncoder::new(fs, ch, app).unwrap();
                 re = RefEnc::new(fs, ch, capp);
                 apply(&mut [&mut e_sc, &mut e_si], &mut re, &cur);
+                for &c in &ctls {
+                    apply_ctl(&mut [&mut e_sc, &mut e_si], &mut re, c)?;
+                }
             }
             None => {}
+        }
+        if let Some(c) = seg.call.ctl {
+            apply_ctl(&mut [&mut e_sc, &mut e_si], &mut re, c)?;
+            ctls.push(c);
         }
         if let Some(s) = &seg.set {
             apply(&mut [&mut e_sc, &mut e_si], &mut re, s);

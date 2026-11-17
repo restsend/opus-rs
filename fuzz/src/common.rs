@@ -267,6 +267,10 @@ impl RefEnc {
         unsafe { c::opus_encoder_ctl(self.0, req, &mut v as *mut i32) };
         v
     }
+    /// An integer encoder control, returning libopus's result.
+    pub fn try_ctl(&mut self, req: c_int, val: i32) -> c_int {
+        unsafe { c::opus_encoder_ctl(self.0, req, val as c_int) }
+    }
     /// `OPUS_RESET_STATE`.
     pub fn reset(&mut self) {
         unsafe { c::opus_encoder_ctl(self.0, c::RESET_STATE) };

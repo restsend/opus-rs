@@ -44,6 +44,7 @@ pub mod dnn;
 #[cfg(feature = "dred")]
 pub mod dred;
 mod decode_int;
+mod encoder_ctl;
 pub mod error;
 /// Opus packet extensions, which carry DRED.
 pub mod extensions;
@@ -222,6 +223,8 @@ pub struct OpusEncoder {
     pub complexity: i32,
     /// Constrained VBR (see [`OpusEncoder::set_vbr_constraint`]).
     vbr_constraint: bool,
+    /// libopus `lsb_depth` (`OPUS_SET_LSB_DEPTH`), 8 to 24.
+    lsb_depth: i32,
     pub use_cbr: bool,
 
     pub use_inband_fec: bool,
@@ -562,12 +565,15 @@ fn decide_fec(
     0
 }
 
-/// libopus `is_digital_silence`: no sample above the input's resolution
-/// (24 bits for float input, 16 for 16-bit input).
-fn is_digital_silence(input: PcmInput<'_>, len: usize) -> bool {
+/// libopus `is_digital_silence`: no sample above the resolution of
+/// `depth` bits.
+fn is_digital_silence(input: PcmInput<'_>, len: usize, depth: i32) -> bool {
+    let limit = 1.0 / (1 << depth) as f32;
     match input {
-        PcmInput::F32(s) => s[..len].iter().all(|x| x.abs() <= 1.0 / (1 << 24) as f32),
-        PcmInput::I16(s) => s[..len].iter().all(|&x| x == 0),
+        PcmInput::F32(s) => s[..len].iter().all(|x| x.abs() <= limit),
+        PcmInput::I16(s) => s[..len]
+            .iter()
+            .all(|&x| (x as f32 * (1.0 / 32768.0)).abs() <= limit),
     }
 }
 
@@ -1331,6 +1337,7 @@ impl OpusEncoder {
             bitrate_bps: Self::BITRATE_AUTO,
             complexity: 9,
             vbr_constraint: true,
+            lsb_depth: 24,
             use_cbr: false,
             use_inband_fec: false,
             packet_loss_perc: 0,
@@ -1795,7 +1802,8 @@ impl OpusEncoder {
         // Digital silence is detected for every frame, at every complexity
         // and rate (opus_encoder.c:1246); the gate below only runs the
         // analysis itself (opus_encoder.c:1252).
-        let is_silence = is_digital_silence(input, n);
+        let depth = self.input_depth(input);
+        let is_silence = is_digital_silence(input, n, depth);
         let info = if self.complexity >= 7 && self.sampling_rate >= 16000 {
             self.analysis_read_bak = Some(self.analysis.read_position());
             let pcm = match input {
@@ -1807,10 +1815,7 @@ impl OpusEncoder {
                 pcm,
                 frame_size,
                 self.channels,
-                match input {
-                    PcmInput::F32(_) => 24,
-                    PcmInput::I16(_) => 16,
-                },
+                depth,
             )
         } else {
             if self.analysis.initialized() {
@@ -2099,10 +2104,7 @@ impl OpusEncoder {
         );
         // CELT sees the input's depth: 16 bits for `encode_i16`, 24 for
         // float (OPUS_SET_LSB_DEPTH, opus_encoder.c:1676-1677).
-        self.celt_enc.set_lsb_depth(match input {
-            PcmInput::F32(_) => 24,
-            PcmInput::I16(_) => 16,
-        });
+        self.celt_enc.set_lsb_depth(self.input_depth(input));
         // CELT has no mediumband: libopus codes it as wideband.
         if mode == OpusMode::CeltOnly && bandwidth == Bandwidth::Mediumband {
             bandwidth = Bandwidth::Wideband;
@@ -3598,7 +3600,7 @@ impl OpusEncoder {
                 let first_frame = i == 0 || i == dtx_count;
                 let args = FrameArgs {
                     analysis: info,
-                    is_silence: is_digital_silence(sub_input, enc_frame * ch),
+                    is_silence: is_digital_silence(sub_input, enc_frame * ch, self.input_depth(input)),
                     transition: FrameTransition {
                         redundancy: transition.redundancy
                             && (to_celt || (!transition.to_celt && i == 0)),
