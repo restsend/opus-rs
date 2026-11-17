@@ -230,18 +230,6 @@ pub struct OpusEncoder {
     silk_initialized: bool,
     mode: OpusMode,
     prev_enc_mode: Option<OpusMode>,
-    /// When set, `encode_impl` uses this mode instead of running the
-    /// mode-selection heuristic. Used to keep all sub-frames of a multiframe
-    /// packet in the same mode (libopus `user_forced_mode`).
-    forced_mode: Option<OpusMode>,
-    /// The mode-switch decisions for the next sub-frame of a multiframe
-    /// packet, which libopus makes once for the whole packet.
-    frame_transition: Option<FrameTransition>,
-    /// The bandwidth and in-band FEC decision for the next sub-frame of a
-    /// multiframe packet: its frames share one ToC, and libopus decides both
-    /// once for the whole packet (opus_encode_native, before
-    /// encode_multiframe_packet).
-    frame_fec: Option<(Bandwidth, i32)>,
     /// The frame is not the last of a multiframe packet (libopus
     /// `nonfinal_frame`): SILK may then not switch its rate.
     nonfinal_frame: bool,
@@ -259,9 +247,6 @@ pub struct OpusEncoder {
     /// The analysis read position before the last packet's analysis
     /// (libopus `analysis_read_pos_bak`), when it ran.
     analysis_read_bak: Option<(usize, i32)>,
-    /// The analysis and digital-silence flag of the next frame of a
-    /// multiframe packet, which reads its share of the packet's analysis.
-    frame_analysis: Option<(AnalysisInfo, bool)>,
     /// libopus `peak_signal_energy`, for the activity of quiet frames.
     peak_signal_energy: f32,
     /// libopus `voice_ratio`: the percentage of speech the analysis found,
@@ -408,6 +393,20 @@ struct FrameTransition {
     celt_to_silk: bool,
     to_celt: bool,
     prefill: bool,
+}
+
+/// What a packet decided for one of its frames (the arguments of libopus
+/// `opus_encode_frame_native`): the frame's analysis and digital-silence
+/// flag, its part in a mode switch, the in-band FEC decision, and whether
+/// it may carry DRED (the first frame of the packet that is not DTX).
+#[derive(Clone, Copy)]
+struct FrameArgs {
+    analysis: AnalysisInfo,
+    is_silence: bool,
+    transition: FrameTransition,
+    lbrr_coded: i32,
+    #[cfg_attr(not(feature = "dred"), allow(dead_code))]
+    first_frame: bool,
 }
 
 fn compute_equiv_rate(
@@ -1328,9 +1327,6 @@ impl OpusEncoder {
             nb_no_activity_ms_q1: 0,
             silk_initialized: false,
             prev_enc_mode: None,
-            forced_mode: None,
-            frame_transition: None,
-            frame_fec: None,
             nonfinal_frame: false,
             mode: opus_mode,
             variable_hp_smth2_q15,
@@ -1341,7 +1337,6 @@ impl OpusEncoder {
             #[cfg(feature = "heap")]
             analysis: Box::new(analysis::TonalityAnalysisState::new(sampling_rate)),
             analysis_read_bak: None,
-            frame_analysis: None,
             peak_signal_energy: 0.0,
             voice_ratio: -1,
             detected_bandwidth: None,
@@ -1786,7 +1781,7 @@ impl OpusEncoder {
         frame_size: usize,
         output: &mut [u8],
     ) -> Result<usize, &'static str> {
-        self.encode_frame(input, frame_size, output)
+        self.encode_native(input, frame_size, output)
     }
 
     /// One frame; with the `dred` feature, `dred.rs` adds the DRED
@@ -1797,8 +1792,9 @@ impl OpusEncoder {
         input: PcmInput<'_>,
         frame_size: usize,
         output: &mut [u8],
+        args: FrameArgs,
     ) -> Result<usize, &'static str> {
-        self.encode_frame(input, frame_size, output)
+        self.encode_frame(input, frame_size, output, args)
     }
 
     /// DRED's share of the packet's bitrate (libopus `dred_bitrate_bps`),
@@ -1824,7 +1820,9 @@ impl OpusEncoder {
         self.use_cbr
     }
 
-    fn encode_frame(
+    /// A packet (libopus `opus_encode_native`): the decisions for the whole
+    /// packet, then its one frame, or its frames repacketized.
+    fn encode_native(
         &mut self,
         input: PcmInput<'_>,
         frame_size: usize,
@@ -1834,8 +1832,6 @@ impl OpusEncoder {
             return Err("Output buffer too small");
         }
         self.range_final = 0;
-        // The frames of a multiframe packet share its decisions.
-        let packet_level = self.frame_fec.is_none();
 
         let frame_rate = frame_rate_from_params(self.sampling_rate, frame_size)
             .ok_or("Invalid frame size for sampling rate")?;
@@ -1859,44 +1855,37 @@ impl OpusEncoder {
 
         // libopus's signal analysis of the packet; the frames of a multiframe
         // packet read their part of it.
-        let (analysis_info, is_silence) = match self.frame_analysis.take() {
-            Some(frame) => frame,
-            None => self.analyse(input, frame_size),
-        };
-        // libopus's own DTX decides where its analysis ran or the frame is
-        // digital silence; SILK's DTX on the other frames.
+        let (analysis_info, is_silence) = self.analyse(input, frame_size);
+        // libopus's own DTX decides where its analysis ran or the packet is
+        // digital silence; SILK's DTX on the other packets.
         let silk_use_dtx = self.use_dtx && !(analysis_info.valid || is_silence);
         self.silk_use_dtx = silk_use_dtx;
 
-        // The rate-dependent mono/stereo decision, once per packet
-        // (opus_encoder.c:1409-1453).
-        if packet_level {
-            self.stream_channels = if self.channels == 2 {
-                let equiv = compute_equiv_rate(
-                    self.bitrate_bps,
-                    self.channels,
-                    frame_rate,
-                    !self.use_cbr,
-                    None,
-                    self.complexity,
-                    self.packet_loss_perc,
-                );
-                let voice_est = self.voice_estimate();
-                let mut threshold = 17000 + ((voice_est * voice_est * (19000 - 17000)) >> 14);
-                if self.stream_channels == 2 {
-                    threshold -= 1000;
-                } else {
-                    threshold += 1000;
-                }
-                if equiv > threshold { 2 } else { 1 }
+        // The rate-dependent mono/stereo decision (opus_encoder.c:1409-1453).
+        self.stream_channels = if self.channels == 2 {
+            let equiv = compute_equiv_rate(
+                self.bitrate_bps,
+                self.channels,
+                frame_rate,
+                !self.use_cbr,
+                None,
+                self.complexity,
+                self.packet_loss_perc,
+            );
+            let voice_est = self.voice_estimate();
+            let mut threshold = 17000 + ((voice_est * voice_est * (19000 - 17000)) >> 14);
+            if self.stream_channels == 2 {
+                threshold -= 1000;
             } else {
-                1
-            };
-        }
+                threshold += 1000;
+            }
+            if equiv > threshold { 2 } else { 1 }
+        } else {
+            1
+        };
 
-        // How far stereo input is from mono (libopus compute_stereo_width),
-        // once per packet.
-        let stereo_width = if self.channels == 2 && self.forced_mode.is_none() {
+        // How far stereo input is from mono (libopus compute_stereo_width).
+        let stereo_width = if self.channels == 2 {
             compute_stereo_width(input, frame_size, self.sampling_rate, &mut self.width_mem)
         } else {
             0.0
@@ -1905,9 +1894,7 @@ impl OpusEncoder {
         // Mode selection: match C's opus_encode_native() behavior.
         // C reference auto-selects between SILK_ONLY and CELT_ONLY; Hybrid is
         // produced afterwards by bandwidth overrides (SILK-only + FB/SWB → Hybrid).
-        let mut mode = if let Some(forced) = self.forced_mode {
-            forced
-        } else if self.application == Application::RestrictedLowDelay {
+        let mut mode = if self.application == Application::RestrictedLowDelay {
             OpusMode::CeltOnly
         } else {
             let equiv = compute_equiv_rate(
@@ -1944,33 +1931,24 @@ impl OpusEncoder {
             mode
         };
 
-        // Per-frame packet budget (C computes this before the mode-dependent
-        // encode; the starved-budget rules below need it too).
+        // The packet's budget (opus_encoder.c:1221, 1326-1332): the output
+        // buffer, at most six frames, or under CBR the bitrate's whole bytes.
         let target_bits =
             (self.packet_bitrate() as i64 * frame_size as i64 / self.sampling_rate as i64) as i32;
-        let cbr_bytes = ((target_bits + 4) / 8) as usize;
-        let max_data_bytes = output.len();
-
-        // C parity (opus_encoder.c): the nominal-size cap applies in CBR mode
-        // only. In VBR mode the CELT-internal bound (vbr_rate/reservoir) decides
-        // the per-frame size, allowing overshoot (borrowing) and undershoot.
-        // Capping VBR at nominal defeats the reservoir and starves complex frames.
-        let mut n_bytes = if self.use_cbr {
-            cbr_bytes
-                .min(max_data_bytes)
-                .clamp(1, OPUS_MAX_PACKET_BYTES)
+        let max_data_bytes = if self.use_cbr {
+            (((target_bits + 4) / 8) as usize).min(output.len()).max(1)
         } else {
-            max_data_bytes.clamp(1, OPUS_MAX_PACKET_BYTES)
+            output.len().min(6 * OPUS_MAX_PACKET_BYTES)
         };
+        let n_bytes = max_data_bytes.min(OPUS_MAX_PACKET_BYTES);
 
         // C opus_encoder.c:1525-1527: a budget representing less than 6 kb/s
         // (9 kb/s for frames longer than 20 ms) cannot carry SILK — libopus
         // switches to CELT-only mode, which codes it as a small valid packet
         // instead of a PLC placeholder (issue #46).
         let tiny_budget_rate: i64 = if frame_rate > 50 { 9000 } else { 6000 };
-        if self.forced_mode.is_none()
-            && ((n_bytes as i64) * 8 * (self.sampling_rate as i64))
-                < (tiny_budget_rate * (frame_size as i64))
+        if ((n_bytes as i64) * 8 * (self.sampling_rate as i64))
+            < (tiny_budget_rate * (frame_size as i64))
         {
             mode = OpusMode::CeltOnly;
         }
@@ -1985,43 +1963,146 @@ impl OpusEncoder {
         // Mode switches (opus_encoder.c:1540-1556): entering or leaving
         // CELT-only adds a 5 ms CELT frame of redundancy. Going to CELT, this
         // frame keeps the previous mode and the redundancy ends it.
-        let transition = match self.frame_transition.take() {
-            Some(transition) => transition,
-            None => {
-                let mut transition = FrameTransition::default();
-                let prev = self.prev_enc_mode.unwrap_or(mode);
-                if (prev == OpusMode::CeltOnly) != (mode == OpusMode::CeltOnly) {
-                    transition.redundancy = true;
-                    transition.celt_to_silk = mode != OpusMode::CeltOnly;
-                    if !transition.celt_to_silk {
-                        if frame_size >= self.sampling_rate as usize / 100 {
-                            mode = prev;
-                            transition.to_celt = true;
-                        } else {
-                            transition.redundancy = false;
-                        }
-                    }
+        let mut transition = FrameTransition::default();
+        let prev = self.prev_enc_mode.unwrap_or(mode);
+        if (prev == OpusMode::CeltOnly) != (mode == OpusMode::CeltOnly) {
+            transition.redundancy = true;
+            transition.celt_to_silk = mode != OpusMode::CeltOnly;
+            if !transition.celt_to_silk {
+                if frame_size >= self.sampling_rate as usize / 100 {
+                    mode = prev;
+                    transition.to_celt = true;
+                } else {
+                    transition.redundancy = false;
                 }
-                // Leaving CELT, SILK starts afresh and is prefilled
-                // (opus_encoder.c:1576-1581).
-                if mode != OpusMode::CeltOnly && self.prev_enc_mode == Some(OpusMode::CeltOnly) {
-                    for enc in [&mut self.silk_enc, &mut self.silk_enc_side] {
-                        *state_mut(enc) = SilkEncoderState::default();
-                        silk_init_encoder(state_mut(enc), 0);
-                    }
-                    self.silk_initialized = false;
-                    self.silk_opus_can_switch = false;
-                    transition.prefill = true;
-                }
-                transition
             }
+        }
+        // Leaving CELT, SILK starts afresh and is prefilled
+        // (opus_encoder.c:1576-1581).
+        if mode != OpusMode::CeltOnly && self.prev_enc_mode == Some(OpusMode::CeltOnly) {
+            for enc in [&mut self.silk_enc, &mut self.silk_enc_side] {
+                *state_mut(enc) = SilkEncoderState::default();
+                silk_init_encoder(state_mut(enc), 0);
+            }
+            self.silk_initialized = false;
+            self.silk_opus_can_switch = false;
+            transition.prefill = true;
+        }
+
+        // The bandwidth and in-band FEC of the packet (opus_encode_native):
+        // the bandwidth from the rate, the user's settings, the packet size,
+        // the sampling rate and the analysis; then FEC, which can lower it
+        // when the loss rate demands FEC at any cost. Like libopus's
+        // `st->bandwidth` it carries over to the next packet.
+        let equiv_rate = compute_equiv_rate(
+            self.bitrate_bps,
+            self.stream_channels,
+            frame_rate,
+            !self.use_cbr,
+            Some(mode),
+            self.complexity,
+            self.packet_loss_perc,
+        );
+        let max_rate = bits_to_bitrate(max_data_bytes as i32 * 8, self.sampling_rate, frame_size);
+        let voice_est = self.voice_estimate();
+        let mut bandwidth = self.decide_bandwidth(mode, equiv_rate, voice_est, max_rate);
+        let lbrr_coded = decide_fec(
+            if self.use_inband_fec { 1 } else { 0 },
+            self.packet_loss_perc,
+            self.silk_enc.s_cmn.lbrr_enabled,
+            mode,
+            &mut bandwidth,
+            equiv_rate,
+        );
+        // CELT has no mediumband: libopus codes it as wideband.
+        if mode == OpusMode::CeltOnly && bandwidth == Bandwidth::Mediumband {
+            bandwidth = Bandwidth::Wideband;
+        }
+        self.bandwidth = bandwidth;
+
+        // FEC can lower the bandwidth. Choose SILK-only or Hybrid after
+        // that decision, as libopus does: Hybrid needs bands above wideband.
+        if mode == OpusMode::SilkOnly
+            && (bandwidth == Bandwidth::Superwideband || bandwidth == Bandwidth::Fullband)
+        {
+            mode = OpusMode::Hybrid;
+        }
+        if mode == OpusMode::Hybrid
+            && (bandwidth == Bandwidth::Narrowband
+                || bandwidth == Bandwidth::Mediumband
+                || bandwidth == Bandwidth::Wideband)
+        {
+            mode = OpusMode::SilkOnly;
+        }
+        self.mode = mode;
+
+        // 40/60 ms frames are only legal as a single Opus frame in SILK-only
+        // mode. CELT and Hybrid cap a frame at 20 ms, so libopus encodes 20 ms
+        // sub-frames and repacketizes them into one code 1/2/3 packet
+        // (opus_encoder.c `encode_multiframe_packet`). (issue #35)
+        // Frames over 60 ms are split in every mode (80, 100 and 120 ms).
+        if (mode != OpusMode::SilkOnly && frame_size > self.sampling_rate as usize / 50)
+            || frame_size > 3 * self.sampling_rate as usize / 50
+        {
+            return self.encode_multiframe(input, frame_size, transition, lbrr_coded, output);
+        }
+
+        // A SILK stereo-to-mono switch waits two frames for SILK's downmix
+        // (opus_encoder.c:1560-1570).
+        if self.stream_channels == 1
+            && self.prev_channels == 2
+            && !self.silk_to_mono
+            && mode != OpusMode::CeltOnly
+            && self.prev_enc_mode != Some(OpusMode::CeltOnly)
+        {
+            self.silk_to_mono = true;
+            self.stream_channels = 2;
+        } else {
+            self.silk_to_mono = false;
+        }
+
+        let args = FrameArgs {
+            analysis: analysis_info,
+            is_silence,
+            transition,
+            lbrr_coded,
+            first_frame: true,
         };
+        self.encode_subframe(input, frame_size, &mut output[..max_data_bytes], args)
+    }
+
+    /// One frame of a packet (libopus `opus_encode_frame_native`), in the
+    /// mode, bandwidth and channels the packet chose, with its decisions
+    /// `args`. `output.len()` is the frame's budget (libopus
+    /// `orig_max_data_bytes`), to which CBR pads.
+    fn encode_frame(
+        &mut self,
+        input: PcmInput<'_>,
+        frame_size: usize,
+        output: &mut [u8],
+        args: FrameArgs,
+    ) -> Result<usize, &'static str> {
+        let FrameArgs {
+            analysis: analysis_info,
+            is_silence,
+            transition,
+            lbrr_coded,
+            ..
+        } = args;
         let FrameTransition {
             mut redundancy,
             mut celt_to_silk,
             to_celt,
             prefill: prefill_after_celt,
         } = transition;
+        self.range_final = 0;
+        let mode = self.mode;
+        let mut frame_bandwidth = self.bandwidth;
+        let frame_rate = frame_rate_from_params(self.sampling_rate, frame_size)
+            .ok_or("Invalid frame size for sampling rate")?;
+        let max_data_bytes = output.len();
+        let mut n_bytes = max_data_bytes.min(OPUS_MAX_PACKET_BYTES);
+        let silk_use_dtx = self.silk_use_dtx;
 
         // The frame's voice activity (opus_encode_frame_native:1916-1931).
         // None (0) in digital silence; from the analysis where it ran, with
@@ -2048,87 +2129,6 @@ impl OpusEncoder {
             activity = i32::from(
                 f64::from(self.peak_signal_energy)
                     < f64::from(PSEUDO_SNR_THRESHOLD) * f64::from(0.5f32 * noise_energy),
-            );
-        }
-
-        // The bandwidth and in-band FEC of the packet (opus_encode_native):
-        // the bandwidth from the rate, the user's settings, the packet size,
-        // the sampling rate and the analysis; then FEC, which can lower it
-        // when the loss rate demands FEC at any cost. Like libopus's
-        // `st->bandwidth` it carries over to the next packet.
-        let (mut frame_bandwidth, lbrr_coded) = match self.frame_fec.take() {
-            Some(decided) => decided,
-            None => {
-                let equiv_rate = compute_equiv_rate(
-                    self.bitrate_bps,
-                    self.stream_channels,
-                    frame_rate,
-                    !self.use_cbr,
-                    Some(mode),
-                    self.complexity,
-                    self.packet_loss_perc,
-                );
-                let max_data_bytes = if self.use_cbr {
-                    let bits =
-                        self.packet_bitrate() as i64 * frame_size as i64 / self.sampling_rate as i64;
-                    (((bits + 4) / 8) as usize).min(output.len()).max(1)
-                } else {
-                    output.len().min(6 * OPUS_MAX_PACKET_BYTES)
-                };
-                let max_rate =
-                    bits_to_bitrate(max_data_bytes as i32 * 8, self.sampling_rate, frame_size);
-                let voice_est = self.voice_estimate();
-                let mut frame_bandwidth =
-                    self.decide_bandwidth(mode, equiv_rate, voice_est, max_rate);
-                let lbrr_coded = decide_fec(
-                    if self.use_inband_fec { 1 } else { 0 },
-                    self.packet_loss_perc,
-                    self.silk_enc.s_cmn.lbrr_enabled,
-                    mode,
-                    &mut frame_bandwidth,
-                    equiv_rate,
-                );
-                // CELT has no mediumband: libopus codes it as wideband.
-                if mode == OpusMode::CeltOnly && frame_bandwidth == Bandwidth::Mediumband {
-                    frame_bandwidth = Bandwidth::Wideband;
-                }
-                self.bandwidth = frame_bandwidth;
-                (frame_bandwidth, lbrr_coded)
-            }
-        };
-
-        // FEC can lower the bandwidth. Choose SILK-only or Hybrid after
-        // that decision, as libopus does: Hybrid needs bands above wideband.
-        if mode == OpusMode::SilkOnly
-            && (frame_bandwidth == Bandwidth::Superwideband
-                || frame_bandwidth == Bandwidth::Fullband)
-        {
-            mode = OpusMode::Hybrid;
-        }
-        if mode == OpusMode::Hybrid
-            && (frame_bandwidth == Bandwidth::Narrowband
-                || frame_bandwidth == Bandwidth::Mediumband
-                || frame_bandwidth == Bandwidth::Wideband)
-        {
-            mode = OpusMode::SilkOnly;
-        }
-
-        // 40/60 ms frames are only legal as a single Opus frame in SILK-only
-        // mode. CELT and Hybrid cap a frame at 20 ms, so libopus encodes 20 ms
-        // sub-frames and repacketizes them into one code 1/2/3 packet
-        // (opus_encoder.c `encode_multiframe_packet`). (issue #35)
-        // Frames over 60 ms are split in every mode (80, 100 and 120 ms).
-        if self.forced_mode.is_none()
-            && ((mode != OpusMode::SilkOnly && frame_size > self.sampling_rate as usize / 50)
-                || frame_size > 3 * self.sampling_rate as usize / 50)
-        {
-            return self.encode_multiframe(
-                input,
-                frame_size,
-                mode,
-                transition,
-                (frame_bandwidth, lbrr_coded),
-                output,
             );
         }
 
@@ -2163,21 +2163,6 @@ impl OpusEncoder {
             }
         }
 
-        // A SILK stereo-to-mono switch waits two frames for SILK's downmix
-        // (opus_encoder.c:1560-1570).
-        if packet_level {
-            if self.stream_channels == 1
-                && self.prev_channels == 2
-                && !self.silk_to_mono
-                && mode != OpusMode::CeltOnly
-                && self.prev_enc_mode != Some(OpusMode::CeltOnly)
-            {
-                self.silk_to_mono = true;
-                self.stream_channels = 2;
-            } else {
-                self.silk_to_mono = false;
-            }
-        }
         // The channels coded: SILK and Hybrid frames code the input's, as
         // opus-rs's SILK encoder has no mono coding of stereo input.
         let coded_channels = if mode == OpusMode::CeltOnly {
@@ -3202,7 +3187,7 @@ impl OpusEncoder {
         // libopus's own DTX (decide_dtx_mode), where its analysis ran or the
         // frame is digital silence: after 200 ms without activity the frame
         // is sent as its ToC alone, with one coded frame every 400 ms.
-        if self.use_dtx && (analysis_info.valid || is_silence) {
+        if self.use_dtx && !self.silk_use_dtx {
             let frame_ms_q1 = (2000 * frame_size as i64 / self.sampling_rate as i64) as i32;
             if decide_dtx_mode(activity != 0, &mut self.nb_no_activity_ms_q1, frame_ms_q1) {
                 self.prev_enc_mode = Some(next_prev_mode);
@@ -3288,7 +3273,7 @@ impl OpusEncoder {
             }
 
             let target_total = if self.use_cbr {
-                cbr_bytes.min(max_data_bytes).max(1)
+                max_data_bytes
             } else {
                 (ret + 1).min(output.len())
             };
@@ -3348,7 +3333,7 @@ impl OpusEncoder {
         // CBR pads the packet to its size, which can exceed the 1276 bytes
         // of one frame (opus_encoder.c:2602, 2646-2653).
         if self.use_cbr {
-            return Ok(pad_packet(output, end, cbr_bytes.min(max_data_bytes)));
+            return Ok(pad_packet(output, end, max_data_bytes));
         }
         Ok(end)
     }
@@ -3356,22 +3341,22 @@ impl OpusEncoder {
     /// Repacketize 40/60 ms CELT/Hybrid input as 20 ms sub-frames, and
     /// 80-120 ms input as SILK's 40, 20 or 60 ms frames or CELT/Hybrid's
     /// 20 ms ones, in one code 1/2/3 Opus packet (libopus
-    /// `encode_multiframe_packet`). Every sub-frame
-    /// is forced to `mode` and to the packet's bandwidth and FEC decision
-    /// `fec`, so the packet carries a single config. A mode switch's
-    /// redundancy goes to the first sub-frame, or going to CELT, to the last
+    /// `encode_multiframe_packet`). Every sub-frame is coded in the
+    /// packet's mode, bandwidth and FEC decision `lbrr_coded`, so the
+    /// packet carries a single config. A mode switch's redundancy goes to
+    /// the first sub-frame, or going to CELT, to the last
     /// (opus_encoder.c:1781-1783).
     fn encode_multiframe(
         &mut self,
         input: PcmInput<'_>,
         frame_size: usize,
-        mode: OpusMode,
         transition: FrameTransition,
-        fec: (Bandwidth, i32),
+        lbrr_coded: i32,
         output: &mut [u8],
     ) -> Result<usize, &'static str> {
         const MAX_SUB: usize = 6; // up to 120 ms of 20 ms frames
         let ch = self.channels;
+        let mode = self.mode;
         // libopus encode_multiframe_packet: SILK codes 80 ms as 2 x 40 ms,
         // 120 ms as 2 x 60 ms and 100 ms as 5 x 20 ms; CELT and Hybrid use
         // 20 ms frames.
@@ -3449,7 +3434,6 @@ impl OpusEncoder {
         if let Some(read_pos) = analysed {
             self.analysis.set_read_position(read_pos);
         }
-        self.forced_mode = Some(mode);
         let enc_res = (|| -> Result<(), &'static str> {
             for i in 0..nb {
                 let start = i * enc_frame * ch;
@@ -3465,25 +3449,25 @@ impl OpusEncoder {
                 } else {
                     AnalysisInfo::zeroed()
                 };
-                self.frame_analysis = Some((info, is_digital_silence(sub_input, enc_frame * ch)));
                 let to_celt = transition.to_celt && i == nb - 1;
-                self.frame_transition = Some(FrameTransition {
-                    redundancy: transition.redundancy
-                        && (to_celt || (!transition.to_celt && i == 0)),
-                    celt_to_silk: transition.celt_to_silk,
-                    to_celt,
-                    prefill: transition.prefill && i == 0,
-                });
-                self.frame_fec = Some(fec);
                 self.nonfinal_frame = i < nb - 1;
                 let first_frame = i == 0 || i == dtx_count;
-                #[cfg(feature = "dred")]
-                {
-                    self.dred.first_frame = first_frame;
-                }
+                let args = FrameArgs {
+                    analysis: info,
+                    is_silence: is_digital_silence(sub_input, enc_frame * ch),
+                    transition: FrameTransition {
+                        redundancy: transition.redundancy
+                            && (to_celt || (!transition.to_celt && i == 0)),
+                        celt_to_silk: transition.celt_to_silk,
+                        to_celt,
+                        prefill: transition.prefill && i == 0,
+                    },
+                    lbrr_coded,
+                    first_frame,
+                };
                 let bonus = if first_frame { dred_bytes } else { 0 };
                 let budget = (sub_budget + bonus).min(1276).min(max_len_sum.saturating_sub(used)).max(2);
-                let n = self.encode_subframe(sub_input, enc_frame, &mut sub[i][..budget])?;
+                let n = self.encode_subframe(sub_input, enc_frame, &mut sub[i][..budget], args)?;
                 if n == 0 {
                     return Err("Empty sub-frame");
                 }
@@ -3510,10 +3494,6 @@ impl OpusEncoder {
             }
             Ok(())
         })();
-        self.forced_mode = None;
-        self.frame_transition = None;
-        self.frame_fec = None;
-        self.frame_analysis = None;
         self.nonfinal_frame = false;
         enc_res?;
 

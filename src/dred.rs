@@ -17,7 +17,7 @@ use crate::dnn::vec::c_floor;
 use crate::dnn::weights::WeightError;
 use crate::extensions::{ExtensionData, ExtensionIterator, parse_packet, samples_per_frame_48k, write_packet};
 use crate::{
-    OPUS_MAX_PACKET_BYTES, OpusDecoder, OpusEncoder, PcmInput, bits_to_bitrate, bitrate_to_bits,
+    FrameArgs, OPUS_MAX_PACKET_BYTES, OpusDecoder, OpusEncoder, PcmInput, bits_to_bitrate, bitrate_to_bits,
     frame_rate_from_params,
 };
 
@@ -232,8 +232,6 @@ pub(crate) struct EncoderDred {
     activity_mem: [u8; 4 * DRED_MAX_FRAMES],
     /// `dred_bitrate_bps` of the current packet.
     pub bitrate_bps: i32,
-    /// The frame may carry DRED (`first_frame` of `opus_encode_frame_native`).
-    pub first_frame: bool,
     /// The frame reached the point where libopus adds DRED.
     pub reached: bool,
 }
@@ -250,7 +248,6 @@ impl EncoderDred {
             target_chunks: 0,
             activity_mem: [0; 4 * DRED_MAX_FRAMES],
             bitrate_bps: 0,
-            first_frame: true,
             reached: false,
         }
     }
@@ -422,10 +419,9 @@ impl OpusEncoder {
             dred_bitrate = self.dred.compute_bitrate(rate, frame_size, fs, self.use_inband_fec, loss);
         }
         self.dred.bitrate_bps = dred_bitrate;
-        self.dred.first_frame = true;
         let bitrate = self.bitrate_bps;
         self.bitrate_bps -= dred_bitrate;
-        let ret = self.encode_subframe(input, frame_size, output);
+        let ret = self.encode_native(input, frame_size, output);
         self.bitrate_bps = bitrate;
         ret
     }
@@ -437,24 +433,18 @@ impl OpusEncoder {
         input: PcmInput<'_>,
         frame_size: usize,
         output: &mut [u8],
+        args: FrameArgs,
     ) -> Result<usize, &'static str> {
         self.dred.reached = false;
-        let len = self.encode_frame(input, frame_size, output)?;
+        let len = self.encode_frame(input, frame_size, output, args)?;
         if !core::mem::take(&mut self.dred.reached) {
             return Ok(len);
         }
-        // libopus `orig_max_data_bytes`: a frame of a multiframe packet
-        // gets its share, a packet its CBR size or the buffer.
-        let max_bytes = if self.forced_mode.is_some() {
-            output.len()
-        } else if self.use_cbr {
-            let bits = self.packet_bitrate() as i64 * frame_size as i64 / self.sampling_rate as i64;
-            (((bits + 4) / 8) as usize).min(output.len()).clamp(1, OPUS_MAX_PACKET_BYTES)
-        } else {
-            output.len().min(6 * OPUS_MAX_PACKET_BYTES)
-        };
-        let first_frame = self.dred.first_frame;
-        self.dred.finish_packet(output, len, max_bytes, !self.use_cbr, first_frame)
+        // `output` is libopus's `orig_max_data_bytes`: a frame of a
+        // multiframe packet gets its share, a packet its CBR size or the
+        // buffer.
+        let max_bytes = output.len();
+        self.dred.finish_packet(output, len, max_bytes, !self.use_cbr, args.first_frame)
     }
 
     /// The DRED latents of a frame from its filtered input (libopus's
