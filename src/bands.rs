@@ -282,9 +282,9 @@ fn celt_atan2p_norm(y: f32, x: f32) -> f32 {
         const A03: f32 = -3.333_166e-1_f32;
         const A05: f32 = 1.996_270_4e-1_f32;
         const A07: f32 = -1.397_658_3e-1_f32;
-        const A09: f32 = 9.794_234_e-2_f32;
+        const A09: f32 = 9.794_234_5e-2_f32;
         const A11: f32 = -5.777_359_e-2_f32;
-        const A13: f32 = 2.304_014e-2_f32;
+        const A13: f32 = 2.304_013_6e-2_f32;
         const A15: f32 = -4.355_406e-3_f32;
         let x2 = x * x;
         ATAN2_2_OVER_PI

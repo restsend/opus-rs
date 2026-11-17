@@ -191,3 +191,9 @@ fn itheta_mismatches(y_scale: f32, stereo: &[bool]) -> usize {
 fn small_split_angles_match_libopus() {
     assert_eq!(itheta_mismatches(0.001, &[false]), 0);
 }
+
+/// celt_atan_norm uses libopus's coefficients (mathops.h:149-156).
+#[test]
+fn split_angles_match_libopus() {
+    assert_eq!(itheta_mismatches(1.0, &[false, true]), 0);
+}
