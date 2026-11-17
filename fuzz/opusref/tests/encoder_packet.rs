@@ -208,3 +208,21 @@ fn starved_multiframe_packets_are_toc_only() {
         }
     }
 }
+
+/// A multiframe packet on which stereo input switches to mono makes every
+/// later packet mono (libopus sets force_channels = 1 and keeps it).
+#[test]
+fn multiframe_stereo_to_mono_switch_stays_mono() {
+    let mut p = Pair::new(48000, 2, Application::Voip);
+    p.ctl(c::SET_SIGNAL, 3001);
+    p.rs.set_signal(opus_rs::Signal::Voice);
+    p.bitrate(32000);
+    p.check(3, 3840, 1500, |_, _| true);
+    p.bitrate(12000);
+    p.check(3, 3840, 1500, |_, _| true);
+    p.bitrate(128000);
+    p.ctl(c::SET_SIGNAL, 3002);
+    p.rs.set_signal(opus_rs::Signal::Music);
+    p.check(1, 3840, 1500, |_, _| true);
+    p.check(4, 3840, 1500, toc);
+}

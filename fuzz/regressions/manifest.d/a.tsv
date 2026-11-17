@@ -6,3 +6,4 @@ a5	test:encoder_packet	-	initial_bandwidth_is_fullband ... FAILED	initial bandwi
 a6	test:encoder_packet	-	toc_only_packets_keep_the_previous_config ... FAILED	ToC-only packet built from the new decisions
 a7	test:encoder_packet	-	one_byte_buffers_take_a_toc_only_packet ... FAILED	1-byte output buffer rejected
 a8	test:encoder_packet	-	starved_multiframe_packets_are_toc_only ... FAILED	starved-budget test run per 20 ms sub-frame
+a9	test:encoder_packet	-	multiframe_stereo_to_mono_switch_stays_mono ... FAILED	stereo-to-mono delay skipped for multiframe packets

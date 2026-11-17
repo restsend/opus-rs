@@ -340,6 +340,9 @@ pub struct OpusEncoder {
     stream_channels: usize,
     prev_channels: usize,
     silk_to_mono: bool,
+    /// libopus `force_channels == 1`, which a multiframe packet with a
+    /// pending stereo-to-mono switch sets: stereo input is coded mono.
+    force_mono: bool,
     /// libopus `silk_mode.opusCanSwitch` and `silk_bw_switch`: SILK asked to
     /// change its internal rate, which the next packet does.
     silk_opus_can_switch: bool,
@@ -405,7 +408,8 @@ struct FrameTransition {
 
 /// What a packet decided for one of its frames (the arguments of libopus
 /// `opus_encode_frame_native`): the frame's analysis and digital-silence
-/// flag, its part in a mode switch, the in-band FEC decision, and whether
+/// flag, its part in a mode switch, the in-band FEC decision, the packet's
+/// equivalent rate, and whether
 /// it may carry DRED (the first frame of the packet that is not DTX).
 #[derive(Clone, Copy)]
 struct FrameArgs {
@@ -413,6 +417,8 @@ struct FrameArgs {
     is_silence: bool,
     transition: FrameTransition,
     lbrr_coded: i32,
+    /// The packet's equivalent rate with its mode, for the stereo width.
+    equiv_rate: i32,
     #[cfg_attr(not(feature = "dred"), allow(dead_code))]
     first_frame: bool,
 }
@@ -1369,6 +1375,7 @@ impl OpusEncoder {
             stream_channels: channels,
             prev_channels: 0,
             silk_to_mono: false,
+            force_mono: false,
             silk_opus_can_switch: false,
             silk_bw_switch: false,
             #[cfg(not(feature = "heap"))]
@@ -1846,7 +1853,7 @@ impl OpusEncoder {
         let (analysis_info, is_silence) = self.analyse(input, frame_size);
 
         // How far stereo input is from mono (libopus compute_stereo_width).
-        let stereo_width = if self.channels == 2 {
+        let stereo_width = if self.channels == 2 && !self.force_mono {
             compute_stereo_width(input, frame_size, self.sampling_rate, &mut self.width_mem)
         } else {
             0.0
@@ -1867,7 +1874,9 @@ impl OpusEncoder {
         self.silk_use_dtx = silk_use_dtx;
 
         // The rate-dependent mono/stereo decision (opus_encoder.c:1409-1453).
-        self.stream_channels = if self.channels == 2 {
+        self.stream_channels = if self.force_mono {
+            1
+        } else if self.channels == 2 {
             let equiv = compute_equiv_rate(
                 self.rate,
                 self.channels,
@@ -1974,6 +1983,20 @@ impl OpusEncoder {
             transition.prefill = true;
         }
 
+        // A SILK stereo-to-mono switch waits two frames for SILK's downmix
+        // (opus_encoder.c:1560-1570), for a multiframe packet too.
+        if self.stream_channels == 1
+            && self.prev_channels == 2
+            && !self.silk_to_mono
+            && mode != OpusMode::CeltOnly
+            && self.prev_enc_mode != Some(OpusMode::CeltOnly)
+        {
+            self.silk_to_mono = true;
+            self.stream_channels = 2;
+        } else {
+            self.silk_to_mono = false;
+        }
+
         // The bandwidth and in-band FEC of the packet (opus_encode_native):
         // the bandwidth from the rate, the user's settings, the packet size,
         // the sampling rate and the analysis; then FEC, which can lower it
@@ -2030,21 +2053,7 @@ impl OpusEncoder {
             || frame_size > 3 * self.sampling_rate as usize / 50
         {
             let output = &mut output[..repacketize_len];
-            return self.encode_multiframe(input, frame_size, transition, lbrr_coded, output);
-        }
-
-        // A SILK stereo-to-mono switch waits two frames for SILK's downmix
-        // (opus_encoder.c:1560-1570).
-        if self.stream_channels == 1
-            && self.prev_channels == 2
-            && !self.silk_to_mono
-            && mode != OpusMode::CeltOnly
-            && self.prev_enc_mode != Some(OpusMode::CeltOnly)
-        {
-            self.silk_to_mono = true;
-            self.stream_channels = 2;
-        } else {
-            self.silk_to_mono = false;
+            return self.encode_multiframe(input, frame_size, transition, lbrr_coded, equiv_rate, output);
         }
 
         let args = FrameArgs {
@@ -2052,6 +2061,7 @@ impl OpusEncoder {
             is_silence,
             transition,
             lbrr_coded,
+            equiv_rate,
             first_frame: true,
         };
         self.encode_subframe(input, frame_size, &mut output[..max_data_bytes], args)
@@ -2138,6 +2148,7 @@ impl OpusEncoder {
             is_silence,
             transition,
             lbrr_coded,
+            equiv_rate,
             ..
         } = args;
         let FrameTransition {
@@ -2951,15 +2962,6 @@ impl OpusEncoder {
         // Hybrid stereo SILK's; below full width the CELT input fades
         // towards mono.
         if mode != OpusMode::Hybrid || self.stream_channels == 1 {
-            let equiv_rate = compute_equiv_rate(
-                self.rate,
-                self.stream_channels,
-                frame_rate,
-                !self.use_cbr,
-                Some(mode),
-                self.complexity,
-                self.packet_loss_perc,
-            );
             self.stereo_width_q14 = if equiv_rate > 32000 {
                 16384
             } else if equiv_rate < 16000 {
@@ -3292,6 +3294,7 @@ impl OpusEncoder {
         frame_size: usize,
         transition: FrameTransition,
         lbrr_coded: i32,
+        equiv_rate: i32,
         output: &mut [u8],
     ) -> Result<usize, &'static str> {
         const MAX_SUB: usize = 6; // up to 120 ms of 20 ms frames
@@ -3365,6 +3368,16 @@ impl OpusEncoder {
         if let Some(read_pos) = analysed {
             self.analysis.set_read_position(read_pos);
         }
+        // A stereo-to-mono switch makes every later packet mono (libopus
+        // sets force_channels and never clears it); the frames themselves
+        // code without the switch delay (opus_encoder.c:1762-1767, 1781,
+        // 1836).
+        let bak_to_mono = self.silk_to_mono;
+        if bak_to_mono {
+            self.force_mono = true;
+        } else {
+            self.prev_channels = self.stream_channels;
+        }
         let enc_res = (|| -> Result<(), &'static str> {
             for i in 0..nb {
                 let start = i * enc_frame * ch;
@@ -3381,6 +3394,7 @@ impl OpusEncoder {
                     AnalysisInfo::zeroed()
                 };
                 let to_celt = transition.to_celt && i == nb - 1;
+                self.silk_to_mono = false;
                 self.nonfinal_frame = i < nb - 1;
                 let first_frame = i == 0 || i == dtx_count;
                 let args = FrameArgs {
@@ -3394,6 +3408,7 @@ impl OpusEncoder {
                         prefill: transition.prefill && i == 0,
                     },
                     lbrr_coded,
+                    equiv_rate,
                     first_frame,
                 };
                 let bonus = if first_frame { dred_bytes } else { 0 };
@@ -3426,6 +3441,7 @@ impl OpusEncoder {
             Ok(())
         })();
         self.nonfinal_frame = false;
+        self.silk_to_mono = bak_to_mono;
         enc_res?;
 
         // Every 20 ms frame in DTX: libopus's repacketizer sends the empty
