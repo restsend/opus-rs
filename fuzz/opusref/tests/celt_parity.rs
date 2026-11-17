@@ -20,6 +20,8 @@ fn signal(sig: &str, f: usize, frame: usize, ch: usize, seed: &mut u32) -> Vec<f
                 "noise" => noise * 0.5,
                 "quiet" => noise * 3e-6,
                 "sine" => (440.0 * t * 6.2832).sin() * 0.5,
+                // Noise growing by 9 dB per 20 ms, up to -6 dBFS.
+                "grow" => noise * (0.0005 * 2f32.powf(t * 75.0)).min(0.5),
                 _ => unreachable!(),
             }
         })
@@ -293,4 +295,12 @@ fn dynalloc_cap_follows_libopus() {
 #[test]
 fn resynthesis_noise_seeds_from_the_last_range() {
     assert_eq!(identical(2, 20.0, 24, 2, "noise", 12), [true; 12]);
+}
+
+/// A frame whose band energies rise by more than 1 (6 dB) on average over
+/// the previous frame's is coded as transient (celt_encoder.c:473-508,
+/// 2213-2235).
+#[test]
+fn rising_band_energy_patches_the_transient_flag() {
+    assert_eq!(identical(1, 20.0, 32, 0, "grow", 8), [true; 8]);
 }

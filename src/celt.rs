@@ -253,6 +253,77 @@ impl Default for AnalysisInfo {
     }
 }
 
+/// libopus compute_mdcts (celt_encoder.c:511-555): each channel's long MDCT
+/// or `1 << lm` short ones, interleaved, scaled for the upsampling.
+#[allow(clippy::too_many_arguments)]
+fn compute_mdcts(
+    mode: &CeltMode,
+    short_blocks: bool,
+    in_buf: &[f32],
+    freq: &mut [f32],
+    channels: usize,
+    frame_size: usize,
+    overlap: usize,
+    lm: usize,
+    upsample: usize,
+) {
+    let buf_stride = frame_size + overlap;
+    let (b, shift) = if short_blocks { (1 << lm, mode.max_lm) } else { (1, mode.max_lm - lm) };
+    let n = frame_size / b;
+    for c in 0..channels {
+        for i in 0..b {
+            mode.mdct.forward(
+                &in_buf[c * buf_stride + i * n..c * buf_stride + buf_stride],
+                &mut freq[c * frame_size + i..],
+                mode.window,
+                overlap,
+                shift,
+                b,
+            );
+        }
+    }
+    upsample_scale_zero(freq, frame_size, upsample, channels);
+}
+
+/// libopus patch_transient_decision (celt_encoder.c:473-508): whether the
+/// band energies rose by more than 1 on average above the previous frame's,
+/// spread by -1 per band.
+fn patch_transient_decision(
+    new_e: &[f32],
+    old_e: &[f32],
+    nb_ebands: usize,
+    start: usize,
+    end: usize,
+    channels: usize,
+) -> bool {
+    let mut spread_old = [0.0f32; 26];
+    let old = |i: usize| {
+        if channels == 1 {
+            old_e[i]
+        } else {
+            old_e[i].max(old_e[i + nb_ebands])
+        }
+    };
+    spread_old[start] = old(start);
+    for i in start + 1..end {
+        spread_old[i] = (spread_old[i - 1] - 1.0).max(old(i));
+    }
+    for i in (start..end - 1).rev() {
+        spread_old[i] = spread_old[i].max(spread_old[i + 1] - 1.0);
+    }
+    let first = start.max(2);
+    let mut mean_diff = 0.0f32;
+    for c in 0..channels {
+        for i in first..end - 1 {
+            let x1 = new_e[i + c * nb_ebands].max(0.0);
+            let x2 = spread_old[i].max(0.0);
+            mean_diff += (x1 - x2).max(0.0);
+        }
+    }
+    mean_diff /= (channels * (end - 1 - first)) as f32;
+    mean_diff > 1.0
+}
+
 #[allow(clippy::too_many_arguments)]
 fn transient_analysis(
     input: &[f32],
@@ -2258,35 +2329,20 @@ impl CeltEncoder {
             }
         }
 
-        let mut short_blocks = false;
+        // The transient flag is coded only with room for it (not in 2.5 ms
+        // frames); otherwise the decoder takes the frame as not transient,
+        // and so does the encoder.
+        let transient_flag_fits = lm > 0 && rc.tell() + 3 <= total_bits;
         let mut transient_got_disabled = false;
-        if lm > 0 && rc.tell() + 3 <= total_bits {
-            rc.encode_bit_logp(is_transient, 3);
-            if is_transient {
-                short_blocks = true;
-            }
-        } else {
-            // No transient flag is coded (2.5 ms frames, or no room for it),
-            // so the decoder takes the frame as not transient: code it that
-            // way too, as libopus does.
+        if !transient_flag_fits {
             is_transient = false;
             transient_got_disabled = true;
         }
+        let mut short_blocks = is_transient;
         let second_mdct = short_blocks && self.complexity >= 8;
+        let mut have_band_log_e2 = second_mdct;
         if second_mdct {
-            for c in 0..channels {
-                let c_buf = c * buf_stride;
-                let c_freq = c * frame_size;
-                mode.mdct.forward(
-                    &in_buf[c_buf..],
-                    &mut freq[c_freq..],
-                    mode.window,
-                    overlap,
-                    mode.max_lm - lm,
-                    1,
-                );
-            }
-            upsample_scale_zero(freq, frame_size, upsample, channels);
+            compute_mdcts(mode, false, in_buf, freq, channels, frame_size, overlap, lm, upsample);
             let band_e2 = &mut self.w_band_e2[..nb_ebands * channels];
             compute_band_energies(mode, freq, band_e2, end, channels, lm);
             let band_log_e2 = &mut self.w_band_log_e2[..nb_ebands * channels];
@@ -2297,67 +2353,10 @@ impl CeltEncoder {
                 }
             }
         }
-        if short_blocks {
-            let b = 1 << lm;
-            let n = frame_size / b;
-            for c in 0..channels {
-                let c_offset = c * buf_stride;
-                for i in 0..b {
-                    mode.mdct.forward(
-                        &in_buf[c_offset + i * n..c_offset + buf_stride],
-                        &mut freq[c * frame_size + i..],
-                        mode.window,
-                        overlap,
-                        mode.max_lm,
-                        b,
-                    );
-                }
-            }
-            upsample_scale_zero(freq, frame_size, upsample, channels);
+        compute_mdcts(mode, short_blocks, in_buf, freq, channels, frame_size, overlap, lm, upsample);
+        compute_band_energies(mode, freq, band_e, end, channels, lm);
+        crate::bands::amp2log2(mode, start_band, end, band_e, band_log_e, channels);
 
-            compute_band_energies(mode, freq, band_e, end, channels, lm);
-            normalise_bands(
-                mode,
-                freq,
-                x,
-                band_e,
-                end,
-                channels,
-                (1 << lm) as usize,
-            );
-            crate::bands::amp2log2(mode, start_band, end, band_e, band_log_e, channels);
-        } else {
-            // Long MDCT (non-transient)
-            for c in 0..channels {
-                let c_buf = c * buf_stride;
-                let c_freq = c * frame_size;
-                mode.mdct.forward(
-                    &in_buf[c_buf..],
-                    &mut freq[c_freq..],
-                    mode.window,
-                    overlap,
-                    mode.max_lm - lm,
-                    1,
-                );
-            }
-            upsample_scale_zero(freq, frame_size, upsample, channels);
-            compute_band_energies(mode, freq, band_e, end, channels, lm);
-            normalise_bands(
-                mode,
-                freq,
-                x,
-                band_e,
-                end,
-                channels,
-                (1 << lm) as usize,
-            );
-            crate::bands::amp2log2(mode, start_band, end, band_e, band_log_e, channels);
-        }
-
-        dumpf!("freq", freq);
-        dumpf!("bandE", band_e);
-        dumpf!("bandLogE", band_log_e);
-        dumpf!("X", &x[..frame_size * channels]);
         // Temporal VBR (celt_encoder.c:2187-2203): how far this frame's
         // spectral level is above its running average.
         let temporal_vbr = {
@@ -2376,6 +2375,41 @@ impl CeltEncoder {
             self.spec_avg += 0.02 * temporal_vbr;
             temporal_vbr
         };
+
+        // The last chance to catch a transient the time-domain analysis
+        // missed: a sudden rise of the band energies (celt_encoder.c:2213-2235).
+        if transient_flag_fits
+            && !is_transient
+            && self.complexity >= 5
+            && !hybrid
+            && patch_transient_decision(band_log_e, &self.old_band_e, nb_ebands, start_band, end, channels)
+        {
+            is_transient = true;
+            short_blocks = true;
+            // The long-block energies, compensated for the scaling of short
+            // and long MDCTs, steer the dynalloc.
+            let band_log_e2 = &mut self.w_band_log_e2[..nb_ebands * channels];
+            band_log_e2.copy_from_slice(band_log_e);
+            for c in 0..channels {
+                for i in 0..end {
+                    band_log_e2[c * nb_ebands + i] += lm as f32 * 0.5;
+                }
+            }
+            have_band_log_e2 = true;
+            compute_mdcts(mode, true, in_buf, freq, channels, frame_size, overlap, lm, upsample);
+            compute_band_energies(mode, freq, band_e, end, channels, lm);
+            crate::bands::amp2log2(mode, start_band, end, band_e, band_log_e, channels);
+            tf_estimate = 0.2;
+        }
+        if transient_flag_fits {
+            rc.encode_bit_logp(is_transient, 3);
+        }
+        normalise_bands(mode, freq, x, band_e, end, channels, (1 << lm) as usize);
+
+        dumpf!("freq", freq);
+        dumpf!("bandE", band_e);
+        dumpf!("bandLogE", band_log_e);
+        dumpf!("X", &x[..frame_size * channels]);
 
         self.w_tf_res[..nb_ebands].fill(0);
         let tf_res = &mut self.w_tf_res[..nb_ebands];
@@ -2396,7 +2430,7 @@ impl CeltEncoder {
         self.w_offsets[..nb_ebands].fill(0);
         let offsets = &mut self.w_offsets[..nb_ebands];
 
-        let band_log_e2_opt = if second_mdct {
+        let band_log_e2_opt = if have_band_log_e2 {
             Some(&self.w_band_log_e2[..nb_ebands * channels] as &[f32])
         } else {
             None
