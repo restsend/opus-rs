@@ -226,11 +226,41 @@ impl MultistreamDecoder {
 
     /// `frame_size` is per-channel capacity; `out` must hold at least
     /// `frame_size * table.channels`. Returns frames decoded (per channel).
+    /// An empty packet conceals `frame_size` samples on every stream.
     pub fn decode(
         &mut self,
         packet: &[u8],
         frame_size: usize,
         out: &mut [f32],
+    ) -> Result<usize, &'static str> {
+        self.decode_native(packet, frame_size, out, false)
+    }
+
+    /// Rebuilds a lost packet from the in-band FEC of the packet after it,
+    /// as [`OpusDecoder::decode_fec`] does for each stream (libopus
+    /// `opus_multistream_decode_float(..., decode_fec = 1)`).
+    pub fn decode_fec(
+        &mut self,
+        packet: &[u8],
+        frame_size: usize,
+        out: &mut [f32],
+    ) -> Result<usize, &'static str> {
+        self.decode_native(packet, frame_size, out, true)
+    }
+
+    /// The XOR of every stream decoder's final range (libopus
+    /// `OPUS_GET_FINAL_RANGE` on a multistream decoder).
+    pub fn final_range(&self) -> u32 {
+        self.decoders.iter().fold(0, |r, d| r ^ d.final_range())
+    }
+
+    /// libopus `opus_multistream_decode_native`.
+    fn decode_native(
+        &mut self,
+        packet: &[u8],
+        frame_size: usize,
+        out: &mut [f32],
+        decode_fec: bool,
     ) -> Result<usize, &'static str> {
         // libopus limits frame_size to 120 ms.
         let frame_size = frame_size.min(self.decoders[0].sampling_rate as usize / 25 * 3);
@@ -274,10 +304,10 @@ impl MultistreamDecoder {
             // strips the injected Appendix B length field(s)). An empty
             // packet is a loss: every stream conceals frame_size samples.
             let n = if packet.is_empty() || i + 1 == num_streams {
-                decoder.decode(rest, frame_size, &mut self.stream_scratch)?
+                decoder.decode_native(rest, frame_size, &mut self.stream_scratch, decode_fec)?
             } else {
                 let (pkt, consumed) = split_self_delimited(rest, &mut self.packet_scratch)?;
-                let n = decoder.decode(pkt, frame_size, &mut self.stream_scratch)?;
+                let n = decoder.decode_native(pkt, frame_size, &mut self.stream_scratch, decode_fec)?;
                 rest = &rest[consumed..];
                 n
             };

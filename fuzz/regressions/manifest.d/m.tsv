@@ -5,3 +5,4 @@ m3	diff_multistream	OFZ_SUPPRESS=ms-empty	DIFF[pcm]	multistream packet with a ba
 m4	test:multistream	-	is_invalid ... FAILED	multistream packets decoded before the whole packet is validated
 m5	test:multistream	-	an_empty_packet_conceals_every_stream ... FAILED	empty multistream packet rejected where libopus conceals every stream
 m6	diff_multistream	-	DIFF[result]	lost multistream packet: opus-rs error, libopus conceals
+m7	test:multistream	-	fec_recovers_every_stream ... FAILED	multistream decoder without decode_fec and final range

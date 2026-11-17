@@ -20,6 +20,7 @@ unsafe extern "C" {
         err: *mut c_int,
     ) -> *mut c_void;
     pub fn opus_multistream_decoder_destroy(st: *mut c_void);
+    pub fn opus_multistream_decoder_ctl(st: *mut c_void, req: c_int, ...) -> c_int;
     pub fn opus_multistream_decode_float(
         st: *mut c_void,
         data: *const c_uchar,
