@@ -169,6 +169,17 @@ fn default_bitrate_is_auto() {
     p.check(8, 960, 1500, bytes);
 }
 
+/// OPUS_SET_BITRATE caps the bitrate at 750 kb/s per channel
+/// (opus_encoder.c:2820-2828): a CBR 2.5 ms frame at 3 Mb/s has the size of
+/// 750 kb/s.
+#[test]
+fn bitrate_is_capped_at_750_kbps_per_channel() {
+    let mut p = Pair::new(48000, 1, Application::RestrictedLowDelay);
+    p.bitrate(3_000_000);
+    p.cbr();
+    p.check(4, 120, 1500, toc_len);
+}
+
 /// OPUS_BITRATE_MAX codes as many bits as the buffer holds.
 #[test]
 fn bitrate_max_fills_the_buffer() {
