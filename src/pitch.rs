@@ -485,6 +485,18 @@ pub fn remove_doubling(
         }
     }
 
+    // A short period with as strong a correlation at 5/8 or 6/8 of it is
+    // not a pitch (pitch.c:538-547).
+    if t < 2 * min_period {
+        let (t1, t2) = (t * 5 / 8, t * 6 / 8);
+        let [xy1, xy2] = inner_prods(x_target, [&x[max_period - t1..], &x[max_period - t2..]], n);
+        let g1 = compute_pitch_gain(xy1, xx, yy_lookup[t1]);
+        let g2 = compute_pitch_gain(xy2, xx, yy_lookup[t2]);
+        if g1 >= g || g2 >= g {
+            g = 0.0;
+        }
+    }
+
     best_xy = best_xy.max(0.0);
     let pg = if best_yy <= best_xy {
         1.0f32
