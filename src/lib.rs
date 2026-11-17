@@ -1962,16 +1962,12 @@ impl OpusEncoder {
             mode
         };
 
-        let n_bytes = max_data_bytes.min(OPUS_MAX_PACKET_BYTES);
-
         // C opus_encoder.c:1525-1527: a budget representing less than 6 kb/s
-        // (9 kb/s for frames longer than 20 ms) cannot carry SILK — libopus
+        // (9 kb/s for frames shorter than 20 ms) cannot carry SILK — libopus
         // switches to CELT-only mode, which codes it as a small valid packet
         // instead of a PLC placeholder (issue #46).
-        let tiny_budget_rate: i64 = if frame_rate > 50 { 9000 } else { 6000 };
-        if ((n_bytes as i64) * 8 * (self.sampling_rate as i64))
-            < (tiny_budget_rate * (frame_size as i64))
-        {
+        let tiny_budget_rate = if frame_rate > 50 { 9000 } else { 6000 };
+        if (max_data_bytes as i32) < bitrate_to_bits(tiny_budget_rate, fs, frame_size) / 8 {
             mode = OpusMode::CeltOnly;
         }
 

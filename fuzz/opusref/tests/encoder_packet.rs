@@ -142,3 +142,13 @@ fn bitrate_max_fills_the_buffer() {
     p.bitrate(OpusEncoder::BITRATE_MAX);
     p.check(8, 960, 200, bytes);
 }
+
+/// Below 9 kb/s of buffer at 10 ms libopus codes CELT, comparing the
+/// buffer with the bit budget floored to bytes: 11 bytes against 90 bits
+/// (11 bytes) keeps SILK.
+#[test]
+fn small_buffer_threshold_floors_to_bytes() {
+    let mut p = Pair::new(16000, 1, Application::Voip);
+    p.bitrate(12000);
+    p.check(8, 160, 11, toc);
+}
