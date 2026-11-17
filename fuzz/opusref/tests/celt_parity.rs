@@ -28,8 +28,8 @@ fn signal(sig: &str, f: usize, frame: usize, ch: usize, seed: &mut u32) -> Vec<f
 /// Encodes `frames` frames at 48 kHz, complexity 10, with both encoders;
 /// rc 0 VBR, 1 constrained VBR, 2 CBR. Returns per frame whether the
 /// packets are identical.
-fn identical(ch: usize, ms: usize, kbps: i32, rc: i32, sig: &str, frames: usize) -> Vec<bool> {
-    let frame = 48 * ms;
+fn identical(ch: usize, ms: f32, kbps: i32, rc: i32, sig: &str, frames: usize) -> Vec<bool> {
+    let frame = (48.0 * ms) as usize;
     let mut e = OpusEncoder::new(48000, ch, Application::RestrictedLowDelay).unwrap();
     e.bitrate_bps = kbps * 1000;
     e.complexity = 10;
@@ -61,7 +61,7 @@ fn identical(ch: usize, ms: usize, kbps: i32, rc: i32, sig: &str, frames: usize)
 /// (opus_encoder.c:2008).
 #[test]
 fn rld_input_is_dc_rejected() {
-    assert_eq!(identical(1, 20, 24, 2, "sine", 2), [true, true]);
+    assert_eq!(identical(1, 20.0, 24, 2, "sine", 2), [true, true]);
 }
 
 /// The static mode's MDCT twiddles and window are libopus's
@@ -106,13 +106,13 @@ fn fft_matches_libopus() {
 /// (ec_enc_done zeroes the gap).
 #[test]
 fn free_space_stays_between_range_and_raw_bits() {
-    assert_eq!(identical(1, 20, 64, 0, "voice", 2), [true, true]);
+    assert_eq!(identical(1, 20.0, 64, 0, "voice", 2), [true, true]);
 }
 
 /// transient_analysis's harmonic mean reads libopus's inv_table.
 #[test]
 fn transient_analysis_uses_libopus_inv_table() {
-    assert_eq!(identical(1, 20, 32, 1, "noise", 1), [true]);
+    assert_eq!(identical(1, 20.0, 32, 1, "noise", 1), [true]);
 }
 
 /// amp2Log2 takes celt_log2 in double precision (mathops.h:346).
@@ -133,4 +133,11 @@ fn band_log_energy_matches_libopus() {
         unsafe { amp2Log2(ref_celt_mode48(), 21, 21, e.as_ptr(), b.as_mut_ptr(), 1) };
         assert_eq!(a, b);
     }
+}
+
+/// 2.5 ms frames' dynalloc reads the previous frame's energies, before
+/// the coarse energy updates them (celt_encoder.c:2248).
+#[test]
+fn dynalloc_reads_the_previous_frame_energy() {
+    assert_eq!(identical(1, 2.5, 192, 1, "noise", 2), [true, true]);
 }

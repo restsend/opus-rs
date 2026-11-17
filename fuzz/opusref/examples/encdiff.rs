@@ -12,13 +12,13 @@ use opusref::*;
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let ch: usize = a[1].parse().unwrap();
-    let ms: usize = a[2].parse().unwrap();
+    let ms: f32 = a[2].parse().unwrap();
     let kbps: i32 = a[3].parse().unwrap();
     let rc: i32 = a[4].parse().unwrap();
     let sig = a[5].clone();
     let frames: usize = a.get(6).map(|s| s.parse().unwrap()).unwrap_or(10);
     let fs = 48000usize;
-    let frame = fs * ms / 1000;
+    let frame = (fs as f32 * ms / 1000.0) as usize;
     let mut e = OpusEncoder::new(fs as i32, ch, Application::RestrictedLowDelay).unwrap();
     e.bitrate_bps = kbps * 1000;
     e.complexity = 10;

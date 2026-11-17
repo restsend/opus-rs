@@ -2388,31 +2388,7 @@ impl CeltEncoder {
             temporal_vbr
         };
 
-        dumpf!("bandLogE_q", band_log_e);
-        // C uses st->force_intra (CTL flag, 0 by default) instead of the old
-        // intra_ener heuristic, so no intra forcing happens here.
-        quant_coarse_energy_advanced(
-            mode,
-            start_band,
-            end,
-            end,
-            band_log_e,
-            &mut self.old_band_e,
-            total_bits as u32,
-            error,
-            rc,
-            channels,
-            lm,
-            (total_bits / 8) as usize,
-            self.force_intra,
-            &mut self.delayed_intra,
-            self.complexity >= 4,
-            self.loss_rate,
-            false,
-        );
         self.w_tf_res[..nb_ebands].fill(0);
-        dumpf!("error", error);
-        dumpf!("oldBandE", &self.old_band_e[..nb_ebands * channels]);
         let tf_res = &mut self.w_tf_res[..nb_ebands];
         let lambda = 80.max(20480 / effective_bytes + 2) as i32;
 
@@ -2506,6 +2482,32 @@ impl CeltEncoder {
             raw[..end].copy_from_slice(&tf_res[..end]);
             raw
         };
+        dumpf!("bandLogE_q", band_log_e);
+        // Coarse energy after the dynalloc and tf analyses, which see the
+        // previous frame's energies (celt_encoder.c:2248-2297).
+        // C uses st->force_intra (CTL flag, 0 by default) instead of the old
+        // intra_ener heuristic, so no intra forcing happens here.
+        quant_coarse_energy_advanced(
+            mode,
+            start_band,
+            end,
+            end,
+            band_log_e,
+            &mut self.old_band_e,
+            total_bits as u32,
+            error,
+            rc,
+            channels,
+            lm,
+            (total_bits / 8) as usize,
+            self.force_intra,
+            &mut self.delayed_intra,
+            self.complexity >= 4,
+            self.loss_rate,
+            false,
+        );
+        dumpf!("error", error);
+        dumpf!("oldBandE", &self.old_band_e[..nb_ebands * channels]);
         tf_encode(
             start_band,
             end,
