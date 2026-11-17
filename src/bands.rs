@@ -288,10 +288,9 @@ fn celt_atan2p_norm(y: f32, x: f32) -> f32 {
         const A15: f32 = -4.355_406e-3_f32;
         let x2 = x * x;
         ATAN2_2_OVER_PI
-            * x
-            * (1.0
-                + x2 * (A03
-                    + x2 * (A05 + x2 * (A07 + x2 * (A09 + x2 * (A11 + x2 * (A13 + x2 * A15)))))))
+            * (x + x
+                * x2
+                * (A03 + x2 * (A05 + x2 * (A07 + x2 * (A09 + x2 * (A11 + x2 * (A13 + x2 * A15)))))))
     }
     if x * x + y * y < 1e-18 {
         return 0.0;

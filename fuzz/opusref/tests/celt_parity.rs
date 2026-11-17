@@ -163,3 +163,31 @@ fn silent_split_has_zero_angle() {
     let c = unsafe { stereo_itheta(z.as_ptr(), z.as_ptr(), 0, 4, 0) };
     assert_eq!(opus_rs::bands::stereo_itheta(&z, &z, false, 4), c);
 }
+
+/// How often stereo_itheta (Q30) of random vectors differs from libopus's,
+/// with the second vector scaled by `y_scale`.
+fn itheta_mismatches(y_scale: f32, stereo: &[bool]) -> usize {
+    let mut seed = 11u32;
+    let mut bad = 0;
+    for k in 0..20000 {
+        let n = 1 + k % 16;
+        let mut v = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 9) as f32 / (1u32 << 23) as f32 - 0.5
+        };
+        let x: Vec<f32> = (0..n).map(|_| v()).collect();
+        let y: Vec<f32> = (0..n).map(|_| v() * y_scale).collect();
+        for &stereo in stereo {
+            let a = opus_rs::bands::stereo_itheta(&x, &y, stereo, n);
+            let b = unsafe { stereo_itheta(x.as_ptr(), y.as_ptr(), stereo as i32, n as i32, 0) };
+            bad += (a != b) as usize;
+        }
+    }
+    bad
+}
+/// celt_atan_norm evaluates 2/pi * (x + x*x^2*(A03 + ...)) (mathops.h:158);
+/// small angles, where the higher terms vanish, show the operation order.
+#[test]
+fn small_split_angles_match_libopus() {
+    assert_eq!(itheta_mismatches(0.001, &[false]), 0);
+}
