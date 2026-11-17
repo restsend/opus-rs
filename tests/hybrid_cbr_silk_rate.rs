@@ -224,10 +224,15 @@ fn hybrid_cbr_silk_layer_matches_fixed_point_libopus() {
 #[test]
 fn hybrid_celt_cbr_switches_keep_silk_like_fixed_point_libopus() {
     // CBR switching between hybrid at 20 kb/s and CELT at 100 kb/s every
-    // 400 ms: the SILK layer of every hybrid frame, through each restart.
-    let cases: [(usize, usize, usize, u64, usize); 2] = [
+    // 400 ms: the SILK layer of every hybrid frame, through each restart. In
+    // 40 and 60 ms packets every 20 ms frame after CELT restarts SILK and
+    // prefills it (opus_encoder.c:1811).
+    let cases: [(usize, usize, usize, u64, usize); 5] = [
         (48000, 20, 1, 0xce8d84b6ef3d6144, 483),
         (24000, 10, 2, 0x61ae2c477a29b816, 943),
+        (48000, 40, 1, 0xe0c81bc409bbd78e, 506),
+        (48000, 40, 2, 0xc89adbfb5f71d943, 506),
+        (24000, 60, 2, 0xe4a3c5e988dd129c, 525),
     ];
     for (sr, ms, channels, expected, layers) in cases {
         let packets = encode_cbr(sr, ms, channels, false, |at| {

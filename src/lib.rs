@@ -2466,6 +2466,20 @@ impl OpusEncoder {
                     silk_reset_for_rate_switch(state_mut(enc));
                 }
                 self.silk_initialized = false;
+            } else if prefill_after_celt && self.silk_initialized {
+                // Every frame of a packet after CELT prefills, and its
+                // prefill restarts the coded channels' encoders, low-pass
+                // filter included (prefill 1, enc_API.c:226-233); the first
+                // frame's restart was the packet's.
+                for enc in [&mut self.silk_enc, &mut self.silk_enc_side]
+                    .into_iter()
+                    .take(coded_channels)
+                {
+                    let enc = state_mut(enc);
+                    silk_reset_for_rate_switch(enc);
+                    enc.s_cmn.s_lp = Default::default();
+                }
+                self.silk_initialized = false;
             }
             let allow_switch = self.silk_enc.allow_bandwidth_switch != 0;
             let rate_control = |enc: &mut SilkEncoderState, can_switch: bool| {
@@ -3512,7 +3526,7 @@ impl OpusEncoder {
                             && (to_celt || (!transition.to_celt && i == 0)),
                         celt_to_silk: transition.celt_to_silk,
                         to_celt,
-                        prefill: transition.prefill && i == 0,
+                        prefill: transition.prefill,
                     },
                     lbrr_coded,
                     equiv_rate,
