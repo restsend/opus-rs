@@ -4,6 +4,8 @@
 //! - `vec`, `nnet`: the generic C kernels and layer functions;
 //! - `weights`, `models`, `builtin`: weight blobs, the layers of each
 //!   model and the embedded 1.6.1 weights;
+//! - `fft`, `freq`, `burg`, `common`, `lpcnet_tables`, `pitchdnn`,
+//!   `lpcnet_enc`: the LPCNet feature analysis;
 //!
 //! The arithmetic follows libopus's generic C build (no SIMD,
 //! `-ffp-contract=off`) operation for operation, including its mix of
@@ -14,8 +16,16 @@
 #![allow(clippy::excessive_precision, clippy::approx_constant)]
 
 pub mod builtin;
+pub mod burg;
+pub mod common;
+pub mod fft;
+pub mod freq;
+pub mod lpcnet_enc;
+#[rustfmt::skip]
+pub mod lpcnet_tables;
 #[rustfmt::skip]
 pub mod models;
 pub mod nnet;
+pub mod pitchdnn;
 pub mod vec;
 pub mod weights;

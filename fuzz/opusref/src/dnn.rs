@@ -112,6 +112,28 @@ pub fn blob_of(list: *const WeightArray) -> Vec<u8> {
     }
 }
 
+unsafe extern "C" {
+    pub fn ref_lpcnet_encoder_create() -> *mut c_void;
+    pub fn ref_lpcnet_encoder_destroy(st: *mut c_void);
+    pub fn ref_lpcnet_features_float(st: *mut c_void, pcm: *const f32, features: *mut f32);
+    pub fn ref_lpcnet_features(st: *mut c_void, pcm: *const i16, features: *mut f32);
+    pub fn ref_burg_cepstral_analysis(ceps: *mut f32, x: *const f32);
+    pub fn ref_lpc_from_cepstrum(lpc: *mut f32, cep: *const f32) -> f32;
+    /// `out` holds 161 (r, i) pairs.
+    pub fn ref_forward_transform(out: *mut f32, input: *const f32);
+    pub fn ref_silk_burg_analysis(
+        a: *mut f32,
+        x: *const f32,
+        min_inv_gain: f32,
+        subfr_length: c_int,
+        nb_subfr: c_int,
+        d: c_int,
+    ) -> f32;
+    pub fn ref_pitchdnn_create() -> *mut c_void;
+    pub fn ref_pitchdnn_destroy(st: *mut c_void);
+    pub fn ref_compute_pitchdnn(st: *mut c_void, if_features: *const f32, xcorr_features: *const f32) -> f32;
+}
+
 /// A small deterministic generator for test inputs (xorshift64*).
 pub struct Rng(pub u64);
 

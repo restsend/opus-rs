@@ -104,4 +104,44 @@ def main():
         + "\n" + "\n".join(consts(k)) + "\n")
 
 
+def tables(src):
+    """src/dnn/lpcnet_tables.rs from dnn/lpcnet_tables.c."""
+    c = (src / "dnn/lpcnet_tables.c").read_text()
+
+    def body(name):
+        return re.search(name + r"\[[0-9]*\] = \{(.*?)\};", c, re.S).group(1)
+
+    def floats(text):
+        return [v[:-1] if v.endswith("f") else v for v in re.findall(r"-?[0-9.]+(?:e-?[0-9]+)?f", text)]
+
+    bitrev = re.findall(r"[0-9]+", body("fft_bitrev"))
+    tw = floats(body("fft_twiddles"))
+    hw = floats(body("half_window"))
+    dct = floats(body("dct_table"))
+    assert len(bitrev) == 320 and len(tw) == 640 and len(hw) == 160 and len(dct) == 324
+    k = re.search(r"kiss_fft_state kfft = \{(.*?)\};", c, re.S).group(1)
+    scale = floats(k)[0]
+    factors = re.search(r"\{([0-9, ]+)\}, /\* factors", k).group(1)
+    factors = [x.strip() for x in factors.split(",") if x.strip()]
+    out = [HEADER.replace("dnn/{stem}_data.h and dnn/{stem}_data.c", "dnn/lpcnet_tables.c").rstrip()]
+    out.append("")
+    out.append("/// `kfft.scale`.")
+    out.append(f"pub const FFT_SCALE: f32 = {scale};")
+    out.append("/// `kfft.factors`.")
+    out.append(f"pub const FFT_FACTORS: [usize; 16] = [{', '.join(factors)}];")
+    out.append("/// `fft_bitrev`.")
+    out.append(f"pub static FFT_BITREV: [u16; 320] = [{', '.join(bitrev)}];")
+    out.append("/// `fft_twiddles` as (r, i) pairs.")
+    out.append("pub static FFT_TWIDDLES: [[f32; 2]; 320] = [")
+    for i in range(0, 640, 2):
+        out.append(f"    [{tw[i]}, {tw[i+1]}],")
+    out.append("];")
+    out.append("/// `half_window`.")
+    out.append(f"pub static HALF_WINDOW: [f32; 160] = [{', '.join(hw)}];")
+    out.append("/// `dct_table`.")
+    out.append(f"pub static DCT_TABLE: [f32; 324] = [{', '.join(dct)}];")
+    return "\n".join(out) + "\n"
+
+
 main()
+(Path(sys.argv[2]).parent / "lpcnet_tables.rs").write_text(tables(Path(sys.argv[1])))

@@ -40,3 +40,35 @@ void ref_compute_glu(const LinearLayer *l, float *out, const float *in) { comput
 void ref_compute_generic_conv1d(const LinearLayer *l, float *out, float *mem, const float *in, int n, int act) { compute_generic_conv1d(l, out, mem, in, n, act, 0); }
 void ref_compute_generic_conv1d_dilation(const LinearLayer *l, float *out, float *mem, const float *in, int n, int dil, int act) { compute_generic_conv1d_dilation(l, out, mem, in, n, dil, act, 0); }
 void ref_compute_conv2d(const Conv2dLayer *c, float *out, float *mem, const float *in, int h, int hs, int act) { compute_conv2d_c(c, out, mem, in, h, hs, act); }
+
+/* LPCNet feature analysis. */
+#include <stdlib.h>
+#include "lpcnet.h"
+#include "lpcnet_private.h"
+#include "freq.h"
+#include "burg.h"
+#include "pitchdnn.h"
+
+LPCNetEncState *ref_lpcnet_encoder_create(void) { return lpcnet_encoder_create(); }
+void ref_lpcnet_encoder_destroy(LPCNetEncState *st) { lpcnet_encoder_destroy(st); }
+void ref_lpcnet_features_float(LPCNetEncState *st, const float *pcm, float *features) {
+  lpcnet_compute_single_frame_features_float(st, pcm, features, 0);
+}
+void ref_lpcnet_features(LPCNetEncState *st, const opus_int16 *pcm, float *features) {
+  lpcnet_compute_single_frame_features(st, pcm, features, 0);
+}
+void ref_burg_cepstral_analysis(float *ceps, const float *x) { burg_cepstral_analysis(ceps, x); }
+float ref_lpc_from_cepstrum(float *lpc, const float *cep) { return lpc_from_cepstrum(lpc, cep); }
+void ref_forward_transform(kiss_fft_cpx *out, const float *in) { forward_transform(out, in); }
+float ref_silk_burg_analysis(float *A, const float *x, float min_inv_gain, int subfr_length, int nb_subfr, int D) {
+  return silk_burg_analysis(A, x, min_inv_gain, subfr_length, nb_subfr, D);
+}
+PitchDNNState *ref_pitchdnn_create(void) {
+  PitchDNNState *st = malloc(sizeof(*st));
+  pitchdnn_init(st);
+  return st;
+}
+void ref_pitchdnn_destroy(PitchDNNState *st) { free(st); }
+float ref_compute_pitchdnn(PitchDNNState *st, const float *if_features, const float *xcorr_features) {
+  return compute_pitchdnn(st, if_features, xcorr_features, 0);
+}
