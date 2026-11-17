@@ -4298,6 +4298,10 @@ impl OpusDecoder {
                 .is_some();
             self.range_final = self.celt_dec.rng();
         } else {
+            // CELT-only with the bandwidth extension still requested.
+            if !celt_accum {
+                pcm[..frame_size * ch].fill(0.0);
+            }
             // For hybrid -> SILK transitions, we let the CELT MDCT do a
             // fade-out by decoding a silence frame.
             if self.prev_mode == Some(OpusMode::Hybrid)
