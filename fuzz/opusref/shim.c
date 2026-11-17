@@ -35,6 +35,7 @@ opus_int32 ref_silk_rand(opus_int32 a) { return silk_RAND(a); }
 
 const CELTMode *ref_celt_mode48(void) { return opus_custom_mode_create(48000, 960, NULL); }
 
+#ifndef FIXED_POINT
 /* The static mode's MDCT and FFT, for kernel comparisons. */
 #include "mdct.h"
 #include "kiss_fft.h"
@@ -51,3 +52,4 @@ void ref_fft_impl(float *x, int shift) {
 }
 const float *ref_mdct_trig(void) { return ref_celt_mode48()->mdct.trig; }
 const float *ref_window(void) { return ref_celt_mode48()->window; }
+#endif

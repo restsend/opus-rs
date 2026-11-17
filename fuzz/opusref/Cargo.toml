@@ -16,3 +16,7 @@ opus-rs = { path = "../..", features = ["fuzzing"] }
 # --enable-dred --enable-osce` (see build.rs) and opus-rs with its matching
 # features, for the neural network tests in `tests/dnn_*.rs`.
 dnn = ["opus-rs/deep-plc", "opus-rs/dred", "opus-rs/osce"]
+# Builds the reference as fixed-point libopus (FIXED_POINT), for the SILK
+# encoder comparison in `tests/silk_fixed.rs`; excludes `dnn`. The float-only
+# kernel wrappers of shim.c are left out.
+fixed = []

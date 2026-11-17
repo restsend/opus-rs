@@ -1,6 +1,8 @@
 //! Builds libopus 1.6.1 (float, scalar C only) as the reference.
 //! `-ffp-contract=off` and no intrinsics/RTCD, so results are reproducible
-//! and match a straightforward float port operation for operation.
+//! and match a straightforward float port operation for operation. With the
+//! feature `fixed` it builds the fixed-point libopus (FIXED_POINT, SILK from
+//! silk/fixed/), the reference of opus-rs's SILK encoder.
 use std::{env, fs, path::PathBuf};
 
 fn list(src: &PathBuf, mk: &str, var: &str) -> Vec<PathBuf> {
@@ -37,11 +39,16 @@ fn main() {
     );
     println!("cargo:rerun-if-env-changed=OPUSREF_SRC");
     println!("cargo:rerun-if-changed=shim.c");
+    let fixed = env::var_os("CARGO_FEATURE_FIXED").is_some();
+    let silk = if fixed { "fixed" } else { "float" };
     let mut b = cc::Build::new();
     for (mk, var) in [
         ("celt_sources.mk", "CELT_SOURCES"),
         ("silk_sources.mk", "SILK_SOURCES"),
-        ("silk_sources.mk", "SILK_SOURCES_FLOAT"),
+        (
+            "silk_sources.mk",
+            &format!("SILK_SOURCES_{}", silk.to_uppercase()),
+        ),
         ("opus_sources.mk", "OPUS_SOURCES"),
         ("opus_sources.mk", "OPUS_SOURCES_FLOAT"),
     ] {
@@ -56,6 +63,12 @@ fn main() {
             "cwrs.c",
             "opus_decoder.c",
             "opus_encoder.c",
+            "dec_API.c",
+            "decode_indices.c",
+            "decode_pulses.c",
+            "code_signs.c",
+            "shell_coder.c",
+            "stereo_decode_pred.c",
         ];
         for f in list(&src, mk, var) {
             let name = f.file_name().unwrap().to_str().unwrap().to_owned();
@@ -71,6 +84,13 @@ fn main() {
     println!("cargo:rerun-if-changed=trace.h");
     println!("cargo:rerun-if-changed=silk_hook.h");
     let dnn = env::var_os("CARGO_FEATURE_DNN").is_some();
+    assert!(
+        !(dnn && fixed),
+        "the features dnn and fixed exclude each other"
+    );
+    if fixed {
+        b.define("FIXED_POINT", None);
+    }
     if dnn {
         b.objects(build_dnn(&src));
         // libopus's `--enable-deep-plc --enable-dred --enable-osce`: these
@@ -87,7 +107,7 @@ fn main() {
         .include(src.join("include"))
         .include(src.join("celt"))
         .include(src.join("silk"))
-        .include(src.join("silk/float"))
+        .include(src.join("silk").join(silk))
         .include(src.join("src"))
         .define("OPUS_BUILD", None)
         .define("VAR_ARRAYS", None)

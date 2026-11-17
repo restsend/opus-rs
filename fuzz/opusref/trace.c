@@ -26,7 +26,7 @@ opus_int ofz_silk_Encode(void *enc, silk_EncControlStruct *ctl, const opus_res *
                          ec_enc *rc, opus_int32 *bytes, const opus_int prefill, int activity) {
   if (!prefill && rc) {
     int i, total = n * ctl->nChannelsAPI;
-    for (i = 0; i < total && i < 2 * 5760; i++) silk_in[i] = FLOAT2INT16(in[i]);
+    for (i = 0; i < total && i < 2 * 5760; i++) silk_in[i] = RES2INT16(in[i]);
     silk_n = i;
   }
   return silk_Encode(enc, ctl, in, n, rc, bytes, prefill, activity);
