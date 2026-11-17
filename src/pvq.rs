@@ -582,18 +582,164 @@ pub fn pvq_search(x: &[f32], y: &mut [i32], k: i32, n: usize) {
             k,
             &mut abs_x[..n],
             &mut y2[..n],
-            |a, y, xy, yy| best_pulse_position_in_order(a, y, xy, yy),
+            |abs_x, y2, iy, xy, yy, pulses| {
+                add_pulses(abs_x, y2, iy, xy, yy, pulses, best_pulse_position_in_order)
+            },
         );
         return;
     }
-    // Padded to whole blocks for best_pulse_position.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if let Some(avx2) = crate::compat::avx2() {
+        use fearless_simd::Simd;
+        return pvq_search_blocks(x, y, k, n, |abs_x, y2, iy, xy, yy, pulses| {
+            avx2.vectorize(|| add_pulses_simd(avx2, abs_x, y2, iy, xy, yy, pulses))
+        });
+    }
+    pvq_search_blocks(x, y, k, n, |abs_x, y2, iy, xy, yy, pulses| {
+        add_pulses(abs_x, y2, iy, xy, yy, pulses, best_pulse_position)
+    });
+}
+
+/// [`op_pvq_search`] on scratch buffers padded to whole blocks of 8.
+#[inline(always)]
+fn pvq_search_blocks(x: &[f32], y: &mut [i32], k: i32, n: usize, add: impl AddPulses) {
     let padded = n.next_multiple_of(8);
     with_scratch(padded, |abs_x: &mut [f32]| {
         with_scratch(padded, |y2: &mut [f32]| {
             y2[n..].fill(f32::INFINITY);
-            op_pvq_search(&x[..n], &mut y[..n], k, abs_x, y2, best_pulse_position)
-        })
+            op_pvq_search(&x[..n], &mut y[..n], k, abs_x, y2, add)
+        });
     });
+}
+
+/// The pulse loop of [`op_pvq_search`]: `(abs_x, y2, iy, xy, yy, pulses)`
+/// to the final `yy`.
+trait AddPulses: FnOnce(&[f32], &mut [f32], &mut [i32], f32, f32, i32) -> f32 {}
+impl<F: FnOnce(&[f32], &mut [f32], &mut [i32], f32, f32, i32) -> f32> AddPulses for F {}
+
+/// Adds `pulses` pulses one at a time, each where `best_position` puts it.
+#[inline(always)]
+fn add_pulses(
+    abs_x: &[f32],
+    y2: &mut [f32],
+    iy: &mut [i32],
+    mut xy: f32,
+    mut yy: f32,
+    pulses: i32,
+    best_position: impl Fn(&[f32], &[f32], f32, f32) -> usize,
+) -> f32 {
+    for _ in 0..pulses {
+        // The squared magnitude term gets added anyway, so add it outside the loop.
+        yy += 1.0;
+        let best_id = best_position(abs_x, y2, xy, yy);
+        xy += abs_x[best_id];
+        yy += y2[best_id];
+        y2[best_id] += 2.0;
+        iy[best_id] += 1;
+    }
+    yy
+}
+
+/// [`add_pulses`] with [`best_pulse_position_simd`]. The y2 update is a
+/// vector add to the block (+0 elsewhere keeps the values, all +0 or
+/// above), so the next scan's vector loads read a whole earlier store.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[inline(always)]
+fn add_pulses_simd<S: fearless_simd::Simd>(
+    simd: S,
+    abs_x: &[f32],
+    y2: &mut [f32],
+    iy: &mut [i32],
+    mut xy: f32,
+    mut yy: f32,
+    pulses: i32,
+) -> f32 {
+    use fearless_simd::{Select, SimdBase, f32x8, i32x8};
+    let lanes = i32x8::from_slice(simd, &[0, 1, 2, 3, 4, 5, 6, 7]);
+    for _ in 0..pulses {
+        yy += 1.0;
+        let best_id = best_pulse_position_simd(simd, abs_x, y2, xy, yy);
+        xy += abs_x[best_id];
+        yy += y2[best_id];
+        let b = best_id & !7;
+        let block = &mut y2[b..b + 8];
+        let two = lanes.simd_eq((best_id & 7) as i32);
+        let two = two.select(f32x8::splat(simd, 2.0), f32x8::splat(simd, 0.0));
+        (f32x8::from_slice(simd, block) + two).store_slice(block);
+        iy[best_id] += 1;
+    }
+    yy
+}
+
+/// Rxy^2 and Ryy of block `b` (positions 8b to 8b+7).
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[inline(always)]
+fn pulse_block<S: fearless_simd::Simd>(
+    simd: S,
+    abs_x: &[f32],
+    y2: &[f32],
+    xy: f32,
+    yy: f32,
+    b: usize,
+) -> (fearless_simd::f32x8<S>, fearless_simd::f32x8<S>) {
+    use fearless_simd::{SimdBase, f32x8};
+    let rxy = f32x8::from_slice(simd, &abs_x[8 * b..8 * b + 8]) + xy;
+    (
+        rxy * rxy,
+        f32x8::from_slice(simd, &y2[8 * b..8 * b + 8]) + yy,
+    )
+}
+
+/// [`best_pulse_position`] eight positions per vector. The candidate is the
+/// first position with the largest Rxy^2/Ryy. When it beats every earlier
+/// position and no later position beats it, the scan takes it on arrival
+/// and keeps it, so it is the scan's answer; on near ties or NaN the scan
+/// runs. Its closures-free body inlines into the caller's target features.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[inline(always)]
+fn best_pulse_position_simd<S: fearless_simd::Simd>(
+    simd: S,
+    abs_x: &[f32],
+    y2: &[f32],
+    xy: f32,
+    yy: f32,
+) -> usize {
+    use fearless_simd::{SimdBase, SimdMask, f32x8};
+    let blocks = abs_x.len() / 8;
+    let mut top = f32x8::splat(simd, 0.0);
+    for b in 0..blocks {
+        let (num, den) = pulse_block(simd, abs_x, y2, xy, yy, b);
+        top = top.max(num / den);
+    }
+    let top = top.reduce_max();
+    let mut w = usize::MAX;
+    for b in 0..blocks {
+        let (num, den) = pulse_block(simd, abs_x, y2, xy, yy, b);
+        let hit = (num / den).simd_eq(top).to_bitmask();
+        if hit != 0 {
+            w = 8 * b + hit.trailing_zeros() as usize;
+            break;
+        }
+    }
+    if w == usize::MAX {
+        return best_pulse_position(abs_x, y2, xy, yy);
+    }
+    let rxy = xy + abs_x[w];
+    let (wn, wd) = (rxy * rxy, yy + y2[w]);
+    let mut fail = 0;
+    for b in 0..blocks {
+        let (num, den) = pulse_block(simd, abs_x, y2, xy, yy, b);
+        let w_beats = (den * wn).simd_gt(num * wd).to_bitmask();
+        let beats_w = (num * wd).simd_gt(den * wn).to_bitmask();
+        // Lanes before position w.
+        let before = (1u64 << w.saturating_sub(8 * b).min(8)) - 1;
+        fail |= (!w_beats & before) | (beats_w & !before);
+    }
+    if fail == 0 {
+        w
+    } else {
+        best_pulse_position(abs_x, y2, xy, yy)
+    }
 }
 
 /// [`best_pulse_position`] one position at a time, for short bands.
@@ -622,8 +768,8 @@ fn scan_position(best: &mut (f32, f32, usize), j: usize, a: f32, y: f32, xy: f32
 /// libopus `op_pvq_search_c` (float build): the `k` pulses `iy` whose
 /// direction best matches `x`, returning their squared norm. `abs_x` and
 /// `y2` are zeroed scratch buffers of at least `x.len()` values, padded as
-/// `best_position` needs (`abs_x_padded[..n]` and `y2_padded[..n]` hold
-/// the values, the rest stays as it is).
+/// `add` needs (`abs_x_padded[..n]` and `y2_padded[..n]` hold the values,
+/// the rest stays as it is).
 #[inline(always)]
 fn op_pvq_search(
     x: &[f32],
@@ -631,7 +777,7 @@ fn op_pvq_search(
     k: i32,
     abs_x_padded: &mut [f32],
     y2_padded: &mut [f32],
-    best_position: impl Fn(&[f32], &[f32], f32, f32) -> usize,
+    add: impl AddPulses,
 ) -> f32 {
     const EPSILON: f32 = 1e-15;
     let n = x.len();
@@ -685,16 +831,7 @@ fn op_pvq_search(
         pulses_left = 0;
     }
 
-    for _ in 0..pulses_left {
-        // The squared magnitude term gets added anyway, so add it outside the loop.
-        yy += 1.0;
-        let best_id = best_position(abs_x_padded, y2_padded, xy, yy);
-        let (abs_x, y2) = (&abs_x_padded[..n], &mut y2_padded[..n]);
-        xy += abs_x[best_id];
-        yy += y2[best_id];
-        y2[best_id] += 2.0;
-        iy[best_id] += 1;
-    }
+    let yy = add(abs_x_padded, y2_padded, iy, xy, yy, pulses_left);
 
     // Put the original sign back.
     for (i, &v) in iy.iter_mut().zip(x) {
@@ -971,4 +1108,40 @@ pub fn alg_unquant(
         exp_rotation(x, n, -1, stride, k, spread);
         mask
     })
+}
+
+#[cfg(all(test, feature = "std", any(target_arch = "x86", target_arch = "x86_64")))]
+mod tests {
+    use super::*;
+    use fearless_simd::Simd;
+
+    /// The AVX2 candidate check gives the scan's position, also where
+    /// positions tie, are zero, or come from a few distinct values.
+    #[test]
+    fn best_pulse_position_simd_matches_scan() {
+        let Some(avx2) = crate::compat::avx2() else {
+            return;
+        };
+        let mut seed = 1u32;
+        let mut rand = |m: u32| {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) % m
+        };
+        for _ in 0..20000 {
+            let blocks = 1 + rand(4) as usize;
+            let n = 8 * blocks - rand(8) as usize;
+            let levels = 1 + rand(6);
+            let mut abs_x = std::vec![0.0f32; 8 * blocks];
+            let mut y2 = std::vec![f32::INFINITY; 8 * blocks];
+            for j in 0..n {
+                abs_x[j] = rand(levels) as f32 * 0.37;
+                y2[j] = 2.0 * rand(3) as f32;
+            }
+            let xy = rand(5) as f32 * 0.81;
+            let yy = 1.0 + rand(7) as f32;
+            let scan = best_pulse_position(&abs_x, &y2, xy, yy);
+            let simd = avx2.vectorize(|| best_pulse_position_simd(avx2, &abs_x, &y2, xy, yy));
+            assert_eq!(simd, scan, "{abs_x:?} {y2:?} {xy} {yy}");
+        }
+    }
 }
