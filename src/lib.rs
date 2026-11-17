@@ -3777,6 +3777,10 @@ impl OpusDecoder {
                     }
                     has_redundancy = has_tail && !celt_to_silk;
                     self.range_final = if len <= 1 { 0 } else { rc.rng ^ redundant_rng };
+                    // The packet's next frame follows this one (opus_decode_frame
+                    // 704-705).
+                    self.prev_mode = Some(mode);
+                    self.prev_redundancy = has_redundancy;
                 }
                 decoded_total
             }
@@ -3999,6 +4003,8 @@ impl OpusDecoder {
                         }
                     }
                     self.range_final = if len <= 1 { 0 } else { rc.rng ^ redundant_rng };
+                    self.prev_mode = Some(mode);
+                    self.prev_redundancy = has_redundancy;
                 }
                 decoded_total
             }
