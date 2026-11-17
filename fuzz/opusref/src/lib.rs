@@ -220,3 +220,6 @@ pub mod dnn;
 /// Deep PLC (FARGAN, LPCNet PLC) of the reference.
 #[cfg(feature = "dnn")]
 pub mod dnn_plc;
+/// DRED of the reference.
+#[cfg(feature = "dnn")]
+pub mod dnn_dred;

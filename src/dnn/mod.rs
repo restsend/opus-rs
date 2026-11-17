@@ -7,6 +7,7 @@
 //! - `fft`, `freq`, `burg`, `common`, `lpcnet_tables`, `pitchdnn`,
 //!   `lpcnet_enc`: the LPCNet feature analysis;
 //! - `fargan`, `lpcnet_plc`: deep packet loss concealment;
+//! - `dred`: deep redundancy (RDOVAE and its coding);
 //!
 //! The arithmetic follows libopus's generic C build (no SIMD,
 //! `-ffp-contract=off`) operation for operation, including its mix of
@@ -19,6 +20,8 @@
 pub mod builtin;
 pub mod burg;
 pub mod common;
+#[cfg(feature = "dred")]
+pub mod dred;
 pub mod fargan;
 pub mod fft;
 pub mod freq;
