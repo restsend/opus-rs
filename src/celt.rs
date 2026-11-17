@@ -2120,11 +2120,20 @@ impl CeltEncoder {
         // `(N-overlap)/upsample` and `overlap/upsample` samples.
         // libopus counts C*(N-overlap)/upsample interleaved samples, so a
         // mono stream of stereo input scans the first half of the frame.
-        let interleaved = |k: usize| pcm[(k % cc) * api_frame_size + k / cc].abs();
+        // The largest |sample| at the interleaved positions `r`: position k
+        // is sample k / cc of channel k % cc.
+        let interleaved_max = |r: core::ops::Range<usize>, init: f32| {
+            (0..cc).fold(init, |m, c| {
+                let first = (r.start + cc - 1 - c) / cc;
+                let end = (r.end + cc - 1 - c) / cc;
+                let x = &pcm[c * api_frame_size..][first..end];
+                x.iter().fold(m, |m, v| m.max(v.abs()))
+            })
+        };
         let head = channels * (frame_size - overlap) / upsample;
         let tail = channels * overlap / upsample;
-        let sample_max = (0..head).map(interleaved).fold(self.overlap_max, f32::max);
-        let new_overlap_max = (head..head + tail).map(interleaved).fold(0.0f32, f32::max);
+        let sample_max = interleaved_max(0..head, self.overlap_max);
+        let new_overlap_max = interleaved_max(head..head + tail, 0.0);
         self.overlap_max = new_overlap_max;
         let sample_max = sample_max.max(new_overlap_max);
         // Input beyond +-65536 clips the frame to +-2.0 (celt_encoder.c:2010-2016,
@@ -2144,20 +2153,23 @@ impl CeltEncoder {
             // Zero-stuff the API-rate input to 48 kHz (libopus celt_preemphasis
             // with `upsample`), then run the pre-emphasis filter over all N
             // internal samples.
-            for i in 0..frame_size {
-                let x = if i % upsample == 0 {
-                    let x = pcm[c * api_frame_size + i / upsample] * 32768.0;
-                    if need_clip {
-                        x.clamp(-65536.0, 65536.0)
+            let syn = &mut self.syn_mem[channel_offset + syn_mem_size - frame_size..][..frame_size];
+            let input = &pcm[c * api_frame_size..];
+            for (chunk, &v) in syn.chunks_mut(upsample).zip(input) {
+                for (k, y) in chunk.iter_mut().enumerate() {
+                    let x = if k == 0 {
+                        let x = v * 32768.0;
+                        if need_clip {
+                            x.clamp(-65536.0, 65536.0)
+                        } else {
+                            x
+                        }
                     } else {
-                        x
-                    }
-                } else {
-                    0.0
-                };
-                let val = x - m;
-                self.syn_mem[channel_offset + syn_mem_size - frame_size + i] = val;
-                m = x * coef;
+                        0.0
+                    };
+                    *y = x - m;
+                    m = x * coef;
+                }
             }
             self.preemph_mem[c] = m;
         }
