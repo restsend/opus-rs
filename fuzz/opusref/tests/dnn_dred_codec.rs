@@ -735,6 +735,9 @@ fn dred_decode_i16_matches_libopus() {
                         .dred_decode(&r, left as i32, &mut b, n)
                         .map_or(-1, |n| n as i32);
                     assert_eq!((na, &a), (nb, &b), "packet {k}, {left} samples left");
+                    let mut d = 0i32;
+                    opus_decoder_ctl(dec, GET_LAST_PACKET_DURATION, &mut d as *mut i32);
+                    assert_eq!(rs.last_packet_duration() as i32, d, "packet {k}: last packet duration");
                     left -= n;
                     n_dred += usize::from(cret > 0);
                 }

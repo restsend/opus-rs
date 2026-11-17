@@ -183,6 +183,8 @@ impl OpusDecoder {
             }
             pos += n;
         }
+        // One call of libopus conceals all of it.
+        self.last_packet_duration = frame_size;
         Ok(frame_size)
     }
 
