@@ -141,6 +141,10 @@ fn run(inp: &Input) -> Result<(), Finding> {
                 if r.nb_frames() as i32 != n {
                     fail!("result", "nb_frames", "op {k}: opus-rs {}, libopus {n}", r.nb_frames());
                 }
+                // IJON: the frames held per ToC configuration and code, and
+                // the result.
+                let toc = p.first().map_or(0, |&t| u64::from(t >> 3) << 2 | u64::from(t & 3));
+                ijon_set(1 << 40 | toc << 16 | (n as u64) << 4 | (b & 15) as u64);
             }
             Op::OutRange { begin, end, max } => {
                 let (begin, end, max) = (*begin as usize % 50, *end as usize % 50, *max as usize % 4000);
@@ -171,6 +175,8 @@ fn run(inp: &Input) -> Result<(), Finding> {
                 y.resize(new_len.max(p.len()), 0);
                 let b = unsafe { crp::opus_packet_pad(y.as_mut_ptr(), p.len() as i32, new_len as i32) };
                 compare("pad", k, a, b, &x, &y[..new_len])?;
+                // IJON: padding sizes by magnitude, per result.
+                ijon_max(2 << 8 | (b & 15) as u64, (new_len - p.len().min(new_len)) as u64);
             }
             Op::Unpad(pkt) => {
                 let p = bytes(pkt);
@@ -178,6 +184,8 @@ fn run(inp: &Input) -> Result<(), Finding> {
                 let a = code(rs::unpad(&mut x));
                 let b = unsafe { crp::opus_packet_unpad(y.as_mut_ptr(), y.len() as i32) };
                 compare("unpad", k, a, b, &x, &y)?;
+                // IJON: the padding removed, by magnitude.
+                ijon_max(4 << 8 | (b & 15) as u64, (p.len() as i64 - b as i64).max(0) as u64);
             }
             Op::MultistreamPad { pkt, streams, extra } => {
                 let p = bytes(pkt);
@@ -191,6 +199,7 @@ fn run(inp: &Input) -> Result<(), Finding> {
                     crp::opus_multistream_packet_pad(y.as_mut_ptr(), p.len() as i32, new_len as i32, s as c_int)
                 };
                 compare("multistream_pad", k, a, b, &x, &y[..new_len])?;
+                ijon_max(3 << 8 | (s as u64) << 4 | (b & 15) as u64, (new_len - p.len().min(new_len)) as u64);
             }
             Op::MultistreamUnpad { pkt, streams } => {
                 let p = bytes(pkt);
