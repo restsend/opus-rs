@@ -16,6 +16,11 @@ arbitrary = { version = "1", features = ["derive"] }
 opus-rs = { path = "..", features = ["fuzzing"] }
 opusref = { path = "opusref" }
 
+[features]
+# The neural network features against the DNN-enabled reference: the
+# decoder targets pick a decoder complexity and the bandwidth extension.
+dnn = ["opusref/dnn", "opus-rs/deep-plc", "opus-rs/dred", "opus-rs/osce"]
+
 [dev-dependencies]
 
 [[bin]]

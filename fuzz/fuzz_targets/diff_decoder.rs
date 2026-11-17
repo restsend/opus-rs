@@ -47,7 +47,26 @@ struct Input {
     /// Only libopus-encoded packets and losses: conformant streams, where
     /// SILK must decode bit-exactly.
     valid_only: bool,
+    /// With the `dnn` feature: the decoder complexity (deep PLC from 5,
+    /// LACE at 6, NoLACE from 7) and the bandwidth extension.
+    #[cfg(feature = "dnn")]
+    complexity: u8,
+    #[cfg(feature = "dnn")]
+    bwe: bool,
     ops: Vec<Op>,
+}
+
+/// A new opus-rs decoder with the input's neural network settings.
+fn new_dec(fs: i32, ch: usize, inp: &Input) -> OpusDecoder {
+    #[allow(unused_mut)]
+    let mut d = OpusDecoder::new(fs, ch).unwrap();
+    #[cfg(feature = "dnn")]
+    {
+        d.set_complexity(inp.complexity as i32 % 11).unwrap();
+        d.set_osce_bwe(inp.bwe);
+    }
+    let _ = inp;
+    d
 }
 
 #[derive(Arbitrary, Debug)]
@@ -161,9 +180,15 @@ fn class(pkt: &[u8]) -> String {
 fn run(inp: Input) -> Result<(), Finding> {
     let fs = RATES[inp.rate as usize % RATES.len()];
     let ch = 1 + inp.stereo as usize;
-    let mut scalar = OpusDecoder::new(fs, ch).unwrap();
-    let mut simd = OpusDecoder::new(fs, ch).unwrap();
+    let mut scalar = new_dec(fs, ch, &inp);
+    let mut simd = new_dec(fs, ch, &inp);
     let mut refd = RefDec::new(fs, ch);
+    // OPUS_SET_COMPLEXITY and OPUS_SET_OSCE_BWE, which a reset keeps.
+    #[cfg(feature = "dnn")]
+    {
+        refd.ctl(4010, inp.complexity as i32 % 11);
+        refd.ctl(4054, inp.bwe as i32);
+    }
     let t = tol();
     let mut prev_cls = String::new();
     let mut enc = None;
@@ -215,8 +240,8 @@ fn run(inp: Input) -> Result<(), Finding> {
         let size = match op {
             Op::Reset => {
                 // opus-rs has no reset; a new decoder is the same state.
-                scalar = OpusDecoder::new(fs, ch).unwrap();
-                simd = OpusDecoder::new(fs, ch).unwrap();
+                scalar = new_dec(fs, ch, &inp);
+                simd = new_dec(fs, ch, &inp);
                 refd.reset();
                 continue;
             }

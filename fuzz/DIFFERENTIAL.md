@@ -90,3 +90,20 @@ find the next one:
 | `rate`, `icdf` | Those calls in `api_args` |
 
 Tolerances: `OFZ_DEC_TOL`, `OFZ_PLC_TOL`, `OFZ_SIMD_TOL`, `OFZ_KTOL`.
+
+## Neural network features
+
+`--features dnn` builds the reference as libopus with
+`--enable-deep-plc --enable-dred --enable-osce` (see `opusref/build.rs`) and
+opus-rs with `deep-plc`, `dred` and `osce`; `diff_decoder` then also picks
+a decoder complexity (0-10) and the bandwidth extension from its input:
+
+```sh
+cargo +nightly fuzz run diff_decoder --features dnn -- -len_control=0 -max_len=8192
+```
+
+Deep PLC, LACE/NoLACE and BBWENet are bit-exact with libopus where the
+decoded signal they start from is; any difference before a loss grows
+through the networks, so the decoder tolerances then do not hold for
+concealed frames. The directed tests are `opusref/tests/dnn_*.rs`
+(`cargo test -p opusref --features dnn`).
