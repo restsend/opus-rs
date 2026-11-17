@@ -452,7 +452,18 @@ fn kf_bfly5(
     }
 }
 
+/// The FFT stages in place; with AVX2 the butterflies compile for it.
 pub fn opus_fft_impl(st: &KissFftState, fout: &mut [KissCpx]) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if let Some(avx2) = crate::compat::avx2() {
+        use fearless_simd::Simd;
+        return avx2.vectorize(|| fft_stages(st, fout));
+    }
+    fft_stages(st, fout);
+}
+
+#[inline(always)]
+fn fft_stages(st: &KissFftState, fout: &mut [KissCpx]) {
     // The butterfly kernels index up to nfft elements; the SIMD paths read
     // through raw pointers, so an undersized slice would be out-of-bounds
     // memory access rather than a panic — check up front (issue #27 deep
