@@ -7,7 +7,9 @@
 //! `simd` it builds libopus as its configure does on x86-64: intrinsics and
 //! RTCD, each instruction set's files with its flags, and GCC's default
 //! floating-point contraction (fused multiply-adds in the `-mfma` files).
-use std::{env, fs, path::PathBuf};
+//! The patches in `patches/` apply to copies of the files they change, in
+//! `OUT_DIR`; the source tree stays as fetched.
+use std::{env, fs, path::Path, path::PathBuf, process::Command};
 
 fn list(src: &PathBuf, mk: &str, var: &str) -> Vec<PathBuf> {
     let text = fs::read_to_string(src.join(mk)).unwrap();
@@ -27,7 +29,12 @@ fn list(src: &PathBuf, mk: &str, var: &str) -> Vec<PathBuf> {
         };
         let file = item.trim_end_matches('\\').trim();
         if !file.is_empty() {
-            out.push(src.join(file));
+            let patched = patched_dir().join(file);
+            out.push(if patched.exists() {
+                patched
+            } else {
+                src.join(file)
+            });
         }
         if !item.ends_with('\\') {
             break;
@@ -44,11 +51,65 @@ fn manifest_dir() -> String {
     env::var("CARGO_MANIFEST_DIR").unwrap()
 }
 
+/// The copies of the source files that `patches/` changes.
+fn patched_dir() -> PathBuf {
+    PathBuf::from(env::var("OUT_DIR").unwrap()).join("patched")
+}
+
+/// Applies `patches/*.patch` (in name order, `patch -p1`) to copies of the
+/// files they change in [`patched_dir`]. The patches change `.c` files
+/// only: a copied `.c` file still finds the original headers.
+fn apply_patches(src: &Path) {
+    let out = patched_dir();
+    if out.exists() {
+        fs::remove_dir_all(&out).unwrap();
+    }
+    fs::create_dir_all(&out).unwrap();
+    let dir = Path::new(&manifest_dir()).join("patches");
+    println!("cargo:rerun-if-changed={}", dir.display());
+    let mut patches: Vec<PathBuf> = match fs::read_dir(&dir) {
+        Ok(d) => d
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|e| e == "patch"))
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    patches.sort();
+    for p in &patches {
+        println!("cargo:rerun-if-changed={}", p.display());
+        for line in fs::read_to_string(p).unwrap().lines() {
+            let Some(file) = line.strip_prefix("+++ b/") else {
+                continue;
+            };
+            let file = file.split('\t').next().unwrap().trim();
+            assert!(
+                file.ends_with(".c"),
+                "{}: a patch changes .c files only, not {file}",
+                p.display()
+            );
+            let copy = out.join(file);
+            if !copy.exists() {
+                fs::create_dir_all(copy.parent().unwrap()).unwrap();
+                fs::copy(src.join(file), &copy).unwrap();
+            }
+        }
+        let ok = Command::new("patch")
+            .args(["-p1", "--batch", "--forward", "--no-backup-if-mismatch", "-s", "-d"])
+            .arg(&out)
+            .arg("-i")
+            .arg(p)
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(ok, "{} does not apply", p.display());
+    }
+}
+
 fn main() {
     let src = PathBuf::from(
         env::var("OPUSREF_SRC").unwrap_or_else(|_| format!("{}/../../libopus", manifest_dir())),
     );
     println!("cargo:rerun-if-env-changed=OPUSREF_SRC");
+    apply_patches(&src);
     println!("cargo:rerun-if-changed=shim.c");
     let fixed = env::var_os("CARGO_FEATURE_FIXED").is_some();
     let silk = if fixed { "fixed" } else { "float" };
@@ -59,7 +120,10 @@ fn main() {
         "the features dnn and fixed exclude each other"
     );
     let mut base = cc::Build::new();
-    base.include(&src)
+    // The patched copies first: `wrap/` includes its file by its path in
+    // the source tree.
+    base.include(patched_dir())
+        .include(&src)
         .include(manifest_dir())
         .include(src.join("include"))
         .include(src.join("celt"))
@@ -278,7 +342,8 @@ fn build_dnn(src: &PathBuf, simd: bool, base: &cc::Build) -> Vec<PathBuf> {
     for def in DNN_DEFINES {
         d.define(def, None);
     }
-    d.include(src)
+    d.include(patched_dir())
+        .include(src)
         .include(src.join("include"))
         .include(src.join("celt"))
         .include(src.join("silk"))

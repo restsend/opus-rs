@@ -23,6 +23,16 @@ cargo +nightly fuzz build
 cargo +nightly fuzz run diff_decoder -- -len_control=0 -max_len=8192
 ```
 
+## Reference patches
+
+`opusref/patches/*.patch` fix libopus bugs in the reference that opus-rs
+fixes too. `opusref/build.rs` applies them in name order (`patch -p1`) to
+copies of the `.c` files they change, in its `OUT_DIR`; the libopus tree,
+`OPUSREF_SRC` and the flake's source stay unchanged. Each patch is the diff
+proposed upstream and starts with a description: the bug it fixes and the
+reference builds it changes (float, `dnn`, `fixed`, `simd`). A patch is
+dropped when the pinned libopus revision contains the fix.
+
 ## Running every check
 
 `scripts/test-all.sh` (from the repository root) runs everything and prints a
