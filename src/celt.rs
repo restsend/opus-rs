@@ -2093,6 +2093,21 @@ impl CeltEncoder {
                 .map(|i| pcm[(i % cc) * api_frame_size + i / cc])
                 .collect::<Vec<f32>>()
         );
+        // --- Silence detection (port of libopus celt_encoder.c: sample_max / overlap_max / lsb_depth) ---
+        // libopus measures sample/overlap maxima on the API-rate `pcm`:
+        // `(N-overlap)/upsample` and `overlap/upsample` samples.
+        // libopus counts C*(N-overlap)/upsample interleaved samples, so a
+        // mono stream of stereo input scans the first half of the frame.
+        let interleaved = |k: usize| pcm[(k % cc) * api_frame_size + k / cc].abs();
+        let head = channels * (frame_size - overlap) / upsample;
+        let tail = channels * overlap / upsample;
+        let sample_max = (0..head).map(interleaved).fold(self.overlap_max, f32::max);
+        let new_overlap_max = (head..head + tail).map(interleaved).fold(0.0f32, f32::max);
+        self.overlap_max = new_overlap_max;
+        let sample_max = sample_max.max(new_overlap_max);
+        // Input beyond +-65536 clips the frame to +-2.0 (celt_encoder.c:2010-2016,
+        // 592-597).
+        let need_clip = sample_max > 65536.0;
         let syn_mem_size = 2048 + overlap;
         for c in 0..cc {
             let channel_offset = c * syn_mem_size;
@@ -2109,7 +2124,8 @@ impl CeltEncoder {
             // internal samples.
             for i in 0..frame_size {
                 let x = if i % upsample == 0 {
-                    pcm[c * api_frame_size + i / upsample] * 32768.0
+                    let x = pcm[c * api_frame_size + i / upsample] * 32768.0;
+                    if need_clip { x.clamp(-65536.0, 65536.0) } else { x }
                 } else {
                     0.0
                 };
@@ -2220,18 +2236,6 @@ impl CeltEncoder {
         toneishness = toneishness.min((1.0 - tf_estimate).clamp(0.0, 1.0));
 
         let mut total_bits = (nb_compressed_bytes * 8) as i32;
-        // --- Silence detection (port of libopus celt_encoder.c: sample_max / overlap_max / lsb_depth) ---
-        // libopus measures sample/overlap maxima on the API-rate `pcm`:
-        // `(N-overlap)/upsample` and `overlap/upsample` samples.
-        // libopus counts C*(N-overlap)/upsample interleaved samples, so a
-        // mono stream of stereo input scans the first half of the frame.
-        let interleaved = |k: usize| pcm[(k % cc) * api_frame_size + k / cc].abs();
-        let head = channels * (frame_size - overlap) / upsample;
-        let tail = channels * overlap / upsample;
-        let sample_max = (0..head).map(interleaved).fold(self.overlap_max, f32::max);
-        let new_overlap_max = (head..head + tail).map(interleaved).fold(0.0f32, f32::max);
-        self.overlap_max = new_overlap_max;
-        let sample_max = sample_max.max(new_overlap_max);
         let threshold = 1.0 / ((1 << self.lsb_depth) as f32);
         let mut silence = sample_max <= threshold;
         let tell_initial_frac = rc.tell_frac();

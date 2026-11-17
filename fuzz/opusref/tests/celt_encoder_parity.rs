@@ -138,3 +138,12 @@ fn intensity_stereo_weights_follow_libopus() {
     let cfg = Cfg { fs: 16000, ch: 2, n: 320, bytes: 300, end: 17, ..Cfg::default() };
     assert_eq!(identical(cfg, 20, |_, _, _| 3e-7), [true; 20]);
 }
+
+/// A frame with a sample beyond +-65536 clips its input to +-2.0 before
+/// the pre-emphasis (celt_encoder.c:2010-2016, 592-597).
+#[test]
+fn input_beyond_65536_is_clipped() {
+    let cfg = Cfg { ..Cfg::default() };
+    let loud = |f: usize, i: usize, _| ((f * 960 + i) as f32 * 0.05).sin() * if f == 1 { 1e5 } else { 1.5 };
+    assert_eq!(identical(cfg, 3, loud), [true; 3]);
+}
