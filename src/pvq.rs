@@ -943,10 +943,10 @@ pub fn extract_collapse_mask(iy: &[i32], n: usize, b: usize) -> u32 {
     collapse_mask
 }
 
-pub fn renormalise_vector(x: &mut [f32], n: usize, gain: f32) {
+pub fn renormalise_vector(x: &mut [f32], n: usize, gain: f32, arch: crate::Arch) {
     let x = &mut x[..n];
     // EPSILON after the sum of squares (vq.c:704).
-    let e = 1e-15 + crate::pitch::inner_prod(x, x, n);
+    let e = 1e-15 + crate::pitch::inner_prod(x, x, n, arch);
     let g = gain * (1.0 / e.sqrt());
     for v in x.iter_mut() {
         *v *= g;

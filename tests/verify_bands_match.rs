@@ -24,7 +24,15 @@ fn test_bands_match() {
     let mut band_e = vec![0.0f32; nb_ebands];
     // compute_band_energies(m, X, bandE, end, C, LM, arch=0)
     // Rust signature: compute_band_energies(m: &CeltMode, X: &[f32], bandE: &mut [f32], end: usize, C: usize, LM: i32, arch: i32)
-    compute_band_energies(mode, &x, &mut band_e, nb_ebands, 1, lm);
+    compute_band_energies(
+        mode,
+        &x,
+        &mut band_e,
+        nb_ebands,
+        1,
+        lm,
+        opus_rs::Arch::Scalar,
+    );
 
     // Reference values from verify_bands output
     let ref_energies = [

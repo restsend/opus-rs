@@ -8,23 +8,40 @@ const PITCH_BUF_MAX: usize = 1024;
 
 use crate::celt_lpc::{autocorr, lpc};
 
-/// libopus `celt_inner_prod`: the products summed in order.
-pub fn inner_prod(x: &[f32], y: &[f32], n: usize) -> f32 {
-    let mut sum = 0.0f32;
-    for (&a, &b) in x[..n].iter().zip(&y[..n]) {
-        sum += a * b;
-    }
-    sum
+/// libopus `celt_inner_prod` at `arch`: [`inner_prods`] of one vector.
+pub fn inner_prod(x: &[f32], y: &[f32], n: usize, arch: crate::Arch) -> f32 {
+    inner_prods(x, [y], n, arch)[0]
 }
 
-/// libopus `dual_inner_prod`: two inner products with `x`, each summed in order.
-pub fn dual_inner_prod(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32) {
-    let mut xy1 = 0.0f32;
-    let mut xy2 = 0.0f32;
-    for ((&a, &b1), &b2) in x[..n].iter().zip(&y1[..n]).zip(&y2[..n]) {
-        xy1 += a * b1;
-        xy2 += a * b2;
+/// [`inner_prod`] of the products `product(i)`, i < n.
+pub(crate) fn inner_prod_by(n: usize, arch: crate::Arch, product: impl Fn(usize) -> f32) -> f32 {
+    let mut j = 0;
+    let mut acc = 0.0f32;
+    if arch != crate::Arch::Scalar {
+        let mut s = [0.0f32; 4];
+        while j + 4 <= n {
+            for (l, s) in s.iter_mut().enumerate() {
+                *s += product(j + l);
+            }
+            j += 4;
+        }
+        acc = (s[0] + s[2]) + (s[1] + s[3]);
     }
+    for j in j..n {
+        acc += product(j);
+    }
+    acc
+}
+
+/// libopus `dual_inner_prod` at `arch`: [`inner_prods`] of two vectors.
+pub fn dual_inner_prod(
+    x: &[f32],
+    y1: &[f32],
+    y2: &[f32],
+    n: usize,
+    arch: crate::Arch,
+) -> (f32, f32) {
+    let [xy1, xy2] = inner_prods(x, [y1, y2], n, arch);
     (xy1, xy2)
 }
 
@@ -121,14 +138,39 @@ fn xcorr_kernel<const L: usize>(x: &[f32], y: &[f32], out: &mut [f32]) {
     out.copy_from_slice(&acc);
 }
 
-/// `K` inner products of `x[..n]` with the `ys`, each summed in order as
-/// [`inner_prod`] does, interleaved so they run in parallel.
+/// `K` inner products of `x[..n]` with the `ys`, interleaved so they run in
+/// parallel. At the scalar level each sums its products in order
+/// (`celt_inner_prod_c`). At the x86 levels each is libopus's
+/// `celt_inner_prod_sse` (`dual_inner_prod_sse` is two of them): four
+/// running sums of every fourth product, added as (s0 + s2) + (s1 + s3),
+/// then the last `n % 4` products in order.
 #[inline(always)]
-fn inner_prods<const K: usize>(x: &[f32], ys: [&[f32]; K], n: usize) -> [f32; K] {
+fn inner_prods<const K: usize>(
+    x: &[f32],
+    ys: [&[f32]; K],
+    n: usize,
+    arch: crate::Arch,
+) -> [f32; K] {
     let x = &x[..n];
     let ys = ys.map(|y| &y[..n]);
     let mut acc = [0.0f32; K];
-    for j in 0..n {
+    let mut j = 0;
+    if arch != crate::Arch::Scalar {
+        let mut lanes = [[0.0f32; 4]; K];
+        while j + 4 <= n {
+            for k in 0..K {
+                for l in 0..4 {
+                    lanes[k][l] += x[j + l] * ys[k][j + l];
+                }
+            }
+            j += 4;
+        }
+        for k in 0..K {
+            let s = lanes[k];
+            acc[k] = (s[0] + s[2]) + (s[1] + s[3]);
+        }
+    }
+    for j in j..n {
         for k in 0..K {
             acc[k] += x[j] * ys[k][j];
         }
@@ -430,7 +472,9 @@ fn fine_xcorr(
     for b in best_pitch {
         let lo = (2 * b).saturating_sub(2).min(xcorr.len());
         let hi = (2 * b + 3).min(xcorr.len());
-        xcorr_lags(&x_lp[..len], &y[lo..], &mut xcorr[lo..hi], arch);
+        for i in lo..hi {
+            xcorr[i] = inner_prod(x_lp, &y[i..], len, arch);
+        }
     }
     for v in xcorr.iter_mut() {
         if *v < -1.0 {
@@ -454,6 +498,7 @@ pub fn remove_doubling(
     t0_ptr: &mut usize,
     mut prev_period: usize,
     prev_gain: f32,
+    arch: crate::Arch,
 ) -> f32 {
     let min_period0 = min_period;
     max_period /= 2;
@@ -475,7 +520,7 @@ pub fn remove_doubling(
     let mut yy_lookup_buf = [0.0f32; MAX_YY_SIZE];
     let yy_lookup = &mut yy_lookup_buf[..=max_period];
 
-    let [xx, xy] = inner_prods(x_target, [x_target, &x[max_period - t0..]], n);
+    let [xx, xy] = inner_prods(x_target, [x_target, &x[max_period - t0..]], n, arch);
 
     yy_lookup[0] = xx;
     let mut yy_curr = xx;
@@ -514,7 +559,7 @@ pub fn remove_doubling(
             let (t1, t1b) = periods[(start + c / 2).min(count - 1)];
             &x[max_period - if c % 2 == 0 { t1 } else { t1b }..]
         };
-        let r = inner_prods(x_target, core::array::from_fn::<_, 8, _>(lag), n);
+        let r = inner_prods(x_target, core::array::from_fn::<_, 8, _>(lag), n, arch);
         for c in 0..4.min(count - start) {
             xys[start + c] = (r[2 * c], r[2 * c + 1]);
         }
@@ -552,7 +597,12 @@ pub fn remove_doubling(
     // not a pitch (pitch.c:538-547).
     if t < 2 * min_period {
         let (t1, t2) = (t * 5 / 8, t * 6 / 8);
-        let [xy1, xy2] = inner_prods(x_target, [&x[max_period - t1..], &x[max_period - t2..]], n);
+        let [xy1, xy2] = inner_prods(
+            x_target,
+            [&x[max_period - t1..], &x[max_period - t2..]],
+            n,
+            arch,
+        );
         let g1 = compute_pitch_gain(xy1, xx, yy_lookup[t1]);
         let g2 = compute_pitch_gain(xy2, xx, yy_lookup[t2]);
         if g1 >= g || g2 >= g {
@@ -571,6 +621,7 @@ pub fn remove_doubling(
         x_target,
         core::array::from_fn::<_, 3, _>(|k| &x[max_period + 1 - t - k..]),
         n,
+        arch,
     );
 
     let mut offset = 0;

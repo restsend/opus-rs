@@ -106,6 +106,7 @@ fn mismatches(long: bool) -> (usize, usize) {
                 &mut ta,
                 prev_period,
                 prev_gain,
+                opus_rs::Arch::Scalar,
             );
             let mut tb = t0 as i32;
             let mut y = x.clone();

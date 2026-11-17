@@ -100,4 +100,16 @@ int ref_celt_encode_after(void *st, const float *pcm, int frame_size, unsigned c
   for (int i = 0; i < prefix; i++) ec_enc_bit_logp(&enc, i & 1, 1);
   return celt_encode_with_ec((CELTEncoder *)st, pcm, frame_size, NULL, bytes, &enc);
 }
+/* celt_inner_prod and dual_inner_prod, macros that select the kernel of
+   the level `arch`. */
+#include "pitch.h"
+float ref_celt_inner_prod(const float *x, const float *y, int n, int arch) {
+  (void)arch;
+  return celt_inner_prod(x, y, n, arch);
+}
+void ref_dual_inner_prod(const float *x, const float *y1, const float *y2, int n,
+                         float *xy1, float *xy2, int arch) {
+  (void)arch;
+  dual_inner_prod(x, y1, y2, n, xy1, xy2, arch);
+}
 #endif

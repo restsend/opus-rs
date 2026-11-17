@@ -251,7 +251,7 @@ pub fn compute_qn(n: usize, b: i32, offset: i32, pulse_cap: i32, stereo: bool) -
 }
 
 #[inline(always)]
-pub fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i32 {
+pub fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool, n: usize, arch: crate::Arch) -> i32 {
     let (x, y) = (&x[..n], &y[..n]);
     let mut emid = 0.0f32;
     let mut eside = 0.0f32;
@@ -263,10 +263,8 @@ pub fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i32 {
             eside += s * s;
         }
     } else {
-        for (&a, &b) in x.iter().zip(y) {
-            emid += a * a;
-            eside += b * b;
-        }
+        emid += crate::pitch::inner_prod(x, x, n, arch);
+        eside += crate::pitch::inner_prod(y, y, n, arch);
     }
     let mid = emid.sqrt();
     let side = eside.sqrt();
@@ -336,7 +334,7 @@ pub fn compute_theta(
 
     let mut itheta = 0;
     if ctx.encode {
-        itheta = stereo_itheta(x, y, stereo, n) >> 16;
+        itheta = stereo_itheta(x, y, stereo, n, ctx.arch) >> 16;
     }
 
     let tell_start = tell_frac_inline!(ctx.rc);
@@ -1152,14 +1150,14 @@ pub fn quant_partition(
                                 -1.0 / 256.0
                             };
                     }
-                    renormalise_vector(x, n, gain);
+                    renormalise_vector(x, n, gain, ctx.arch);
                     cm = fill_masked;
                 } else {
                     for xv in x[..n].iter_mut() {
                         ctx.seed = celt_lcg_rand(ctx.seed);
                         *xv = ((ctx.seed as i32 >> 20) as f32) / 16384.0;
                     }
-                    renormalise_vector(x, n, gain);
+                    renormalise_vector(x, n, gain, ctx.arch);
                     cm = cm_mask;
                 }
             }
@@ -1403,13 +1401,16 @@ pub fn quant_band(
     cm
 }
 
-pub fn stereo_merge(x: &mut [f32], y: &mut [f32], mid: f32, _side: f32, n: usize) {
-    let mut xp = 0.0f32;
-    let mut side_e = 0.0f32;
-    for i in 0..n {
-        xp += y[i] * x[i];
-        side_e += y[i] * y[i];
-    }
+pub fn stereo_merge(
+    x: &mut [f32],
+    y: &mut [f32],
+    mid: f32,
+    _side: f32,
+    n: usize,
+    arch: crate::Arch,
+) {
+    let mut xp = crate::pitch::inner_prod(y, x, n, arch);
+    let side_e = crate::pitch::inner_prod(y, y, n, arch);
 
     xp *= mid;
     let el = mid * mid + side_e - 2.0 * xp;
@@ -1748,7 +1749,7 @@ pub fn quant_band_stereo(
     }
 
     if ctx.resynth {
-        stereo_merge(x, y, mid_gain, side_gain, n);
+        stereo_merge(x, y, mid_gain, side_gain, n, ctx.arch);
         if sctx.inv {
             for yv in y[..n].iter_mut() {
                 *yv = -*yv;
@@ -2008,8 +2009,8 @@ pub fn quant_all_bands(
                 let cm_down = quant_band_stereo(
                     &mut ctx, x_slice, y_slice, n, b, b_blocks, lb, lm, lb_out, 1.0, cm,
                 );
-                let dist_down = w[0] * crate::pitch::inner_prod(&x_save, x_slice, n)
-                    + w[1] * crate::pitch::inner_prod(&y_save, y_slice, n);
+                let dist_down = w[0] * crate::pitch::inner_prod(&x_save, x_slice, n, arch)
+                    + w[1] * crate::pitch::inner_prod(&y_save, y_slice, n, arch);
 
                 let rc_down = ctx.rc.state();
                 let (seed_down, bits_down) = (ctx.seed, ctx.remaining_bits);
@@ -2042,8 +2043,8 @@ pub fn quant_all_bands(
                 x_cm = quant_band_stereo(
                     &mut ctx, x_slice, y_slice, n, b, b_blocks, lb, lm, lb_out, 1.0, cm,
                 );
-                let dist_up = w[0] * crate::pitch::inner_prod(&x_save, x_slice, n)
-                    + w[1] * crate::pitch::inner_prod(&y_save, y_slice, n);
+                let dist_up = w[0] * crate::pitch::inner_prod(&x_save, x_slice, n, arch)
+                    + w[1] * crate::pitch::inner_prod(&y_save, y_slice, n, arch);
                 dumpi!("rdo_band", &[i as i32]);
                 dumpf!("rdo_dist", &[dist_down, dist_up]);
                 dumpf!("rdo_x", x_slice);
@@ -2124,6 +2125,7 @@ pub fn compute_band_energies(
     end: usize,
     channels: usize,
     lm: usize,
+    arch: crate::Arch,
 ) {
     let frame_size = m.short_mdct_size << lm;
     for c in 0..channels {
@@ -2133,7 +2135,7 @@ pub fn compute_band_energies(
             let n = ((m.e_bands[i + 1] - m.e_bands[i]) as usize) << lm;
             let band = &ch[offset..offset + n];
             // bands.c:160: 1e-27 after the sum of squares.
-            let sum = 1e-27 + band.iter().fold(0.0f32, |acc, &v| acc + v * v);
+            let sum = 1e-27 + crate::pitch::inner_prod(band, band, n, arch);
             band_e[c * m.nb_ebands + i] = sum.sqrt();
         }
     }
@@ -2244,6 +2246,7 @@ pub fn anti_collapse(
     prev2_log_e: &[f32],
     pulses: &[i32],
     mut seed: u32,
+    arch: crate::Arch,
 ) -> u32 {
     for i in start..end {
         let n0 = (m.e_bands[i + 1] - m.e_bands[i]) as usize;
@@ -2291,7 +2294,12 @@ pub fn anti_collapse(
                 }
             }
             if renormalize {
-                renormalise_vector(&mut x_buf[x_offset..x_offset + (n0 << lm)], n0 << lm, 1.0);
+                renormalise_vector(
+                    &mut x_buf[x_offset..x_offset + (n0 << lm)],
+                    n0 << lm,
+                    1.0,
+                    arch,
+                );
             }
         }
     }

@@ -231,6 +231,8 @@ enum OpusMode {
 }
 
 pub struct OpusEncoder {
+    /// libopus `OpusEncoder.arch`, chosen at init.
+    arch: Arch,
     #[cfg(not(feature = "heap"))]
     celt_enc: CeltEncoder,
     #[cfg(feature = "heap")]
@@ -665,13 +667,13 @@ const PSEUDO_SNR_THRESHOLD: f32 = 316.23;
 const VAD_NO_DECISION: i32 = -1;
 
 /// libopus `compute_frame_energy` (float build): the mean square of the
-/// input, at the float API's scale.
-fn compute_frame_energy(input: PcmInput<'_>, len: usize) -> f32 {
+/// input, at the float API's scale (`celt_inner_prod` at `arch`).
+fn compute_frame_energy(input: PcmInput<'_>, len: usize, arch: Arch) -> f32 {
     let sum = match input {
-        PcmInput::F32(s) => s[..len].iter().fold(0.0f32, |acc, &x| acc + x * x),
-        PcmInput::I16(s) => s[..len].iter().fold(0.0f32, |acc, &x| {
-            let x = f32::from(x) / 32768.0;
-            acc + x * x
+        PcmInput::F32(s) => crate::pitch::inner_prod(s, s, len, arch),
+        PcmInput::I16(s) => crate::pitch::inner_prod_by(len, arch, |i| {
+            let x = f32::from(s[i]) / 32768.0;
+            x * x
         }),
     };
     sum / len as f32
@@ -953,6 +955,7 @@ fn filter_frame(
     frame_size: usize,
     ch: usize,
     fs: i32,
+    arch: Arch,
 ) {
     if voip {
         hp_cutoff_float(input, cutoff_hz, out, hp_mem, frame_size, ch, fs);
@@ -960,7 +963,7 @@ fn filter_frame(
         dc_reject_float(input, 3, out, hp_mem, frame_size, ch, fs);
     }
     // NaN guard, in libopus's shape (`!(sum < 1e9f) || celt_isnan(sum)`).
-    let sum: f32 = out.iter().map(|v| v * v).sum();
+    let sum = crate::pitch::inner_prod(out, out, out.len(), arch);
     #[allow(clippy::neg_cmp_op_on_partial_ord)]
     if !(sum < 1e9) || sum.is_nan() {
         out.fill(0.0);
@@ -1384,6 +1387,7 @@ impl OpusEncoder {
         let variable_hp_smth2_q15 = silk_lin2log(60) << 8;
 
         Ok(Self {
+            arch: Arch::select(),
             celt_enc,
             silk_enc,
             silk_enc_side,
@@ -1920,7 +1924,7 @@ impl OpusEncoder {
         // Track the peak signal energy of active frames, wherever the
         // analysis ran or not (opus_encoder.c:1311-1321).
         if (!info.valid || info.activity_probability > DTX_ACTIVITY_THRESHOLD) && !is_silence {
-            let energy = compute_frame_energy(input, n);
+            let energy = compute_frame_energy(input, n, self.arch);
             let decayed = 0.999 * self.peak_signal_energy;
             self.peak_signal_energy = if decayed > energy { decayed } else { energy };
         }
@@ -2429,13 +2433,14 @@ impl OpusEncoder {
         } else if analysis_info.valid {
             activity = i32::from(analysis_info.activity_probability >= DTX_ACTIVITY_THRESHOLD);
             if activity == 0 {
-                let noise_energy = compute_frame_energy(input, frame_size * self.channels);
+                let noise_energy =
+                    compute_frame_energy(input, frame_size * self.channels, self.arch);
                 activity = i32::from(self.peak_signal_energy < PSEUDO_SNR_THRESHOLD * noise_energy);
             }
         } else if mode == OpusMode::CeltOnly {
             // Boosting peak energy a bit because we didn't just average the
             // active frames (C's HALF32).
-            let noise_energy = compute_frame_energy(input, frame_size * self.channels);
+            let noise_energy = compute_frame_energy(input, frame_size * self.channels, self.arch);
             activity =
                 i32::from(self.peak_signal_energy < PSEUDO_SNR_THRESHOLD * (0.5 * noise_energy));
         }
@@ -2553,6 +2558,7 @@ impl OpusEncoder {
                 frame_size,
                 ch,
                 self.sampling_rate,
+                self.arch,
             );
             // SILK's input. VoIP follows the fixed-point build, whose
             // `hp_cutoff` is an integer filter on the 16-bit input, so its

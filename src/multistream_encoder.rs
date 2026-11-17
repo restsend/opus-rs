@@ -70,6 +70,8 @@ pub struct MultistreamEncoder {
     /// (libopus `ms_get_preemph_mem`, `ms_get_window_mem`).
     preemph_mem: Vec<f32>,
     window_mem: Vec<f32>,
+    /// libopus `OpusMSEncoder.arch`, chosen at init.
+    arch: crate::Arch,
 }
 
 impl MultistreamEncoder {
@@ -212,6 +214,7 @@ impl MultistreamEncoder {
             lfe_stream,
             preemph_mem: vec![0.0; channels],
             window_mem: vec![0.0; channels * 120],
+            arch: crate::Arch::select(),
         };
         if (0..streams).any(|s| enc.stream_channels(s).is_none()) {
             return Err(BAD_ARG);
@@ -565,7 +568,7 @@ impl MultistreamEncoder {
                     }
                     freq[bound..].fill(0.0);
                 }
-                crate::bands::compute_band_energies(mode, &freq, &mut tmp_e, 21, 1, lm);
+                crate::bands::compute_band_energies(mode, &freq, &mut tmp_e, 21, 1, lm, self.arch);
                 for i in 0..21 {
                     band_e[i] = band_e[i].max(tmp_e[i]);
                 }

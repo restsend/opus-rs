@@ -1084,6 +1084,7 @@ fn run_prefilter(
             &mut pitch_index,
             prefilter_period,
             prefilter_gain,
+            arch,
         );
         if pitch_index > max_period - 2 {
             pitch_index = max_period - 2;
@@ -1428,6 +1429,7 @@ fn alloc_trim_analysis(
     intensity: i32,
     surround_trim: f32,
     equiv_rate: i32,
+    arch: crate::Arch,
 ) -> i32 {
     let mut trim = 5.0f32;
     if equiv_rate < 64000 {
@@ -1442,21 +1444,14 @@ fn alloc_trim_analysis(
         for i in 0..8 {
             let offset = (mode.e_bands[i] as usize) << lm;
             let n = ((mode.e_bands[i + 1] - mode.e_bands[i]) as usize) << lm;
-            let mut partial = 0.0f32;
-            for j in 0..n {
-                partial += x[offset + j] * x[n0 + offset + j];
-            }
-            sum += partial;
+            sum += crate::pitch::inner_prod(&x[offset..], &x[n0 + offset..], n, arch);
         }
         sum = (sum / 8.0).abs().min(1.0);
         let mut min_xc = sum;
         for i in 8..intensity as usize {
             let offset = (mode.e_bands[i] as usize) << lm;
             let n = ((mode.e_bands[i + 1] - mode.e_bands[i]) as usize) << lm;
-            let mut partial = 0.0f32;
-            for j in 0..n {
-                partial += x[offset + j] * x[n0 + offset + j];
-            }
+            let partial = crate::pitch::inner_prod(&x[offset..], &x[n0 + offset..], n, arch);
             min_xc = min_xc.min(partial.abs());
         }
         min_xc = min_xc.min(1.0);
@@ -2539,7 +2534,7 @@ impl CeltEncoder {
                 mode, false, in_buf, freq, channels, cc, frame_size, overlap, lm, upsample,
             );
             let band_e2 = &mut self.w_band_e2[..nb_ebands * channels];
-            compute_band_energies(mode, freq, band_e2, end, channels, lm);
+            compute_band_energies(mode, freq, band_e2, end, channels, lm, self.arch);
             let band_log_e2 = &mut self.w_band_log_e2[..nb_ebands * channels];
             crate::bands::amp2log2(mode, eff_end, end, band_e2, band_log_e2, channels);
             for c in 0..channels {
@@ -2560,7 +2555,7 @@ impl CeltEncoder {
             lm,
             upsample,
         );
-        compute_band_energies(mode, freq, band_e, end, channels, lm);
+        compute_band_energies(mode, freq, band_e, end, channels, lm, self.arch);
         // An LFE stream keeps the energy of its lowest two bands
         // (celt_encoder.c:2099-2106).
         if self.lfe {
@@ -2683,7 +2678,7 @@ impl CeltEncoder {
             compute_mdcts(
                 mode, true, in_buf, freq, channels, cc, frame_size, overlap, lm, upsample,
             );
-            compute_band_energies(mode, freq, band_e, end, channels, lm);
+            compute_band_energies(mode, freq, band_e, end, channels, lm, self.arch);
             crate::bands::amp2log2(mode, eff_end, end, band_e, band_log_e, channels);
             tf_estimate = 0.2;
         }
@@ -2974,6 +2969,7 @@ impl CeltEncoder {
                     self.intensity,
                     surround_trim,
                     equiv_rate,
+                    self.arch,
                 );
             }
             rc.encode_icdf(alloc_trim, &TRIM_ICDF, 7);
@@ -4108,6 +4104,7 @@ impl CeltDecoder {
                 &self.old_band_e3,
                 pulses,
                 self.rng,
+                self.arch,
             );
         }
         if silence {

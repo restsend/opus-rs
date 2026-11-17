@@ -286,6 +286,16 @@ unsafe extern "C" {
     );
     pub fn _celt_lpc(lpc: *mut f32, ac: *const f32, p: c_int);
     pub fn renormalise_vector(x: *mut f32, n: c_int, gain: f32, arch: c_int);
+    pub fn ref_celt_inner_prod(x: *const f32, y: *const f32, n: c_int, arch: c_int) -> f32;
+    pub fn ref_dual_inner_prod(
+        x: *const f32,
+        y1: *const f32,
+        y2: *const f32,
+        n: c_int,
+        xy1: *mut f32,
+        xy2: *mut f32,
+        arch: c_int,
+    );
     pub fn stereo_itheta(
         x: *const f32,
         y: *const f32,

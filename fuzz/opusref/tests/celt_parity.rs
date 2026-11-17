@@ -167,7 +167,7 @@ fn band_energies_add_the_floor_after_the_sum() {
             .collect();
         let mut a = [0f32; 21];
         let mut b = [0f32; 21];
-        opus_rs::bands::compute_band_energies(mode, &x, &mut a, 21, 1, 3);
+        opus_rs::bands::compute_band_energies(mode, &x, &mut a, 21, 1, 3, opus_rs::Arch::Scalar);
         unsafe {
             compute_band_energies(ref_celt_mode48(), x.as_ptr(), b.as_mut_ptr(), 21, 1, 3, 0)
         };
@@ -201,7 +201,10 @@ fn split_angle_is_truncated_from_q30() {
 fn silent_split_has_zero_angle() {
     let z = [0f32; 4];
     let c = unsafe { stereo_itheta(z.as_ptr(), z.as_ptr(), 0, 4, 0) };
-    assert_eq!(opus_rs::bands::stereo_itheta(&z, &z, false, 4), c);
+    assert_eq!(
+        opus_rs::bands::stereo_itheta(&z, &z, false, 4, opus_rs::Arch::Scalar),
+        c
+    );
 }
 
 /// How often stereo_itheta (Q30) of random vectors differs from libopus's,
@@ -218,7 +221,7 @@ fn itheta_mismatches(y_scale: f32, stereo: &[bool]) -> usize {
         let x: Vec<f32> = (0..n).map(|_| v()).collect();
         let y: Vec<f32> = (0..n).map(|_| v() * y_scale).collect();
         for &stereo in stereo {
-            let a = opus_rs::bands::stereo_itheta(&x, &y, stereo, n);
+            let a = opus_rs::bands::stereo_itheta(&x, &y, stereo, n, opus_rs::Arch::Scalar);
             let b = unsafe { stereo_itheta(x.as_ptr(), y.as_ptr(), stereo as i32, n as i32, 0) };
             bad += (a != b) as usize;
         }
@@ -302,7 +305,7 @@ fn renormalise_mismatches(scale: f32) -> usize {
         let gain = 0.25 + (k % 7) as f32 * 0.125;
         let mut a = x.clone();
         let mut b = x.clone();
-        opus_rs::bands::renormalise_vector(&mut a, n, gain);
+        opus_rs::bands::renormalise_vector(&mut a, n, gain, opus_rs::Arch::Scalar);
         unsafe { renormalise_vector(b.as_mut_ptr(), n as i32, gain, 0) };
         bad += (a != b) as usize;
     }

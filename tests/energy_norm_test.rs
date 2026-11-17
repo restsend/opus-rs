@@ -21,7 +21,15 @@ fn test_energy_norm_denorm() {
 
     // Compute energies
     let mut band_e = vec![0.0f32; nb_ebands * channels];
-    compute_band_energies(mode, &freq, &mut band_e, nb_ebands, channels, lm);
+    compute_band_energies(
+        mode,
+        &freq,
+        &mut band_e,
+        nb_ebands,
+        channels,
+        lm,
+        opus_rs::Arch::Scalar,
+    );
 
     let mut band_log_e = vec![0.0f32; nb_ebands * channels];
     opus_rs::bands::amp2log2(

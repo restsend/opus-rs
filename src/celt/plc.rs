@@ -154,7 +154,7 @@ impl CeltDecoder {
                     seed = celt_lcg_rand(seed);
                     *v = ((seed as i32) >> 20) as f32;
                 }
-                renormalise_vector(&mut x[b0..b0 + blen], blen, 1.0);
+                renormalise_vector(&mut x[b0..b0 + blen], blen, 1.0, self.arch);
             }
         }
         self.rng = seed;
