@@ -129,3 +129,12 @@ fn quiet_onsets_weigh_the_epsilon_like_libopus() {
     };
     assert_eq!(identical(cfg, 2, chirp), [true; 2]);
 }
+
+/// Intensity stereo weighs the channels by bandE/(EPSILON +
+/// sqrt(EPSILON + left^2 + right^2)) (bands.c:391-395); a quiet DC
+/// leaves bands at the energy floor.
+#[test]
+fn intensity_stereo_weights_follow_libopus() {
+    let cfg = Cfg { fs: 16000, ch: 2, n: 320, bytes: 300, end: 17, ..Cfg::default() };
+    assert_eq!(identical(cfg, 20, |_, _, _| 3e-7), [true; 20]);
+}

@@ -1400,9 +1400,11 @@ fn intensity_stereo(
     band: usize,
     n: usize,
 ) {
-    let left = band_e[band].max(MIN_STEREO_ENERGY);
-    let right = band_e[m.nb_ebands + band].max(MIN_STEREO_ENERGY);
-    let norm = (left * left + right * right).sqrt().max(MIN_STEREO_ENERGY);
+    // bands.c:391 (float build): EPSILON inside and outside the root.
+    const EPSILON: f32 = 1e-15;
+    let left = band_e[band];
+    let right = band_e[m.nb_ebands + band];
+    let norm = EPSILON + (EPSILON + left * left + right * right).sqrt();
     let a1 = left / norm;
     let a2 = right / norm;
     for i in 0..n {
