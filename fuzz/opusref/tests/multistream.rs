@@ -282,6 +282,7 @@ fn controls_queries_and_integer_output_match_libopus() {
     let code = |r: Result<(), &str>| r.map_or_else(|e| opus_rs::error::code(e).unwrap(), |()| 0);
     assert_eq!(code(d.rs.set_gain(40000)), unsafe { opus_multistream_decoder_ctl(d.c, SET_GAIN, 40000) });
     assert_eq!(code(d.rs.set_gain(-700)), unsafe { opus_multistream_decoder_ctl(d.c, SET_GAIN, -700) });
+    assert_eq!(code(d.rs.set_complexity(11)), unsafe { opus_multistream_decoder_ctl(d.c, SET_COMPLEXITY, 11) });
     assert_eq!(code(d.rs.set_complexity(6)), unsafe { opus_multistream_decoder_ctl(d.c, SET_COMPLEXITY, 6) });
     d.rs.set_phase_inversion_disabled(true);
     unsafe { opus_multistream_decoder_ctl(d.c, SET_PHASE_INVERSION_DISABLED, 1) };

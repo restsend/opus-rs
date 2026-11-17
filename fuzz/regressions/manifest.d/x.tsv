@@ -1,0 +1,2 @@
+# API lane: the libopus API surface; same columns as ../manifest.tsv.
+x1	diff_multistream	-	DIFF[ctl]	decoder complexity outside 0-10 rejected with a text that is no libopus error code

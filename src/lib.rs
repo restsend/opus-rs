@@ -4203,7 +4203,7 @@ impl OpusDecoder {
     /// nothing.
     pub fn set_complexity(&mut self, complexity: i32) -> Result<(), &'static str> {
         if !(0..=10).contains(&complexity) {
-            return Err("complexity must be 0 to 10");
+            return Err(crate::error::BAD_ARG);
         }
         self.complexity = complexity;
         // libopus passes it on to CELT (OPUS_SET_COMPLEXITY).

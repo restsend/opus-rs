@@ -38,7 +38,7 @@ where noted.
 
 ## Counts
 
-146 fix commits: 91 guarded (G), 24 reproducer only (R), 1 fuzz-findable (F), 24 unguarded (U), 3 SIMD kernel removed (X), 3 no behaviour change (N).
+147 fix commits: 91 guarded (G), 25 reproducer only (R), 1 fuzz-findable (F), 24 unguarded (U), 3 SIMD kernel removed (X), 3 no behaviour change (N).
 
 ## Fixes
 
@@ -190,6 +190,7 @@ where noted.
 | 210 | `mxrromnu` | encoder: compare CELT-only activity in float as the float build does | U | a single f32 value per frame energy decides it; no reproducer (commit message) | commit message |
 | 211 | `ylqzmlwm` | encoder: hand SILK the toMono flag while a switch to mono waits | G | opusref silk_fixed::stereo_to_mono_switches_match_fixed_point_libopus (--features fixed) | reverted: fails opusref --features fixed (stereo_to_mono_switches_match_fixed_point_libopus) |
 | 213 | `sztrnrtw` | silk: zero the padding pulses of a 10 ms frame at 12 kHz | G | opusref silk_frame_switch_range (s1) | reverted: fails opusref (ten_ms_silk_frames_after_longer_frames_keep_the_range) |
+| 214 | `ppnxtost` | decoder: reject an out-of-range complexity with error::BAD_ARG | R | regression x1 (diff_multistream `ctl`) | x1 present before the fix |
 
 ## Reproducers that no longer reach their bug
 
