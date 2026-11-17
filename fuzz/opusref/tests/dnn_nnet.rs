@@ -19,12 +19,13 @@ struct Layer {
     nin: usize,
     nout: usize,
     bias: Option<Vec<f32>>,
+    subias: Option<Vec<f32>>,
     w8: Option<Vec<i8>>,
     fw: Option<Vec<f32>>,
     idx: Option<Vec<i32>>,
     diag: Option<Vec<f32>>,
     scale: Option<Vec<f32>>,
-    b: [Option<Vec<u8>>; 6],
+    b: [Option<Vec<u8>>; 7],
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -75,6 +76,8 @@ impl Layer {
         };
         let scale = w8.as_ref().map(|_| vecf(r, nout, 1.0 / 256.0));
         let bias = bias.then(|| vecf(r, nout, 1.0));
+        // The bias of the int8 layers at the x86 levels (unsigned inputs).
+        let subias = w8.as_ref().map(|_| vecf(r, nout, 1.0));
         let diag = diag.then(|| vecf(r, nout, 0.5));
         let b = [
             bias.as_deref().map(bytes_f32),
@@ -83,11 +86,13 @@ impl Layer {
             idx.as_deref().map(bytes_i32),
             diag.as_deref().map(bytes_f32),
             scale.as_deref().map(bytes_f32),
+            subias.as_deref().map(bytes_f32),
         ];
         Layer {
             nin,
             nout,
             bias,
+            subias,
             w8,
             fw,
             idx,
@@ -103,7 +108,7 @@ impl Layer {
         }
         c::LinearLayer {
             bias: p(&self.bias),
-            subias: core::ptr::null(),
+            subias: p(&self.subias),
             weights: p(&self.w8),
             float_weights: p(&self.fw),
             weights_idx: p(&self.idx),
@@ -117,7 +122,7 @@ impl Layer {
     fn rs(&self) -> rs::LinearLayer<'_> {
         rs::LinearLayer {
             bias: self.b[0].as_deref().map(F32s::new),
-            subias: None,
+            subias: self.b[6].as_deref().map(F32s::new),
             weights: self.b[1].as_deref(),
             float_weights: self.b[2].as_deref().map(F32s::new),
             weights_idx: self.b[3].as_deref().map(I32s::new),
@@ -159,6 +164,7 @@ fn activations_match() {
         0.0,
         -0.0,
         f32::NAN,
+        -f32::NAN,
         f32::INFINITY,
         f32::NEG_INFINITY,
         1e30,

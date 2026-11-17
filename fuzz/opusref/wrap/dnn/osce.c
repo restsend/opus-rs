@@ -2,6 +2,7 @@
    the OSCE tests (tests/dnn_osce.rs). The angle brackets find osce.c on
    the include path (opus-1.6.1/dnn). */
 #include <osce.c>
+#include "cpu_support.h"
 #include <stdlib.h>
 
 void ref_lace_numbits_embedding(float *emb, float numbits, float min_val, float max_val) {
@@ -26,15 +27,15 @@ BBWENetState *ref_bbwenet_state_new(void) {
 
 void ref_lace_process_20ms_frame(OSCEModel *m, LACEState *st, float *out, const float *in, const float *features,
                                  const float *numbits, const int *periods) {
-  lace_process_20ms_frame(&m->lace, st, out, in, features, numbits, periods, 0);
+  lace_process_20ms_frame(&m->lace, st, out, in, features, numbits, periods, opus_select_arch());
 }
 void ref_nolace_process_20ms_frame(OSCEModel *m, NoLACEState *st, float *out, const float *in, const float *features,
                                    const float *numbits, const int *periods) {
-  nolace_process_20ms_frame(&m->nolace, st, out, in, features, numbits, periods, 0);
+  nolace_process_20ms_frame(&m->nolace, st, out, in, features, numbits, periods, opus_select_arch());
 }
 void ref_bbwenet_process_frames(OSCEModel *m, BBWENetState *st, float *out, const float *in, const float *features,
                                 int num_frames) {
-  bbwenet_process_frames(&m->bbwenet, st, out, in, features, num_frames, 0);
+  bbwenet_process_frames(&m->bbwenet, st, out, in, features, num_frames, opus_select_arch());
 }
 
 resamp_state *ref_resamp_state_new(void) { return calloc(1, sizeof(resamp_state)); }

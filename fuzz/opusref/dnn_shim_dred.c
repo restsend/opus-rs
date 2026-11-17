@@ -2,6 +2,7 @@
    states of dnn/dred_*.c without the Rust side knowing their layout. */
 #include <stdlib.h>
 #include <string.h>
+#include "cpu_support.h"
 #include "dred_encoder.h"
 #include "dred_decoder.h"
 #include "dred_coding.h"
@@ -58,7 +59,7 @@ RefRdovaeEnc *ref_rdovae_enc_create(void)
 void ref_rdovae_enc_destroy(RefRdovaeEnc *e) { free(e); }
 void ref_rdovae_encode_dframe(RefRdovaeEnc *e, float *latents, float *initial_state, const float *input)
 {
-  dred_rdovae_encode_dframe(&e->st, &e->model, latents, initial_state, input, 0);
+  dred_rdovae_encode_dframe(&e->st, &e->model, latents, initial_state, input, opus_select_arch());
 }
 /* The state as floats: the GRU states then the conv states, in field order.
    Returns `initialized`; `*n` receives the float count. */
@@ -86,15 +87,15 @@ RefRdovaeDec *ref_rdovae_dec_create(void)
 void ref_rdovae_dec_destroy(RefRdovaeDec *d) { free(d); }
 void ref_rdovae_dec_init_states(RefRdovaeDec *d, const float *initial_state)
 {
-  dred_rdovae_dec_init_states(&d->st, &d->model, initial_state, 0);
+  dred_rdovae_dec_init_states(&d->st, &d->model, initial_state, opus_select_arch());
 }
 void ref_rdovae_decode_qframe(RefRdovaeDec *d, float *qframe, const float *z)
 {
-  dred_rdovae_decode_qframe(&d->st, &d->model, qframe, z, 0);
+  dred_rdovae_decode_qframe(&d->st, &d->model, qframe, z, opus_select_arch());
 }
 void ref_rdovae_decode_all(RefRdovaeDec *d, float *features, const float *state, const float *latents, int nb)
 {
-  DRED_rdovae_decode_all(&d->model, features, state, latents, nb, 0);
+  DRED_rdovae_decode_all(&d->model, features, state, latents, nb, opus_select_arch());
 }
 int ref_rdovae_dec_state(const RefRdovaeDec *d, float *out, int *n)
 {
@@ -119,12 +120,12 @@ void ref_dred_encoder_destroy(DREDEnc *e) { free(e); }
 void ref_dred_encoder_reset(DREDEnc *e) { dred_encoder_reset(e); }
 void ref_dred_compute_latents(DREDEnc *e, const float *pcm, int frame_size, int extra_delay)
 {
-  dred_compute_latents(e, pcm, frame_size, extra_delay, 0);
+  dred_compute_latents(e, pcm, frame_size, extra_delay, opus_select_arch());
 }
 int ref_dred_encode_silk_frame(DREDEnc *e, unsigned char *buf, int max_chunks, int max_bytes, int q0, int dQ,
                                int qmax, unsigned char *activity_mem)
 {
-  return dred_encode_silk_frame(e, buf, max_chunks, max_bytes, q0, dQ, qmax, activity_mem, 0);
+  return dred_encode_silk_frame(e, buf, max_chunks, max_bytes, q0, dQ, qmax, activity_mem, opus_select_arch());
 }
 /* The integer fields: loaded, Fs, channels, input_buffer_fill, dred_offset,
    latent_offset, last_extra_dred_offset, latents_buffer_fill. */
@@ -190,6 +191,6 @@ float *ref_dred_floats(OpusDRED *d, int which, int *n)
 /* The decoding step of opus_dred_process with the built-in model. */
 void ref_dred_process(OpusDRED *d, const RefRdovaeDec *m)
 {
-  DRED_rdovae_decode_all(&m->model, d->fec_features, d->state, d->latents, d->nb_latents, 0);
+  DRED_rdovae_decode_all(&m->model, d->fec_features, d->state, d->latents, d->nb_latents, opus_select_arch());
   d->process_stage = 2;
 }

@@ -2,6 +2,7 @@
    decoder data osce_enhance_frame reads, and the nndsp kernels. */
 #include <stdlib.h>
 #include <string.h>
+#include "cpu_support.h"
 #include "osce.h"
 #include "osce_features.h"
 #include "nndsp.h"
@@ -77,20 +78,20 @@ void ref_adaconv_process_frame(AdaConvState *st, float *out, const float *in, co
                                int overlap_size, int in_channels, int out_channels, int kernel_size, int left_padding,
                                float gain_a, float gain_b, float shape_gain, float *window) {
   adaconv_process_frame(st, out, in, features, kernel, gain, feature_dim, frame_size, overlap_size, in_channels,
-                        out_channels, kernel_size, left_padding, gain_a, gain_b, shape_gain, window, 0);
+                        out_channels, kernel_size, left_padding, gain_a, gain_b, shape_gain, window, opus_select_arch());
 }
 void ref_adacomb_process_frame(AdaCombState *st, float *out, const float *in, const float *features,
                                const LinearLayer *kernel, const LinearLayer *gain, const LinearLayer *global_gain,
                                int pitch_lag, int feature_dim, int frame_size, int overlap_size, int kernel_size,
                                int left_padding, float gain_a, float gain_b, float log_gain_limit, float *window) {
   adacomb_process_frame(st, out, in, features, kernel, gain, global_gain, pitch_lag, feature_dim, frame_size,
-                        overlap_size, kernel_size, left_padding, gain_a, gain_b, log_gain_limit, window, 0);
+                        overlap_size, kernel_size, left_padding, gain_a, gain_b, log_gain_limit, window, opus_select_arch());
 }
 void ref_adashape_process_frame(AdaShapeState *st, float *out, const float *in, const float *features,
                                 const LinearLayer *alpha1f, const LinearLayer *alpha1t, const LinearLayer *alpha2,
                                 int feature_dim, int frame_size, int avg_pool_k, int interpolate_k) {
   adashape_process_frame(st, out, in, features, alpha1f, alpha1t, alpha2, feature_dim, frame_size, avg_pool_k,
-                         interpolate_k, 0);
+                         interpolate_k, opus_select_arch());
 }
 
 /* A SILK decoder channel and the control data of its current frame. */
@@ -126,7 +127,7 @@ void ref_osce_dec_features(RefOsceDec *d, const opus_int16 *xq, int num_bits, fl
   osce_calculate_features(&d->dec, &d->ctrl, features, numbits, periods, xq, num_bits);
 }
 void ref_osce_enhance_frame(OSCEModel *m, RefOsceDec *d, opus_int16 *xq, int num_bits) {
-  osce_enhance_frame(m, &d->dec, &d->ctrl, xq, num_bits, 0);
+  osce_enhance_frame(m, &d->dec, &d->ctrl, xq, num_bits, opus_select_arch());
 }
 void ref_osce_reset(RefOsceDec *d, int method) { osce_reset(&d->dec.osce, method); }
 int ref_osce_method(const RefOsceDec *d) { return d->dec.osce.method; }
@@ -137,7 +138,7 @@ float ref_osce_numbits_smooth(const RefOsceDec *d) { return d->dec.osce.features
 silk_OSCE_BWE_struct *ref_osce_bwe_new(void) { return calloc(1, sizeof(silk_OSCE_BWE_struct)); }
 void ref_osce_bwe_reset(silk_OSCE_BWE_struct *st) { osce_bwe_reset(st); }
 void ref_osce_bwe(OSCEModel *m, silk_OSCE_BWE_struct *st, opus_int16 *xq48, opus_int16 *xq16, int len) {
-  osce_bwe(m, st, xq48, xq16, len, 0);
+  osce_bwe(m, st, xq48, xq16, len, opus_select_arch());
 }
 void ref_osce_bwe_features(silk_OSCE_BWE_struct *st, float *features, const opus_int16 *xq16, int len) {
   osce_bwe_calculate_features(&st->features, features, xq16, len);
