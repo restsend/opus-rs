@@ -826,17 +826,15 @@ pub fn silk_encode(
     use_cbr: i32,
     activity: i32,
 ) -> i32 {
-    // The frame loop slices samples_in[..frame_end] based on this declared
-    // length; a mismatched declaration would panic mid-encode
-    // (issue #27 deep scan).
-    assert!(
-        n_samples_in <= samples_in.len(),
-        "silk_encode: n_samples_in ({}) exceeds samples_in.len() ({})",
-        n_samples_in,
-        samples_in.len()
-    );
     let n_frames_per_packet = ps_enc.s_cmn.n_frames_per_packet;
     let frame_length = ps_enc.s_cmn.frame_length as usize;
+    // The whole packet must be there: a skipped frame would leave the
+    // header's VAD flags without their frame (libopus rejects such input,
+    // enc_API.c:247-251).
+    let packet_length = n_frames_per_packet as usize * frame_length;
+    if n_samples_in < packet_length || samples_in.len() < packet_length {
+        return SILK_ENC_INPUT_INVALID_NO_OF_SAMPLES;
+    }
 
     ps_enc.s_cmn.n_frames_encoded = 0;
     // In DTX unless a frame of the packet has speech (silk_encode_do_vad
@@ -870,22 +868,8 @@ pub fn silk_encode(
         // Once per frame, from the previous frame's state (enc_API.c:409).
         silk_hp_variable_cutoff(&mut ps_enc.s_cmn);
 
-        let frame_end = (sample_offset + frame_length).min(n_samples_in);
-        let raw_frame = &samples_in[sample_offset..frame_end];
-
-        let fs_in_khz = ps_enc.s_cmn.fs_khz as usize;
-
-        if raw_frame.len() < fs_in_khz {
-            sample_offset += frame_length;
-            continue;
-        }
-
-        let n = raw_frame.len();
-
-        if n > MAX_FRAME_LENGTH {
-            sample_offset += frame_length;
-            continue;
-        }
+        let raw_frame = &samples_in[sample_offset..sample_offset + frame_length];
+        let n = frame_length;
 
         // The API-rate -> internal-rate conversion (with its delay_matrix_enc
         // input delay) is done by the caller's encoder resampler; frames
@@ -1375,6 +1359,29 @@ mod tests {
             .collect();
         silk_encode_prefill_stereo(mid, side, &left, &left, 40000, 1);
         assert_eq!(side.s_cmn.s_lp.transition_frame_no, 41);
+    }
+
+    #[test]
+    fn encode_rejects_a_partial_packet() {
+        let mut enc = SilkEncoderState::default();
+        crate::silk::init_encoder::silk_init_encoder(&mut enc, 0);
+        crate::silk::control_codec::silk_control_encoder(&mut enc, 16, 40, 20000, 10);
+        let mut rc = RangeCoder::new_encoder(1275);
+        let mut n_bytes = 0;
+        // 30 ms of a 40 ms packet.
+        let input = [0i16; 480];
+        let ret = silk_encode(
+            &mut enc,
+            &input,
+            480,
+            &mut rc,
+            &mut n_bytes,
+            20000,
+            10000,
+            0,
+            1,
+        );
+        assert_eq!(ret, SILK_ENC_INPUT_INVALID_NO_OF_SAMPLES);
     }
 
     #[test]
