@@ -266,17 +266,8 @@ pub fn silk_noise_shape_analysis_fix(
         tmp32 = silk_sqrt_approx(nrg);
         q_nrg >>= 1;
 
-        let shift = 16 - q_nrg;
-        if shift >= 0 {
-            let max_val = i32::MAX >> shift;
-            if tmp32 > max_val {
-                ps_enc_ctrl.gains_q16[k] = i32::MAX;
-            } else {
-                ps_enc_ctrl.gains_q16[k] = tmp32 << shift;
-            }
-        } else {
-            ps_enc_ctrl.gains_q16[k] = tmp32 >> (-shift);
-        }
+        // q_nrg lies in -6..15 (noise_shape_analysis_FIX.c:287).
+        ps_enc_ctrl.gains_q16[k] = silk_lshift_sat32(tmp32, 16 - q_nrg);
 
         if ps_enc.s_cmn.warping_q16 > 0 {
             let gain_mult_q16 = warped_gain(
