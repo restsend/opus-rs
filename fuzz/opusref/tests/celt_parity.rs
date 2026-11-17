@@ -219,3 +219,10 @@ fn vbr_target_uses_dynalloc_max_depth() {
 fn vbr_drift_uses_the_float_alpha() {
     assert_eq!(identical(1, 10.0, 128, 1, "noise", 8), [true; 8]);
 }
+
+/// Stereo frames run the pitch pre-filter, with libopus's stereo cancel
+/// test (celt_encoder.c:2038, 1555-1563).
+#[test]
+fn stereo_frames_use_the_pre_filter() {
+    assert_eq!(identical(2, 10.0, 32, 0, "voice", 10), [true; 10]);
+}

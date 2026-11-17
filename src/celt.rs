@@ -1087,7 +1087,19 @@ fn run_prefilter(
         after[c] = sum_abs(&in_buf[start..start + frame_size]);
     }
 
-    let cancel_pitch = (0..channels).any(|c| after[c] > before[c]);
+    let cancel_pitch = if channels == 2 {
+        // Stereo (celt_encoder.c:1555-1563): cancel if one channel gets
+        // significantly worse, or neither gets significantly better.
+        let thresh = [
+            0.25 * gain1 * before[0] + 0.01 * before[1],
+            0.25 * gain1 * before[1] + 0.01 * before[0],
+        ];
+        after[0] - before[0] > thresh[0]
+            || after[1] - before[1] > thresh[1]
+            || (before[0] - after[0] < thresh[0] && before[1] - after[1] < thresh[1])
+    } else {
+        after[0] > before[0]
+    };
 
     // C 1572-1584: revert to a gain of zero, but still fade the previous
     // frame's filter out over the overlap. The decoder's post-filter always
@@ -2168,13 +2180,11 @@ impl CeltEncoder {
             effective_bytes = nb_compressed_bytes;
         }
         // The pre-filter runs every frame; `enabled` as celt_encoder.c:2038.
-        // Stereo stays off: the stereo pre-filter is not ported yet.
         let tell = if silence { total_bits } else { rc.tell() };
         let enabled = (nb_available > 12 * channels)
             && start_band == 0
             && !silence
             && tell + 16 <= total_bits
-            && channels == 1
             && !self.disable_pf;
         let prefilter_tapset = self.tapset_decision;
         let (pf_on, gain1, pitch_index) = run_prefilter(
