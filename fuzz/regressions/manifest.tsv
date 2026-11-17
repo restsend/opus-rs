@@ -34,3 +34,4 @@ n9	diff_encoder	OFZ_SUPPRESS=toc,simd	range celt	encoder final range differs fro
 n10	diff_encoder	OFZ_SUPPRESS=toc,simd	returns -4	encoder emits a 2-byte packet libopus rejects
 d1	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode ->hybrid	SILK resampling to 8 kHz misses the down-FIR
 d2	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode ->celt first-2.5ms	2.5 ms CELT frames fold from a scaled N=1 band
+d3	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] valid decode ->hybrid	N=2 stereo bands drop the decoded inversion

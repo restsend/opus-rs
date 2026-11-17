@@ -1619,6 +1619,10 @@ pub fn quant_band_stereo(
             x[1] = mx1 - sy1;
             y[0] = mx0 + sy0;
             y[1] = mx1 + sy1;
+            if sctx.inv {
+                y[0] = -y[0];
+                y[1] = -y[1];
+            }
         }
         return cm;
     }
