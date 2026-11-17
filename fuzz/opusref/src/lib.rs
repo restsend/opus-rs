@@ -81,6 +81,15 @@ unsafe extern "C" {
         fec: c_int,
     ) -> c_int;
 
+    pub fn opus_packet_get_bandwidth(data: *const c_uchar) -> c_int;
+    pub fn opus_packet_get_samples_per_frame(data: *const c_uchar, fs: i32) -> c_int;
+    pub fn opus_packet_get_nb_channels(data: *const c_uchar) -> c_int;
+    pub fn opus_packet_get_nb_frames(packet: *const c_uchar, len: i32) -> c_int;
+    pub fn opus_packet_get_nb_samples(packet: *const c_uchar, len: i32, fs: i32) -> c_int;
+    pub fn opus_packet_has_lbrr(packet: *const c_uchar, len: i32) -> c_int;
+    pub fn opus_decoder_get_nb_samples(dec: *const OpusDecoder, packet: *const c_uchar, len: i32)
+    -> c_int;
+    pub fn opus_pcm_soft_clip(pcm: *mut f32, n: c_int, c: c_int, declip_mem: *mut f32);
     pub fn opus_strerror(error: c_int) -> *const core::ffi::c_char;
     pub fn opus_get_version_string() -> *const core::ffi::c_char;
     pub fn opus_packet_parse(

@@ -366,6 +366,15 @@ pub struct PacketParts<'a> {
     pub frames: [&'a [u8]; 48],
     /// The padding of a code 3 packet, where extensions live.
     pub padding: &'a [u8],
+    /// The offset of the first frame's data (libopus `payload_offset`).
+    pub payload_offset: usize,
+}
+
+impl<'a> PacketParts<'a> {
+    /// The frames of the packet.
+    pub fn frames(&self) -> &[&'a [u8]] {
+        &self.frames[..self.count]
+    }
 }
 
 /// libopus `opus_packet_parse_impl` without self-delimiting: the ToC,
@@ -463,6 +472,7 @@ pub fn parse_packet(data: &[u8]) -> Result<PacketParts<'_>, &'static str> {
         return Err(INVALID_PACKET);
     }
     sizes[count - 1] = last_size as usize;
+    let payload_offset = pos;
     let mut frames: [&[u8]; 48] = [&[]; 48];
     for i in 0..count {
         frames[i] = &data[pos..pos + sizes[i]];
@@ -473,6 +483,7 @@ pub fn parse_packet(data: &[u8]) -> Result<PacketParts<'_>, &'static str> {
         count,
         frames,
         padding: &data[pos..pos + pad],
+        payload_offset,
     })
 }
 

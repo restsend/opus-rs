@@ -44,8 +44,7 @@ pub mod dnn;
 #[cfg(feature = "dred")]
 pub mod dred;
 pub mod error;
-/// Opus packet extensions, which carry DRED (cargo feature `dred`).
-#[cfg(feature = "dred")]
+/// Opus packet extensions, which carry DRED.
 pub mod extensions;
 pub mod hp_cutoff;
 pub mod kiss_fft;
@@ -57,6 +56,7 @@ pub mod modes;
 /// + no-`alloc` capable (see `split_self_delimited` docs).
 #[cfg(feature = "std")]
 pub mod multistream;
+pub mod packet;
 pub mod pitch;
 pub mod pvq;
 pub mod quant_bands;
