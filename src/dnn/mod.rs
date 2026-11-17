@@ -2,7 +2,7 @@
 //! Rust.
 //!
 //! - `vec`, `nnet`: the generic C kernels and layer functions;
-//! - `weights`: the arrays the layers read;
+//! - `weights`, `models`: weight blobs and the layers of each model;
 //!
 //! The arithmetic follows libopus's generic C build (no SIMD,
 //! `-ffp-contract=off`) operation for operation, including its mix of
@@ -12,6 +12,8 @@
 // The constants are copied digit for digit from libopus.
 #![allow(clippy::excessive_precision, clippy::approx_constant)]
 
+#[rustfmt::skip]
+pub mod models;
 pub mod nnet;
 pub mod vec;
 pub mod weights;
