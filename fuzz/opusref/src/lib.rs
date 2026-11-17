@@ -92,6 +92,14 @@ unsafe extern "C" {
     pub fn opus_pcm_soft_clip(pcm: *mut f32, n: c_int, c: c_int, declip_mem: *mut f32);
     pub fn opus_strerror(error: c_int) -> *const core::ffi::c_char;
     pub fn opus_get_version_string() -> *const core::ffi::c_char;
+    pub fn opus_decode24(
+        st: *mut OpusDecoder,
+        data: *const c_uchar,
+        len: i32,
+        pcm: *mut i32,
+        fs: c_int,
+        fec: c_int,
+    ) -> c_int;
     pub fn opus_packet_parse(
         data: *const c_uchar,
         len: i32,

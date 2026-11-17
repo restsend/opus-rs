@@ -120,6 +120,27 @@ enum Setting {
     PhaseInversionDisabled(bool),
     /// `set_ignore_extensions` / `OPUS_SET_IGNORE_EXTENSIONS`.
     IgnoreExtensions(bool),
+    /// The output of the calls from here on: float, `decode_i16` /
+    /// `opus_decode` or `decode24` / `opus_decode24`.
+    Format(Format),
+}
+
+#[derive(Arbitrary, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    F32,
+    I16,
+    I24,
+}
+
+impl Format {
+    /// One step of the integer output, as a float.
+    fn step(self) -> f32 {
+        match self {
+            Format::F32 => 0.0,
+            Format::I16 => 1.0 / 32768.0,
+            Format::I24 => 1.0 / 8_388_608.0,
+        }
+    }
 }
 
 /// The first five variants keep the derived encoding, which the saved
@@ -183,7 +204,33 @@ fn tol() -> &'static Tol {
     })
 }
 
-fn call(d: &mut OpusDecoder, op: &Op, fs: usize, out: &mut [f32]) -> Result<usize, &'static str> {
+fn call(
+    d: &mut OpusDecoder,
+    op: &Op,
+    fs: usize,
+    out: &mut [f32],
+    fmt: Format,
+) -> Result<usize, &'static str> {
+    let (pkt, fec): (&[u8], bool) = match op {
+        Op::Decode { pkt, .. } => (pkt, false),
+        Op::Fec { pkt, .. } => (pkt, true),
+        _ => (&[], false),
+    };
+    match fmt {
+        Format::F32 => {}
+        Format::I16 => {
+            let mut o = vec![0i16; out.len()];
+            let r = if fec { d.decode_fec_i16(pkt, fs, &mut o) } else { d.decode_i16(pkt, fs, &mut o) };
+            out.iter_mut().zip(&o).for_each(|(f, &x)| *f = x as f32 / 32768.0);
+            return r;
+        }
+        Format::I24 => {
+            let mut o = vec![0i32; out.len()];
+            let r = if fec { d.decode_fec24(pkt, fs, &mut o) } else { d.decode24(pkt, fs, &mut o) };
+            out.iter_mut().zip(&o).for_each(|(f, &x)| *f = x as f32 / 8_388_608.0);
+            return r;
+        }
+    }
     match op {
         Op::Decode { pkt, .. } => d.decode(pkt, fs, out),
         Op::Fec { pkt, .. } => d.decode_fec(pkt, fs, out),
@@ -253,6 +300,7 @@ fn run(inp: Input) -> Result<(), Finding> {
     let mut enc = None;
     let mut synth = Synth::new(fs);
     let mut valid = true;
+    let mut fmt = Format::F32;
 
     if std::env::var("OFZ_DEBUG").is_ok() {
         eprintln!("script {fs} {ch}");
@@ -330,6 +378,10 @@ fn run(inp: Input) -> Result<(), Finding> {
                         scalar.set_ignore_extensions(i);
                         (Ok(()), refd.ctl(c::SET_IGNORE_EXTENSIONS, i as i32))
                     }
+                    Setting::Format(f) => {
+                        fmt = f;
+                        (Ok(()), 0)
+                    }
                 };
                 let code = r.map_or_else(|e| opus_rs::error::code(e).unwrap_or(1), |()| 0);
                 if code != c {
@@ -363,7 +415,7 @@ fn run(inp: Input) -> Result<(), Finding> {
             // a caller-sized buffer, so it has no equivalent call.
             let mut out = vec![0f32; CAP * ch];
             set_simd(false);
-            let _ = call(&mut scalar, op, frame, &mut out);
+            let _ = call(&mut scalar, op, frame, &mut out, fmt);
             return Ok(());
         }
         // Known divergences (see fuzz/DIFFERENTIAL.md); skipping ends the
@@ -401,14 +453,14 @@ fn run(inp: Input) -> Result<(), Finding> {
         let mut o_sc = o_ref.clone();
         let mut o_si = o_ref.clone();
         let r_ref = match op {
-            Op::Decode { pkt, .. } => refd.decode(Some(pkt), &mut o_ref, frame, false),
-            Op::Fec { pkt, .. } => refd.decode(Some(pkt), &mut o_ref, frame, true),
-            _ => refd.decode(None, &mut o_ref, frame, false),
+            Op::Decode { pkt, .. } => refd.decode_as(fmt, Some(pkt), &mut o_ref, frame, false),
+            Op::Fec { pkt, .. } => refd.decode_as(fmt, Some(pkt), &mut o_ref, frame, true),
+            _ => refd.decode_as(fmt, None, &mut o_ref, frame, false),
         };
         set_simd(false);
-        let r_sc = call(&mut scalar, op, frame, &mut o_sc);
+        let r_sc = call(&mut scalar, op, frame, &mut o_sc, fmt);
         set_simd(true);
-        let r_si = call(&mut simd, op, frame, &mut o_si);
+        let r_si = call(&mut simd, op, frame, &mut o_si, fmt);
 
         let (kind, cls) = match op {
             Op::Decode { pkt, .. } => ("decode", class(pkt)),
@@ -497,7 +549,7 @@ fn run(inp: Input) -> Result<(), Finding> {
             );
         }
         let (d, peak, at) = max_diff(&o_sc[..n * ch], &o_ref[..n * ch]);
-        let lim = if kind == "decode" { t.dec } else { t.plc } * peak;
+        let lim = if kind == "decode" { t.dec } else { t.plc } * peak + fmt.step();
         if !(d <= lim) {
             // Where the differences are: a transition window shows up as a
             // short span at the start of the frame.

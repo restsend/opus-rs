@@ -316,11 +316,11 @@ impl MultistreamDecoder {
             // strips the injected Appendix B length field(s)). An empty
             // packet is a loss: every stream conceals frame_size samples.
             let n = if packet.is_empty() || i + 1 == num_streams {
-                decoder.decode_native(rest, frame_size, &mut self.stream_scratch, decode_fec)?
+                decoder.decode_native(rest, frame_size, &mut self.stream_scratch, decode_fec, false)?
             } else {
                 let (pkt, consumed) = split_self_delimited(rest, &mut self.packet_scratch)?;
                 let n =
-                    decoder.decode_native(pkt, frame_size, &mut self.stream_scratch, decode_fec)?;
+                    decoder.decode_native(pkt, frame_size, &mut self.stream_scratch, decode_fec, false)?;
                 rest = &rest[consumed..];
                 n
             };

@@ -277,3 +277,100 @@ fn ignore_extensions_and_initial_queries() {
     assert_eq!(p.rs.ignore_extensions() as i32, p.get(GET_IGNORE_EXTENSIONS));
     p.decode(None, 480, false, "loss before any packet");
 }
+
+/// The output format of a call.
+#[derive(Clone, Copy, Debug)]
+enum Format {
+    F32,
+    I16,
+    I24,
+}
+
+impl Pair {
+    /// Decodes `pkt` (`None`: a loss) on both in `format` and asserts the
+    /// same result and samples within the float tolerance plus one step.
+    fn decode_as(&mut self, format: Format, pkt: Option<&[u8]>, frame: usize, fec: bool, what: &str) {
+        let what = &format!("{what} {format:?}");
+        let n = frame * self.ch;
+        let p = pkt.unwrap_or(&[]);
+        let ptr = pkt.map_or(core::ptr::null(), |p| p.as_ptr());
+        let (len, f) = (p.len() as i32, frame as i32);
+        let (r, m, a, b, scale): (Result<usize, &str>, i32, Vec<f32>, Vec<f32>, f32) = match format {
+            Format::F32 => return self.decode(pkt, frame, fec, what),
+            Format::I16 => {
+                let (mut a, mut b) = (vec![0i16; n], vec![0i16; n]);
+                let r = if fec {
+                    self.rs.decode_fec_i16(p, frame, &mut a)
+                } else {
+                    self.rs.decode_i16(p, frame, &mut a)
+                };
+                let m = unsafe { opus_decode(self.c, ptr, len, b.as_mut_ptr(), f, fec as i32) };
+                let g = |v: Vec<i16>| v.iter().map(|&x| x as f32).collect();
+                (r, m, g(a), g(b), 32768.0)
+            }
+            Format::I24 => {
+                let (mut a, mut b) = (vec![0i32; n], vec![0i32; n]);
+                let r = if fec {
+                    self.rs.decode_fec24(p, frame, &mut a)
+                } else {
+                    self.rs.decode24(p, frame, &mut a)
+                };
+                let m = unsafe { opus_decode24(self.c, ptr, len, b.as_mut_ptr(), f, fec as i32) };
+                let g = |v: Vec<i32>| v.iter().map(|&x| x as f32).collect();
+                (r, m, g(a), g(b), 8_388_608.0)
+            }
+        };
+        match r {
+            Ok(k) => assert_eq!(k as i32, m, "{what}"),
+            Err(e) => {
+                assert!(m < 0, "{what}: opus-rs {e}, libopus {m}");
+                if let Some(c) = opus_rs::error::code(e) {
+                    assert_eq!(c, m, "{what}");
+                }
+                return;
+            }
+        }
+        let k = m as usize * self.ch;
+        let peak = b[..k].iter().fold(scale, |p, x| p.max(x.abs()));
+        if let Some(i) = (0..k).find(|&i| !((a[i] - b[i]).abs() <= 1.0 + 4e-6 * peak)) {
+            panic!("{what}: sample {i}: opus-rs {}, libopus {}", a[i], b[i]);
+        }
+        let mut rng = 0u32;
+        unsafe { opus_decoder_ctl(self.c, GET_FINAL_RANGE, &mut rng as *mut u32) };
+        assert_eq!(self.rs.final_range(), rng, "{what}: final range");
+        self.check_getters(what);
+    }
+}
+
+/// `opus_decode` and `opus_decode24`: loud streams that soft clipping
+/// shapes, mixed with float calls (which clear the soft clipping state),
+/// losses, FEC and concealments longer than 120 ms.
+#[test]
+fn integer_decoding_matches_libopus() {
+    use Format::*;
+    for (fs, ch, frame, kbps, force) in [
+        (48000, 2, 960, 128, CELT),
+        (48000, 1, 480, 64, CELT),
+        (16000, 1, 320, 24, SILK),
+        (24000, 2, 480, 40, HYBRID),
+    ] {
+        let mut src = Source::new(fs, ch, frame, kbps, force);
+        let mut p = Pair::new(fs, ch);
+        p.rs.set_gain(2048).unwrap();
+        p.ctl(SET_GAIN, 2048);
+        for f in 0..40 {
+            let pkt = src.next();
+            let format = [I16, I16, I24, F32, I16][f % 5];
+            let what = format!("{fs} {ch} mode {force} frame {f}");
+            match f % 9 {
+                3 => p.decode_as(format, None, frame, false, &what),
+                4 => p.decode_as(format, Some(&pkt), 3 * frame, true, &what),
+                6 => p.decode_as(format, None, 7 * fs as usize / 50, false, &what),
+                7 => p.decode_as(format, Some(&pkt), 8 * fs as usize / 50, true, &what),
+                _ => p.decode_as(format, Some(&pkt), frame * 6, false, &what),
+            }
+        }
+        p.decode_as(I16, None, 0, false, "frame size 0");
+        p.decode_as(I24, Some(&[0xfb]), 960, false, "code 3 without count");
+    }
+}

@@ -194,6 +194,35 @@ impl RefDec {
             )
         }
     }
+    /// [`Self::decode`] through `opus_decode` or `opus_decode24` for an
+    /// integer `fmt`, the samples scaled back to float.
+    pub fn decode_as(
+        &mut self,
+        fmt: crate::diff_decoder::Format,
+        data: Option<&[u8]>,
+        out: &mut [f32],
+        frame_size: usize,
+        fec: bool,
+    ) -> i32 {
+        use crate::diff_decoder::Format;
+        let (ptr, len) = data.map_or((core::ptr::null(), 0), |d| (d.as_ptr(), d.len() as i32));
+        let (f, fec) = (frame_size as c_int, fec as c_int);
+        match fmt {
+            Format::F32 => self.decode(data, out, frame_size, fec != 0),
+            Format::I16 => {
+                let mut o = vec![0i16; out.len()];
+                let r = unsafe { c::opus_decode(self.0, ptr, len, o.as_mut_ptr(), f, fec) };
+                out.iter_mut().zip(&o).for_each(|(v, &x)| *v = x as f32 / 32768.0);
+                r
+            }
+            Format::I24 => {
+                let mut o = vec![0i32; out.len()];
+                let r = unsafe { c::opus_decode24(self.0, ptr, len, o.as_mut_ptr(), f, fec) };
+                out.iter_mut().zip(&o).for_each(|(v, &x)| *v = x as f32 / 8_388_608.0);
+                r
+            }
+        }
+    }
     pub fn final_range(&mut self) -> u32 {
         let mut r = 0u32;
         unsafe { c::opus_decoder_ctl(self.0, c::GET_FINAL_RANGE, &mut r as *mut u32) };

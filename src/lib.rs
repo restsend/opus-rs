@@ -43,6 +43,7 @@ pub mod dnn;
 /// Deep redundancy in the decoder (cargo feature `dred`).
 #[cfg(feature = "dred")]
 pub mod dred;
+mod decode_int;
 pub mod error;
 /// Opus packet extensions, which carry DRED.
 pub mod extensions;
@@ -3807,6 +3808,9 @@ pub struct OpusDecoder {
     /// Whether the last frame ended with a SILK-to-CELT redundant frame.
     prev_redundancy: bool,
     last_packet_duration: usize,
+    /// libopus `softclip_mem`: the soft clipping of `decode_i16` carried
+    /// across packets.
+    softclip_mem: [f32; 2],
 
     /// Range decoder state after the last decoded frame (libopus
     /// `OPUS_GET_FINAL_RANGE`), 0 after a concealed one.
@@ -3891,6 +3895,7 @@ impl OpusDecoder {
         frame_size: 0,
         prev_redundancy: false,
         last_packet_duration: 0,
+        softclip_mem: [0.0; 2],
         range_final: 0,
         hybrid_skip_celt: false,
     };
@@ -3913,6 +3918,7 @@ impl OpusDecoder {
             frame_size: 0,
             prev_redundancy: false,
             last_packet_duration: 0,
+            softclip_mem: [0.0; 2],
             range_final: 0,
             hybrid_skip_celt: false,
         }
@@ -3946,6 +3952,7 @@ impl OpusDecoder {
         self.frame_size = self.sampling_rate as usize / 400;
         self.prev_redundancy = false;
         self.last_packet_duration = 0;
+        self.softclip_mem = [0.0; 2];
         self.range_final = 0;
         self.celt_dec.reset_state();
         self.silk_dec.reset();
@@ -4097,7 +4104,7 @@ impl OpusDecoder {
         frame_size: usize,
         output: &mut [f32],
     ) -> Result<usize, &'static str> {
-        self.decode_native(input, frame_size, output, false)
+        self.decode_native(input, frame_size, output, false, false)
     }
 
     /// Rebuild a lost packet from the in-band FEC of the packet after it,
@@ -4122,16 +4129,18 @@ impl OpusDecoder {
         frame_size: usize,
         output: &mut [f32],
     ) -> Result<usize, &'static str> {
-        self.decode_native(input, frame_size, output, true)
+        self.decode_native(input, frame_size, output, true, false)
     }
 
-    /// libopus `opus_decode_native` (not self-delimited, no soft clipping).
+    /// libopus `opus_decode_native` (not self-delimited), soft clipping a
+    /// decoded packet with `soft_clip`.
     fn decode_native(
         &mut self,
         data: &[u8],
         frame_size: usize,
         pcm: &mut [f32],
         decode_fec: bool,
+        soft_clip: bool,
     ) -> Result<usize, &'static str> {
         let fs = self.sampling_rate as usize;
         let ch = self.channels;
@@ -4176,7 +4185,7 @@ impl OpusDecoder {
                 || packet_mode == OpusMode::CeltOnly
                 || self.mode == Some(OpusMode::CeltOnly)
             {
-                return self.decode_native(&[], frame_size, pcm, false);
+                return self.decode_native(&[], frame_size, pcm, false, soft_clip);
             }
             if frame_size.checked_mul(ch).is_none_or(|n| pcm.len() < n) {
                 return Err("Output buffer too small for packet");
@@ -4185,7 +4194,8 @@ impl OpusDecoder {
             // there might be FEC.
             let duration_copy = self.last_packet_duration;
             if frame_size - packet_frame_size != 0 {
-                if let Err(e) = self.decode_native(&[], frame_size - packet_frame_size, pcm, false)
+                if let Err(e) =
+                    self.decode_native(&[], frame_size - packet_frame_size, pcm, false, soft_clip)
                 {
                     self.last_packet_duration = duration_copy;
                     return Err(e);
@@ -4228,6 +4238,11 @@ impl OpusDecoder {
             nb_samples += ret;
         }
         self.last_packet_duration = nb_samples;
+        if soft_clip {
+            packet::soft_clip_impl(&mut pcm[..nb_samples * ch], ch, &mut self.softclip_mem);
+        } else {
+            self.softclip_mem = [0.0; 2];
+        }
         Ok(nb_samples)
     }
 
