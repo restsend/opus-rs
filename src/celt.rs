@@ -1195,6 +1195,9 @@ pub struct CeltEncoder {
     /// libopus `energyError`: the last frame's fine-quantisation error,
     /// clamped to +-0.5, which biases stable bands' coarse energy.
     energy_error: [f32; CELT_NB_X_CH],
+    /// libopus `CELTEncoder.rng`: the last frame's final range, which seeds
+    /// the resynthesis's folding noise.
+    rng: u32,
     lsb_depth: i32,
     overlap_max: f32,
     bitrate: i32,
@@ -1755,6 +1758,7 @@ impl CeltEncoder {
             last_band_log_e: FixedVec::from_value(0.0, nb_x_ch),
             delayed_intra: 0.0,
             energy_error: [0.0; CELT_NB_X_CH],
+            rng: 0,
             lsb_depth: 24,
             overlap_max: 0.0,
             bitrate: OPUS_BITRATE_MAX,
@@ -1833,6 +1837,7 @@ impl CeltEncoder {
         self.last_band_log_e.fill(0.0);
         self.delayed_intra = 1.0;
         self.energy_error = [0.0; CELT_NB_X_CH];
+        self.rng = 0;
         self.overlap_max = 0.0;
         self.vbr_reservoir = 0;
         self.vbr_drift = 0;
@@ -2894,7 +2899,7 @@ impl CeltEncoder {
             coded_bands,
             resynth,
             false,
-            &mut 0u32,
+            &mut self.rng,
         );
 
         dumpf!("Xq", &x[..frame_size * channels]);
@@ -2996,6 +3001,8 @@ impl CeltEncoder {
                 self.old_band_e2[i] = self.old_band_e2[i].min(self.old_band_e[i]);
             }
         }
+
+        self.rng = rc.rng;
 
         // libopus keeps the pitch found even when the pre-filter is off (its
         // gain is then 0), and the tapset the frame started with.

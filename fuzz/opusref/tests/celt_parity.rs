@@ -287,3 +287,10 @@ fn renormalise_adds_epsilon_after_the_sum() {
 fn dynalloc_cap_follows_libopus() {
     assert_eq!(identical(2, 20.0, 32, 1, "sine", 4), [true; 4]);
 }
+
+/// The encoder's resynthesis seeds its folding noise with the previous
+/// frame's final range (celt_encoder.c:2688, 2825).
+#[test]
+fn resynthesis_noise_seeds_from_the_last_range() {
+    assert_eq!(identical(2, 20.0, 24, 2, "noise", 12), [true; 12]);
+}
