@@ -44,6 +44,7 @@ pub mod dnn;
 #[cfg(feature = "dred")]
 pub mod dred;
 mod decode_int;
+mod encode_int;
 mod encoder_ctl;
 pub mod error;
 /// Opus packet extensions, which carry DRED.
@@ -1635,7 +1636,7 @@ impl OpusEncoder {
         frame_size: usize,
         output: &mut [u8],
     ) -> Result<usize, &'static str> {
-        self.encode_native(PcmInput::F32(input), frame_size, output)
+        self.encode_native(PcmInput::F32(input), frame_size, output, None)
     }
 
     /// Encode a frame of interleaved PCM16 (`opus_int16` C `opus_encode()`
@@ -1650,7 +1651,7 @@ impl OpusEncoder {
         frame_size: usize,
         output: &mut [u8],
     ) -> Result<usize, &'static str> {
-        self.encode_native(PcmInput::I16(input), frame_size, output)
+        self.encode_native(PcmInput::I16(input), frame_size, output, None)
     }
 
     /// libopus's signal analysis of a packet (run_analysis in
@@ -1664,10 +1665,12 @@ impl OpusEncoder {
     fn analyse(
         &mut self,
         input: PcmInput<'_>,
+        analysis24: Option<&[i32]>,
         analysis_frame_size: usize,
         frame_size: usize,
     ) -> (AnalysisInfo, bool) {
-        let (info, is_silence) = self.run_analysis(input, analysis_frame_size, frame_size);
+        let (info, is_silence) =
+            self.run_analysis(input, analysis24, analysis_frame_size, frame_size);
         // The speech estimate of the mode decision: from the analysis's
         // music probability, the one for staying in the previous mode; the
         // last one is kept through digital silence.
@@ -1822,6 +1825,7 @@ impl OpusEncoder {
     fn run_analysis(
         &mut self,
         input: PcmInput<'_>,
+        analysis24: Option<&[i32]>,
         analysis_frame_size: usize,
         frame_size: usize,
     ) -> (AnalysisInfo, bool) {
@@ -1835,9 +1839,10 @@ impl OpusEncoder {
         let info = if self.complexity >= 7 && self.sampling_rate >= 16000 {
             self.analysis_read_bak = Some(self.analysis.read_position());
             let na = analysis_frame_size * self.channels;
-            let pcm = match input {
-                PcmInput::F32(s) => analysis::AnalysisPcm::F32(&s[..na]),
-                PcmInput::I16(s) => analysis::AnalysisPcm::I16(&s[..na]),
+            let pcm = match (analysis24, input) {
+                (Some(s), _) => analysis::AnalysisPcm::I24(&s[..na]),
+                (None, PcmInput::F32(s)) => analysis::AnalysisPcm::F32(&s[..na]),
+                (None, PcmInput::I16(s)) => analysis::AnalysisPcm::I16(&s[..na]),
             };
             self.analysis.run(
                 modes::default_mode().mdct.fft(0),
@@ -1896,11 +1901,14 @@ impl OpusEncoder {
 
     /// A packet (libopus `opus_encode_native`): the decisions for the whole
     /// packet, then its one frame, or its frames repacketized.
-    fn encode_native(
+    /// `analysis24` is the 24-bit input of `encode24`, which the signal
+    /// analysis reads in place of `input` (libopus `downmix_int24`).
+    pub(crate) fn encode_native(
         &mut self,
         input: PcmInput<'_>,
         frame_size: usize,
         output: &mut [u8],
+        analysis24: Option<&[i32]>,
     ) -> Result<usize, &'static str> {
         self.range_final = 0;
         // The frame coded from the call's `frame_size` samples (libopus
@@ -1965,7 +1973,8 @@ impl OpusEncoder {
 
         // libopus's signal analysis of the packet; the frames of a multiframe
         // packet read their part of it.
-        let (analysis_info, is_silence) = self.analyse(input, analysis_frame_size, frame_size);
+        let (analysis_info, is_silence) =
+            self.analyse(input, analysis24, analysis_frame_size, frame_size);
 
         // How far stereo input is from mono (libopus compute_stereo_width).
         let stereo_width = if self.channels == 2 && self.force_channels != Some(1) {

@@ -294,6 +294,17 @@ impl RefEnc {
             )
         }
     }
+    pub fn encode24(&mut self, pcm: &[i32], frame_size: usize, out: &mut [u8]) -> i32 {
+        unsafe {
+            c::opus_encode24(
+                self.0,
+                pcm.as_ptr(),
+                frame_size as c_int,
+                out.as_mut_ptr(),
+                out.len() as i32,
+            )
+        }
+    }
     pub fn encode(&mut self, pcm: &[f32], frame_size: usize, out: &mut [u8]) -> i32 {
         unsafe {
             c::opus_encode_float(

@@ -54,6 +54,13 @@ unsafe extern "C" {
         data: *mut c_uchar,
         max: i32,
     ) -> i32;
+    pub fn opus_encode24(
+        st: *mut OpusEncoder,
+        pcm: *const i32,
+        fs: c_int,
+        data: *mut c_uchar,
+        max: i32,
+    ) -> i32;
     pub fn opus_encode_float(
         st: *mut OpusEncoder,
         pcm: *const f32,

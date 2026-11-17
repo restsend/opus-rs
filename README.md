@@ -74,6 +74,7 @@ a libopus function return libopus's errors as the constants of
 | `OPUS_SET_PHASE_INVERSION_DISABLED`, `OPUS_GET_PHASE_INVERSION_DISABLED` | `OpusEncoder::set_phase_inversion_disabled`, `phase_inversion_disabled`; `OpusDecoder::set_phase_inversion_disabled`, `phase_inversion_disabled` |
 | `OPUS_GET_SAMPLE_RATE`, `OPUS_GET_BANDWIDTH`, `OPUS_GET_PITCH`, `OPUS_GET_LAST_PACKET_DURATION` (decoder) | `OpusDecoder::sample_rate`, `bandwidth`, `pitch`, `last_packet_duration` |
 | `OPUS_SET_IGNORE_EXTENSIONS`, `OPUS_GET_IGNORE_EXTENSIONS` | `OpusDecoder::set_ignore_extensions`, `ignore_extensions` |
+| `opus_encode`, `opus_encode_float`, `opus_encode24` | `OpusEncoder::encode_i16`, `encode`, `encode24` |
 | `opus_decode`, `opus_decode24` | `OpusDecoder::decode_i16`, `decode_fec_i16`, `decode24`, `decode_fec24` |
 | `opus_packet_parse` | `packet::parse` |
 | `opus_packet_get_bandwidth`, `opus_packet_get_nb_channels`, `opus_packet_get_samples_per_frame` | `packet::bandwidth`, `nb_channels`, `samples_per_frame` (of the ToC byte) |

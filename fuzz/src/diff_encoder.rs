@@ -93,6 +93,8 @@ enum Ctl {
     Vbr(bool),
     /// `set_application` / `OPUS_SET_APPLICATION`, an index into `APPS`.
     Application(u8),
+    /// Float calls from here on go through `encode24` / `opus_encode24`.
+    Int24(bool),
 }
 
 const APPS: [(Application, i32); 3] = [
@@ -186,6 +188,7 @@ fn apply_ctl(rs: &mut [&mut OpusEncoder; 2], re: &mut RefEnc, ctl: Ctl) -> Resul
             let b = re.try_ctl(c::SET_APPLICATION, a_c);
             (a, b, rs[0].application() as i32, re.get(c::GET_APPLICATION))
         }
+        Ctl::Int24(_) => (0, 0, 0, 0),
         Ctl::FrameDuration(i) => {
             let d = FRAME_DURATIONS[i as usize % FRAME_DURATIONS.len()];
             rs.iter_mut().for_each(|e| e.set_expert_frame_duration(d));
@@ -400,6 +403,7 @@ fn run(inp: Input) -> Result<(), Finding> {
     let mut identical = true;
     let mut cur = Settings::default();
     let mut ctls = Vec::new();
+    let mut int24 = false;
     let mut total = 0;
     let mut pcm = vec![0f32; frame * ch];
     for seg in inp.segs.iter().take(12) {
@@ -427,6 +431,9 @@ fn run(inp: Input) -> Result<(), Finding> {
             ctls.push(c);
             app = e_sc.application();
             capp = app as i32;
+            if let Ctl::Int24(on) = c {
+                int24 = on;
+            }
         }
         if let Some(s) = &seg.set {
             apply(&mut [&mut e_sc, &mut e_si], &mut re, s);
@@ -477,14 +484,21 @@ fn run(inp: Input) -> Result<(), Finding> {
                 .iter()
                 .map(|&x| (x * 32768.0).round().clamp(-32768.0, 32767.0) as i16)
                 .collect();
+            // 24-bit input: the float signal scaled by 2^23, which can reach
+            // beyond full scale.
+            let pcm24: Vec<i32> = pcm.iter().map(|&x| (x * 8_388_608.0) as i32).collect();
             let r_ref = if seg.call.int16 {
                 re.encode_i16(&pcm16, frame, &mut p_ref[..budget])
+            } else if int24 {
+                re.encode24(&pcm24, frame, &mut p_ref[..budget])
             } else {
                 re.encode(&pcm, frame, &mut p_ref[..budget])
             };
             set_simd(false);
             let r_sc = if seg.call.int16 {
                 e_sc.encode_i16(&pcm16, frame, &mut p_sc[..budget])
+            } else if int24 {
+                e_sc.encode24(&pcm24, frame, &mut p_sc[..budget])
             } else {
                 e_sc.encode(&pcm, frame, &mut p_sc[..budget])
             };
@@ -518,6 +532,8 @@ fn run(inp: Input) -> Result<(), Finding> {
                 set_simd(true);
                 if seg.call.int16 {
                     e_si.encode_i16(&pcm16, frame, &mut p_si[..budget])
+                } else if int24 {
+                    e_si.encode24(&pcm24, frame, &mut p_si[..budget])
                 } else {
                     e_si.encode(&pcm, frame, &mut p_si[..budget])
                 }
@@ -528,7 +544,7 @@ fn run(inp: Input) -> Result<(), Finding> {
                 frame * 1000 / fs as usize,
                 cur.rc % 3,
                 br / 1000,
-                if seg.call.int16 { " i16" } else { "" }
+                if seg.call.int16 { " i16" } else if int24 { " i24" } else { "" }
             );
             // `result`: both encoders accept or both reject the call.
             let n_ref = match (r_ref, &r_sc) {

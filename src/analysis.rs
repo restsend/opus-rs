@@ -94,6 +94,8 @@ const STD_FEATURE_BIAS: [f32; 9] = [
 pub enum AnalysisPcm<'a> {
     F32(&'a [f32]),
     I16(&'a [i16]),
+    /// 24-bit samples in 32-bit integers (libopus `downmix_int24`).
+    I24(&'a [i32]),
 }
 
 impl AnalysisPcm<'_> {
@@ -126,6 +128,16 @@ impl AnalysisPcm<'_> {
                 for c in 1..channels {
                     for j in 0..n {
                         y[j] += f32::from(x[(j + offset) * channels + c]);
+                    }
+                }
+            }
+            AnalysisPcm::I24(x) => {
+                for (j, v) in y.iter_mut().enumerate() {
+                    *v = x[(j + offset) * channels] as f32 * (1.0 / 256.0);
+                }
+                for c in 1..channels {
+                    for j in 0..n {
+                        y[j] += x[(j + offset) * channels + c] as f32 * (1.0 / 256.0);
                     }
                 }
             }

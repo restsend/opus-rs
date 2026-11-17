@@ -386,3 +386,30 @@ fn inband_fec_2_matches_libopus() {
         }
     }
 }
+
+/// `opus_encode24`: 24-bit input, also beyond full scale, whose signal
+/// analysis reads the integers.
+#[test]
+fn encode24_matches_libopus() {
+    for (fs, ch, app, frame, rate) in CONFIGS {
+        for gain in [0.5f32, 3.0, 400.0] {
+            let mut p = Pair::new(fs, ch, app);
+            p.rs.set_bitrate(rate).unwrap();
+            p.ctl(SET_BITRATE, rate);
+            p.rs.complexity = 10;
+            p.ctl(SET_COMPLEXITY, 10);
+            for f in 0..12 {
+                let pcm: Vec<i32> = signal(fs, ch, frame, f)
+                    .iter()
+                    .map(|&x| (x * gain * 8_388_608.0) as i32)
+                    .collect();
+                let (mut a, mut b) = ([0u8; 1500], [0u8; 1500]);
+                let n = p.rs.encode24(&pcm, frame, &mut a);
+                let m = unsafe { opus_encode24(p.c, pcm.as_ptr(), frame as i32, b.as_mut_ptr(), 1500) };
+                let what = format!("{fs} {ch} {app:?} gain {gain} frame {f}");
+                assert_eq!(n.is_ok(), m > 0, "{what}");
+                p.check(&a[..n.unwrap()], &b[..m as usize], frame, &what);
+            }
+        }
+    }
+}
