@@ -130,9 +130,23 @@ pub(crate) fn sparse_sgemv8x4_by(
     }
 }
 
+/// The int8 inputs of `cgemv8x4` and `sparse_cgemv8x4`: `f` on the
+/// quantized `x_in[..cols]`.
+#[inline(always)]
+fn with_quantized<R>(x_in: &[f32], cols: usize, f: impl FnOnce(&[i8]) -> R) -> R {
+    super::nnet::with_zeroed(cols, |x: &mut [i8]| {
+        for (q, &v) in x.iter_mut().zip(&x_in[..cols]) {
+            *q = quantize(v);
+        }
+        f(x)
+    })
+}
+
 /// `cgemv8x4`: int8 weights in 8x4 blocks, inputs quantized to int8 and
 /// converted back to float; the four products of a block row are summed
-/// in float before they are added to the output.
+/// in float before they are added to the output. The eight rows of a
+/// block are lanes, and four blocks of rows run side by side, each
+/// output's sum in libopus's order.
 pub fn cgemv8x4(
     out: &mut [f32],
     w: &[u8],
@@ -141,34 +155,46 @@ pub fn cgemv8x4(
     cols: usize,
     x_in: &[f32],
 ) {
-    let mut x = [0i8; MAX_INPUTS];
-    out[..rows].fill(0.0);
-    for (q, &v) in x.iter_mut().zip(&x_in[..cols]) {
-        *q = quantize(v);
-    }
-    let mut wp = 0;
-    for i in (0..rows).step_by(8) {
-        for j in (0..cols).step_by(4) {
-            let xj = [
-                x[j] as f32,
-                x[j + 1] as f32,
-                x[j + 2] as f32,
-                x[j + 3] as f32,
-            ];
-            let blk = &w[wp..wp + 32];
-            for k in 0..8 {
-                let b = &blk[4 * k..4 * k + 4];
-                out[i + k] += (b[0] as i8 as f32) * xj[0]
-                    + (b[1] as i8 as f32) * xj[1]
-                    + (b[2] as i8 as f32) * xj[2]
-                    + (b[3] as i8 as f32) * xj[3];
-            }
-            wp += 32;
+    let step = |mut acc: [f32; 8], x: &[f32; 4], w: &[u8; 32]| {
+        let wc: [[f32; 8]; 4] =
+            core::array::from_fn(|c| core::array::from_fn(|k| w[4 * k + c] as i8 as f32));
+        for (k, a) in acc.iter_mut().enumerate() {
+            *a += wc[0][k] * x[0] + wc[1][k] * x[1] + wc[2][k] * x[2] + wc[3][k] * x[3];
         }
-    }
-    for (i, y) in out[..rows].iter_mut().enumerate() {
-        *y *= scale.at(i);
-    }
+        acc
+    };
+    with_quantized(x_in, cols, |x| {
+        let xb: &[[i8; 4]] = x.as_chunks::<4>().0;
+        let n = xb.len();
+        let wb = w.as_chunks::<32>().0;
+        let out = out[..rows].as_chunks_mut::<8>().0;
+        let blocks = out.len();
+        let mut finish = |b: usize, acc: [f32; 8]| {
+            let s = scale.array::<8>(8 * b);
+            out[b] = core::array::from_fn(|k| acc[k] * s[k]);
+        };
+        let groups = blocks / 4;
+        for g in 0..groups {
+            let row: [&[[u8; 32]]; 4] =
+                core::array::from_fn(|r| &wb[(4 * g + r) * n..(4 * g + r + 1) * n]);
+            let mut s = [[0.0f32; 8]; 4];
+            for (c, x) in xb.iter().enumerate() {
+                let x = x.map(|v| v as f32);
+                s = core::array::from_fn(|r| step(s[r], &x, &row[r][c]));
+            }
+            for (r, &s) in s.iter().enumerate() {
+                finish(4 * g + r, s);
+            }
+        }
+        for b in 4 * groups..blocks {
+            let row = &wb[b * n..(b + 1) * n];
+            let s = xb
+                .iter()
+                .zip(row)
+                .fold([0.0f32; 8], |s, (x, w)| step(s, &x.map(|v| v as f32), w));
+            finish(b, s);
+        }
+    })
 }
 
 /// `sparse_cgemv8x4`: like `cgemv8x4` over the blocks listed by `idx`, but
@@ -182,37 +208,35 @@ pub fn sparse_cgemv8x4(
     cols: usize,
     x_in: &[f32],
 ) {
-    let mut x = [0i8; MAX_INPUTS];
     out[..rows].fill(0.0);
-    for (q, &v) in x.iter_mut().zip(&x_in[..cols]) {
-        *q = quantize(v);
-    }
-    let mut p = 0;
-    let mut wp = 0;
-    for i in (0..rows).step_by(8) {
-        let colblocks = idx.at(p);
-        p += 1;
-        for _ in 0..colblocks {
-            let pos = idx.at(p) as usize;
+    with_quantized(x_in, cols, |x| {
+        let mut p = 0;
+        let mut wp = 0;
+        for i in (0..rows).step_by(8) {
+            let colblocks = idx.at(p);
             p += 1;
-            let xj = [
-                x[pos] as i32,
-                x[pos + 1] as i32,
-                x[pos + 2] as i32,
-                x[pos + 3] as i32,
-            ];
-            let blk = &w[wp..wp + 32];
-            for k in 0..8 {
-                let b = &blk[4 * k..4 * k + 4];
-                let s = (b[0] as i8 as i32) * xj[0]
-                    + (b[1] as i8 as i32) * xj[1]
-                    + (b[2] as i8 as i32) * xj[2]
-                    + (b[3] as i8 as i32) * xj[3];
-                out[i + k] += s as f32;
+            for _ in 0..colblocks {
+                let pos = idx.at(p) as usize;
+                p += 1;
+                let xj = [
+                    x[pos] as i32,
+                    x[pos + 1] as i32,
+                    x[pos + 2] as i32,
+                    x[pos + 3] as i32,
+                ];
+                let blk = &w[wp..wp + 32];
+                for k in 0..8 {
+                    let b = &blk[4 * k..4 * k + 4];
+                    let s = (b[0] as i8 as i32) * xj[0]
+                        + (b[1] as i8 as i32) * xj[1]
+                        + (b[2] as i8 as i32) * xj[2]
+                        + (b[3] as i8 as i32) * xj[3];
+                    out[i + k] += s as f32;
+                }
+                wp += 32;
             }
-            wp += 32;
         }
-    }
+    });
     for (i, y) in out[..rows].iter_mut().enumerate() {
         *y *= scale.at(i);
     }
