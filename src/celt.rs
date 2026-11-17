@@ -3498,16 +3498,25 @@ impl CeltDecoder {
                     m = coef0 * tmp;
                     pcm[base + j * stride] += (1.0 / 32768.0) * tmp;
                 }
-            } else {
+            } else if ds == 1 {
                 for (j, &xj) in x.iter().enumerate() {
                     let tmp = xj + VERY_SMALL + m;
                     m = coef0 * tmp;
-                    if j % ds == 0 {
-                        let y = &mut pcm[base + j / ds * stride];
-                        if accum {
-                            *y += (1.0 / 32768.0) * tmp;
-                        } else {
-                            *y = (1.0 / 32768.0) * tmp;
+                    pcm[base + j * stride] = (1.0 / 32768.0) * tmp;
+                }
+            } else {
+                // Every ds-th sample is an output.
+                for (j, xs) in x.chunks(ds).enumerate() {
+                    for (k, &xj) in xs.iter().enumerate() {
+                        let tmp = xj + VERY_SMALL + m;
+                        m = coef0 * tmp;
+                        if k == 0 {
+                            let y = &mut pcm[base + j * stride];
+                            if accum {
+                                *y += (1.0 / 32768.0) * tmp;
+                            } else {
+                                *y = (1.0 / 32768.0) * tmp;
+                            }
                         }
                     }
                 }
