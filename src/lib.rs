@@ -4238,12 +4238,13 @@ impl OpusDecoder {
                 frame_size
             }
             Some(toc) => {
-                // A ToC-only packet: code 0 is one empty frame, codes 1 and 2
-                // are two; code 3 lacks its frame-count byte (libopus rejects).
+                // A ToC-only packet: code 0 is one empty frame, code 1 two;
+                // code 2 lacks its first frame's size and code 3 its frame
+                // count, and libopus rejects both (opus_packet_parse_impl).
                 let count = match toc & 0x03 {
                     0 => 1,
-                    1 | 2 => 2,
-                    _ => return Err("Code 3 packet too short"),
+                    1 => 2,
+                    _ => return Err("Invalid packet"),
                 };
                 let per_frame = frame_samples_from_toc(toc, self.sampling_rate)
                     .ok_or("Invalid TOC for sampling rate")?;

@@ -44,3 +44,4 @@ d9	test:packet_limits	-	FAILED	frames over 1275 bytes and code-3 packets over 12
 d10	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode ->silk	frames of a packet ignore the previous frame redundancy
 d11	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode_fec silk->dtx	decode_fec of a ToC-only packet conceals with the old frame size
 d12	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode_fec dtx->silk	decode_fec after CELT concealment skips the SILK reset and bridge
+d14	test:toc_only_code2	-	FAILED	ToC-only code-2 packet concealed instead of rejected
