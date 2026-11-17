@@ -368,6 +368,10 @@ pub struct PacketParts<'a> {
     pub padding: &'a [u8],
     /// The offset of the first frame's data (libopus `payload_offset`).
     pub payload_offset: usize,
+    /// The length of the packet, padding included (libopus
+    /// `packet_offset`), which for a self-delimited packet is where the
+    /// next one starts.
+    pub packet_offset: usize,
 }
 
 impl<'a> PacketParts<'a> {
@@ -380,23 +384,35 @@ impl<'a> PacketParts<'a> {
 /// libopus `opus_packet_parse_impl` without self-delimiting: the ToC,
 /// frames and padding of `data`, or an error for an invalid packet.
 pub fn parse_packet(data: &[u8]) -> Result<PacketParts<'_>, &'static str> {
-    let (&toc, rest) = data.split_first().ok_or(INVALID_PACKET)?;
+    parse_packet_impl(data, false)
+}
+
+/// libopus `opus_packet_parse_impl`: the ToC, frames and padding of the
+/// packet at the start of `data`, self-delimited (RFC 6716 appendix B, as
+/// all but the last stream of a multistream packet) with
+/// `self_delimited`, or an error for an invalid packet.
+pub fn parse_packet_impl(data: &[u8], self_delimited: bool) -> Result<PacketParts<'_>, &'static str> {
+    let (&toc, _) = data.split_first().ok_or(INVALID_PACKET)?;
     let framesize = samples_per_frame_48k(toc);
     let mut sizes = [0usize; 48];
     let mut pos = 1usize;
-    let mut len = rest.len() as i64;
+    let mut len = data.len() as i64 - 1;
     let mut last_size = len;
     let mut pad = 0usize;
+    let mut cbr = false;
     let count;
     match toc & 3 {
         0 => count = 1,
         1 => {
             count = 2;
-            if len & 1 != 0 {
-                return Err(INVALID_PACKET);
+            cbr = true;
+            if !self_delimited {
+                if len & 1 != 0 {
+                    return Err(INVALID_PACKET);
+                }
+                last_size = len / 2;
+                sizes[0] = last_size as usize;
             }
-            last_size = len / 2;
-            sizes[0] = last_size as usize;
         }
         2 => {
             count = 2;
@@ -439,7 +455,8 @@ pub fn parse_packet(data: &[u8]) -> Result<PacketParts<'_>, &'static str> {
             if len < 0 {
                 return Err(INVALID_PACKET);
             }
-            if ch & 0x80 != 0 {
+            cbr = ch & 0x80 == 0;
+            if !cbr {
                 // VBR: the lengths of all but the last frame.
                 last_size = len;
                 for size in sizes.iter_mut().take(count - 1) {
@@ -455,7 +472,7 @@ pub fn parse_packet(data: &[u8]) -> Result<PacketParts<'_>, &'static str> {
                 if last_size < 0 {
                     return Err(INVALID_PACKET);
                 }
-            } else {
+            } else if !self_delimited {
                 last_size = len / count as i64;
                 if last_size * count as i64 != len {
                     return Err(INVALID_PACKET);
@@ -466,12 +483,32 @@ pub fn parse_packet(data: &[u8]) -> Result<PacketParts<'_>, &'static str> {
             }
         }
     }
-    // The last frame (all of them for CBR) has no explicit length, so it
-    // can exceed 1275 bytes.
-    if last_size > 1275 {
-        return Err(INVALID_PACKET);
+    if self_delimited {
+        // The extra length of the last frame (all frames for CBR).
+        let (s, bytes) = parse_size(&data[pos..]).ok_or(INVALID_PACKET)?;
+        len -= bytes as i64;
+        if s as i64 > len {
+            return Err(INVALID_PACKET);
+        }
+        pos += bytes;
+        if cbr {
+            if (s * count) as i64 > len {
+                return Err(INVALID_PACKET);
+            }
+            sizes[..count].fill(s);
+        } else if (bytes + s) as i64 > last_size {
+            return Err(INVALID_PACKET);
+        } else {
+            sizes[count - 1] = s;
+        }
+    } else {
+        // The last frame (all of them for CBR) has no explicit length, so
+        // it can exceed 1275 bytes.
+        if last_size > 1275 {
+            return Err(INVALID_PACKET);
+        }
+        sizes[count - 1] = last_size as usize;
     }
-    sizes[count - 1] = last_size as usize;
     let payload_offset = pos;
     let mut frames: [&[u8]; 48] = [&[]; 48];
     for i in 0..count {
@@ -484,6 +521,7 @@ pub fn parse_packet(data: &[u8]) -> Result<PacketParts<'_>, &'static str> {
         frames,
         padding: &data[pos..pos + pad],
         payload_offset,
+        packet_offset: pos + pad,
     })
 }
 

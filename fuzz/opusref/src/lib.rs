@@ -363,6 +363,8 @@ unsafe extern "C" {
     pub fn ref_window() -> *const f32;
 }
 
+/// The repacketizer and packet extensions of the reference.
+pub mod repacketizer;
 /// The neural network functions of the reference (feature `dnn`).
 #[cfg(feature = "dnn")]
 pub mod dnn;

@@ -158,5 +158,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "diff_repacketizer"
+path = "fuzz_targets/diff_repacketizer.rs"
+test = false
+doc = false
+bench = false
+
 [profile.release]
 debug = 1

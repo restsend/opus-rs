@@ -68,8 +68,15 @@ a libopus function return libopus's errors as the constants of
 | `opus_packet_get_nb_frames`, `opus_packet_get_nb_samples`, `opus_packet_has_lbrr` | `packet::nb_frames`, `nb_samples`, `has_lbrr` |
 | `opus_decoder_get_nb_samples` | `OpusDecoder::nb_samples` |
 | `opus_pcm_soft_clip` | `packet::soft_clip` |
+| `opus_repacketizer_create`, `_init`, `_cat`, `_get_nb_frames`, `_out_range`, `_out` | `repacketizer::Repacketizer::new`, `init`, `cat`, `nb_frames`, `out_range`, `out` (the repacketizer borrows the packets it holds and writes into another buffer) |
+| `opus_packet_pad`, `opus_multistream_packet_pad` | `repacketizer::pad`, `multistream_pad` (from the packet into a buffer of the padded length) |
+| `opus_packet_unpad`, `opus_multistream_packet_unpad` | `repacketizer::unpad`, `multistream_unpad` (in place) |
 | `opus_strerror` | `error::strerror` |
 | `opus_get_version_string` | `error::version_string` |
+
+The repacketizer and the padding functions keep the extensions of the
+frames they write, up to `repacketizer::MAX_EXTENSIONS` (256) per packet;
+more are `error::ALLOC_FAIL`, where libopus allocates them on its stack.
 
 `opus_custom.h` is left out: libopus exports it only with
 `--enable-custom-modes`, its modes need run-time tables for other frame

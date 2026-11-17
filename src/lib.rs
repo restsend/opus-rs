@@ -63,6 +63,7 @@ pub mod pvq;
 pub mod quant_bands;
 pub mod range_coder;
 pub mod rate;
+pub mod repacketizer;
 
 /// Internals for the differential fuzz harnesses in `fuzz/`. Not a stable API.
 #[cfg(feature = "fuzzing")]
