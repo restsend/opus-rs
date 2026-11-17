@@ -994,6 +994,7 @@ fn push_delay_history(delay_buffer: &mut [f32], pcm: &mut [f32], frame_size: usi
 /// gain_fade from 0 to Q15ONE with the squared CELT window
 /// (opus_encoder.c:2202-2203), in the fixed-point arithmetic of the 16-bit
 /// SILK input.
+#[cfg(feature = "silk-fixed")]
 fn prefill_fade(x: i16, k: usize, fs: i32) -> i16 {
     let window = modes::default_mode().window;
     let inc = (48000 / fs).max(1) as usize;
@@ -1028,13 +1029,32 @@ fn silk_move_history(
     let mut api = [0i16; 45 * 48];
     let api = &mut api[..api_samples];
     let mut temp = silk::resampler::SilkResampler::default();
+    // The float encoder's history goes through 16 bits (control_codec.c:163-187).
+    #[cfg(not(feature = "silk-fixed"))]
+    let mut x16 = [0i16; 45 * 16];
+    #[cfg(not(feature = "silk-fixed"))]
+    let x16 = {
+        let n = old_samples.max(new_samples);
+        silk::float::sigproc_flp::silk_float2short_array(
+            &mut x16[..old_samples],
+            &enc.s_cmn.x_buf[..old_samples],
+        );
+        &mut x16[..n]
+    };
+    #[cfg(feature = "silk-fixed")]
+    let x16 = &mut enc.s_cmn.x_buf;
     if temp.init(enc.s_cmn.fs_khz * 1000, api_hz) != 0
-        || temp.process(api, &enc.s_cmn.x_buf[..old_samples], old_samples as i32) != 0
+        || temp.process(api, &x16[..old_samples], old_samples as i32) != 0
         || resampler.init_for_enc(api_hz, new_khz * 1000) != 0
-        || resampler.process(&mut enc.s_cmn.x_buf[..new_samples], api, api_samples as i32) != 0
+        || resampler.process(&mut x16[..new_samples], api, api_samples as i32) != 0
     {
         return Err("Unsupported SILK resampling ratio");
     }
+    #[cfg(not(feature = "silk-fixed"))]
+    silk::float::sigproc_flp::silk_short2float_array(
+        &mut enc.s_cmn.x_buf[..new_samples],
+        &x16[..new_samples],
+    );
     Ok(())
 }
 
@@ -2562,14 +2582,14 @@ impl OpusEncoder {
                 self.sampling_rate,
                 self.arch,
             );
-            // SILK's input. VoIP follows the fixed-point build, whose
-            // `hp_cutoff` is an integer filter on the 16-bit input, so its
-            // SILK layer matches that build byte for byte
+            // SILK's input: the frame of pcm_buf (high-passed for VoIP,
+            // DC-rejected otherwise) rounded to 16 bits, as in the float
+            // build. With `silk-fixed`, VoIP follows the fixed-point build,
+            // whose `hp_cutoff` is an integer filter on the 16-bit input, so
+            // its SILK layer matches that build byte for byte
             // (tests/silk_fixed_point_compare.rs, hybrid_cbr_silk_rate.rs).
-            // The other applications follow the float build: SILK reads the
-            // DC-rejected frame of pcm_buf rounded to 16 bits, so an input's
-            // DC offset is gone in SILK packets as it is in CELT ones.
-            let integer_hp = self.application == Application::Voip;
+            let integer_hp =
+                cfg!(feature = "silk-fixed") && self.application == Application::Voip;
             self.buf_filtered.resize(frame_size * ch, 0);
             if integer_hp {
                 let filtered = state_mut(&mut self.buf_filtered);
@@ -2932,17 +2952,36 @@ impl OpusEncoder {
                 // resampled prefill is at most the same length (Copy at equal
                 // rates). No allocation: this crate is heap-free without the
                 // `heap` feature.
+                //
+                // The 16-bit prefill input, interleaved, zero before the
+                // fade-in: the float build fades the delay buffer
+                // (opus_encoder.c:2221-2224) and silk_Encode rounds it to 16
+                // bits; with `silk-fixed`, the 16-bit history is faded in
+                // the fixed-point build's arithmetic.
+                let mut faded = [0i16; 2 * 480];
+                let start = offset.min(eb) * ch;
+                #[cfg(feature = "silk-fixed")]
+                for (i, d) in faded[..eb * ch].iter_mut().enumerate().skip(start) {
+                    *d = prefill_fade(self.silk_delay_buffer[i], i / ch - offset, self.sampling_rate);
+                }
+                #[cfg(not(feature = "silk-fixed"))]
+                {
+                    let mut pcm = [0.0f32; 2 * 480];
+                    pcm[start..eb * ch].copy_from_slice(&self.delay_buffer[start..eb * ch]);
+                    let fade_end = (offset + f2_5 as usize).min(eb) * ch;
+                    gain_fade(&mut pcm[start..fade_end], 0.0, 1.0, ch, self.sampling_rate);
+                    for (d, &x) in faded[..eb * ch].iter_mut().zip(&pcm) {
+                        *d = float2int16(x);
+                    }
+                }
                 if coded_channels == 2 {
                     // Each channel through its own resampler, then mid/side
                     // at the internal rate, as C silk_Encode prefills two
                     // internal channels.
                     let (mut pre_l, mut pre_r) = ([0i16; 480], [0i16; 480]);
-                    for i in offset.min(eb)..eb {
-                        let k = i - offset;
-                        pre_l[i] =
-                            prefill_fade(self.silk_delay_buffer[2 * i], k, self.sampling_rate);
-                        pre_r[i] =
-                            prefill_fade(self.silk_delay_buffer[2 * i + 1], k, self.sampling_rate);
+                    for i in 0..eb {
+                        pre_l[i] = faded[2 * i];
+                        pre_r[i] = faded[2 * i + 1];
                     }
                     let (mut int_l, mut int_r) = ([0i16; 480], [0i16; 480]);
                     let int_l = &mut int_l[..pre_resampled_len];
@@ -2964,16 +3003,12 @@ impl OpusEncoder {
                     // Stereo input coded mono prefills its downmix.
                     let mut pre = [0i16; 480];
                     let pre = &mut pre[..eb];
-                    for i in offset.min(eb)..eb {
-                        let fade = |x| prefill_fade(x, i - offset, self.sampling_rate);
-                        pre[i] = if ch == 2 {
-                            let (l, r) = (
-                                self.silk_delay_buffer[2 * i],
-                                self.silk_delay_buffer[2 * i + 1],
-                            );
-                            ((i32::from(fade(l)) + i32::from(fade(r)) + 1) >> 1) as i16
+                    for (i, p) in pre.iter_mut().enumerate() {
+                        *p = if ch == 2 {
+                            let (l, r) = (faded[2 * i], faded[2 * i + 1]);
+                            ((i32::from(l) + i32::from(r) + 1) >> 1) as i16
                         } else {
-                            fade(self.silk_delay_buffer[i])
+                            faded[i]
                         };
                     }
                     let mut pre_internal = [0i16; 480];
@@ -3241,9 +3276,10 @@ impl OpusEncoder {
         } else {
             self.silk_bw_switch = false;
         }
-        // The last 10 ms of SILK input, which a prefill reuses (libopus
-        // `delay_buffer` in the fixed-point build), in every mode.
-        if !self.application.celt_only() {
+        // The last 10 ms of SILK input, which a prefill with `silk-fixed`
+        // reuses (libopus `delay_buffer` in the fixed-point build), in every
+        // mode.
+        if cfg!(feature = "silk-fixed") && !self.application.celt_only() {
             let n = self.encoder_buffer * self.channels;
             push_silk_history(
                 &mut self.silk_delay_buffer[..n],

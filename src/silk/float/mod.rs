@@ -3,6 +3,8 @@
 //! the tables and the entropy coding are the shared fixed-point code.
 
 pub mod control_flp;
+#[cfg(not(feature = "silk-fixed"))]
+pub mod encode_frame_flp;
 pub mod find_pitch_lags_flp;
 pub mod lpc_analysis_flp;
 pub mod ltp_analysis_flp;

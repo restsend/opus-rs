@@ -190,6 +190,13 @@ pub struct SilkLPState {
     pub saved_fs_khz: i32,
 }
 
+/// A sample of the encoder's analysis buffer: `silk_float` in libopus's
+/// float encoder, `opus_int16` in the fixed-point one (`silk-fixed`).
+#[cfg(not(feature = "silk-fixed"))]
+pub type SilkXBufSample = f32;
+#[cfg(feature = "silk-fixed")]
+pub type SilkXBufSample = i16;
+
 pub struct SilkEncoderStateCommon {
     pub indices: SideInfoIndices,
     pub in_hp_state: [i32; 2],
@@ -216,7 +223,8 @@ pub struct SilkEncoderStateCommon {
     pub input_tilt_q15: i32,
     pub n_states_delayed_decision: i32,
     pub prev_lag: i32,
-    pub x_buf: [i16; 2 * MAX_FRAME_LENGTH + LA_SHAPE_MAX],
+    /// The analysis buffer (libopus `silk_encoder_state_Fxx.x_buf`).
+    pub x_buf: [SilkXBufSample; 2 * MAX_FRAME_LENGTH + LA_SHAPE_MAX],
     pub x_buf_idx: i32,
     pub prev_nlsf_q15: [i16; MAX_LPC_ORDER],
     pub nlsf_mu_q20: i32,
@@ -289,7 +297,7 @@ impl Default for SilkEncoderStateCommon {
             input_tilt_q15: 0,
             n_states_delayed_decision: 0,
             prev_lag: 0,
-            x_buf: [0; 2 * MAX_FRAME_LENGTH + LA_SHAPE_MAX],
+            x_buf: [0 as SilkXBufSample; 2 * MAX_FRAME_LENGTH + LA_SHAPE_MAX],
             x_buf_idx: 0,
             prev_nlsf_q15: [0; MAX_LPC_ORDER],
             nlsf_mu_q20: 0,

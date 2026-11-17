@@ -114,19 +114,20 @@ fn silk_dtx_follows_voice_activity() {
             lens[..speech].iter().all(|&n| n > 1),
             "{rate} Hz: DTX during speech: {lens:?}"
         );
-        // In the silence: 10 SILK frames coded, then 20 ToC-only packets for
-        // each coded one.
-        let quiet = &lens[speech + 15..];
+        // In the silence: 10 SILK frames coded once the VAD sees it (float
+        // libopus's first ToC-only packet comes 21 frames in at 16 kHz,
+        // 10 ms), then 20 ToC-only packets for each coded one.
+        let first = lens[speech..].iter().position(|&n| n == 1).unwrap();
+        assert!(
+            (10..22).contains(&first),
+            "{rate} Hz {frame_ms} ms: first DTX packet {first} frames into the silence"
+        );
+        let quiet = &lens[speech + first..];
         let toc_only = quiet.iter().filter(|&&n| n == 1).count();
         assert!(
             toc_only * 21 >= quiet.len() * 19,
             "{rate} Hz {frame_ms} ms: {toc_only} of {} ToC-only: {lens:?}",
             quiet.len()
-        );
-        let first = lens[speech..].iter().position(|&n| n == 1).unwrap();
-        assert!(
-            (10..20).contains(&first),
-            "{rate} Hz {frame_ms} ms: first DTX packet {first} frames into the silence"
         );
         let coded: Vec<usize> = quiet
             .iter()
@@ -142,7 +143,7 @@ fn silk_dtx_follows_voice_activity() {
             );
         }
         assert!(
-            dtx[speech + 20..].iter().all(|&d| d),
+            dtx[speech + first..].iter().all(|&d| d),
             "{rate} Hz: in_dtx during silence"
         );
         assert!(!dtx[speech / 2], "{rate} Hz: in_dtx during speech");

@@ -7,9 +7,10 @@
 //! stabilized vector differ, and so do the coded NLSF indices. The test
 //! encodes all 18 s of the fixture with 16-bit input at 16 kHz, 20 ms,
 //! 12 kb/s, CBR, VoIP, complexity 9, where that happens, and compares every
-//! packet with a hash of the packets of fixed-point libopus main, with the
-//! patches of fuzz/opusref/patches, at the same settings (voice signal,
-//! wideband, mono; loss rate 10% with FEC).
+//! packet with a hash of the packets of libopus main (fixed-point with
+//! `silk-fixed`, float by default; with the patches of fuzz/opusref/patches)
+//! at the same settings (voice signal, wideband, mono; loss rate 10% with
+//! FEC).
 
 // Only the fixture reader is used here.
 #[allow(dead_code)]
@@ -17,6 +18,13 @@
 mod vbr;
 
 use opus_rs::{Application, OpusEncoder};
+
+/// The value of the build's SILK encoder: fixed-point libopus main's with
+/// `silk-fixed`, float libopus main's by default (both with the patches of
+/// fuzz/opusref/patches).
+fn silk_ref<T>(fixed: T, float: T) -> T {
+    if cfg!(feature = "silk-fixed") { fixed } else { float }
+}
 
 fn fnv(hash: u64, bytes: &[u8]) -> u64 {
     bytes.iter().fold(hash, |hash, &b| {
@@ -42,7 +50,7 @@ fn speech_i16(sr: usize) -> Vec<i16> {
 }
 
 #[test]
-fn silk_nlsf_weights_match_fixed_point_libopus() {
+fn silk_nlsf_weights_match_libopus() {
     // Every packet's length and bytes. FEC changes nothing at this rate:
     // libopus, and opus-rs, code no LBRR data.
     for fec in [false, true] {
@@ -64,7 +72,7 @@ fn silk_nlsf_weights_match_fixed_point_libopus() {
         }
         assert_eq!(
             (hash, packets),
-            (0xee611830a7b7c417, 902),
+            (silk_ref(0xee611830a7b7c417, 0x07ea3b047ccbfe58), 902),
             "16 kHz 20 ms 12 kb/s CBR, FEC {fec}"
         );
     }

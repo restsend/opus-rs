@@ -38,6 +38,11 @@ libm = ["dep:libm", "fearless_simd/libm"]
 portable-atomic = []
 # Exposes internals to the differential fuzz harnesses in `fuzz/`.
 fuzzing = ["std"]
+# The SILK encoder of fixed-point libopus (`silk/fixed/`, FIXED_POINT) in
+# place of the float one (`silk/float/`, libopus's default build), with the
+# 16-bit SILK input of the fixed-point build for VoIP: the packets follow
+# fixed-point libopus's.
+silk-fixed = []
 
 # Neural network features of libopus (its `dnn/` folder), all off by
 # default as in libopus. They mirror libopus's configure options:

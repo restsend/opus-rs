@@ -13,6 +13,8 @@ pub mod decode_pulses;
 pub mod decoder_structs;
 pub mod define;
 pub mod encode_indices;
+#[cfg(feature = "silk-fixed")]
+pub mod encode_frame_fix;
 pub mod encode_pulses;
 pub mod gain_quant;
 pub mod hp_variable_cutoff;

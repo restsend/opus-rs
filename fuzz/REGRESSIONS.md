@@ -180,7 +180,7 @@ where noted.
 | 200 | `mvvvkuuk` | encoder: decide the stereo-to-mono delay per packet before the bandwidth | G | opusref encoder_packet (a9) | commit message |
 | 201 | `mnqpuvqr` | encoder: code stereo input in one SILK channel when the stream is mono | G | opusref encoder_packet (a10); tests/issue_73_silk_vbr_rate.rs, hybrid_cbr_silk_rate.rs hashes | commit message |
 | 202 | `xxzxmtkx` | encoder: fade Hybrid CELT input to mono while SILK delays the switch | G | unit test silk_rate_tests::hybrid_fades_to_mono_while_silk_delays_the_switch | reverted without its test hunk: fails its unit test |
-| 203 | `oxonrrxu` | encoder: prefill SILK in every frame of a multiframe packet after CELT | G | tests/hybrid_cbr_silk_rate.rs hybrid_celt_cbr_switches_keep_silk_like_fixed_point_libopus | reverted: fails suite (hybrid_celt_cbr_switches_keep_silk_like_fixed_point_libopus) |
+| 203 | `oxonrrxu` | encoder: prefill SILK in every frame of a multiframe packet after CELT | G | tests/hybrid_cbr_silk_rate.rs hybrid_celt_cbr_switches_keep_silk_like_libopus | reverted: fails suite (hybrid_celt_cbr_switches_keep_silk_like_libopus) |
 | 204 | `trutqovk` | encoder: keep the maximum bandwidth when set_max_bandwidth gets Auto | G | opusref encoder_packet::max_bandwidth_ignores_auto (a12) | reverted: fails opusref (max_bandwidth_ignores_auto) |
 | 205 | `rvpypqxy` | encoder: size the fallback packet of a busted frame like libopus | U | no reproducer: busted frames with redundancy did not occur in the commit's sweeps | commit message |
 | 206 | `wmompwrv` | encoder: set SILK up for every packet as libopus does | G | tests/issue_73_silk_vbr_rate.rs silk_follows_a_change_of_complexity | reverted: fails suite (silk_follows_a_change_of_complexity) |

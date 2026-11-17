@@ -1,9 +1,10 @@
 //! SILK conformance and the hybrid VBR rate of #73.
 //!
-//! The reference values come from fixed-point libopus main at f1afc4222a
-//! with the patches of fuzz/opusref/patches
-//! (scalar build), which the opus-rs SILK encoder follows: its symbols, the
-//! packets of whole encodes and the helper functions below match it exactly.
+//! The reference values come from libopus main at f1afc4222a with the
+//! patches of fuzz/opusref/patches (scalar builds): fixed-point with
+//! `silk-fixed`, float by default, the build whose SILK encoder opus-rs
+//! follows: its symbols, the packets of whole encodes and the helper
+//! functions below match it exactly.
 
 #[path = "common/vbr.rs"]
 mod vbr;
@@ -33,6 +34,12 @@ fn fnv(hash: u64, bytes: &[u8]) -> u64 {
 }
 
 const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+
+/// The value of the build's SILK encoder: fixed-point libopus main's with
+/// `silk-fixed`, float libopus main's by default.
+fn silk_ref<T>(fixed: T, float: T) -> T {
+    if cfg!(feature = "silk-fixed") { fixed } else { float }
+}
 
 #[test]
 fn positive_saturation_matches_libopus_ltp_rate_costs() {
@@ -250,7 +257,7 @@ fn packet_hash(hash: u64, packet: &[u8]) -> u64 {
 }
 
 #[test]
-fn silk_packets_match_fixed_point_libopus() {
+fn silk_packets_match_libopus() {
     // Whole encodes of answer_16k.wav (VoIP, VBR, complexity 9). Each hash
     // covers 200 consecutive packets, length and bytes.
     for (sr, ms, rate, channels, expected) in PACKET_BLOCKS {
@@ -271,7 +278,8 @@ fn fec_bandwidth_switch_waits_like_libopus() {
     // 10% loss makes FEC narrow the bandwidth: libopus starts SILK at 8 kHz,
     // keeps it there until a switch is allowed, then moves to 12 kHz. The
     // two packets around the switch end with 27 bytes of 5 ms CELT
-    // redundancy, which libopus codes in fixed point; all else matches.
+    // redundancy, which the fixed-point build codes in fixed point; all else
+    // matches.
     let packets = encode_speech(16000, 20, 20000, 1, true);
     let configs: Vec<u8> = packets.iter().map(|p| p[0] >> 3).collect();
     assert!(
@@ -284,7 +292,10 @@ fn fec_bandwidth_switch_waits_like_libopus() {
         "{:?}",
         &configs[..30]
     );
-    assert_eq!((packets[24].len(), packets[25].len()), (76, 69));
+    assert_eq!(
+        (packets[24].len(), packets[25].len()),
+        (76, silk_ref(69, 67))
+    );
     let hash = packets.iter().enumerate().fold(FNV_OFFSET, |h, (i, p)| {
         if (24..=25).contains(&i) {
             fnv(fnv(h, &(p.len() as u32).to_le_bytes()), &p[..p.len() - 27])
@@ -292,7 +303,7 @@ fn fec_bandwidth_switch_waits_like_libopus() {
             packet_hash(h, p)
         }
     });
-    assert_eq!(hash, 0x53eef2e810c802d9);
+    assert_eq!(hash, silk_ref(0x53eef2e810c802d9, 0xb00662c5c3b4cb08));
 }
 
 #[test]
@@ -397,8 +408,11 @@ fn fec_bandwidth_reduction_keeps_speech_decodable() {
 fn silk_follows_a_change_of_complexity() {
     // libopus sets SILK's complexity up for every packet: complexity 9, 3
     // from 2 s and 6 from 4 s (VoIP, VBR, 20 kb/s). Hashes of every packet
-    // of fixed-point libopus main at the same settings.
-    for (ms, channels, expected) in [(20, 1, 0xc2b4123c72d2001d_u64), (10, 2, 0x13bab6f47995f635)] {
+    // of libopus main at the same settings.
+    for (ms, channels, expected) in [
+        (20, 1, silk_ref(0xc2b4123c72d2001d_u64, 0x4aa9d64c650bcdae)),
+        (10, 2, silk_ref(0x13bab6f47995f635, 0x13c93e02f4146af1)),
+    ] {
         let mono = speech_i16(16000);
         let frame = 16 * ms;
         let mut enc = OpusEncoder::new(16000, channels, Application::Voip).unwrap();
@@ -425,10 +439,11 @@ fn silk_follows_a_change_of_complexity() {
 
 #[test]
 fn float_voip_input_rounds_like_libopus() {
-    // The fixed-point build's float entry point turns VoIP input into 16-bit
-    // samples with FLOAT2INT16, which rounds ties to even: the fixture moved
-    // by half a step, so every sample is a tie (16 kHz, 20 ms, 20 kb/s).
-    // Hash of every packet of fixed-point libopus main at the same settings.
+    // libopus turns the VoIP input into 16-bit samples with FLOAT2INT16,
+    // which rounds ties to even, the fixed-point build at its float entry
+    // point, the float build after the high-pass: the fixture moved by half
+    // a step, so every sample is a tie (16 kHz, 20 ms, 20 kb/s). Hash of
+    // every packet of libopus main at the same settings.
     let pcm: Vec<f32> = speech_i16(16000)
         .iter()
         .map(|&x| (x as f32 + 0.5) / 32768.0)
@@ -443,7 +458,7 @@ fn float_voip_input_rounds_like_libopus() {
         let n = enc.encode(frame, 320, &mut packet).unwrap();
         packet_hash(h, &packet[..n])
     });
-    assert_eq!(hash, 0x5fdf12e5a3df2fea);
+    assert_eq!(hash, silk_ref(0x5fdf12e5a3df2fea, 0x56404b345a8d4159));
 }
 
 #[test]
@@ -551,8 +566,10 @@ fn hybrid_vbr_rate_tracks_libopus() {
     }
 }
 
-/// opus-rs, whose SILK packets equal patched fixed-point libopus main's
-/// (fuzz/opusref/tests/silk_fixed.rs), 41 frames per hash.
+/// opus-rs, whose SILK packets equal the reference build's
+/// (fuzz/opusref/tests/silk_fixed.rs, silk_float.rs), 41 frames per hash:
+/// with `silk-fixed`.
+#[cfg(feature = "silk-fixed")]
 const TRACE_BLOCKS: [u64; 22] = [
     0xef0e22ef06b524cc,
     0x42840a8ea5bc5ebe,
@@ -577,10 +594,37 @@ const TRACE_BLOCKS: [u64; 22] = [
     0xfc949fd2791bd800,
     0xad7941cc419cd65b,
 ];
+/// The same with the float encoder.
+#[cfg(not(feature = "silk-fixed"))]
+const TRACE_BLOCKS: [u64; 22] = [
+    0x7dde110e2489533d,
+    0x74fb652497b66905,
+    0xab43e1042c9529f6,
+    0x3b588a7668b9af8a,
+    0xf0adc0777c3edc07,
+    0x7f9ecd1146958cba,
+    0x85154fe6e5e05319,
+    0x57bd46f9c4a3d320,
+    0x2db3c7818c21f418,
+    0x1039d9807888671a,
+    0xd3d3449d27365cca,
+    0x699bb4258fded34f,
+    0x9b8b2fda8fa3cb4e,
+    0x26fbbc367946b323,
+    0x80698aeb2897c74c,
+    0x0767edc075375312,
+    0x789a10eb03ddaed4,
+    0x05ffcdc4065abe6a,
+    0xde59f9c46f888bca,
+    0x822422e524bc6737,
+    0x72f223a866f62340,
+    0x5a985774be6c6c1a,
+];
 
 /// libopus main fixed point: sample rate, frame ms, bitrate, channels and
 /// the hashes of each 200 packets. Stereo at 12 kb/s codes one SILK
 /// channel, as libopus chooses.
+#[cfg(feature = "silk-fixed")]
 const PACKET_BLOCKS: [(usize, usize, i32, usize, &[u64]); 5] = [
     (
         16000,
@@ -655,6 +699,85 @@ const PACKET_BLOCKS: [(usize, usize, i32, usize, &[u64]); 5] = [
             0xb7ace9d570144f7a,
             0xfa8b230444a5fb0f,
             0xebcb44488f0a4b27,
+        ],
+    ),
+];
+/// The same of float libopus main.
+#[cfg(not(feature = "silk-fixed"))]
+const PACKET_BLOCKS: [(usize, usize, i32, usize, &[u64]); 5] = [
+    (
+        16000,
+        20,
+        20000,
+        1,
+        &[
+            0x5454015cc633660f,
+            0x902bb712e50a707b,
+            0x33d39440dfc80b91,
+            0xb2649f512d74f6db,
+            0x3e0f49f81a5e7c52,
+        ],
+    ),
+    (
+        16000,
+        20,
+        24000,
+        1,
+        &[
+            0x874e52ff7cee0194,
+            0x4a6b6a363922bb67,
+            0xd5e5671eddc3572f,
+            0x753ebb8b496e9a4c,
+            0x7d5f598fbcb5e26d,
+        ],
+    ),
+    (
+        16000,
+        10,
+        20000,
+        1,
+        &[
+            0xa89496972cb71d33,
+            0x8f886403ff286c3a,
+            0xa65d320cffe0d22a,
+            0xf36887ed3895ffff,
+            0x5fdc9b5cf53a70a9,
+            0x93e28113a7d8d22b,
+            0xc50449e476fd76f6,
+            0x5f3fc2ff9a3edec5,
+            0x76a76e2afd619352,
+            0xabf5856271449320,
+        ],
+    ),
+    (
+        16000,
+        10,
+        12000,
+        2,
+        &[
+            0xdb15d015ce2349c5,
+            0xd448d8f35ff13915,
+            0x2e63f63083b316e5,
+            0xd63a181821fc0ebf,
+            0xc083fa082df8e24e,
+            0x1a6eed08627f854b,
+            0x46011ce1dcb3d768,
+            0xd679ca7e8bc4989f,
+            0xd3390e1dda48e132,
+            0xbc4952ab251da65c,
+        ],
+    ),
+    (
+        12000,
+        20,
+        20000,
+        1,
+        &[
+            0x07f23cca2bf40720,
+            0xa8c72702fa59cceb,
+            0xc3e935c3fca4e03e,
+            0x082318d72939e9bd,
+            0x6113a7cbcf5e4db3,
         ],
     ),
 ];
