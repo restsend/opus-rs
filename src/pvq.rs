@@ -798,7 +798,9 @@ fn alg_quant_resynth(y: &[i32], x: &mut [f32], n: usize, gain: f32) {
     } else {
         y.iter().fold(0.0f32, |s, &v| s + v as f32 * v as f32)
     };
-    let g = gain / (1e-15 + ryy).sqrt();
+    // normalise_residual (vq.c:150-166): the reciprocal square root
+    // times the gain.
+    let g = (1.0 / ryy.sqrt()) * gain;
     for (xv, &v) in x.iter_mut().zip(y) {
         *xv = v as f32 * g;
     }

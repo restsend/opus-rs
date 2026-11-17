@@ -240,3 +240,9 @@ fn stereo_angle_uses_rate_distortion_choice() {
 fn low_rate_stereo_fades_towards_mono() {
     assert_eq!(identical(2, 10.0, 24, 0, "noise", 10), [true; 10]);
 }
+
+/// Resynthesised pulses scale by (1/sqrt(Ryy))*gain (vq.c:150-166).
+#[test]
+fn pulses_resynthesise_with_reciprocal_sqrt() {
+    assert_eq!(identical(2, 10.0, 96, 2, "sine", 3), [true; 3]);
+}
