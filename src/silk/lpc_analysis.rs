@@ -220,8 +220,10 @@ pub fn silk_burg_modified_fix(
     let mut ca_f = [0i32; MAX_LPC_ORDER + 1];
     let mut ca_b = [0i32; MAX_LPC_ORDER + 1];
 
+    // Autocorrelations, added over subframes. The noise corresponds to at
+    // least a unit pulse.
     let total_len = subfr_length * nb_subfr;
-    let mut c0_64: i64 = 0;
+    let mut c0_64: i64 = 1;
     for i in 0..total_len {
         c0_64 += (x[i] as i64) * (x[i] as i64);
     }
@@ -524,7 +526,8 @@ pub fn silk_burg_modified_flp(
     }
     c_last_row[..d].copy_from_slice(&c_first_row[..d]);
 
-    caf[0] = c0 + (FIND_LPC_COND_FAC as f64) * c0 + 1e-9;
+    // The noise corresponds to at least a unit pulse.
+    caf[0] = c0 + (FIND_LPC_COND_FAC as f64) * c0 + 1e-1;
     cab[0] = caf[0];
 
     let mut inv_gain = 1.0f64;

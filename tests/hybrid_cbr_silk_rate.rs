@@ -13,7 +13,7 @@
 //! control_audio_bandwidth.c:86-90).
 //!
 //! The tests encode all 18 s of the fixture with 16-bit input in CBR, VoIP,
-//! complexity 9, and compare with hashes of fixed-point libopus 1.6.1's
+//! complexity 9, and compare with hashes of fixed-point libopus main's
 //! packets at the same settings (voice signal and the bandwidth forced, the
 //! stream's channel count chosen by the encoder: stereo input at 20 and
 //! 24 kb/s codes one channel; loss rate 10% with FEC).
@@ -206,9 +206,9 @@ fn hybrid_cbr_silk_layer_matches_fixed_point_libopus() {
     // (at packets 21, 18 and 18 here): libopus then lowers the coding SNR,
     // and opus-rs, running SILK as CBR, did not.
     let cases: [(usize, usize, usize, i32, bool, u64); 3] = [
-        (24000, 20, 1, 16000, false, 0x567928009ad3872d),
-        (48000, 10, 2, 24000, false, 0xceeba16a0a780e1b),
-        (48000, 20, 1, 32000, true, 0xdda780ca600b0a9c),
+        (24000, 20, 1, 16000, false, 0xf10b49dee686bd9c),
+        (48000, 10, 2, 24000, false, 0x38854b2096a5f13a),
+        (48000, 20, 1, 32000, true, 0xc5b0760ccf2dc0a0),
     ];
     for (sr, ms, channels, rate, fec, expected) in cases {
         let packets = encode_cbr(sr, ms, channels, fec, |_| rate);
@@ -228,11 +228,11 @@ fn hybrid_celt_cbr_switches_keep_silk_like_fixed_point_libopus() {
     // 40 and 60 ms packets every 20 ms frame after CELT restarts SILK and
     // prefills it (opus_encoder.c:1811).
     let cases: [(usize, usize, usize, u64, usize); 5] = [
-        (48000, 20, 1, 0xce8d84b6ef3d6144, 483),
-        (24000, 10, 2, 0x61ae2c477a29b816, 943),
-        (48000, 40, 1, 0xe0c81bc409bbd78e, 506),
-        (48000, 40, 2, 0xc89adbfb5f71d943, 506),
-        (24000, 60, 2, 0xe4a3c5e988dd129c, 525),
+        (48000, 20, 1, 0x789f49089468c988, 483),
+        (24000, 10, 2, 0x2ff6edbd21237c75, 943),
+        (48000, 40, 1, 0xd6379196047c85ed, 506),
+        (48000, 40, 2, 0x16ab513900193b4b, 506),
+        (24000, 60, 2, 0x71d094747c887399, 525),
     ];
     for (sr, ms, channels, expected, layers) in cases {
         let packets = encode_cbr(sr, ms, channels, false, |at| {
@@ -253,7 +253,7 @@ fn hybrid_celt_cbr_switches_keep_silk_like_fixed_point_libopus() {
 #[test]
 fn cbr_fec_packets_match_fixed_point_libopus() {
     // With FEC at 10% loss these streams are SILK-only, and every packet is
-    // byte-identical to fixed-point libopus's, also the 15 and 23 whose
+    // byte-identical to fixed-point libopus's, also the 13 and 21 whose
     // frame the LBRR section leaves too little room and that decoders
     // conceal. Before this change opus-rs dropped the LBRR section from such
     // packets instead (mono at 24 kb/s parts from libopus at packet 24), and
@@ -262,9 +262,9 @@ fn cbr_fec_packets_match_fixed_point_libopus() {
     // stereo stream at 20 kb/s; at 20 kb/s libopus codes this input in one
     // channel).
     let cases: [(usize, usize, usize, i32, u64, usize); 3] = [
-        (24000, 10, 1, 24000, 0x00de474e3e2f5e7c, 15),
-        (24000, 20, 2, 20000, 0x8c54087df60b33bc, 0),
-        (48000, 10, 2, 28000, 0xac0af6e75ea8cf97, 23),
+        (24000, 10, 1, 24000, 0x92135594d43dcbc2, 13),
+        (24000, 20, 2, 20000, 0x1e3bd1ca8635820a, 0),
+        (48000, 10, 2, 28000, 0xd8b954fab128c846, 21),
     ];
     for (sr, ms, channels, rate, expected, concealed) in cases {
         let packets = encode_cbr(sr, ms, channels, true, |_| rate);

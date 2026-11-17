@@ -1,8 +1,8 @@
 //! SILK conformance and the hybrid VBR rate of #73.
 //!
-//! The reference values come from fixed-point libopus 1.6.1 (scalar build),
-//! which the opus-rs SILK encoder follows: its symbols, the packets of whole
-//! encodes and the helper functions below match it exactly.
+//! The reference values come from fixed-point libopus main at f1afc4222a
+//! (scalar build), which the opus-rs SILK encoder follows: its symbols, the
+//! packets of whole encodes and the helper functions below match it exactly.
 
 #[path = "common/vbr.rs"]
 mod vbr;
@@ -283,7 +283,7 @@ fn fec_bandwidth_switch_waits_like_libopus() {
         "{:?}",
         &configs[..30]
     );
-    assert_eq!((packets[24].len(), packets[25].len()), (77, 69));
+    assert_eq!((packets[24].len(), packets[25].len()), (76, 69));
     let hash = packets.iter().enumerate().fold(FNV_OFFSET, |h, (i, p)| {
         if (24..=25).contains(&i) {
             fnv(fnv(h, &(p.len() as u32).to_le_bytes()), &p[..p.len() - 27])
@@ -291,7 +291,7 @@ fn fec_bandwidth_switch_waits_like_libopus() {
             packet_hash(h, p)
         }
     });
-    assert_eq!(hash, 0x63147ec8ca3250f8);
+    assert_eq!(hash, 0xe7aec3da7b851507);
 }
 
 #[test]
@@ -396,8 +396,8 @@ fn fec_bandwidth_reduction_keeps_speech_decodable() {
 fn silk_follows_a_change_of_complexity() {
     // libopus sets SILK's complexity up for every packet: complexity 9, 3
     // from 2 s and 6 from 4 s (VoIP, VBR, 20 kb/s). Hashes of every packet
-    // of fixed-point libopus 1.6.1 at the same settings.
-    for (ms, channels, expected) in [(20, 1, 0x38c89d2997089fdf_u64), (10, 2, 0x1c9046b31b92f43a)] {
+    // of fixed-point libopus main at the same settings.
+    for (ms, channels, expected) in [(20, 1, 0xa443e174eb41ca7b_u64), (10, 2, 0x52f02a004df80d3b)] {
         let mono = speech_i16(16000);
         let frame = 16 * ms;
         let mut enc = OpusEncoder::new(16000, channels, Application::Voip).unwrap();
@@ -427,7 +427,7 @@ fn float_voip_input_rounds_like_libopus() {
     // The fixed-point build's float entry point turns VoIP input into 16-bit
     // samples with FLOAT2INT16, which rounds ties to even: the fixture moved
     // by half a step, so every sample is a tie (16 kHz, 20 ms, 20 kb/s).
-    // Hash of every packet of fixed-point libopus 1.6.1 at the same settings.
+    // Hash of every packet of fixed-point libopus main at the same settings.
     let pcm: Vec<f32> = speech_i16(16000)
         .iter()
         .map(|&x| (x as f32 + 0.5) / 32768.0)
@@ -442,7 +442,7 @@ fn float_voip_input_rounds_like_libopus() {
         let n = enc.encode(frame, 320, &mut packet).unwrap();
         packet_hash(h, &packet[..n])
     });
-    assert_eq!(hash, 0xbe7b36f5a215e9ad);
+    assert_eq!(hash, 0xa9c2ad491baa34b3);
 }
 
 #[test]
@@ -550,33 +550,33 @@ fn hybrid_vbr_rate_tracks_libopus() {
     }
 }
 
-/// libopus 1.6.1 fixed point, 41 frames per hash.
+/// libopus main fixed point, 41 frames per hash.
 const TRACE_BLOCKS: [u64; 22] = [
-    0x71e78e86d6f4cb72,
-    0x4490e71ef6f48ad3,
-    0x545d7888d0b398d5,
-    0x5c9375677fff91a2,
-    0x4a16c9c9983e1bf0,
-    0xc7ec689d1a4ce0ca,
-    0xb33b2a7497c721de,
-    0xac67cd3216d9742f,
-    0xfd5cc9a73154c6c4,
-    0x275c1f101a4e9538,
-    0x3e4bfa86928138e7,
-    0xf90a9e1e9e082cad,
-    0xad1179fefdbdc01e,
-    0xec74cdb690ee3b3d,
-    0x3539b2f89d83bb06,
-    0xcebdc9d19d8f8bb5,
-    0xf97fe77d306319fc,
-    0xa39e0e40bda7b1c7,
-    0x29fa8ab0410faa24,
-    0x09c60d0112af7578,
-    0x3921083ebc95c076,
-    0xbcc87deb72449060,
+    0x9b94207267f3cce2,
+    0xc249d84095965c6d,
+    0xdee4897c8fc8b941,
+    0xe8ce03faa82aac2c,
+    0x820f80188d3f4d9f,
+    0xab70991bb4a5c988,
+    0xc8b66a44bcee2611,
+    0x898e8cd8edb66767,
+    0xe1df8d161d21e2f4,
+    0x95b7e77ba7938acc,
+    0x413a8933547e15ac,
+    0x03c8896a627228ba,
+    0x7e3eb4730b96005c,
+    0xfe68d00b53e3f066,
+    0x39ba2044050b9af2,
+    0xd16459dfadfcb80f,
+    0x08536a3fee78dfbd,
+    0x39d261e38fc41771,
+    0x675fcac3f4e65541,
+    0x267d6bdeb31428b4,
+    0x9e7111dfd16928cc,
+    0x6773e0a9fb13f0e2,
 ];
 
-/// libopus 1.6.1 fixed point: sample rate, frame ms, bitrate, channels and
+/// libopus main fixed point: sample rate, frame ms, bitrate, channels and
 /// the hashes of each 200 packets. Stereo at 12 kb/s codes one SILK
 /// channel, as libopus chooses.
 const PACKET_BLOCKS: [(usize, usize, i32, usize, &[u64]); 5] = [
@@ -586,11 +586,11 @@ const PACKET_BLOCKS: [(usize, usize, i32, usize, &[u64]); 5] = [
         20000,
         1,
         &[
-            0x1afdaa98f4693731,
-            0x651e503410d59f7f,
-            0x28e67b0ac6241f0a,
-            0x0b58e27f109c4db7,
-            0xef04355cea592650,
+            0xbbbffbaa5b14e31c,
+            0x2dc69a9e5e98548d,
+            0xef61a9fd9b1ef646,
+            0x9c78f89ce3cfc884,
+            0x428ac9b37b7e55ca,
         ],
     ),
     (
@@ -599,11 +599,11 @@ const PACKET_BLOCKS: [(usize, usize, i32, usize, &[u64]); 5] = [
         24000,
         1,
         &[
-            0x5fc8df4ea8f334ae,
-            0x981baa4dd6c5540e,
-            0x28a98fa198dfe05d,
-            0x229f85f5c2c61e74,
-            0xe9d300a6fce337cc,
+            0x5b9daf3f7fe92361,
+            0x63a7a5734964f4cb,
+            0xb1cb8d6755a1007d,
+            0x61180493015c6737,
+            0xd400d7bf9dcb7fc8,
         ],
     ),
     (
@@ -612,16 +612,16 @@ const PACKET_BLOCKS: [(usize, usize, i32, usize, &[u64]); 5] = [
         20000,
         1,
         &[
-            0x060ffd423647f90c,
-            0xe01be72e1c2ccdef,
-            0x0e661541ce72e897,
-            0x874dd96047c090c4,
-            0x862c81c8164e5e77,
-            0x23c91c6d670b35e3,
-            0xc4c724a7216ee1dc,
-            0xdc1eda980f821ff8,
-            0xc2886f02e67bc478,
-            0x91defcedfe78afdd,
+            0xa76425b27e5a239a,
+            0x7330afcdc1cb9572,
+            0xc4b85fb0ace3f729,
+            0x036ebd7492116770,
+            0xc463992d28d77a87,
+            0x4f25ca3d1a82b88d,
+            0x5abf3b27d0c6a06b,
+            0x5c094f52998606e8,
+            0xf7975e3537382a79,
+            0xfe158e67f4e5bab9,
         ],
     ),
     (
@@ -630,16 +630,16 @@ const PACKET_BLOCKS: [(usize, usize, i32, usize, &[u64]); 5] = [
         12000,
         2,
         &[
-            0x9670e5d82b8170d6,
-            0x5d5acb96969b5cb3,
-            0xa86035f56e2c432c,
-            0x6b7a7dd5ada5e7c2,
-            0xc076fc63433b4bae,
-            0xbcba4c26c7db226a,
-            0x059a9f1342709083,
-            0x3e353b06ae60827a,
-            0x4aa13a526333b64a,
-            0x6559a5dee551b94d,
+            0x3020ef11b8d4875b,
+            0xadf196cc617c628d,
+            0x84e07226a57cbf66,
+            0x08a9a909173f6515,
+            0x534ce49592e26f8a,
+            0x12de7e3158ee6907,
+            0x2a52196ba2f14e8c,
+            0xba5e1edf984c0608,
+            0xe5c94cc302ca001a,
+            0x46929b72af2fe1ec,
         ],
     ),
     (
@@ -648,11 +648,11 @@ const PACKET_BLOCKS: [(usize, usize, i32, usize, &[u64]); 5] = [
         20000,
         1,
         &[
-            0x25e3c6df073b5838,
-            0x4f6b585b59c4427c,
-            0x090171dfc4045826,
-            0x275e24518653411b,
-            0x9391901f034d475f,
+            0xffad26f941860f1c,
+            0x4dd665c734da1d59,
+            0xb7ace9d570144f7a,
+            0xfa8b230444a5fb0f,
+            0xebcb44488f0a4b27,
         ],
     ),
 ];
