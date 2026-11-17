@@ -1,5 +1,6 @@
 use crate::silk::define::*;
 use crate::silk::macros::*;
+use crate::silk::nsq::silk_quant_levels;
 use crate::silk::sigproc_fix::*;
 use crate::silk::structs::*;
 use crate::silk::tables::*;
@@ -134,7 +135,11 @@ fn silk_noise_shape_quantizer_short_prediction(
     order: usize,
 ) -> i32 {
     let mut out = silk_rshift(order as i32, 1);
-    for (&s, &a) in buf[NSQ_LPC_BUF_LENGTH - order..].iter().rev().zip(&a_q12[..order]) {
+    for (&s, &a) in buf[NSQ_LPC_BUF_LENGTH - order..]
+        .iter()
+        .rev()
+        .zip(&a_q12[..order])
+    {
         out = silk_smlawb(out, s, a as i32);
     }
     out
@@ -234,8 +239,9 @@ pub fn silk_noise_shape_quantizer_del_dec<const N: usize>(
         for k in 0..N {
             let ps_dd = &mut ps_del_dec[k];
             ps_dd.seed = silk_rand(ps_dd.seed);
-            let lpc: &[i32; NSQ_LPC_BUF_LENGTH] =
-                ps_dd.s_lpc_q14[idx..idx + NSQ_LPC_BUF_LENGTH].try_into().unwrap();
+            let lpc: &[i32; NSQ_LPC_BUF_LENGTH] = ps_dd.s_lpc_q14[idx..idx + NSQ_LPC_BUF_LENGTH]
+                .try_into()
+                .unwrap();
             lpc_pred_q14[k] = silk_lshift(
                 silk_noise_shape_quantizer_short_prediction(lpc, a_q12, predict_order),
                 4,
@@ -251,12 +257,18 @@ pub fn silk_noise_shape_quantizer_del_dec<const N: usize>(
         for j in (2..shaping_order).step_by(2) {
             for k in 0..N {
                 let s_ar2 = &mut ps_del_dec[k].s_ar2_q14;
-                tmp2[k] =
-                    silk_smlawb(s_ar2[j - 1], silk_sub32_ovflw(s_ar2[j], tmp1[k]), warping_q16);
+                tmp2[k] = silk_smlawb(
+                    s_ar2[j - 1],
+                    silk_sub32_ovflw(s_ar2[j], tmp1[k]),
+                    warping_q16,
+                );
                 s_ar2[j - 1] = tmp1[k];
                 n_ar_q14[k] = silk_smlawb(n_ar_q14[k], tmp1[k], ar_shp_q13[j - 1] as i32);
-                tmp1[k] =
-                    silk_smlawb(s_ar2[j], silk_sub32_ovflw(s_ar2[j + 1], tmp2[k]), warping_q16);
+                tmp1[k] = silk_smlawb(
+                    s_ar2[j],
+                    silk_sub32_ovflw(s_ar2[j + 1], tmp2[k]),
+                    warping_q16,
+                );
                 s_ar2[j] = tmp2[k];
                 n_ar_q14[k] = silk_smlawb(n_ar_q14[k], tmp2[k], ar_shp_q13[j] as i32);
             }
@@ -289,45 +301,8 @@ pub fn silk_noise_shape_quantizer_del_dec<const N: usize>(
             let r_q10_signed = if ps_dd.seed < 0 { -r_q10 } else { r_q10 };
             let r_q10_signed = silk_limit_32(r_q10_signed, -(31 << 10), 30 << 10);
 
-            let q1_q10_in = r_q10_signed - offset_q10;
-            let mut q1_q0 = silk_rshift(q1_q10_in, 10);
-            if lambda_q10 > 2048 {
-                let rdo_offset = lambda_q10 / 2 - 512;
-                if q1_q10_in > rdo_offset {
-                    q1_q0 = silk_rshift(q1_q10_in - rdo_offset, 10);
-                } else if q1_q10_in < -rdo_offset {
-                    q1_q0 = silk_rshift(q1_q10_in + rdo_offset, 10);
-                } else if q1_q10_in < 0 {
-                    q1_q0 = -1;
-                } else {
-                    q1_q0 = 0;
-                }
-            }
-
-            let (rd1_q10, rd2_q10, q1_q10_val, q2_q10_val);
-            if q1_q0 > 0 {
-                q1_q10_val =
-                    silk_sub32(silk_lshift(q1_q0, 10), QUANT_LEVEL_ADJUST_Q10) + offset_q10;
-                q2_q10_val = q1_q10_val + 1024;
-                rd1_q10 = silk_smulbb(q1_q10_val, lambda_q10);
-                rd2_q10 = silk_smulbb(q2_q10_val, lambda_q10);
-            } else if q1_q0 == 0 {
-                q1_q10_val = offset_q10;
-                q2_q10_val = q1_q10_val + 1024 - QUANT_LEVEL_ADJUST_Q10;
-                rd1_q10 = silk_smulbb(q1_q10_val, lambda_q10);
-                rd2_q10 = silk_smulbb(q2_q10_val, lambda_q10);
-            } else if q1_q0 == -1 {
-                q2_q10_val = offset_q10;
-                q1_q10_val = q2_q10_val - (1024 - QUANT_LEVEL_ADJUST_Q10);
-                rd1_q10 = silk_smulbb(-q1_q10_val, lambda_q10);
-                rd2_q10 = silk_smulbb(q2_q10_val, lambda_q10);
-            } else {
-                q1_q10_val =
-                    silk_add32(silk_lshift(q1_q0, 10), QUANT_LEVEL_ADJUST_Q10) + offset_q10;
-                q2_q10_val = q1_q10_val + 1024;
-                rd1_q10 = silk_smulbb(-q1_q10_val, lambda_q10);
-                rd2_q10 = silk_smulbb(-q2_q10_val, lambda_q10);
-            }
+            let (q1_q10_val, q2_q10_val, rd1_q10, rd2_q10) =
+                silk_quant_levels(r_q10_signed, offset_q10, lambda_q10);
 
             let mut rr_q10 = r_q10_signed - q1_q10_val;
             let rd1_q10_final = silk_rshift(silk_smlabb(rd1_q10, rr_q10, rr_q10), 10);

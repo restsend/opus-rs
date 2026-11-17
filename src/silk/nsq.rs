@@ -210,6 +210,48 @@ pub fn silk_nsq_scale_states(
     nsq.prev_sig_type = signal_type as i8;
 }
 
+/// The two quantization levels around the residual `r_q10` and their rate
+/// terms (NSQ.c, NSQ_del_dec.c): `(q1_q10, q2_q10, rd1, rd2)`, with
+/// `rd = |q| * lambda` before the distortion is added. The level depends on
+/// each sample's data, so it is computed with selects.
+#[inline(always)]
+pub(crate) fn silk_quant_levels(
+    r_q10: i32,
+    offset_q10: i32,
+    lambda_q10: i32,
+) -> (i32, i32, i32, i32) {
+    let q1_q10 = r_q10 - offset_q10;
+    let mut q1_q0 = q1_q10 >> 10;
+    if lambda_q10 > 2048 {
+        // For aggressive RDO, the bias becomes more than one pulse.
+        let rdo_offset = lambda_q10 / 2 - 512;
+        q1_q0 = if q1_q10 > rdo_offset {
+            (q1_q10 - rdo_offset) >> 10
+        } else if q1_q10 < -rdo_offset {
+            (q1_q10 + rdo_offset) >> 10
+        } else {
+            q1_q10 >> 31
+        };
+    }
+    let adjust = if q1_q0 > 0 {
+        -QUANT_LEVEL_ADJUST_Q10
+    } else if q1_q0 == 0 {
+        0
+    } else {
+        QUANT_LEVEL_ADJUST_Q10
+    };
+    let q1_q10 = (q1_q0 << 10).wrapping_add(adjust) + offset_q10;
+    let q2_q10 = q1_q10
+        + if q1_q0 == 0 || q1_q0 == -1 {
+            1024 - QUANT_LEVEL_ADJUST_Q10
+        } else {
+            1024
+        };
+    let rd1 = silk_smulbb(if q1_q0 >= 0 { q1_q10 } else { -q1_q10 }, lambda_q10);
+    let rd2 = silk_smulbb(if q1_q0 >= -1 { q2_q10 } else { -q2_q10 }, lambda_q10);
+    (q1_q10, q2_q10, rd1, rd2)
+}
+
 /// Shifts `data0_val` into the delay line `data1` and returns the filter
 /// output (libopus `silk_NSQ_noise_shape_feedback_loop_c`).
 #[inline(always)]
@@ -385,7 +427,6 @@ fn silk_noise_shape_quantizer_voiced(
     let mut n_ltp_q13: i32;
     let mut r_q10: i32;
     let mut rr_q10: i32;
-    let mut q1_q0: i32;
     let mut q1_q10: i32;
     let mut q2_q10: i32;
     let mut rd1_q20: i32;
@@ -467,42 +508,7 @@ fn silk_noise_shape_quantizer_voiced(
         }
         r_q10 = silk_limit_32(r_q10, -(31 << 10), 30 << 10);
 
-        q1_q10 = r_q10 - offset_q10;
-        q1_q0 = q1_q10 >> 10;
-        if lambda_q10 > 2048 {
-            let rdo_offset = lambda_q10 / 2 - 512;
-            if q1_q10 > rdo_offset {
-                q1_q0 = (q1_q10 - rdo_offset) >> 10;
-            } else if q1_q10 < -rdo_offset {
-                q1_q0 = (q1_q10 + rdo_offset) >> 10;
-            } else if q1_q10 < 0 {
-                q1_q0 = -1;
-            } else {
-                q1_q0 = 0;
-            }
-        }
-
-        if q1_q0 > 0 {
-            q1_q10 = (q1_q0 << 10) - QUANT_LEVEL_ADJUST_Q10 + offset_q10;
-            q2_q10 = q1_q10 + 1024;
-            rd1_q20 = silk_smulbb(q1_q10, lambda_q10);
-            rd2_q20 = silk_smulbb(q2_q10, lambda_q10);
-        } else if q1_q0 == 0 {
-            q1_q10 = offset_q10;
-            q2_q10 = q1_q10 + 1024 - QUANT_LEVEL_ADJUST_Q10;
-            rd1_q20 = silk_smulbb(q1_q10, lambda_q10);
-            rd2_q20 = silk_smulbb(q2_q10, lambda_q10);
-        } else if q1_q0 == -1 {
-            q2_q10 = offset_q10;
-            q1_q10 = q2_q10 - (1024 - QUANT_LEVEL_ADJUST_Q10);
-            rd1_q20 = silk_smulbb(-q1_q10, lambda_q10);
-            rd2_q20 = silk_smulbb(q2_q10, lambda_q10);
-        } else {
-            q1_q10 = (q1_q0 << 10) + QUANT_LEVEL_ADJUST_Q10 + offset_q10;
-            q2_q10 = q1_q10 + 1024;
-            rd1_q20 = silk_smulbb(-q1_q10, lambda_q10);
-            rd2_q20 = silk_smulbb(-q2_q10, lambda_q10);
-        }
+        (q1_q10, q2_q10, rd1_q20, rd2_q20) = silk_quant_levels(r_q10, offset_q10, lambda_q10);
         rr_q10 = r_q10 - q1_q10;
         rd1_q20 = silk_smlabb(rd1_q20, rr_q10, rr_q10);
         rr_q10 = r_q10 - q2_q10;
@@ -571,7 +577,6 @@ fn silk_noise_shape_quantizer_unvoiced(
     let mut n_lf_q12: i32;
     let mut r_q10: i32;
     let mut rr_q10: i32;
-    let mut q1_q0: i32;
     let mut q1_q10: i32;
     let mut q2_q10: i32;
     let mut rd1_q20: i32;
@@ -634,42 +639,7 @@ fn silk_noise_shape_quantizer_unvoiced(
         }
         r_q10 = silk_limit_32(r_q10, -(31 << 10), 30 << 10);
 
-        q1_q10 = r_q10 - offset_q10;
-        q1_q0 = q1_q10 >> 10;
-        if lambda_q10 > 2048 {
-            let rdo_offset = lambda_q10 / 2 - 512;
-            if q1_q10 > rdo_offset {
-                q1_q0 = (q1_q10 - rdo_offset) >> 10;
-            } else if q1_q10 < -rdo_offset {
-                q1_q0 = (q1_q10 + rdo_offset) >> 10;
-            } else if q1_q10 < 0 {
-                q1_q0 = -1;
-            } else {
-                q1_q0 = 0;
-            }
-        }
-
-        if q1_q0 > 0 {
-            q1_q10 = (q1_q0 << 10) - QUANT_LEVEL_ADJUST_Q10 + offset_q10;
-            q2_q10 = q1_q10 + 1024;
-            rd1_q20 = silk_smulbb(q1_q10, lambda_q10);
-            rd2_q20 = silk_smulbb(q2_q10, lambda_q10);
-        } else if q1_q0 == 0 {
-            q1_q10 = offset_q10;
-            q2_q10 = q1_q10 + 1024 - QUANT_LEVEL_ADJUST_Q10;
-            rd1_q20 = silk_smulbb(q1_q10, lambda_q10);
-            rd2_q20 = silk_smulbb(q2_q10, lambda_q10);
-        } else if q1_q0 == -1 {
-            q2_q10 = offset_q10;
-            q1_q10 = q2_q10 - (1024 - QUANT_LEVEL_ADJUST_Q10);
-            rd1_q20 = silk_smulbb(-q1_q10, lambda_q10);
-            rd2_q20 = silk_smulbb(q2_q10, lambda_q10);
-        } else {
-            q1_q10 = (q1_q0 << 10) + QUANT_LEVEL_ADJUST_Q10 + offset_q10;
-            q2_q10 = q1_q10 + 1024;
-            rd1_q20 = silk_smulbb(-q1_q10, lambda_q10);
-            rd2_q20 = silk_smulbb(-q2_q10, lambda_q10);
-        }
+        (q1_q10, q2_q10, rd1_q20, rd2_q20) = silk_quant_levels(r_q10, offset_q10, lambda_q10);
         rr_q10 = r_q10 - q1_q10;
         rd1_q20 = silk_smlabb(rd1_q20, rr_q10, rr_q10);
         rr_q10 = r_q10 - q2_q10;
