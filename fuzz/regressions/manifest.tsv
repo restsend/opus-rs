@@ -50,3 +50,4 @@ d15	test:hybrid_postfilter_carry	-	FAILED	Hybrid frames drop the postfilter gain
 d16	test:mono_inv	-	FAILED	mono decoder applies intensity inversion before the downmix
 d17	test:celt_fold_after_loss	-	FAILED	prefilter_and_fold crossfades the postfilters
 d18	test:celt_no_saturation	-	FAILED	CELT output saturated at SIG_SAT in the float path
+d19	test:dec_uint_overflow	-	FAILED	ec_dec_uint returns values past its range

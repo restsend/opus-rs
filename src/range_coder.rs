@@ -175,7 +175,15 @@ impl RangeCoder {
                 let fs = self.decode(ft);
                 self.update(fs, fs.wrapping_add(1), ft);
                 let r = self.dec_bits(s as u32);
-                (fs << s) | r
+                // libopus ec_dec_uint (entdec.c:233-236): a value past the
+                // range is an error and decodes as the largest one.
+                let t = (fs << s) | r;
+                if t <= ft_minus_1 {
+                    t
+                } else {
+                    self.error = 1;
+                    ft_minus_1
+                }
             } else {
                 let fs = self.decode(ft);
                 self.update(fs, fs.wrapping_add(1), ft);
