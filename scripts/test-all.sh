@@ -28,6 +28,9 @@
 #   opusref-simd     on x86-64, the same tests against libopus built as its
 #                    configure builds it (--features simd), opus-rs at the
 #                    CPU's level and at sse2 (OPUS_RS_ARCH, OPUSREF_ARCH)
+#   opusref-dnn-simd on x86-64, the dnn tests (--features simd,dnn) against
+#                    the simd reference with the neural features, opus-rs at
+#                    the CPU's level and at sse2 and sse4_1
 #   parity           opusref's parity example: every 48 kHz CELT configuration
 #                    must give byte-identical packets (also for the simd pair)
 #   replay           the fuzz reproducers in fuzz/regressions, in cargo test,
@@ -81,6 +84,10 @@ parity() {
 simd_pair() {
   (cd fuzz && OPUS_RS_ARCH=$1 OPUSREF_ARCH=$2 cargo test --release --no-fail-fast -p opusref --features simd)
 }
+# The same with the neural features (the dnn tests and the rest).
+simd_pair_dnn() {
+  (cd fuzz && OPUS_RS_ARCH=$1 OPUSREF_ARCH=$2 cargo test --release --no-fail-fast -p opusref --features simd,dnn)
+}
 simd_parity() { OPUS_RS_ARCH=native parity --features simd; }
 
 step suite cargo test --release --no-fail-fast -- "${known[@]}"
@@ -100,6 +107,9 @@ step parity parity
 if [ $x86 = 1 ]; then
   step opusref-simd simd_pair native ""
   step opusref-simd-sse2 simd_pair sse2 2
+  step opusref-dnn-simd simd_pair_dnn native ""
+  step opusref-dnn-simd-sse2 simd_pair_dnn sse2 2
+  step opusref-dnn-simd-sse4_1 simd_pair_dnn sse4_1 3
   step parity-simd simd_parity
 fi
 step replay in_fuzz cargo test --test regressions

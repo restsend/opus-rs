@@ -169,6 +169,10 @@ OPUS_RS_ARCH=sse2 OPUSREF_ARCH=2 <target-dir>/release/diff_encoder ...
 
 The `simd` encoder and decoder of the targets run at the CPU's level.
 
+With `--features simd,dnn` the reference also builds libopus's x86 neural
+network kernels (`dnn/x86/`), and the neural features of both sides (deep
+PLC, DRED, OSCE, the bandwidth extension) run at the pair's levels.
+
 ## SILK encoder
 
 opus-rs's SILK encoder is libopus's float encoder (`silk/float/`), the one of
