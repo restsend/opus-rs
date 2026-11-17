@@ -47,7 +47,16 @@ fn burg_and_cepstrum_match() {
         let mig = [1e-3f32, 1e-2, 0.25][f % 3];
         let mut aa = vec![0f32; 16];
         let mut ab = vec![0f32; 16];
-        let ga = unsafe { c::ref_silk_burg_analysis(aa.as_mut_ptr(), y.as_ptr(), mig, sub as i32, nb as i32, d as i32) };
+        let ga = unsafe {
+            c::ref_silk_burg_analysis(
+                aa.as_mut_ptr(),
+                y.as_ptr(),
+                mig,
+                sub as i32,
+                nb as i32,
+                d as i32,
+            )
+        };
         let gb = burg::silk_burg_analysis(&mut ab, &y, mig, sub, nb, d);
         assert_eq!(same_bits(&aa[..d], &ab[..d]), None, "burg frame {f}");
         assert_eq!(ga.to_bits(), gb.to_bits(), "burg energy frame {f}");
@@ -72,7 +81,10 @@ fn pitchdnn_matches() {
 #[test]
 fn frame_features_match() {
     for (seed, scale) in [(5u64, 1.0f32), (6, 0.01), (7, 3.0)] {
-        let sig: Vec<f32> = speechlike(16000 * 4, seed).iter().map(|x| x * scale).collect();
+        let sig: Vec<f32> = speechlike(16000 * 4, seed)
+            .iter()
+            .map(|x| x * scale)
+            .collect();
         let cst = unsafe { c::ref_lpcnet_encoder_create() };
         let mut rst = lpcnet_enc::LpcnetEncState::new(builtin::pitchdnn().unwrap());
         for (f, x) in sig.chunks_exact(freq::FRAME_SIZE).enumerate() {
@@ -80,7 +92,11 @@ fn frame_features_match() {
             let mut b = [0f32; lpcnet_enc::NB_TOTAL_FEATURES];
             unsafe { c::ref_lpcnet_features_float(cst, x.as_ptr(), a.as_mut_ptr()) };
             lpcnet_enc::lpcnet_compute_single_frame_features_float(&mut rst, x, &mut b);
-            assert_eq!(same_bits(&a, &b), None, "seed {seed} frame {f}\n{a:?}\n{b:?}");
+            assert_eq!(
+                same_bits(&a, &b),
+                None,
+                "seed {seed} frame {f}\n{a:?}\n{b:?}"
+            );
         }
         unsafe { c::ref_lpcnet_encoder_destroy(cst) };
     }

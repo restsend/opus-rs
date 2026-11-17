@@ -54,17 +54,28 @@ fn main() {
                     "split" => voice,
                     "switch" => (if f < 4 { 440.0 } else { 3000.0 } * t * 6.2832).sin() * 0.5,
                     "grow" => noise * (0.0005 * 2f32.powf(t * 75.0)).min(0.5),
-                    _ => if f < 10 { 0.0 } else { voice },
+                    _ => {
+                        if f < 10 {
+                            0.0
+                        } else {
+                            voice
+                        }
+                    }
                 }
             })
             .collect();
         let mut pa = [0u8; 1500];
         let mut pb = [0u8; 1500];
         let n = e.encode(&pcm, frame, &mut pa).unwrap();
-        let m = unsafe { opus_encode_float(r, pcm.as_ptr(), frame as i32, pb.as_mut_ptr(), 1500) } as usize;
+        let m = unsafe { opus_encode_float(r, pcm.as_ptr(), frame as i32, pb.as_mut_ptr(), 1500) }
+            as usize;
         let mut out = vec![0f32; frame * ch];
-        let (_, sa) = trace(|| unsafe { opus_decode_float(d1, pa.as_ptr(), n as i32, out.as_mut_ptr(), frame as i32, 0) });
-        let (_, sb) = trace(|| unsafe { opus_decode_float(d2, pb.as_ptr(), m as i32, out.as_mut_ptr(), frame as i32, 0) });
+        let (_, sa) = trace(|| unsafe {
+            opus_decode_float(d1, pa.as_ptr(), n as i32, out.as_mut_ptr(), frame as i32, 0)
+        });
+        let (_, sb) = trace(|| unsafe {
+            opus_decode_float(d2, pb.as_ptr(), m as i32, out.as_mut_ptr(), frame as i32, 0)
+        });
         if pa[..n] == pb[..m] {
             println!("frame {f}: identical ({n} bytes)");
             continue;
@@ -75,8 +86,20 @@ fn main() {
         let at = sa.iter().zip(&sb).position(|(x, y)| x != y);
         match at {
             Some(i) => {
-                let ctx: Vec<String> = sb[i.saturating_sub(3)..i].iter().map(|s| format!("{}:{}={}", s.file, s.line, s.val)).collect();
-                println!("frame {f}: sym {i} rs {}:{}={} ref {}:{}={} after [{}] ({n}/{m} bytes)", sa[i].file, sa[i].line, sa[i].val, sb[i].file, sb[i].line, sb[i].val, ctx.join(" "));
+                let ctx: Vec<String> = sb[i.saturating_sub(3)..i]
+                    .iter()
+                    .map(|s| format!("{}:{}={}", s.file, s.line, s.val))
+                    .collect();
+                println!(
+                    "frame {f}: sym {i} rs {}:{}={} ref {}:{}={} after [{}] ({n}/{m} bytes)",
+                    sa[i].file,
+                    sa[i].line,
+                    sa[i].val,
+                    sb[i].file,
+                    sb[i].line,
+                    sb[i].val,
+                    ctx.join(" ")
+                );
             }
             None => println!("frame {f}: same symbols, {n}/{m} bytes"),
         }

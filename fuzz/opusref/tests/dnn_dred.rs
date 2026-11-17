@@ -3,7 +3,9 @@
 //! encoder and decoder, `DREDEnc` and `OpusDRED`) against libopus: every
 //! float must have the same bits and every payload the same bytes.
 use opus_rs::dnn::builtin;
-use opus_rs::dnn::dred::{DredEnc, OpusDred, coding, decoder, encoder, laplace, rdovae_dec, rdovae_enc, stats};
+use opus_rs::dnn::dred::{
+    DredEnc, OpusDred, coding, decoder, encoder, laplace, rdovae_dec, rdovae_enc, stats,
+};
 use opus_rs::range_coder::RangeCoder;
 use opusref::dnn::{Rng, same_bits};
 use opusref::dnn_dred as c;
@@ -11,11 +13,17 @@ use opusref::dnn_dred as c;
 #[test]
 fn stats_tables_match() {
     unsafe {
-        assert_eq!(stats::DRED_LATENT_QUANT_SCALES_Q8, c::dred_latent_quant_scales_q8);
+        assert_eq!(
+            stats::DRED_LATENT_QUANT_SCALES_Q8,
+            c::dred_latent_quant_scales_q8
+        );
         assert_eq!(stats::DRED_LATENT_DEAD_ZONE_Q8, c::dred_latent_dead_zone_q8);
         assert_eq!(stats::DRED_LATENT_R_Q8, c::dred_latent_r_q8);
         assert_eq!(stats::DRED_LATENT_P0_Q8, c::dred_latent_p0_q8);
-        assert_eq!(stats::DRED_STATE_QUANT_SCALES_Q8, c::dred_state_quant_scales_q8);
+        assert_eq!(
+            stats::DRED_STATE_QUANT_SCALES_Q8,
+            c::dred_state_quant_scales_q8
+        );
         assert_eq!(stats::DRED_STATE_DEAD_ZONE_Q8, c::dred_state_dead_zone_q8);
         assert_eq!(stats::DRED_STATE_R_Q8, c::dred_state_r_q8);
         assert_eq!(stats::DRED_STATE_P0_Q8, c::dred_state_p0_q8);
@@ -29,7 +37,11 @@ fn compute_quantizer_matches() {
             for qmax in q0..16 {
                 for i in 0..60 {
                     let a = unsafe { c::ref_compute_quantizer(q0, dq, qmax, i) };
-                    assert_eq!(a, coding::compute_quantizer(q0, dq, qmax, i), "{q0} {dq} {qmax} {i}");
+                    assert_eq!(
+                        a,
+                        coding::compute_quantizer(q0, dq, qmax, i),
+                        "{q0} {dq} {qmax} {i}"
+                    );
                 }
             }
         }
@@ -90,7 +102,9 @@ fn laplace_p0_matches() {
         for pass in 0..2 {
             let (cv, ct) = c::laplace_p0_decode(&p0, &decay, &bytes);
             let mut dec = RangeCoder::new_decoder(&bytes);
-            let rv: Vec<i32> = (0..n).map(|i| laplace::ec_laplace_decode_p0(&mut dec, p0[i], decay[i])).collect();
+            let rv: Vec<i32> = (0..n)
+                .map(|i| laplace::ec_laplace_decode_p0(&mut dec, p0[i], decay[i]))
+                .collect();
             assert_eq!(cv, rv, "case {case} pass {pass}");
             assert_eq!(ct, dec.tell(), "case {case} pass {pass}");
             if pass == 0 {
@@ -190,8 +204,16 @@ fn rdovae_encoder_matches() {
             cst.encode_dframe(&mut la, &mut sa, &input);
             rdovae_enc::dred_rdovae_encode_dframe(&mut rst, &model, &mut lb, &mut sb, &input);
             assert_eq!(same_bits(&la, &lb), None, "seed {seed} frame {f}: latents");
-            assert_eq!(same_bits(&sa, &sb), None, "seed {seed} frame {f}: initial state");
-            assert_state_eq(&cst.state(), &rdovae_enc_state(&rst), &format!("seed {seed} frame {f}"));
+            assert_eq!(
+                same_bits(&sa, &sb),
+                None,
+                "seed {seed} frame {f}: initial state"
+            );
+            assert_state_eq(
+                &cst.state(),
+                &rdovae_enc_state(&rst),
+                &format!("seed {seed} frame {f}"),
+            );
         }
     }
 }
@@ -210,7 +232,11 @@ fn rdovae_decoder_matches() {
                 let init: [f32; 50] = core::array::from_fn(|_| r.uni() * scale);
                 cst.init_states(&init);
                 rdovae_dec::dred_rdovae_dec_init_states(&mut rst, &model, &init);
-                assert_state_eq(&cst.state(), &rdovae_dec_state(&rst), &format!("seed {seed} init {f}"));
+                assert_state_eq(
+                    &cst.state(),
+                    &rdovae_dec_state(&rst),
+                    &format!("seed {seed} init {f}"),
+                );
             }
             let mut z: [f32; 26] = core::array::from_fn(|_| r.uni() * scale);
             z[25] = (r.below(16) as f64 * 0.125 - 1.0) as f32;
@@ -219,7 +245,11 @@ fn rdovae_decoder_matches() {
             cst.decode_qframe(&mut qa, &z);
             rdovae_dec::dred_rdovae_decode_qframe(&mut rst, &model, &mut qb, &z);
             assert_eq!(same_bits(&qa, &qb), None, "seed {seed} frame {f}");
-            assert_state_eq(&cst.state(), &rdovae_dec_state(&rst), &format!("seed {seed} frame {f}"));
+            assert_state_eq(
+                &cst.state(),
+                &rdovae_dec_state(&rst),
+                &format!("seed {seed} frame {f}"),
+            );
         }
         for nb in [0usize, 1, 2, 7, 26] {
             let init: [f32; 50] = core::array::from_fn(|_| r.uni() * scale);
@@ -243,7 +273,11 @@ fn speechlike(n: usize, fs: u32, channels: usize, seed: u64, gain: f32) -> Vec<f
         let f0 = 110.0 + 70.0 * (t * 1.3).sin() + 30.0 * (t * 5.1).sin();
         phase += 2.0 * std::f64::consts::PI * f0 / fs as f64;
         let env = ((t * 2.7).sin() * 0.5 + 0.5).powi(2);
-        let gate = if ((t * 4.0) as usize) % 5 == 4 { 0.0 } else { 1.0 };
+        let gate = if ((t * 4.0) as usize) % 5 == 4 {
+            0.0
+        } else {
+            1.0
+        };
         let mut v = 0.0;
         for h in 1..12 {
             if f0 * h as f64 > 0.45 * fs as f64 {
@@ -282,10 +316,26 @@ fn rust_fields(e: &DredEnc<'_>) -> c::DredEncFields {
 
 fn assert_enc_eq(a: &c::DredEncFields, b: &c::DredEncFields, what: &str) {
     assert_eq!(a.ints, b.ints, "{what}: ints");
-    assert_eq!(same_bits(&a.input_buffer, &b.input_buffer), None, "{what}: input_buffer");
-    assert_eq!(same_bits(&a.latents_buffer, &b.latents_buffer), None, "{what}: latents_buffer");
-    assert_eq!(same_bits(&a.state_buffer, &b.state_buffer), None, "{what}: state_buffer");
-    assert_eq!(same_bits(&a.resample_mem, &b.resample_mem), None, "{what}: resample_mem");
+    assert_eq!(
+        same_bits(&a.input_buffer, &b.input_buffer),
+        None,
+        "{what}: input_buffer"
+    );
+    assert_eq!(
+        same_bits(&a.latents_buffer, &b.latents_buffer),
+        None,
+        "{what}: latents_buffer"
+    );
+    assert_eq!(
+        same_bits(&a.state_buffer, &b.state_buffer),
+        None,
+        "{what}: state_buffer"
+    );
+    assert_eq!(
+        same_bits(&a.resample_mem, &b.resample_mem),
+        None,
+        "{what}: resample_mem"
+    );
     assert_state_eq(&a.rdovae, &b.rdovae, what);
 }
 
@@ -308,7 +358,8 @@ fn compute_latents_matches() {
                 let seed = fs as u64 + channels as u64 * 7 + kind as u64;
                 let gain = [1.0f32, 3.0, 0.02, 1.0][kind];
                 let sig = speechlike(fs as usize * 3, fs, channels, seed, gain);
-                let extra_delay = [0, fs as i32 / 400, fs as i32 / 250, fs as i32 * 13 / 1000][kind];
+                let extra_delay =
+                    [0, fs as i32 / 400, fs as i32 / 250, fs as i32 * 13 / 1000][kind];
                 let mut cenc = c::DredEnc::new(fs as i32, channels as i32);
                 let mut renc = DredEnc::builtin(fs as i32, channels as i32).unwrap();
                 let what = format!("{fs} Hz {channels} ch kind {kind}");
@@ -325,13 +376,21 @@ fn compute_latents_matches() {
                     let pcm = &sig[pos * channels..];
                     cenc.compute_latents(pcm, frame, channels, extra_delay);
                     renc.compute_latents(pcm, frame, extra_delay);
-                    assert_enc_eq(&cenc.fields(), &rust_fields(&renc), &format!("{what} frame {k}"));
+                    assert_enc_eq(
+                        &cenc.fields(),
+                        &rust_fields(&renc),
+                        &format!("{what} frame {k}"),
+                    );
                     pos += frame;
                     k += 1;
                     if k == 70 {
                         cenc.reset();
                         renc.reset();
-                        assert_enc_eq(&cenc.fields(), &rust_fields(&renc), &format!("{what} reset"));
+                        assert_enc_eq(
+                            &cenc.fields(),
+                            &rust_fields(&renc),
+                            &format!("{what} reset"),
+                        );
                     }
                 }
             }
@@ -358,7 +417,11 @@ fn rust_dred(d: &OpusDred) -> c::DredFields {
 }
 
 fn assert_dred_eq(a: &c::DredFields, b: &c::DredFields, what: &str) {
-    assert_eq!(same_bits(&a.fec_features, &b.fec_features), None, "{what}: fec_features");
+    assert_eq!(
+        same_bits(&a.fec_features, &b.fec_features),
+        None,
+        "{what}: fec_features"
+    );
     assert_eq!(same_bits(&a.state, &b.state), None, "{what}: state");
     assert_eq!(same_bits(&a.latents, &b.latents), None, "{what}: latents");
     assert_eq!(
@@ -404,7 +467,13 @@ fn encode_silk_frame_and_ec_decode_match() {
     let mut r = Rng(41);
     let mut payloads = 0;
     let mut max_extra = 0;
-    for (fs, channels) in [(16000u32, 1usize), (48000, 2), (8000, 1), (24000, 2), (12000, 1)] {
+    for (fs, channels) in [
+        (16000u32, 1usize),
+        (48000, 2),
+        (8000, 1),
+        (24000, 2),
+        (12000, 1),
+    ] {
         let sig = speechlike(fs as usize * 4, fs, channels, fs as u64, 1.0);
         let mut cenc = c::DredEnc::new(fs as i32, channels as i32);
         let mut renc = DredEnc::builtin(fs as i32, channels as i32).unwrap();
@@ -439,21 +508,32 @@ fn encode_silk_frame_and_ec_decode_match() {
             let max_chunks = [26, 1, 3, 13, 26, 8][k % 6];
             let max_bytes = [998, 8, 20, 60, 200, 500][(k / 3) % 6];
             let q0 = r.below(16) as i32;
-            let dq = if r.below(4) == 0 { 0 } else { r.below(8) as i32 };
-            let qmax = if q0 < 14 && dq > 0 { q0 + 1 + r.below((15 - q0) as u32) as i32 } else { 15 };
+            let dq = if r.below(4) == 0 {
+                0
+            } else {
+                r.below(8) as i32
+            };
+            let qmax = if q0 < 14 && dq > 0 {
+                q0 + 1 + r.below((15 - q0) as u32) as i32
+            } else {
+                15
+            };
             let a = cenc.encode_silk_frame(max_chunks, max_bytes, q0, dq, qmax, &mut act_c);
             let mut b = vec![0u8; max_bytes as usize];
             let n = renc.encode_silk_frame(&mut b, max_chunks, max_bytes, q0, dq, qmax, &act_r);
             b.truncate(n as usize);
-            let what = format!("{fs} Hz {channels} ch frame {k} ({max_chunks} {max_bytes} {q0} {dq} {qmax})");
+            let what = format!(
+                "{fs} Hz {channels} ch frame {k} ({max_chunks} {max_bytes} {q0} {dq} {qmax})"
+            );
             assert_eq!(a, b, "{what}: payload");
             assert_enc_eq(&cenc.fields(), &rust_fields(&renc), &what);
             max_extra = max_extra.max(renc.last_extra_dred_offset);
             if !a.is_empty() {
                 payloads += 1;
-                for (mff, off, process) in
-                    [(104, 0, true), (2 + r.below(100) as i32, r.below(8) as i32 * 4, k % 4 == 0)]
-                {
+                for (mff, off, process) in [
+                    (104, 0, true),
+                    (2 + r.below(100) as i32, r.below(8) as i32 * 4, k % 4 == 0),
+                ] {
                     check_decode(
                         &a,
                         mff,
@@ -467,7 +547,16 @@ fn encode_silk_frame_and_ec_decode_match() {
                 }
                 // Truncated payloads.
                 let cut = r.below(a.len() as u32) as usize;
-                check_decode(&a[..cut], 104, 0, k % 5 == 0, &mut r, &cmodel, &dec_model, &format!("{what} cut {cut}"));
+                check_decode(
+                    &a[..cut],
+                    104,
+                    0,
+                    k % 5 == 0,
+                    &mut r,
+                    &cmodel,
+                    &dec_model,
+                    &format!("{what} cut {cut}"),
+                );
             }
             pos += frame;
             k += 1;
@@ -488,12 +577,27 @@ fn ec_decode_random_bytes_matches() {
         let bytes: Vec<u8> = (0..len).map(|_| r.next_u32() as u8).collect();
         let mff = r.below(210) as i32 - 2;
         let off = r.below(12) as i32 * 4;
-        check_decode(&bytes, mff, off, case % 8 == 0, &mut r, &cmodel, &dec_model, &format!("case {case}"));
+        check_decode(
+            &bytes,
+            mff,
+            off,
+            case % 8 == 0,
+            &mut r,
+            &cmodel,
+            &dec_model,
+            &format!("case {case}"),
+        );
     }
 }
 
 #[test]
 fn decoder_constants_match() {
-    assert_eq!(decoder::DRED_FEC_FEATURES_SIZE, c::Dred::new().fields().fec_features.len());
-    assert_eq!(decoder::DRED_LATENTS_SIZE, c::Dred::new().fields().latents.len());
+    assert_eq!(
+        decoder::DRED_FEC_FEATURES_SIZE,
+        c::Dred::new().fields().fec_features.len()
+    );
+    assert_eq!(
+        decoder::DRED_LATENTS_SIZE,
+        c::Dred::new().fields().latents.len()
+    );
 }

@@ -11,7 +11,8 @@ fn both(p: &[u8]) -> (bool, i32) {
     let c = unsafe { opus_decoder_create(48000, 1, &mut err) };
     let mut out = vec![0f32; 5760 * 2];
     let r = rs.decode(p, 5760 * 2, &mut out).is_ok();
-    let n = unsafe { opus_decode_float(c, p.as_ptr(), p.len() as i32, out.as_mut_ptr(), 5760 * 2, 0) };
+    let n =
+        unsafe { opus_decode_float(c, p.as_ptr(), p.len() as i32, out.as_mut_ptr(), 5760 * 2, 0) };
     unsafe { opus_decoder_destroy(c) };
     (r, n)
 }

@@ -28,11 +28,15 @@ fn mono_decoder_ignores_intensity_inversion() {
             pcm[2 * i + 1] = -0.8 * v;
         }
         let mut pkt = [0u8; 1500];
-        let len = unsafe { opus_encode_float(enc, pcm.as_ptr(), frame as i32, pkt.as_mut_ptr(), 1500) };
+        let len =
+            unsafe { opus_encode_float(enc, pcm.as_ptr(), frame as i32, pkt.as_mut_ptr(), 1500) };
         let p = &pkt[..len as usize];
         rs.decode(p, frame, &mut a).unwrap();
         unsafe { opus_decode_float(c, p.as_ptr(), len, b.as_mut_ptr(), frame as i32, 0) };
-        let d = a.iter().zip(&b).fold(0f32, |m, (x, y)| m.max((x - y).abs()));
+        let d = a
+            .iter()
+            .zip(&b)
+            .fold(0f32, |m, (x, y)| m.max((x - y).abs()));
         assert!(d <= 4e-6, "frame {f}: max difference {d}");
     }
     unsafe { opus_encoder_destroy(enc) };

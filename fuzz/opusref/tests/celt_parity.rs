@@ -55,7 +55,8 @@ fn identical(ch: usize, ms: f32, kbps: i32, rc: i32, sig: &str, frames: usize) -
             let pcm = signal(sig, f, frame, ch, &mut seed);
             let (mut a, mut b) = ([0u8; 1500], [0u8; 1500]);
             let n = e.encode(&pcm, frame, &mut a).unwrap();
-            let m = unsafe { opus_encode_float(r, pcm.as_ptr(), frame as i32, b.as_mut_ptr(), 1500) };
+            let m =
+                unsafe { opus_encode_float(r, pcm.as_ptr(), frame as i32, b.as_mut_ptr(), 1500) };
             a[..n] == b[..m as usize]
         })
         .collect();
@@ -82,7 +83,9 @@ fn static_mode_tables_are_libopus_literals() {
         assert_eq!(t, &trig[at..at + t.len()], "shift {shift}");
         at += t.len();
     }
-    assert_eq!(mode.window, unsafe { std::slice::from_raw_parts(ref_window(), 120) });
+    assert_eq!(mode.window, unsafe {
+        std::slice::from_raw_parts(ref_window(), 120)
+    });
 }
 
 /// The static mode's FFTs round like libopus's kiss_fft butterflies.

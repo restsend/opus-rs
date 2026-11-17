@@ -67,7 +67,11 @@ unsafe extern "C" {
         dred_end: *mut c_int,
         defer_processing: c_int,
     ) -> c_int;
-    pub fn opus_dred_process(dred_dec: *mut OpusDREDDecoder, src: *const OpusDRED, dst: *mut OpusDRED) -> c_int;
+    pub fn opus_dred_process(
+        dred_dec: *mut OpusDREDDecoder,
+        src: *const OpusDRED,
+        dst: *mut OpusDRED,
+    ) -> c_int;
     pub fn opus_decoder_dred_decode(
         st: *mut OpusDecoder,
         dred: *const OpusDRED,
@@ -115,7 +119,11 @@ unsafe extern "C" {
 unsafe extern "C" {
     pub fn opus_repacketizer_create() -> *mut OpusRepacketizer;
     pub fn opus_repacketizer_destroy(rp: *mut OpusRepacketizer);
-    pub fn opus_repacketizer_cat(rp: *mut OpusRepacketizer, data: *const c_uchar, len: i32) -> c_int;
+    pub fn opus_repacketizer_cat(
+        rp: *mut OpusRepacketizer,
+        data: *const c_uchar,
+        len: i32,
+    ) -> c_int;
     pub fn opus_repacketizer_out_range_impl(
         rp: *mut OpusRepacketizer,
         begin: c_int,
@@ -151,10 +159,24 @@ pub unsafe fn set_dred_duration(enc: *mut OpusEncoder, frames: i32) -> c_int {
 /// frames) by `opus_packet_extensions_parse`: (id, frame, payload) or the
 /// error code.
 pub fn extensions_parse(data: &[u8], nb_frames: usize) -> Result<Vec<(u8, usize, Vec<u8>)>, i32> {
-    let mut exts = vec![OpusExtensionData { id: 0, frame: 0, data: core::ptr::null(), len: 0 }; 512];
+    let mut exts = vec![
+        OpusExtensionData {
+            id: 0,
+            frame: 0,
+            data: core::ptr::null(),
+            len: 0
+        };
+        512
+    ];
     let mut n = exts.len() as i32;
     let ret = unsafe {
-        opus_packet_extensions_parse(data.as_ptr(), data.len() as i32, exts.as_mut_ptr(), &mut n, nb_frames as c_int)
+        opus_packet_extensions_parse(
+            data.as_ptr(),
+            data.len() as i32,
+            exts.as_mut_ptr(),
+            &mut n,
+            nb_frames as c_int,
+        )
     };
     if ret < 0 {
         return Err(ret);
@@ -162,7 +184,11 @@ pub fn extensions_parse(data: &[u8], nb_frames: usize) -> Result<Vec<(u8, usize,
     Ok(exts[..n as usize]
         .iter()
         .map(|e| {
-            let payload = if e.len == 0 { Vec::new() } else { unsafe { core::slice::from_raw_parts(e.data, e.len as usize) }.to_vec() };
+            let payload = if e.len == 0 {
+                Vec::new()
+            } else {
+                unsafe { core::slice::from_raw_parts(e.data, e.len as usize) }.to_vec()
+            };
             (e.id as u8, e.frame as usize, payload)
         })
         .collect())
@@ -180,10 +206,26 @@ impl RefDredDecoder {
     }
 
     /// `opus_dred_parse` into `dred`: (return value, dred_end).
-    pub fn parse(&self, dred: &mut OpusDRED, packet: &[u8], max_dred_samples: i32, fs: i32, defer: bool) -> (i32, i32) {
+    pub fn parse(
+        &self,
+        dred: &mut OpusDRED,
+        packet: &[u8],
+        max_dred_samples: i32,
+        fs: i32,
+        defer: bool,
+    ) -> (i32, i32) {
         let mut end = -1;
         let ret = unsafe {
-            opus_dred_parse(self.0, dred, packet.as_ptr(), packet.len() as i32, max_dred_samples, fs, &mut end, defer as c_int)
+            opus_dred_parse(
+                self.0,
+                dred,
+                packet.as_ptr(),
+                packet.len() as i32,
+                max_dred_samples,
+                fs,
+                &mut end,
+                defer as c_int,
+            )
         };
         (ret, end)
     }

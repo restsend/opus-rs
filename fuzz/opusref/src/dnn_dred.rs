@@ -32,20 +32,36 @@ unsafe extern "C" {
 
     pub fn ref_rdovae_enc_create() -> *mut c_void;
     pub fn ref_rdovae_enc_destroy(e: *mut c_void);
-    pub fn ref_rdovae_encode_dframe(e: *mut c_void, latents: *mut f32, initial_state: *mut f32, input: *const f32);
+    pub fn ref_rdovae_encode_dframe(
+        e: *mut c_void,
+        latents: *mut f32,
+        initial_state: *mut f32,
+        input: *const f32,
+    );
     pub fn ref_rdovae_enc_state(e: *const c_void, out: *mut f32, n: *mut c_int) -> c_int;
 
     pub fn ref_rdovae_dec_create() -> *mut c_void;
     pub fn ref_rdovae_dec_destroy(d: *mut c_void);
     pub fn ref_rdovae_dec_init_states(d: *mut c_void, initial_state: *const f32);
     pub fn ref_rdovae_decode_qframe(d: *mut c_void, qframe: *mut f32, z: *const f32);
-    pub fn ref_rdovae_decode_all(d: *mut c_void, features: *mut f32, state: *const f32, latents: *const f32, nb: c_int);
+    pub fn ref_rdovae_decode_all(
+        d: *mut c_void,
+        features: *mut f32,
+        state: *const f32,
+        latents: *const f32,
+        nb: c_int,
+    );
     pub fn ref_rdovae_dec_state(d: *const c_void, out: *mut f32, n: *mut c_int) -> c_int;
 
     pub fn ref_dred_encoder_create(fs: c_int, channels: c_int) -> *mut c_void;
     pub fn ref_dred_encoder_destroy(e: *mut c_void);
     pub fn ref_dred_encoder_reset(e: *mut c_void);
-    pub fn ref_dred_compute_latents(e: *mut c_void, pcm: *const f32, frame_size: c_int, extra_delay: c_int);
+    pub fn ref_dred_compute_latents(
+        e: *mut c_void,
+        pcm: *const f32,
+        frame_size: c_int,
+        extra_delay: c_int,
+    );
     pub fn ref_dred_encode_silk_frame(
         e: *mut c_void,
         buf: *mut u8,
@@ -102,8 +118,20 @@ impl RdovaeEnc {
         assert!(!p.is_null());
         RdovaeEnc(p)
     }
-    pub fn encode_dframe(&mut self, latents: &mut [f32; 25], state: &mut [f32; 50], input: &[f32; 40]) {
-        unsafe { ref_rdovae_encode_dframe(self.0, latents.as_mut_ptr(), state.as_mut_ptr(), input.as_ptr()) }
+    pub fn encode_dframe(
+        &mut self,
+        latents: &mut [f32; 25],
+        state: &mut [f32; 50],
+        input: &[f32; 40],
+    ) {
+        unsafe {
+            ref_rdovae_encode_dframe(
+                self.0,
+                latents.as_mut_ptr(),
+                state.as_mut_ptr(),
+                input.as_ptr(),
+            )
+        }
     }
     pub fn state(&self) -> (Vec<f32>, bool) {
         state_of(|o, n| unsafe { ref_rdovae_enc_state(self.0, o, n) })
@@ -138,7 +166,15 @@ impl RdovaeDec {
     pub fn decode_all(&self, state: &[f32; 50], latents: &[f32], nb: usize) -> Vec<f32> {
         assert!(latents.len() >= 26 * nb);
         let mut f = vec![0f32; 80 * nb];
-        unsafe { ref_rdovae_decode_all(self.0, f.as_mut_ptr(), state.as_ptr(), latents.as_ptr(), nb as c_int) };
+        unsafe {
+            ref_rdovae_decode_all(
+                self.0,
+                f.as_mut_ptr(),
+                state.as_ptr(),
+                latents.as_ptr(),
+                nb as c_int,
+            )
+        };
         f
     }
     pub fn state(&self) -> (Vec<f32>, bool) {
@@ -181,7 +217,13 @@ impl DredEnc {
     }
     /// `pcm` must hold `2*frame_size` values for stereo (see
     /// `dred_compute_latents`).
-    pub fn compute_latents(&mut self, pcm: &[f32], frame_size: usize, channels: usize, extra_delay: i32) {
+    pub fn compute_latents(
+        &mut self,
+        pcm: &[f32],
+        frame_size: usize,
+        channels: usize,
+        extra_delay: i32,
+    ) {
         assert!(pcm.len() >= frame_size * channels);
         unsafe { ref_dred_compute_latents(self.0, pcm.as_ptr(), frame_size as c_int, extra_delay) }
     }
@@ -265,9 +307,20 @@ impl Dred {
     pub fn latents_mut(&mut self) -> &mut [f32] {
         self.floats(2)
     }
-    pub fn ec_decode(&mut self, bytes: &[u8], min_feature_frames: i32, dred_frame_offset: i32) -> i32 {
+    pub fn ec_decode(
+        &mut self,
+        bytes: &[u8],
+        min_feature_frames: i32,
+        dred_frame_offset: i32,
+    ) -> i32 {
         unsafe {
-            ref_dred_ec_decode(self.0, bytes.as_ptr(), bytes.len() as c_int, min_feature_frames, dred_frame_offset)
+            ref_dred_ec_decode(
+                self.0,
+                bytes.as_ptr(),
+                bytes.len() as c_int,
+                min_feature_frames,
+                dred_frame_offset,
+            )
         }
     }
     pub fn process(&mut self, model: &RdovaeDec) {
@@ -300,7 +353,12 @@ impl Drop for Dred {
 /// `ec_laplace_encode_p0` over `vals` (each with its `p0` and `decay`)
 /// into `cap` bytes: the buffer after `ec_enc_done` and `ec_tell` before
 /// it, or `None` on a coder error.
-pub fn laplace_p0_encode(vals: &[i32], p0: &[u16], decay: &[u16], cap: usize) -> Option<(Vec<u8>, i32)> {
+pub fn laplace_p0_encode(
+    vals: &[i32],
+    p0: &[u16],
+    decay: &[u16],
+    cap: usize,
+) -> Option<(Vec<u8>, i32)> {
     let mut buf = vec![0u8; cap];
     let tell = unsafe {
         ref_laplace_p0_encode(

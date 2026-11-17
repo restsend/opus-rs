@@ -6,7 +6,10 @@ use opus_rs::OpusDecoder;
 use opusref::*;
 
 fn unhex(s: &str) -> Vec<u8> {
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
 }
 
 #[test]
@@ -27,7 +30,10 @@ fn hybrid_frame_keeps_the_postfilter_of_a_redundant_frame() {
     for (k, p) in pkts.iter().map(|p| unhex(p)).enumerate() {
         rs.decode(&p, 960, &mut a).unwrap();
         unsafe { opus_decode_float(c, p.as_ptr(), p.len() as i32, b.as_mut_ptr(), 960, 0) };
-        let d = a.iter().zip(&b).fold(0f32, |m, (x, y)| m.max((x - y).abs()));
+        let d = a
+            .iter()
+            .zip(&b)
+            .fold(0f32, |m, (x, y)| m.max((x - y).abs()));
         assert!(d <= 4e-6, "packet {k}: max difference {d}");
     }
     unsafe { opus_decoder_destroy(c) };

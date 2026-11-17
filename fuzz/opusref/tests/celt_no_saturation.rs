@@ -5,7 +5,10 @@ use opus_rs::OpusDecoder;
 use opusref::*;
 
 fn unhex(s: &str) -> Vec<u8> {
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
 }
 
 #[test]
@@ -20,6 +23,9 @@ fn extreme_celt_frame_is_not_saturated() {
     unsafe { opus_decode_float(c, p.as_ptr(), p.len() as i32, b.as_mut_ptr(), 960, 0) };
     unsafe { opus_decoder_destroy(c) };
     let peak = b.iter().fold(1f32, |m, v| m.max(v.abs()));
-    let d = a.iter().zip(&b).fold(0f32, |m, (x, y)| m.max((x - y).abs()));
+    let d = a
+        .iter()
+        .zip(&b)
+        .fold(0f32, |m, (x, y)| m.max((x - y).abs()));
     assert!(d <= 4e-6 * peak, "max difference {d} (peak {peak})");
 }

@@ -66,7 +66,12 @@ pub fn compare(s: Setup, packets: &[Option<Vec<u8>>], complexity: i32) -> (f32, 
 const OPUS_SET_OSCE_BWE: i32 = 4054;
 
 /// `compare` with the bandwidth extension switched on or off.
-pub fn compare_bwe(s: Setup, packets: &[Option<Vec<u8>>], complexity: i32, bwe: bool) -> (f32, Option<usize>) {
+pub fn compare_bwe(
+    s: Setup,
+    packets: &[Option<Vec<u8>>],
+    complexity: i32,
+    bwe: bool,
+) -> (f32, Option<usize>) {
     let frame = s.fs as usize * s.frame_ms / 1000;
     let mut rs = opus_rs::OpusDecoder::new(s.fs, s.channels).unwrap();
     rs.set_complexity(complexity).unwrap();
@@ -86,7 +91,9 @@ pub fn compare_bwe(s: Setup, packets: &[Option<Vec<u8>>], complexity: i32, bwe: 
                 None => (core::ptr::null(), 0),
             };
             let na = opus_decode_float(dec, ptr, len, a.as_mut_ptr(), frame as i32, 0);
-            let nb = rs.decode(p.as_deref().unwrap_or(&[]), frame, &mut b).unwrap();
+            let nb = rs
+                .decode(p.as_deref().unwrap_or(&[]), frame, &mut b)
+                .unwrap();
             assert_eq!(na as usize, nb, "frame {k}");
             for (x, y) in a.iter().zip(&b) {
                 let d = (x - y).abs();
@@ -103,7 +110,13 @@ pub fn compare_bwe(s: Setup, packets: &[Option<Vec<u8>>], complexity: i32, bwe: 
 
 /// Bursts of 1 to `max_burst` lost packets, a burst starting with
 /// probability `rate` per packet; the first second is never lost.
-pub fn with_losses(packets: Vec<Vec<u8>>, seed: u64, rate: u32, max_burst: u32, frame_ms: usize) -> Vec<Option<Vec<u8>>> {
+pub fn with_losses(
+    packets: Vec<Vec<u8>>,
+    seed: u64,
+    rate: u32,
+    max_burst: u32,
+    frame_ms: usize,
+) -> Vec<Option<Vec<u8>>> {
     let mut r = Rng(seed);
     let mut left = 0;
     packets
@@ -123,24 +136,78 @@ pub fn with_losses(packets: Vec<Vec<u8>>, seed: u64, rate: u32, max_burst: u32, 
         .collect()
 }
 
-pub const SILK_WB_16K: Setup =
-    Setup { fs: 16000, channels: 1, app: 2048, bitrate: 20000, max_bandwidth: 1103, frame_ms: 20 };
-pub const SILK_WB_48K: Setup =
-    Setup { fs: 48000, channels: 1, app: 2048, bitrate: 20000, max_bandwidth: 1103, frame_ms: 20 };
-pub const SILK_WB_16K_10MS: Setup =
-    Setup { fs: 16000, channels: 1, app: 2048, bitrate: 20000, max_bandwidth: 1103, frame_ms: 10 };
-pub const SILK_NB_8K: Setup =
-    Setup { fs: 8000, channels: 1, app: 2048, bitrate: 12000, max_bandwidth: 1101, frame_ms: 20 };
-pub const SILK_WB_STEREO: Setup =
-    Setup { fs: 16000, channels: 2, app: 2048, bitrate: 32000, max_bandwidth: 1103, frame_ms: 20 };
-pub const CELT_48K: Setup =
-    Setup { fs: 48000, channels: 1, app: 2051, bitrate: 48000, max_bandwidth: 1105, frame_ms: 20 };
-pub const CELT_48K_STEREO: Setup =
-    Setup { fs: 48000, channels: 2, app: 2051, bitrate: 64000, max_bandwidth: 1105, frame_ms: 20 };
-pub const CELT_48K_10MS: Setup =
-    Setup { fs: 48000, channels: 1, app: 2051, bitrate: 48000, max_bandwidth: 1105, frame_ms: 10 };
-pub const CELT_16K: Setup =
-    Setup { fs: 16000, channels: 1, app: 2051, bitrate: 32000, max_bandwidth: 1105, frame_ms: 20 };
+pub const SILK_WB_16K: Setup = Setup {
+    fs: 16000,
+    channels: 1,
+    app: 2048,
+    bitrate: 20000,
+    max_bandwidth: 1103,
+    frame_ms: 20,
+};
+pub const SILK_WB_48K: Setup = Setup {
+    fs: 48000,
+    channels: 1,
+    app: 2048,
+    bitrate: 20000,
+    max_bandwidth: 1103,
+    frame_ms: 20,
+};
+pub const SILK_WB_16K_10MS: Setup = Setup {
+    fs: 16000,
+    channels: 1,
+    app: 2048,
+    bitrate: 20000,
+    max_bandwidth: 1103,
+    frame_ms: 10,
+};
+pub const SILK_NB_8K: Setup = Setup {
+    fs: 8000,
+    channels: 1,
+    app: 2048,
+    bitrate: 12000,
+    max_bandwidth: 1101,
+    frame_ms: 20,
+};
+pub const SILK_WB_STEREO: Setup = Setup {
+    fs: 16000,
+    channels: 2,
+    app: 2048,
+    bitrate: 32000,
+    max_bandwidth: 1103,
+    frame_ms: 20,
+};
+pub const CELT_48K: Setup = Setup {
+    fs: 48000,
+    channels: 1,
+    app: 2051,
+    bitrate: 48000,
+    max_bandwidth: 1105,
+    frame_ms: 20,
+};
+pub const CELT_48K_STEREO: Setup = Setup {
+    fs: 48000,
+    channels: 2,
+    app: 2051,
+    bitrate: 64000,
+    max_bandwidth: 1105,
+    frame_ms: 20,
+};
+pub const CELT_48K_10MS: Setup = Setup {
+    fs: 48000,
+    channels: 1,
+    app: 2051,
+    bitrate: 48000,
+    max_bandwidth: 1105,
+    frame_ms: 10,
+};
+pub const CELT_16K: Setup = Setup {
+    fs: 16000,
+    channels: 1,
+    app: 2051,
+    bitrate: 32000,
+    max_bandwidth: 1105,
+    frame_ms: 20,
+};
 
 /// The largest difference between opus-rs's output at two complexities.
 pub fn rs_effect(s: Setup, packets: &[Option<Vec<u8>>], c0: i32, c1: i32) -> f32 {
@@ -153,15 +220,26 @@ pub fn rs_effect(s: Setup, packets: &[Option<Vec<u8>>], c0: i32, c1: i32) -> f32
     for p in packets {
         let mut a = vec![0f32; frame * s.channels];
         let mut b = vec![0f32; frame * s.channels];
-        d0.decode(p.as_deref().unwrap_or(&[]), frame, &mut a).unwrap();
-        d1.decode(p.as_deref().unwrap_or(&[]), frame, &mut b).unwrap();
-        maxd = a.iter().zip(&b).fold(maxd, |m, (x, y)| m.max((x - y).abs()));
+        d0.decode(p.as_deref().unwrap_or(&[]), frame, &mut a)
+            .unwrap();
+        d1.decode(p.as_deref().unwrap_or(&[]), frame, &mut b)
+            .unwrap();
+        maxd = a
+            .iter()
+            .zip(&b)
+            .fold(maxd, |m, (x, y)| m.max((x - y).abs()));
     }
     maxd
 }
 
-pub const HYBRID_48K: Setup =
-    Setup { fs: 48000, channels: 1, app: 2048, bitrate: 32000, max_bandwidth: 1105, frame_ms: 20 };
+pub const HYBRID_48K: Setup = Setup {
+    fs: 48000,
+    channels: 1,
+    app: 2048,
+    bitrate: 32000,
+    max_bandwidth: 1105,
+    frame_ms: 20,
+};
 
 /// Every setup, and whether deep PLC conceals its losses (SILK at 16 kHz
 /// and CELT; narrowband SILK keeps the classic PLC).
@@ -189,7 +267,10 @@ fn deep_plc_matches_libopus() {
             let packets = with_losses(encode(s, 6, seed), seed, rate, burst, s.frame_ms);
             assert_eq!(compare(s, &packets, 5), (0.0, None), "{name} seed {seed}");
             if neural {
-                assert!(rs_effect(s, &packets, 4, 5) > 0.01, "{name} seed {seed}: deep PLC did not run");
+                assert!(
+                    rs_effect(s, &packets, 4, 5) > 0.01,
+                    "{name} seed {seed}: deep PLC did not run"
+                );
             }
         }
     }
@@ -201,7 +282,10 @@ fn deep_plc_matches_libopus() {
 fn deep_plc_survey() {
     for (name, s, _) in SETUPS {
         let packets = with_losses(encode(s, 6, 7), 3, 12, 6, s.frame_ms);
-        println!("{name}: opus-rs complexity 0 vs 5 differ by {:e}", rs_effect(s, &packets, 0, 5));
+        println!(
+            "{name}: opus-rs complexity 0 vs 5 differ by {:e}",
+            rs_effect(s, &packets, 0, 5)
+        );
         for c in [0, 4, 5, 10] {
             let (d, f) = compare(s, &packets, c);
             println!("{name} complexity {c}: max diff {d:e}, first differing frame {f:?}");
@@ -229,7 +313,10 @@ fn osce_matches_libopus() {
             for c in [6, 7] {
                 assert_eq!(compare(s, packets, c), (0.0, None), "{name} complexity {c}");
                 if enhanced {
-                    assert!(rs_effect(s, packets, 5, c) > 0.01, "{name} complexity {c}: OSCE did not run");
+                    assert!(
+                        rs_effect(s, packets, 5, c) > 0.01,
+                        "{name} complexity {c}: OSCE did not run"
+                    );
                 }
             }
         }
@@ -258,15 +345,49 @@ fn osce_bwe_matches_libopus() {
         .collect();
     let streams: [(&str, Setup, Vec<Vec<u8>>); 5] = [
         ("silk wb 48k", SILK_WB_48K, silk.clone()),
-        ("silk wb 48k 10ms", Setup { frame_ms: 10, ..SILK_WB_48K }, encode(Setup { frame_ms: 10, ..SILK_WB_48K }, 6, 9)),
-        ("silk wb 48k stereo", Setup { channels: 2, bitrate: 32000, ..SILK_WB_48K }, encode(Setup { channels: 2, bitrate: 32000, ..SILK_WB_48K }, 6, 9)),
+        (
+            "silk wb 48k 10ms",
+            Setup {
+                frame_ms: 10,
+                ..SILK_WB_48K
+            },
+            encode(
+                Setup {
+                    frame_ms: 10,
+                    ..SILK_WB_48K
+                },
+                6,
+                9,
+            ),
+        ),
+        (
+            "silk wb 48k stereo",
+            Setup {
+                channels: 2,
+                bitrate: 32000,
+                ..SILK_WB_48K
+            },
+            encode(
+                Setup {
+                    channels: 2,
+                    bitrate: 32000,
+                    ..SILK_WB_48K
+                },
+                6,
+                9,
+            ),
+        ),
         ("hybrid 48k", HYBRID_48K, hybrid.clone()),
         ("switching 48k", SILK_WB_48K, switching),
     ];
     for (name, s, packets) in streams {
         let packets = with_losses(packets, 5, 12, 6, s.frame_ms);
         for c in [4, 7] {
-            assert_eq!(compare_bwe(s, &packets, c, true), (0.0, None), "{name} complexity {c}");
+            assert_eq!(
+                compare_bwe(s, &packets, c, true),
+                (0.0, None),
+                "{name} complexity {c}"
+            );
         }
         let frame = s.fs as usize * s.frame_ms / 1000;
         let mut on = opus_rs::OpusDecoder::new(s.fs, s.channels).unwrap();
@@ -276,12 +397,16 @@ fn osce_bwe_matches_libopus() {
         on.set_osce_bwe(true);
         let mut d = 0f32;
         for p in &packets {
-            let (mut a, mut b) = (vec![0f32; frame * s.channels], vec![0f32; frame * s.channels]);
-            on.decode(p.as_deref().unwrap_or(&[]), frame, &mut a).unwrap();
-            off.decode(p.as_deref().unwrap_or(&[]), frame, &mut b).unwrap();
+            let (mut a, mut b) = (
+                vec![0f32; frame * s.channels],
+                vec![0f32; frame * s.channels],
+            );
+            on.decode(p.as_deref().unwrap_or(&[]), frame, &mut a)
+                .unwrap();
+            off.decode(p.as_deref().unwrap_or(&[]), frame, &mut b)
+                .unwrap();
             d = a.iter().zip(&b).fold(d, |m, (x, y)| m.max((x - y).abs()));
         }
         assert!(d > 0.01, "{name}: the bandwidth extension did not run");
     }
 }
-

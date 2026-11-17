@@ -25,17 +25,24 @@ fn frame_after_a_loss_folds_without_crossfade() {
         let pcm: Vec<f32> = (0..frame)
             .map(|i| {
                 let t = (f * frame + i) as f32 / fs as f32;
-                (1..12).map(|h| ((h as f32) * pitch * t * 6.2832).sin() / h as f32).sum::<f32>() * 0.2
+                (1..12)
+                    .map(|h| ((h as f32) * pitch * t * 6.2832).sin() / h as f32)
+                    .sum::<f32>()
+                    * 0.2
             })
             .collect();
         let mut pkt = [0u8; 1500];
-        let len = unsafe { opus_encode_float(enc, pcm.as_ptr(), frame as i32, pkt.as_mut_ptr(), 1500) };
+        let len =
+            unsafe { opus_encode_float(enc, pcm.as_ptr(), frame as i32, pkt.as_mut_ptr(), 1500) };
         let lost = f % 7 == 6;
         let p: &[u8] = if lost { &[] } else { &pkt[..len as usize] };
         rs.decode(p, frame, &mut a).unwrap();
         let ptr = if lost { core::ptr::null() } else { p.as_ptr() };
         unsafe { opus_decode_float(c, ptr, p.len() as i32, b.as_mut_ptr(), frame as i32, 0) };
-        let d = a.iter().zip(&b).fold(0f32, |m, (x, y)| m.max((x - y).abs()));
+        let d = a
+            .iter()
+            .zip(&b)
+            .fold(0f32, |m, (x, y)| m.max((x - y).abs()));
         assert!(d <= 1e-3, "frame {f}: max difference {d}");
     }
     unsafe { opus_encoder_destroy(enc) };

@@ -12,8 +12,16 @@ fn embedded_blobs_equal_the_reference_arrays() {
             ("pitchdnn", pitchdnn_arrays.as_ptr(), builtin::PITCHDNN),
             ("fargan", fargan_arrays.as_ptr(), builtin::FARGAN),
             ("plc", plcmodel_arrays.as_ptr(), builtin::PLC),
-            ("dred_rdovae_enc", rdovaeenc_arrays.as_ptr(), builtin::DRED_RDOVAE_ENC),
-            ("dred_rdovae_dec", rdovaedec_arrays.as_ptr(), builtin::DRED_RDOVAE_DEC),
+            (
+                "dred_rdovae_enc",
+                rdovaeenc_arrays.as_ptr(),
+                builtin::DRED_RDOVAE_ENC,
+            ),
+            (
+                "dred_rdovae_dec",
+                rdovaedec_arrays.as_ptr(),
+                builtin::DRED_RDOVAE_DEC,
+            ),
             ("lace", lacelayers_arrays.as_ptr(), builtin::LACE),
             ("nolace", nolacelayers_arrays.as_ptr(), builtin::NOLACE),
             ("bbwenet", bbwenetlayers_arrays.as_ptr(), builtin::BBWENET),
@@ -23,10 +31,16 @@ fn embedded_blobs_equal_the_reference_arrays() {
     for (name, list, embedded) in models {
         let blob = blob_of(list);
         if write {
-            let p = format!("{}/../../dnn-weights/{name}.bin", env!("CARGO_MANIFEST_DIR"));
+            let p = format!(
+                "{}/../../dnn-weights/{name}.bin",
+                env!("CARGO_MANIFEST_DIR")
+            );
             std::fs::write(p, &blob).unwrap();
         } else {
-            assert!(blob == embedded, "{name}: embedded blob differs from the reference arrays");
+            assert!(
+                blob == embedded,
+                "{name}: embedded blob differs from the reference arrays"
+            );
         }
     }
 }

@@ -37,13 +37,17 @@ enum Kind {
 
 impl Layer {
     fn new(r: &mut Rng, nin: usize, nout: usize, kind: Kind, bias: bool, diag: bool) -> Layer {
-        let vecf = |r: &mut Rng, n: usize, s: f32| (0..n).map(|_| r.uni() * s).collect::<Vec<f32>>();
+        let vecf =
+            |r: &mut Rng, n: usize, s: f32| (0..n).map(|_| r.uni() * s).collect::<Vec<f32>>();
         let mut idx = None;
         let mut blocks = 0;
         if matches!(kind, Kind::FloatSparse | Kind::Int8Sparse) {
             let mut v = Vec::new();
             for _ in 0..nout / 8 {
-                let cols: Vec<i32> = (0..nin / 4).filter(|_| r.below(3) != 0).map(|c| 4 * c as i32).collect();
+                let cols: Vec<i32> = (0..nin / 4)
+                    .filter(|_| r.below(3) != 0)
+                    .map(|c| 4 * c as i32)
+                    .collect();
                 v.push(cols.len() as i32);
                 blocks += cols.len();
                 v.extend(cols);
@@ -56,8 +60,16 @@ impl Layer {
             _ => None,
         };
         let w8 = match kind {
-            Kind::Int8 => Some((0..nin * nout).map(|_| (r.below(255) as i32 - 127) as i8).collect::<Vec<i8>>()),
-            Kind::Int8Sparse => Some((0..32 * blocks).map(|_| (r.below(255) as i32 - 127) as i8).collect()),
+            Kind::Int8 => Some(
+                (0..nin * nout)
+                    .map(|_| (r.below(255) as i32 - 127) as i8)
+                    .collect::<Vec<i8>>(),
+            ),
+            Kind::Int8Sparse => Some(
+                (0..32 * blocks)
+                    .map(|_| (r.below(255) as i32 - 127) as i8)
+                    .collect(),
+            ),
             _ => None,
         };
         let scale = w8.as_ref().map(|_| vecf(r, nout, 1.0 / 256.0));
@@ -71,7 +83,17 @@ impl Layer {
             diag.as_deref().map(bytes_f32),
             scale.as_deref().map(bytes_f32),
         ];
-        Layer { nin, nout, bias, w8, fw, idx, diag, scale, b }
+        Layer {
+            nin,
+            nout,
+            bias,
+            w8,
+            fw,
+            idx,
+            diag,
+            scale,
+            b,
+        }
     }
 
     fn c(&self) -> c::LinearLayer {
@@ -132,11 +154,24 @@ fn input(r: &mut Rng, n: usize, scale: f32) -> Vec<f32> {
 fn activations_match() {
     let mut r = Rng(0x1234);
     let mut x: Vec<f32> = (0..4000).map(|_| r.uni() * 40.0).collect();
-    x.extend([0.0, -0.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 1e30, -1e30, 88.0, -88.0, 1e-40]);
+    x.extend([
+        0.0,
+        -0.0,
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        1e30,
+        -1e30,
+        88.0,
+        -88.0,
+        1e-40,
+    ]);
     for act in ACTS {
         let mut a = vec![0f32; x.len()];
         let mut b = vec![0f32; x.len()];
-        unsafe { c::ref_compute_activation(a.as_mut_ptr(), x.as_ptr(), x.len() as i32, act as i32) };
+        unsafe {
+            c::ref_compute_activation(a.as_mut_ptr(), x.as_ptr(), x.len() as i32, act as i32)
+        };
         rs::compute_activation(&mut b, &x, x.len(), act);
         assert_eq!(same_bits(&a, &b), None, "{act:?}");
         let mut d = x.clone();
@@ -149,9 +184,19 @@ fn activations_match() {
 fn linear_and_dense_match() {
     let mut r = Rng(0x5678);
     for it in 0..400 {
-        let kind = [Kind::Float, Kind::FloatSparse, Kind::Int8, Kind::Int8Sparse, Kind::Empty][it % 5];
+        let kind = [
+            Kind::Float,
+            Kind::FloatSparse,
+            Kind::Int8,
+            Kind::Int8Sparse,
+            Kind::Empty,
+        ][it % 5];
         let nin = 4 * (1 + r.below(64) as usize);
-        let nout = if kind == Kind::Float && r.below(2) == 0 { 1 + r.below(100) as usize } else { 8 * (1 + r.below(24) as usize) };
+        let nout = if kind == Kind::Float && r.below(2) == 0 {
+            1 + r.below(100) as usize
+        } else {
+            8 * (1 + r.below(24) as usize)
+        };
         let diag = false;
         let with_bias = r.below(4) != 0;
         let l = Layer::new(&mut r, nin, nout, kind, with_bias, diag);
@@ -206,7 +251,11 @@ fn conv1d_match() {
         // libopus's dilation path needs ksize >= 2 (it copies a negative count
         // otherwise).
         let ksize = 1 + r.below(4) as usize;
-        let dilation = if it % 2 == 0 || ksize == 1 { 1 } else { 1 + r.below(3) as usize };
+        let dilation = if it % 2 == 0 || ksize == 1 {
+            1
+        } else {
+            1 + r.below(3) as usize
+        };
         let nin = input_size * ksize;
         let nout = 8 * (1 + r.below(12) as usize);
         let l = Layer::new(&mut r, nin, nout, kind, true, false);
@@ -229,12 +278,27 @@ fn conv1d_match() {
                     act as i32,
                 )
             };
-            rs::compute_generic_conv1d_dilation(&l.rs(), &mut b, &mut mb, &x, input_size, dilation, act);
+            rs::compute_generic_conv1d_dilation(
+                &l.rs(),
+                &mut b,
+                &mut mb,
+                &x,
+                input_size,
+                dilation,
+                act,
+            );
             assert_eq!(same_bits(&a, &b), None, "conv1d iteration {it}");
             assert_eq!(same_bits(&ma, &mb), None, "conv1d memory iteration {it}");
             if dilation == 1 {
                 unsafe {
-                    c::ref_compute_generic_conv1d(&l.c(), a.as_mut_ptr(), ma.as_mut_ptr(), x.as_ptr(), input_size as i32, act as i32)
+                    c::ref_compute_generic_conv1d(
+                        &l.c(),
+                        a.as_mut_ptr(),
+                        ma.as_mut_ptr(),
+                        x.as_ptr(),
+                        input_size as i32,
+                        act as i32,
+                    )
                 };
                 rs::compute_generic_conv1d(&l.rs(), &mut b, &mut mb, &x, input_size, act);
                 assert_eq!(same_bits(&a, &b), None, "conv1d iteration {it}");
@@ -248,7 +312,11 @@ fn conv1d_match() {
 fn conv2d_match() {
     let mut r = Rng(0x1357);
     for it in 0..60 {
-        let (ktime, kheight) = if it % 2 == 0 { (3, 3) } else { (1 + r.below(3) as usize, 1 + r.below(5) as usize) };
+        let (ktime, kheight) = if it % 2 == 0 {
+            (3, 3)
+        } else {
+            (1 + r.below(3) as usize, 1 + r.below(5) as usize)
+        };
         let inc = 1 + r.below(4) as usize;
         let outc = 1 + r.below(4) as usize;
         let height = 8 + r.below(60) as usize;
@@ -281,7 +349,15 @@ fn conv2d_match() {
             let mut a = vec![0f32; outc * hstride];
             let mut b = vec![0f32; outc * hstride];
             unsafe {
-                c::ref_compute_conv2d(&cl, a.as_mut_ptr(), ma.as_mut_ptr(), x.as_ptr(), height as i32, hstride as i32, act as i32)
+                c::ref_compute_conv2d(
+                    &cl,
+                    a.as_mut_ptr(),
+                    ma.as_mut_ptr(),
+                    x.as_ptr(),
+                    height as i32,
+                    hstride as i32,
+                    act as i32,
+                )
             };
             rs::compute_conv2d(&rl, &mut b, &mut mb, &x, height, hstride, act);
             assert_eq!(same_bits(&a, &b), None, "conv2d iteration {it}");

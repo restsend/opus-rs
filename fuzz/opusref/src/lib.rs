@@ -99,8 +99,13 @@ unsafe extern "C" {
     );
     pub fn _celt_lpc(lpc: *mut f32, ac: *const f32, p: c_int);
     pub fn renormalise_vector(x: *mut f32, n: c_int, gain: f32, arch: c_int);
-    pub fn stereo_itheta(x: *const f32, y: *const f32, stereo: c_int, n: c_int, arch: c_int)
-    -> c_int;
+    pub fn stereo_itheta(
+        x: *const f32,
+        y: *const f32,
+        stereo: c_int,
+        n: c_int,
+        arch: c_int,
+    ) -> c_int;
     pub fn amp2Log2(
         m: *const CELTMode,
         eff_end: c_int,
@@ -224,9 +229,6 @@ unsafe extern "C" {
 /// The neural network functions of the reference (feature `dnn`).
 #[cfg(feature = "dnn")]
 pub mod dnn;
-/// Deep PLC (FARGAN, LPCNet PLC) of the reference.
-#[cfg(feature = "dnn")]
-pub mod dnn_plc;
 /// DRED of the reference.
 #[cfg(feature = "dnn")]
 pub mod dnn_dred;
@@ -237,3 +239,6 @@ pub mod dnn_dred_api;
 /// OSCE of the reference.
 #[cfg(feature = "dnn")]
 pub mod dnn_osce;
+/// Deep PLC (FARGAN, LPCNet PLC) of the reference.
+#[cfg(feature = "dnn")]
+pub mod dnn_plc;

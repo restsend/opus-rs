@@ -252,7 +252,11 @@ fn run(inp: Input) -> Result<(), Finding> {
                 set_simd(false);
                 let rs = e_sc.encode(&x, bad, &mut o2);
                 if (r > 0) != rs.is_ok() {
-                    fail!("result", "bad frame size", "frame size {bad}: opus-rs {rs:?}, libopus {r} fs{fs} ch{ch}");
+                    fail!(
+                        "result",
+                        "bad frame size",
+                        "frame size {bad}: opus-rs {rs:?}, libopus {r} fs{fs} ch{ch}"
+                    );
                 }
                 if r > 0 {
                     // libopus accepted it (e.g. a multiple it supports): the
@@ -270,7 +274,10 @@ fn run(inp: Input) -> Result<(), Finding> {
             synth.fill(&seg.signal, &mut pcm, ch, i, n);
             hist.extend_from_slice(&pcm);
             let (mut p_sc, mut p_si, mut p_ref) = ([0u8; 1600], [0u8; 1600], [0u8; 1600]);
-            let pcm16: Vec<i16> = pcm.iter().map(|&x| (x * 32768.0).round().clamp(-32768.0, 32767.0) as i16).collect();
+            let pcm16: Vec<i16> = pcm
+                .iter()
+                .map(|&x| (x * 32768.0).round().clamp(-32768.0, 32767.0) as i16)
+                .collect();
             let r_ref = if seg.call.int16 {
                 re.encode_i16(&pcm16, frame, &mut p_ref[..budget])
             } else {
@@ -286,11 +293,22 @@ fn run(inp: Input) -> Result<(), Finding> {
             // (after the high-pass or DC filter and the conversion).
             let (si_rs, si_ref) = (opus_rs::fuzzing::take_silk_input(), c::take_silk_input());
             if !si_rs.is_empty() && !si_ref.is_empty() {
-                if let Some(i) = (0..si_rs.len().min(si_ref.len())).find(|&i| si_rs[i] != si_ref[i]) {
-                    let worst = si_rs.iter().zip(&si_ref).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
-                    fail!("silk-input", format!("app{capp} {}", if worst <= 1 { "lsb" } else { "large" }),
-                          "frame {total}: sample {i} opus-rs {}, libopus {} (largest difference {worst}) fs{fs} ch{ch} gen {:?}",
-                          si_rs[i], si_ref[i], seg.signal);
+                if let Some(i) = (0..si_rs.len().min(si_ref.len())).find(|&i| si_rs[i] != si_ref[i])
+                {
+                    let worst = si_rs
+                        .iter()
+                        .zip(&si_ref)
+                        .map(|(a, b)| (*a as i32 - *b as i32).abs())
+                        .max()
+                        .unwrap_or(0);
+                    fail!(
+                        "silk-input",
+                        format!("app{capp} {}", if worst <= 1 { "lsb" } else { "large" }),
+                        "frame {total}: sample {i} opus-rs {}, libopus {} (largest difference {worst}) fs{fs} ch{ch} gen {:?}",
+                        si_rs[i],
+                        si_ref[i],
+                        seg.signal
+                    );
                 }
             }
             // `OFZ_SUPPRESS=simd` skips the SIMD encoder (see fuzz/DIFFERENTIAL.md).
@@ -324,7 +342,17 @@ fn run(inp: Input) -> Result<(), Finding> {
                 }
                 (n, r) => fail!(
                     "result",
-                    format!("{} budget {}", if n > 0 { "rs-err" } else { "rs-ok" }, if budget < 3 { "tiny" } else if budget < 1275 { "short" } else { "full" }),
+                    format!(
+                        "{} budget {}",
+                        if n > 0 { "rs-err" } else { "rs-ok" },
+                        if budget < 3 {
+                            "tiny"
+                        } else if budget < 1275 {
+                            "short"
+                        } else {
+                            "full"
+                        }
+                    ),
                     "libopus {n}, opus-rs {r:?} at frame {total} {ctx}"
                 ),
             };

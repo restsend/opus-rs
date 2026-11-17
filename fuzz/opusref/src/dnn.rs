@@ -70,8 +70,18 @@ unsafe extern "C" {
 
     pub fn ref_compute_linear(l: *const LinearLayer, out: *mut f32, input: *const f32);
     pub fn ref_compute_activation(out: *mut f32, input: *const f32, n: c_int, act: c_int);
-    pub fn ref_compute_generic_dense(l: *const LinearLayer, out: *mut f32, input: *const f32, act: c_int);
-    pub fn ref_compute_generic_gru(i: *const LinearLayer, r: *const LinearLayer, state: *mut f32, input: *const f32);
+    pub fn ref_compute_generic_dense(
+        l: *const LinearLayer,
+        out: *mut f32,
+        input: *const f32,
+        act: c_int,
+    );
+    pub fn ref_compute_generic_gru(
+        i: *const LinearLayer,
+        r: *const LinearLayer,
+        state: *mut f32,
+        input: *const f32,
+    );
     pub fn ref_compute_glu(l: *const LinearLayer, out: *mut f32, input: *const f32);
     pub fn ref_compute_generic_conv1d(
         l: *const LinearLayer,
@@ -131,7 +141,11 @@ unsafe extern "C" {
     ) -> f32;
     pub fn ref_pitchdnn_create() -> *mut c_void;
     pub fn ref_pitchdnn_destroy(st: *mut c_void);
-    pub fn ref_compute_pitchdnn(st: *mut c_void, if_features: *const f32, xcorr_features: *const f32) -> f32;
+    pub fn ref_compute_pitchdnn(
+        st: *mut c_void,
+        if_features: *const f32,
+        xcorr_features: *const f32,
+    ) -> f32;
 }
 
 /// A small deterministic generator for test inputs (xorshift64*).
@@ -155,7 +169,9 @@ impl Rng {
 
 /// Bitwise float comparison: NaNs compare equal to NaNs.
 pub fn same_bits(a: &[f32], b: &[f32]) -> Option<usize> {
-    a.iter().zip(b).position(|(x, y)| x.to_bits() != y.to_bits() && !(x.is_nan() && y.is_nan()))
+    a.iter()
+        .zip(b)
+        .position(|(x, y)| x.to_bits() != y.to_bits() && !(x.is_nan() && y.is_nan()))
 }
 
 /// A voiced-speech-like test signal at 16 kHz in the int16 range: a few

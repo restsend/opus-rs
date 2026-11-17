@@ -29,7 +29,15 @@ fn extension_iterator_matches_libopus() {
         let data: Vec<u8> = if case % 3 == 0 {
             // Random bytes, biased to small IDs and lengths.
             let n = r.below(40) as usize;
-            (0..n).map(|_| if r.below(2) == 0 { r.below(16) as u8 } else { r.next_u32() as u8 }).collect()
+            (0..n)
+                .map(|_| {
+                    if r.below(2) == 0 {
+                        r.below(16) as u8
+                    } else {
+                        r.next_u32() as u8
+                    }
+                })
+                .collect()
         } else {
             let n = r.below(8) as usize;
             let payloads: Vec<Vec<u8>> = (0..n)
@@ -46,9 +54,18 @@ fn extension_iterator_matches_libopus() {
             let mut exts: Vec<OpusExtensionData> = payloads
                 .iter()
                 .map(|p| {
-                    let id = if r.below(2) == 0 { 3 + r.below(29) } else { 32 + r.below(96) } as i32;
+                    let id = if r.below(2) == 0 {
+                        3 + r.below(29)
+                    } else {
+                        32 + r.below(96)
+                    } as i32;
                     let len = if id < 32 { p.len().min(1) } else { p.len() } as i32;
-                    OpusExtensionData { id, frame: r.below(nb_frames as u32) as i32, data: p.as_ptr(), len }
+                    OpusExtensionData {
+                        id,
+                        frame: r.below(nb_frames as u32) as i32,
+                        data: p.as_ptr(),
+                        len,
+                    }
                 })
                 .collect();
             // Mostly in frame order, which lets repeats happen.
@@ -57,9 +74,20 @@ fn extension_iterator_matches_libopus() {
             }
             let mut buf = vec![0u8; 8000];
             let pad = r.below(2) as i32;
-            let cap = if pad != 0 { 1 + r.below(7000) as i32 } else { 8000 };
+            let cap = if pad != 0 {
+                1 + r.below(7000) as i32
+            } else {
+                8000
+            };
             let len = unsafe {
-                opus_packet_extensions_generate(buf.as_mut_ptr(), cap, exts.as_ptr(), exts.len() as i32, nb_frames as i32, pad)
+                opus_packet_extensions_generate(
+                    buf.as_mut_ptr(),
+                    cap,
+                    exts.as_ptr(),
+                    exts.len() as i32,
+                    nb_frames as i32,
+                    pad,
+                )
             };
             if len < 0 {
                 continue;
@@ -90,10 +118,15 @@ fn extension_iterator_matches_libopus() {
                 }
             }
             (Err(_), Err(_)) => {}
-            _ => panic!("case {case}: libopus {c:?}, opus-rs {rs:?} for {data:?} with {nb_frames} frames"),
+            _ => panic!(
+                "case {case}: libopus {c:?}, opus-rs {rs:?} for {data:?} with {nb_frames} frames"
+            ),
         }
     }
-    assert!(generated > 5000 && valid_random > 1000, "{generated} generated, {valid_random} valid random");
+    assert!(
+        generated > 5000 && valid_random > 1000,
+        "{generated} generated, {valid_random} valid random"
+    );
 }
 
 /// opus-rs's packet parsing returns the frame count and padding of
@@ -139,19 +172,42 @@ fn packet_padding_matches_libopus() {
                 assert_eq!(parts.count, ret as usize, "case {case}");
                 for i in 0..parts.count {
                     let off = unsafe { frames[i].offset_from(p.as_ptr()) } as usize;
-                    assert_eq!((parts.frames[i].as_ptr() as usize - p.as_ptr() as usize, parts.frames[i].len()), (off, size[i] as usize), "case {case} frame {i}");
+                    assert_eq!(
+                        (
+                            parts.frames[i].as_ptr() as usize - p.as_ptr() as usize,
+                            parts.frames[i].len()
+                        ),
+                        (off, size[i] as usize),
+                        "case {case} frame {i}"
+                    );
                 }
                 let off = unsafe { padding.offset_from(p.as_ptr()) } as usize;
-                assert_eq!((parts.padding.as_ptr() as usize - p.as_ptr() as usize, parts.padding.len()), (off, padding_len as usize), "case {case}");
+                assert_eq!(
+                    (
+                        parts.padding.as_ptr() as usize - p.as_ptr() as usize,
+                        parts.padding.len()
+                    ),
+                    (off, padding_len as usize),
+                    "case {case}"
+                );
             }
-            Err(_) => assert!(ret < 0, "case {case}: libopus {ret}, opus-rs failed for {p:?}"),
+            Err(_) => assert!(
+                ret < 0,
+                "case {case}: libopus {ret}, opus-rs failed for {p:?}"
+            ),
         }
     }
 }
 
 /// Bursts of 1 to `max_burst` lost packets, a burst starting with
 /// probability `rate` per packet; the first second is never lost.
-pub fn with_losses(packets: Vec<Vec<u8>>, seed: u64, rate: u32, max_burst: u32, frame_ms: usize) -> Vec<Option<Vec<u8>>> {
+pub fn with_losses(
+    packets: Vec<Vec<u8>>,
+    seed: u64,
+    rate: u32,
+    max_burst: u32,
+    frame_ms: usize,
+) -> Vec<Option<Vec<u8>>> {
     let mut r = Rng(seed);
     let mut left = 0;
     packets
@@ -198,12 +254,36 @@ pub const SILK_WB_16K: Setup = Setup {
     dred: 100,
     vbr: true,
 };
-pub const SILK_WB_48K: Setup = Setup { fs: 48000, ..SILK_WB_16K };
+pub const SILK_WB_48K: Setup = Setup {
+    fs: 48000,
+    ..SILK_WB_16K
+};
 /// At 32 kb/s, 10 ms frames leave too few bits for two DRED chunks.
-pub const SILK_WB_16K_CBR_10MS: Setup = Setup { frame_ms: 10, vbr: false, dred: 50, bitrate: 48000, ..SILK_WB_16K };
-pub const HYBRID_48K: Setup = Setup { fs: 48000, max_bandwidth: 1105, bitrate: 40000, ..SILK_WB_16K };
-pub const CELT_48K: Setup = Setup { fs: 48000, app: 2051, bitrate: 64000, max_bandwidth: 1105, ..SILK_WB_16K };
-pub const CELT_48K_STEREO: Setup = Setup { channels: 2, bitrate: 96000, ..CELT_48K };
+pub const SILK_WB_16K_CBR_10MS: Setup = Setup {
+    frame_ms: 10,
+    vbr: false,
+    dred: 50,
+    bitrate: 48000,
+    ..SILK_WB_16K
+};
+pub const HYBRID_48K: Setup = Setup {
+    fs: 48000,
+    max_bandwidth: 1105,
+    bitrate: 40000,
+    ..SILK_WB_16K
+};
+pub const CELT_48K: Setup = Setup {
+    fs: 48000,
+    app: 2051,
+    bitrate: 64000,
+    max_bandwidth: 1105,
+    ..SILK_WB_16K
+};
+pub const CELT_48K_STEREO: Setup = Setup {
+    channels: 2,
+    bitrate: 96000,
+    ..CELT_48K
+};
 
 /// `seconds` of a speech-like signal at `s.fs` (interleaved; the second
 /// channel is the first scaled).
@@ -249,7 +329,10 @@ pub fn ref_encode(s: Setup, pcm: &[f32]) -> Vec<Vec<u8>> {
 fn same_dred(c: &OpusDRED, r: &opus_rs::dred::OpusDred) -> Result<(), String> {
     let ints = (c.process_stage, c.nb_latents, c.dred_offset);
     if ints != (r.process_stage, r.nb_latents, r.dred_offset) {
-        return Err(format!("(stage, latents, offset) {ints:?} vs {:?}", (r.process_stage, r.nb_latents, r.dred_offset)));
+        return Err(format!(
+            "(stage, latents, offset) {ints:?} vs {:?}",
+            (r.process_stage, r.nb_latents, r.dred_offset)
+        ));
     }
     for (name, a, b) in [
         ("fec_features", &c.fec_features[..], &r.fec_features[..]),
@@ -272,14 +355,24 @@ fn compare_parse(s: Setup, packets: &[Vec<u8>]) -> usize {
     let rdec = opus_rs::dred::OpusDredDecoder::new().unwrap();
     let mut with_dred = 0;
     for (k, p) in packets.iter().enumerate() {
-        for (fs, max) in [(s.fs, s.fs / 50), (s.fs, s.fs), (s.fs, 2 * s.fs), (16000, 4000), (48000, 30000)] {
+        for (fs, max) in [
+            (s.fs, s.fs / 50),
+            (s.fs, s.fs),
+            (s.fs, 2 * s.fs),
+            (16000, 4000),
+            (48000, 30000),
+        ] {
             for defer in [false, true] {
                 let mut c = OpusDRED::zeroed();
                 let mut r = Box::<opus_rs::dred::OpusDred>::default();
                 let (cret, cend) = cdec.parse(&mut c, p, max, fs, defer);
                 let rres = rdec.parse(&mut r, p, max, fs, defer);
                 assert!(cret >= 0, "packet {k}: {cret}");
-                assert_eq!(rres, Ok((cret, cend)), "packet {k}, {max} samples at {fs} Hz");
+                assert_eq!(
+                    rres,
+                    Ok((cret, cend)),
+                    "packet {k}, {max} samples at {fs} Hz"
+                );
                 if let Err(e) = same_dred(&c, &r) {
                     panic!("packet {k}, {max} samples at {fs} Hz, defer {defer}: {e}");
                 }
@@ -314,7 +407,11 @@ fn dred_parse_matches_libopus() {
     ] {
         let packets = ref_encode(s, &signal(s, 4, 5));
         let n = compare_parse(s, &packets);
-        assert!(n > packets.len() / 2, "{name}: only {n} of {} packets carry DRED", packets.len());
+        assert!(
+            n > packets.len() / 2,
+            "{name}: only {n} of {} packets carry DRED",
+            packets.len()
+        );
     }
 }
 
@@ -346,7 +443,10 @@ fn dred_parse_edge_cases_match_libopus() {
         let (cret, cend) = cdec.parse(&mut c, &q, s.fs, s.fs, false);
         let rres = rdec.parse(&mut rd, &q, s.fs, s.fs, false);
         if cret < 0 {
-            assert!(rres.is_err(), "packet {k}: libopus {cret}, opus-rs {rres:?}");
+            assert!(
+                rres.is_err(),
+                "packet {k}: libopus {cret}, opus-rs {rres:?}"
+            );
             assert_eq!((c.process_stage, rd.process_stage), (-1, -1));
         } else {
             assert_eq!(rres, Ok((cret, cend)), "packet {k}");
@@ -368,7 +468,12 @@ enum Lost {
 /// `complexity`, concealing losses before a packet with DRED from it as
 /// opus_demo does. Returns the largest difference, the first differing
 /// frame, and the number of frames concealed from DRED.
-fn dred_decode_compare(s: Setup, packets: &[Option<Vec<u8>>], complexity: i32, how: Lost) -> (f32, Option<usize>, usize) {
+fn dred_decode_compare(
+    s: Setup,
+    packets: &[Option<Vec<u8>>],
+    complexity: i32,
+    how: Lost,
+) -> (f32, Option<usize>, usize) {
     let frame = s.fs as usize * s.frame_ms / 1000;
     let ch = s.channels;
     let mut rs = opus_rs::OpusDecoder::new(s.fs, ch).unwrap();
@@ -404,13 +509,20 @@ fn dred_decode_compare(s: Setup, packets: &[Option<Vec<u8>>], complexity: i32, h
                 let mut r = Box::<opus_rs::dred::OpusDred>::default();
                 let want = ((lost * frame) as i32).min(s.fs);
                 let (cret, cend) = cdred.parse(&mut c, p, want, s.fs, false);
-                assert_eq!(rdred.parse(&mut r, p, want, s.fs, false), Ok((cret, cend)), "packet {k}");
+                assert_eq!(
+                    rdred.parse(&mut r, p, want, s.fs, false),
+                    Ok((cret, cend)),
+                    "packet {k}"
+                );
                 same_dred(&c, &r).unwrap();
                 for fr in 0..lost {
                     let j = k - lost + fr;
                     let parts: &[(usize, usize)] = match how {
                         Lost::Frame => &[(frame, (lost - fr) * frame)],
-                        Lost::Halves => &[(frame / 2, (lost - fr) * frame), (frame / 2, (lost - fr) * frame - frame / 2)],
+                        Lost::Halves => &[
+                            (frame / 2, (lost - fr) * frame),
+                            (frame / 2, (lost - fr) * frame - frame / 2),
+                        ],
                     };
                     for &(n, offset) in parts {
                         let mut a = vec![0f32; n * ch];
@@ -418,12 +530,25 @@ fn dred_decode_compare(s: Setup, packets: &[Option<Vec<u8>>], complexity: i32, h
                         let (na, nb) = if cret > 0 {
                             from_dred += 1;
                             (
-                                opus_decoder_dred_decode_float(dec, &*c, offset as i32, a.as_mut_ptr(), n as i32),
+                                opus_decoder_dred_decode_float(
+                                    dec,
+                                    &*c,
+                                    offset as i32,
+                                    a.as_mut_ptr(),
+                                    n as i32,
+                                ),
                                 rs.dred_decode_float(&r, offset as i32, &mut b, n).unwrap(),
                             )
                         } else {
                             (
-                                opus_decode_float(dec, core::ptr::null(), 0, a.as_mut_ptr(), n as i32, 0),
+                                opus_decode_float(
+                                    dec,
+                                    core::ptr::null(),
+                                    0,
+                                    a.as_mut_ptr(),
+                                    n as i32,
+                                    0,
+                                ),
                                 rs.decode(&[], n, &mut b).unwrap(),
                             )
                         };
@@ -434,7 +559,14 @@ fn dred_decode_compare(s: Setup, packets: &[Option<Vec<u8>>], complexity: i32, h
             }
             let mut a = vec![0f32; frame * ch];
             let mut b = vec![0f32; frame * ch];
-            let na = opus_decode_float(dec, p.as_ptr(), p.len() as i32, a.as_mut_ptr(), frame as i32, 0);
+            let na = opus_decode_float(
+                dec,
+                p.as_ptr(),
+                p.len() as i32,
+                a.as_mut_ptr(),
+                frame as i32,
+                0,
+            );
             let nb = rs.decode(p, frame, &mut b).unwrap();
             assert_eq!(na as usize, nb, "frame {k}");
             check(k, &a, &b, &mut maxd);
@@ -462,9 +594,17 @@ fn plc_output(s: Setup, packets: &[Option<Vec<u8>>], complexity: i32, dred: bool
                 let next = (k..packets.len()).find(|&j| packets[j].is_some());
                 let mut r = Box::<opus_rs::dred::OpusDred>::default();
                 if let (true, Some(m)) = (dred, next) {
-                    rdred.parse(&mut r, packets[m].as_ref().unwrap(), s.fs, s.fs, false).unwrap();
+                    rdred
+                        .parse(&mut r, packets[m].as_ref().unwrap(), s.fs, s.fs, false)
+                        .unwrap();
                 }
-                rs.dred_decode_float(&r, ((next.unwrap_or(k + 1) - k) * frame) as i32, &mut b, frame).unwrap();
+                rs.dred_decode_float(
+                    &r,
+                    ((next.unwrap_or(k + 1) - k) * frame) as i32,
+                    &mut b,
+                    frame,
+                )
+                .unwrap();
             }
         }
         out.extend(b);
@@ -490,13 +630,23 @@ fn dred_decode_matches_libopus() {
         for complexity in [0, 5] {
             for how in [Lost::Frame, Lost::Halves] {
                 let (d, f, n) = dred_decode_compare(s, &packets, complexity, how);
-                assert_eq!((d, f), (0.0, None), "{name} complexity {complexity} {how:?}");
+                assert_eq!(
+                    (d, f),
+                    (0.0, None),
+                    "{name} complexity {complexity} {how:?}"
+                );
                 assert!(n > 20, "{name}: only {n} DRED decodes");
             }
             let plain = plc_output(s, &packets, complexity, false);
             let dred = plc_output(s, &packets, complexity, true);
-            let effect = plain.iter().zip(&dred).fold(0f32, |m, (x, y)| m.max((x - y).abs()));
-            assert!(effect > 0.01, "{name} complexity {complexity}: DRED changed nothing ({effect})");
+            let effect = plain
+                .iter()
+                .zip(&dred)
+                .fold(0f32, |m, (x, y)| m.max((x - y).abs()));
+            assert!(
+                effect > 0.01,
+                "{name} complexity {complexity}: DRED changed nothing ({effect})"
+            );
         }
     }
 }
@@ -522,7 +672,9 @@ fn dred_decode_i16_matches_libopus() {
         let mut err = 0;
         let dec = opus_decoder_create(s.fs, 1, &mut err);
         let mut k = 0;
-        let mut conceal = [frame, 2 * frame + frame / 4, frame + frame / 8].into_iter().cycle();
+        let mut conceal = [frame, 2 * frame + frame / 4, frame + frame / 8]
+            .into_iter()
+            .cycle();
         while k < packets.len() {
             let p = &packets[k];
             if k > 50 && k % 7 == 0 && k + 3 < packets.len() {
@@ -531,15 +683,23 @@ fn dred_decode_i16_matches_libopus() {
                 let mut c = OpusDRED::zeroed();
                 let mut r = Box::<opus_rs::dred::OpusDred>::default();
                 let (cret, cend) = cdred.parse(&mut c, q, 2 * frame as i32, s.fs, false);
-                assert_eq!(rdred.parse(&mut r, q, 2 * frame as i32, s.fs, false), Ok((cret, cend)));
+                assert_eq!(
+                    rdred.parse(&mut r, q, 2 * frame as i32, s.fs, false),
+                    Ok((cret, cend))
+                );
                 let mut left = 2 * frame;
                 while left > 0 {
                     let n = conceal.next().unwrap().min(left);
                     let mut a = vec![0i16; n];
                     let mut b = vec![0i16; n];
-                    let na = opus_decoder_dred_decode(dec, &*c, left as i32, a.as_mut_ptr(), n as i32);
+                    let na =
+                        opus_decoder_dred_decode(dec, &*c, left as i32, a.as_mut_ptr(), n as i32);
                     let nb = rs.dred_decode(&r, left as i32, &mut b, n).unwrap();
-                    assert_eq!((na as usize, &a), (nb, &b), "packet {k}, {left} samples left");
+                    assert_eq!(
+                        (na as usize, &a),
+                        (nb, &b),
+                        "packet {k}, {left} samples left"
+                    );
                     left -= n;
                     n_dred += usize::from(cret > 0);
                 }
@@ -548,7 +708,14 @@ fn dred_decode_i16_matches_libopus() {
             }
             let mut a = vec![0f32; frame];
             let mut b = vec![0f32; frame];
-            opus_decode_float(dec, p.as_ptr(), p.len() as i32, a.as_mut_ptr(), frame as i32, 0);
+            opus_decode_float(
+                dec,
+                p.as_ptr(),
+                p.len() as i32,
+                a.as_mut_ptr(),
+                frame as i32,
+                0,
+            );
             rs.decode(p, frame, &mut b).unwrap();
             assert_eq!(same_bits(&a, &b), None, "packet {k}");
             k += 1;
@@ -559,12 +726,20 @@ fn dred_decode_i16_matches_libopus() {
 }
 
 /// A random extension list for `nb_frames` frames, mostly in frame order.
-fn random_extensions(r: &mut Rng, nb_frames: usize, store: &mut Vec<Vec<u8>>) -> Vec<(u8, usize, usize)> {
+fn random_extensions(
+    r: &mut Rng,
+    nb_frames: usize,
+    store: &mut Vec<Vec<u8>>,
+) -> Vec<(u8, usize, usize)> {
     let n = r.below(8) as usize;
     store.clear();
     let mut exts = Vec::new();
     for k in 0..n {
-        let id = if r.below(2) == 0 { 3 + r.below(29) } else { 32 + r.below(96) } as u8;
+        let id = if r.below(2) == 0 {
+            3 + r.below(29)
+        } else {
+            32 + r.below(96)
+        } as u8;
         let len = match r.below(4) {
             0 => 0,
             1 => 1,
@@ -594,17 +769,43 @@ fn extension_writing_matches_libopus() {
         let exts = random_extensions(&mut r, nb_frames, &mut store);
         let c_exts: Vec<OpusExtensionData> = exts
             .iter()
-            .map(|&(id, frame, k)| OpusExtensionData { id: id as i32, frame: frame as i32, data: store[k].as_ptr(), len: store[k].len() as i32 })
+            .map(|&(id, frame, k)| OpusExtensionData {
+                id: id as i32,
+                frame: frame as i32,
+                data: store[k].as_ptr(),
+                len: store[k].len() as i32,
+            })
             .collect();
-        let rs_exts: Vec<opus_rs::extensions::ExtensionData> =
-            exts.iter().map(|&(id, frame, k)| opus_rs::extensions::ExtensionData { id, frame, data: &store[k] }).collect();
+        let rs_exts: Vec<opus_rs::extensions::ExtensionData> = exts
+            .iter()
+            .map(|&(id, frame, k)| opus_rs::extensions::ExtensionData {
+                id,
+                frame,
+                data: &store[k],
+            })
+            .collect();
         let pad = r.below(2) == 1;
-        let cap = if r.below(3) == 0 { r.below(800) as usize } else { 8000 };
+        let cap = if r.below(3) == 0 {
+            r.below(800) as usize
+        } else {
+            8000
+        };
         let mut a = vec![0u8; cap];
         let mut b = vec![0u8; cap];
-        let ca = unsafe { opus_packet_extensions_generate(a.as_mut_ptr(), cap as i32, c_exts.as_ptr(), c_exts.len() as i32, nb_frames as i32, pad as i32) };
-        let rb = opus_rs::extensions::generate_extensions(Some(&mut b), cap, &rs_exts, nb_frames, pad);
-        let measured = opus_rs::extensions::generate_extensions(None, cap, &rs_exts, nb_frames, pad);
+        let ca = unsafe {
+            opus_packet_extensions_generate(
+                a.as_mut_ptr(),
+                cap as i32,
+                c_exts.as_ptr(),
+                c_exts.len() as i32,
+                nb_frames as i32,
+                pad as i32,
+            )
+        };
+        let rb =
+            opus_rs::extensions::generate_extensions(Some(&mut b), cap, &rs_exts, nb_frames, pad);
+        let measured =
+            opus_rs::extensions::generate_extensions(None, cap, &rs_exts, nb_frames, pad);
         match rb {
             Ok(n) => {
                 assert_eq!(ca, n as i32, "case {case}");
@@ -627,7 +828,11 @@ fn packet_writing_matches_libopus() {
     let mut store = Vec::new();
     let mut ok = 0;
     for case in 0..5000 {
-        let count = if case % 2 == 0 { 1 } else { 1 + r.below(6) as usize };
+        let count = if case % 2 == 0 {
+            1
+        } else {
+            1 + r.below(6) as usize
+        };
         // 20 ms SILK WB frames: up to 6 fit in 120 ms.
         let toc = 0x48u8;
         let same = r.below(2) == 0;
@@ -641,10 +846,21 @@ fn packet_writing_matches_libopus() {
         let exts = random_extensions(&mut r, count, &mut store);
         let c_exts: Vec<OpusExtensionData> = exts
             .iter()
-            .map(|&(id, frame, k)| OpusExtensionData { id: id as i32, frame: frame as i32, data: store[k].as_ptr(), len: store[k].len() as i32 })
+            .map(|&(id, frame, k)| OpusExtensionData {
+                id: id as i32,
+                frame: frame as i32,
+                data: store[k].as_ptr(),
+                len: store[k].len() as i32,
+            })
             .collect();
-        let rs_exts: Vec<opus_rs::extensions::ExtensionData> =
-            exts.iter().map(|&(id, frame, k)| opus_rs::extensions::ExtensionData { id, frame, data: &store[k] }).collect();
+        let rs_exts: Vec<opus_rs::extensions::ExtensionData> = exts
+            .iter()
+            .map(|&(id, frame, k)| opus_rs::extensions::ExtensionData {
+                id,
+                frame,
+                data: &store[k],
+            })
+            .collect();
         let pad = r.below(2) == 1;
         let total: usize = frames.iter().map(|f| f.len()).sum();
         let maxlen = total + r.below(3000) as usize;
@@ -665,7 +881,17 @@ fn packet_writing_matches_libopus() {
                 }
             }
             if ret == 0 {
-                ret = opus_repacketizer_out_range_impl(rp, 0, count as i32, a.as_mut_ptr(), maxlen as i32, 0, pad as i32, c_exts.as_ptr(), c_exts.len() as i32);
+                ret = opus_repacketizer_out_range_impl(
+                    rp,
+                    0,
+                    count as i32,
+                    a.as_mut_ptr(),
+                    maxlen as i32,
+                    0,
+                    pad as i32,
+                    c_exts.as_ptr(),
+                    c_exts.len() as i32,
+                );
             }
             opus_repacketizer_destroy(rp);
             ret
@@ -675,9 +901,22 @@ fn packet_writing_matches_libopus() {
             let mut p = vec![0u8; maxlen.max(1 + frames[0].len())];
             p[0] = toc;
             p[1..1 + frames[0].len()].copy_from_slice(&frames[0]);
-            let cp = unsafe { opus_packet_pad_impl(p.as_mut_ptr(), 1 + frames[0].len() as i32, maxlen as i32, pad as i32, c_exts.as_ptr(), c_exts.len() as i32) };
+            let cp = unsafe {
+                opus_packet_pad_impl(
+                    p.as_mut_ptr(),
+                    1 + frames[0].len() as i32,
+                    maxlen as i32,
+                    pad as i32,
+                    c_exts.as_ptr(),
+                    c_exts.len() as i32,
+                )
+            };
             if cp > 1 && ca > 0 {
-                assert_eq!(p[..cp as usize], a[..ca as usize], "case {case}: pad_impl and repacketizer");
+                assert_eq!(
+                    p[..cp as usize],
+                    a[..ca as usize],
+                    "case {case}: pad_impl and repacketizer"
+                );
             }
         }
         let frame_refs: Vec<&[u8]> = frames.iter().map(|f| &f[..]).collect();
@@ -769,18 +1008,95 @@ fn dred_encode_survey() {
         ("hybrid 48k", HYBRID_48K),
         ("celt 48k", CELT_48K),
         ("celt 48k stereo", CELT_48K_STEREO),
-        ("silk wb 16k audio", Setup { app: 2049, ..SILK_WB_16K }),
-        ("silk wb 48k 60ms", Setup { frame_ms: 60, ..SILK_WB_48K }),
-        ("silk wb 48k 100ms", Setup { frame_ms: 100, ..SILK_WB_48K }),
-        ("hybrid 48k 40ms", Setup { frame_ms: 40, ..HYBRID_48K }),
-        ("celt 48k 40ms", Setup { frame_ms: 40, ..CELT_48K }),
-        ("celt 48k 40ms cbr", Setup { frame_ms: 40, vbr: false, ..CELT_48K }),
-        ("celt 48k cbr", Setup { vbr: false, ..CELT_48K }),
-        ("silk wb 48k 60ms audio", Setup { frame_ms: 60, app: 2049, ..SILK_WB_48K }),
-        ("silk wb 48k 100ms audio", Setup { frame_ms: 100, app: 2049, ..SILK_WB_48K }),
-        ("hybrid 48k 40ms audio", Setup { frame_ms: 40, app: 2049, ..HYBRID_48K }),
-        ("silk wb 16k 60ms audio", Setup { frame_ms: 60, app: 2049, ..SILK_WB_16K }),
-        ("silk wb 48k cbr", Setup { vbr: false, ..SILK_WB_48K }),
+        (
+            "silk wb 16k audio",
+            Setup {
+                app: 2049,
+                ..SILK_WB_16K
+            },
+        ),
+        (
+            "silk wb 48k 60ms",
+            Setup {
+                frame_ms: 60,
+                ..SILK_WB_48K
+            },
+        ),
+        (
+            "silk wb 48k 100ms",
+            Setup {
+                frame_ms: 100,
+                ..SILK_WB_48K
+            },
+        ),
+        (
+            "hybrid 48k 40ms",
+            Setup {
+                frame_ms: 40,
+                ..HYBRID_48K
+            },
+        ),
+        (
+            "celt 48k 40ms",
+            Setup {
+                frame_ms: 40,
+                ..CELT_48K
+            },
+        ),
+        (
+            "celt 48k 40ms cbr",
+            Setup {
+                frame_ms: 40,
+                vbr: false,
+                ..CELT_48K
+            },
+        ),
+        (
+            "celt 48k cbr",
+            Setup {
+                vbr: false,
+                ..CELT_48K
+            },
+        ),
+        (
+            "silk wb 48k 60ms audio",
+            Setup {
+                frame_ms: 60,
+                app: 2049,
+                ..SILK_WB_48K
+            },
+        ),
+        (
+            "silk wb 48k 100ms audio",
+            Setup {
+                frame_ms: 100,
+                app: 2049,
+                ..SILK_WB_48K
+            },
+        ),
+        (
+            "hybrid 48k 40ms audio",
+            Setup {
+                frame_ms: 40,
+                app: 2049,
+                ..HYBRID_48K
+            },
+        ),
+        (
+            "silk wb 16k 60ms audio",
+            Setup {
+                frame_ms: 60,
+                app: 2049,
+                ..SILK_WB_16K
+            },
+        ),
+        (
+            "silk wb 48k cbr",
+            Setup {
+                vbr: false,
+                ..SILK_WB_48K
+            },
+        ),
     ] {
         let pcm = signal(s, if name.ends_with("8s") { 8 } else { 4 }, 5);
         for c in [5, 9] {
@@ -793,14 +1109,21 @@ fn dred_encode_survey() {
                 match (dred_payload(x), dred_payload(y)) {
                     (Some(p), Some(q)) => {
                         both += 1;
-                        if p == q { same += 1 } else if first_diff.is_none() { first_diff = Some(k) }
+                        if p == q {
+                            same += 1
+                        } else if first_diff.is_none() {
+                            first_diff = Some(k)
+                        }
                     }
                     (Some(_), None) => only_c += 1,
                     (None, Some(_)) => only_rs += 1,
                     _ => {}
                 }
             }
-            println!("{name} c{c}: {} packets, {same_pkt} identical; DRED in both {both}, same payload {same}, first diff {first_diff:?}; only libopus {only_c}, only opus-rs {only_rs}", a.len());
+            println!(
+                "{name} c{c}: {} packets, {same_pkt} identical; DRED in both {both}, same payload {same}, first diff {first_diff:?}; only libopus {only_c}, only opus-rs {only_rs}",
+                a.len()
+            );
         }
     }
 }
@@ -821,10 +1144,20 @@ fn dred_encode_survey() {
 /// some frames of long SILK packets.
 #[test]
 fn dred_encode_payload_matches_libopus() {
-    let celt_40 = Setup { frame_ms: 40, ..CELT_48K };
+    let celt_40 = Setup {
+        frame_ms: 40,
+        ..CELT_48K
+    };
     for (name, s, complexities) in [
         ("silk wb 48k", SILK_WB_48K, &[5, 9][..]),
-        ("silk wb 16k audio", Setup { app: 2049, ..SILK_WB_16K }, &[5, 9]),
+        (
+            "silk wb 16k audio",
+            Setup {
+                app: 2049,
+                ..SILK_WB_16K
+            },
+            &[5, 9],
+        ),
         ("hybrid 48k", HYBRID_48K, &[5, 9]),
         ("celt 48k", CELT_48K, &[5, 9]),
         ("celt 48k stereo", CELT_48K_STEREO, &[5, 9]),
@@ -840,7 +1173,11 @@ fn dred_encode_payload_matches_libopus() {
                 assert_eq!(p, q, "{name} complexity {c}, packet {k}");
                 n += usize::from(p.is_some());
             }
-            assert!(n * 10 >= a.len() * 9, "{name} complexity {c}: {n} of {} packets with DRED", a.len());
+            assert!(
+                n * 10 >= a.len() * 9,
+                "{name} complexity {c}: {n} of {} packets with DRED",
+                a.len()
+            );
         }
     }
 }
@@ -854,8 +1191,20 @@ fn dred_encode_celt_packets_match_libopus() {
     for (name, s) in [
         ("celt 48k", CELT_48K),
         ("celt 48k stereo", CELT_48K_STEREO),
-        ("celt 48k cbr", Setup { vbr: false, ..CELT_48K }),
-        ("celt 48k 40ms", Setup { frame_ms: 40, ..CELT_48K }),
+        (
+            "celt 48k cbr",
+            Setup {
+                vbr: false,
+                ..CELT_48K
+            },
+        ),
+        (
+            "celt 48k 40ms",
+            Setup {
+                frame_ms: 40,
+                ..CELT_48K
+            },
+        ),
     ] {
         let pcm = signal(s, 4, 5);
         for c in [5, 9] {
@@ -880,15 +1229,58 @@ fn libopus_parses_opus_rs_dred() {
         ("silk wb 16k", SILK_WB_16K),
         ("silk wb 48k", SILK_WB_48K),
         ("silk wb 16k cbr 10ms", SILK_WB_16K_CBR_10MS),
-        ("silk wb 48k cbr", Setup { vbr: false, ..SILK_WB_48K }),
-        ("silk wb 48k 60ms", Setup { frame_ms: 60, ..SILK_WB_48K }),
-        ("silk wb 48k 100ms", Setup { frame_ms: 100, ..SILK_WB_48K }),
+        (
+            "silk wb 48k cbr",
+            Setup {
+                vbr: false,
+                ..SILK_WB_48K
+            },
+        ),
+        (
+            "silk wb 48k 60ms",
+            Setup {
+                frame_ms: 60,
+                ..SILK_WB_48K
+            },
+        ),
+        (
+            "silk wb 48k 100ms",
+            Setup {
+                frame_ms: 100,
+                ..SILK_WB_48K
+            },
+        ),
         ("hybrid 48k", HYBRID_48K),
-        ("hybrid 48k cbr", Setup { vbr: false, ..HYBRID_48K }),
-        ("hybrid 48k 40ms", Setup { frame_ms: 40, ..HYBRID_48K }),
+        (
+            "hybrid 48k cbr",
+            Setup {
+                vbr: false,
+                ..HYBRID_48K
+            },
+        ),
+        (
+            "hybrid 48k 40ms",
+            Setup {
+                frame_ms: 40,
+                ..HYBRID_48K
+            },
+        ),
         ("celt 48k", CELT_48K),
-        ("celt 48k cbr", Setup { vbr: false, ..CELT_48K }),
-        ("celt 48k 40ms cbr", Setup { frame_ms: 40, vbr: false, ..CELT_48K }),
+        (
+            "celt 48k cbr",
+            Setup {
+                vbr: false,
+                ..CELT_48K
+            },
+        ),
+        (
+            "celt 48k 40ms cbr",
+            Setup {
+                frame_ms: 40,
+                vbr: false,
+                ..CELT_48K
+            },
+        ),
         ("celt 48k stereo", CELT_48K_STEREO),
     ] {
         let packets = rs_encode(s, &signal(s, 4, 5), 9);
@@ -898,7 +1290,14 @@ fn libopus_parses_opus_rs_dred() {
             let dec = opus_decoder_create(s.fs, s.channels as i32, &mut err);
             for (k, p) in packets.iter().enumerate() {
                 let mut out = vec![0f32; frame * s.channels];
-                let n = opus_decode_float(dec, p.as_ptr(), p.len() as i32, out.as_mut_ptr(), frame as i32, 0);
+                let n = opus_decode_float(
+                    dec,
+                    p.as_ptr(),
+                    p.len() as i32,
+                    out.as_mut_ptr(),
+                    frame as i32,
+                    0,
+                );
                 assert_eq!(n, frame as i32, "{name}: packet {k}");
                 if !s.vbr {
                     let cbr = (s.bitrate as usize * frame / s.fs as usize + 4) / 8;
@@ -908,7 +1307,11 @@ fn libopus_parses_opus_rs_dred() {
             opus_decoder_destroy(dec);
         }
         let n = compare_parse(s, &packets);
-        assert!(n * 10 >= packets.len() * 9, "{name}: only {n} of {} packets carry DRED", packets.len());
+        assert!(
+            n * 10 >= packets.len() * 9,
+            "{name}: only {n} of {} packets carry DRED",
+            packets.len()
+        );
     }
 }
 
@@ -918,15 +1321,24 @@ fn libopus_parses_opus_rs_dred() {
 /// concealment.
 #[test]
 fn dred_round_trip_matches_libopus() {
-    for (name, s) in [("silk wb 16k", SILK_WB_16K), ("silk wb 48k", SILK_WB_48K), ("silk wb 16k cbr 10ms", SILK_WB_16K_CBR_10MS)] {
+    for (name, s) in [
+        ("silk wb 16k", SILK_WB_16K),
+        ("silk wb 48k", SILK_WB_48K),
+        ("silk wb 16k cbr 10ms", SILK_WB_16K_CBR_10MS),
+    ] {
         let packets = with_losses(rs_encode(s, &signal(s, 6, 7), 9), 3, 15, 5, s.frame_ms);
         for complexity in [0, 5] {
             let (d, f, n) = dred_decode_compare(s, &packets, complexity, Lost::Frame);
             assert_eq!((d, f), (0.0, None), "{name} complexity {complexity}");
             assert!(n > 20, "{name}: only {n} DRED decodes");
-            let effect = max_diff(&plc_output(s, &packets, complexity, false), &plc_output(s, &packets, complexity, true));
-            assert!(effect > 0.01, "{name} complexity {complexity}: DRED changed nothing ({effect})");
+            let effect = max_diff(
+                &plc_output(s, &packets, complexity, false),
+                &plc_output(s, &packets, complexity, true),
+            );
+            assert!(
+                effect > 0.01,
+                "{name} complexity {complexity}: DRED changed nothing ({effect})"
+            );
         }
     }
 }
-

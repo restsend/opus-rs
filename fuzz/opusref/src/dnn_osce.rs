@@ -105,7 +105,13 @@ unsafe extern "C" {
 
     pub fn ref_osce_bwe_new() -> *mut c_void;
     pub fn ref_osce_bwe_reset(st: *mut c_void);
-    pub fn ref_osce_bwe(m: *mut OsceModel, st: *mut c_void, xq48: *mut i16, xq16: *mut i16, len: c_int);
+    pub fn ref_osce_bwe(
+        m: *mut OsceModel,
+        st: *mut c_void,
+        xq48: *mut i16,
+        xq16: *mut i16,
+        len: c_int,
+    );
     pub fn ref_osce_bwe_features(st: *mut c_void, features: *mut f32, xq16: *const i16, len: c_int);
     pub fn ref_osce_cross_fade_10ms(x_enhanced: *mut f32, x_in: *mut f32, len: c_int);
     pub fn ref_osce_bwe_cross_fade_10ms(x_fadein: *mut i16, x_fadeout: *mut i16, len: c_int);

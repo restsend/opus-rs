@@ -6,21 +6,32 @@
 #![cfg(feature = "dnn")]
 use core::ffi::{c_int, c_void};
 use opus_rs::dnn::nnet::LinearLayer;
-use opus_rs::dnn::osce::{self as rs, bbwenet as rb, features as rf, lace as rl, nndsp, nolace as rn, OsceMethod};
+use opus_rs::dnn::osce::{
+    self as rs, OsceMethod, bbwenet as rb, features as rf, lace as rl, nndsp, nolace as rn,
+};
 use opusref::dnn::{Rng, same_bits};
 use opusref::dnn_osce::{self as c, layer};
 
 fn check(what: &str, rust: &[f32], cref: &[f32]) {
     assert_eq!(rust.len(), cref.len());
     if let Some(i) = same_bits(rust, cref) {
-        panic!("{what}: first difference at {i}: rust {:e} ({:#x}), C {:e} ({:#x})", rust[i], rust[i].to_bits(), cref[i], cref[i].to_bits());
+        panic!(
+            "{what}: first difference at {i}: rust {:e} ({:#x}), C {:e} ({:#x})",
+            rust[i],
+            rust[i].to_bits(),
+            cref[i],
+            cref[i].to_bits()
+        );
     }
 }
 
 fn check_i16(what: &str, rust: &[i16], cref: &[i16]) {
     assert_eq!(rust.len(), cref.len());
     if let Some(i) = rust.iter().zip(cref).position(|(a, b)| a != b) {
-        panic!("{what}: first difference at {i}: rust {}, C {}", rust[i], cref[i]);
+        panic!(
+            "{what}: first difference at {i}: rust {}, C {}",
+            rust[i], cref[i]
+        );
     }
 }
 
@@ -38,7 +49,10 @@ struct Model {
 }
 
 fn model() -> Model {
-    Model { c: CBox(unsafe { c::ref_osce_model_new() }), rs: rs::OsceModel::builtin().unwrap() }
+    Model {
+        c: CBox(unsafe { c::ref_osce_model_new() }),
+        rs: rs::OsceModel::builtin().unwrap(),
+    }
 }
 
 impl Model {
@@ -61,10 +75,16 @@ fn overlap_windows() {
         check(&format!("window {n}"), &a, &b);
     }
     let m = model();
-    let rsw: [&[f32]; 5] =
-        [&m.rs.lace.window, &m.rs.nolace.window, &m.rs.bbwenet.window16, &m.rs.bbwenet.window32, &m.rs.bbwenet.window48];
+    let rsw: [&[f32]; 5] = [
+        &m.rs.lace.window,
+        &m.rs.nolace.window,
+        &m.rs.bbwenet.window16,
+        &m.rs.bbwenet.window32,
+        &m.rs.bbwenet.window48,
+    ];
     for (i, w) in rsw.iter().enumerate() {
-        let cw = unsafe { core::slice::from_raw_parts(c::ref_osce_window(m.c.0, i as c_int), w.len()) };
+        let cw =
+            unsafe { core::slice::from_raw_parts(c::ref_osce_window(m.c.0, i as c_int), w.len()) };
         check(&format!("model window {i}"), w, cw);
     }
 }
@@ -73,14 +93,70 @@ fn overlap_windows() {
 fn adaconv() {
     let m = model();
     let l = &m.rs;
-    let cases: [(&str, &LinearLayer, &LinearLayer, nndsp::AdaConvConfig, usize, &[f32]); 7] = [
-        ("lace_af1", &l.lace.layers.lace_af1_kernel, &l.lace.layers.lace_af1_gain, rl::AF1, 128, &l.lace.window),
-        ("nolace_af1", &l.nolace.layers.nolace_af1_kernel, &l.nolace.layers.nolace_af1_gain, rn::AF1, 160, &l.nolace.window),
-        ("nolace_af2", &l.nolace.layers.nolace_af2_kernel, &l.nolace.layers.nolace_af2_gain, rn::AF2, 160, &l.nolace.window),
-        ("nolace_af4", &l.nolace.layers.nolace_af4_kernel, &l.nolace.layers.nolace_af4_gain, rn::AF4, 160, &l.nolace.window),
-        ("bbwenet_af1", &l.bbwenet.layers.bbwenet_af1_kernel, &l.bbwenet.layers.bbwenet_af1_gain, rb::AF1, 128, &l.bbwenet.window16),
-        ("bbwenet_af2", &l.bbwenet.layers.bbwenet_af2_kernel, &l.bbwenet.layers.bbwenet_af2_gain, rb::AF2, 128, &l.bbwenet.window32),
-        ("bbwenet_af3", &l.bbwenet.layers.bbwenet_af3_kernel, &l.bbwenet.layers.bbwenet_af3_gain, rb::AF3, 128, &l.bbwenet.window48),
+    let cases: [(
+        &str,
+        &LinearLayer,
+        &LinearLayer,
+        nndsp::AdaConvConfig,
+        usize,
+        &[f32],
+    ); 7] = [
+        (
+            "lace_af1",
+            &l.lace.layers.lace_af1_kernel,
+            &l.lace.layers.lace_af1_gain,
+            rl::AF1,
+            128,
+            &l.lace.window,
+        ),
+        (
+            "nolace_af1",
+            &l.nolace.layers.nolace_af1_kernel,
+            &l.nolace.layers.nolace_af1_gain,
+            rn::AF1,
+            160,
+            &l.nolace.window,
+        ),
+        (
+            "nolace_af2",
+            &l.nolace.layers.nolace_af2_kernel,
+            &l.nolace.layers.nolace_af2_gain,
+            rn::AF2,
+            160,
+            &l.nolace.window,
+        ),
+        (
+            "nolace_af4",
+            &l.nolace.layers.nolace_af4_kernel,
+            &l.nolace.layers.nolace_af4_gain,
+            rn::AF4,
+            160,
+            &l.nolace.window,
+        ),
+        (
+            "bbwenet_af1",
+            &l.bbwenet.layers.bbwenet_af1_kernel,
+            &l.bbwenet.layers.bbwenet_af1_gain,
+            rb::AF1,
+            128,
+            &l.bbwenet.window16,
+        ),
+        (
+            "bbwenet_af2",
+            &l.bbwenet.layers.bbwenet_af2_kernel,
+            &l.bbwenet.layers.bbwenet_af2_gain,
+            rb::AF2,
+            128,
+            &l.bbwenet.window32,
+        ),
+        (
+            "bbwenet_af3",
+            &l.bbwenet.layers.bbwenet_af3_kernel,
+            &l.bbwenet.layers.bbwenet_af3_gain,
+            rb::AF3,
+            128,
+            &l.bbwenet.window48,
+        ),
     ];
     let mut r = Rng(0x0dd5_eed1);
     for (name, kl, gl, cfg, fdim, window) in cases {
@@ -97,10 +173,23 @@ fn adaconv() {
             nndsp::adaconv_process_frame(&mut st, &mut out, &x, &feat, kl, gl, &cfg, window);
             unsafe {
                 c::ref_adaconv_process_frame(
-                    cst.0, out_c.as_mut_ptr(), x.as_ptr(), feat.as_ptr(), ck, cg, fdim as c_int,
-                    cfg.frame_size as c_int, cfg.overlap_size as c_int, cfg.in_channels as c_int,
-                    cfg.out_channels as c_int, cfg.kernel_size as c_int, cfg.left_padding as c_int,
-                    cfg.filter_gain_a, cfg.filter_gain_b, cfg.shape_gain, window.as_ptr(),
+                    cst.0,
+                    out_c.as_mut_ptr(),
+                    x.as_ptr(),
+                    feat.as_ptr(),
+                    ck,
+                    cg,
+                    fdim as c_int,
+                    cfg.frame_size as c_int,
+                    cfg.overlap_size as c_int,
+                    cfg.in_channels as c_int,
+                    cfg.out_channels as c_int,
+                    cfg.kernel_size as c_int,
+                    cfg.left_padding as c_int,
+                    cfg.filter_gain_a,
+                    cfg.filter_gain_b,
+                    cfg.shape_gain,
+                    window.as_ptr(),
                 )
             };
             check(&format!("adaconv {name} frame {frame}"), &out, &out_c);
@@ -113,10 +202,50 @@ fn adacomb() {
     let m = model();
     let l = &m.rs;
     let cases: [(&str, [&LinearLayer; 3], nndsp::AdaCombConfig, usize, &[f32]); 4] = [
-        ("lace_cf1", [&l.lace.layers.lace_cf1_kernel, &l.lace.layers.lace_cf1_gain, &l.lace.layers.lace_cf1_global_gain], rl::CF1, 128, &l.lace.window),
-        ("lace_cf2", [&l.lace.layers.lace_cf2_kernel, &l.lace.layers.lace_cf2_gain, &l.lace.layers.lace_cf2_global_gain], rl::CF2, 128, &l.lace.window),
-        ("nolace_cf1", [&l.nolace.layers.nolace_cf1_kernel, &l.nolace.layers.nolace_cf1_gain, &l.nolace.layers.nolace_cf1_global_gain], rn::CF1, 160, &l.nolace.window),
-        ("nolace_cf2", [&l.nolace.layers.nolace_cf2_kernel, &l.nolace.layers.nolace_cf2_gain, &l.nolace.layers.nolace_cf2_global_gain], rn::CF2, 160, &l.nolace.window),
+        (
+            "lace_cf1",
+            [
+                &l.lace.layers.lace_cf1_kernel,
+                &l.lace.layers.lace_cf1_gain,
+                &l.lace.layers.lace_cf1_global_gain,
+            ],
+            rl::CF1,
+            128,
+            &l.lace.window,
+        ),
+        (
+            "lace_cf2",
+            [
+                &l.lace.layers.lace_cf2_kernel,
+                &l.lace.layers.lace_cf2_gain,
+                &l.lace.layers.lace_cf2_global_gain,
+            ],
+            rl::CF2,
+            128,
+            &l.lace.window,
+        ),
+        (
+            "nolace_cf1",
+            [
+                &l.nolace.layers.nolace_cf1_kernel,
+                &l.nolace.layers.nolace_cf1_gain,
+                &l.nolace.layers.nolace_cf1_global_gain,
+            ],
+            rn::CF1,
+            160,
+            &l.nolace.window,
+        ),
+        (
+            "nolace_cf2",
+            [
+                &l.nolace.layers.nolace_cf2_kernel,
+                &l.nolace.layers.nolace_cf2_gain,
+                &l.nolace.layers.nolace_cf2_global_gain,
+            ],
+            rn::CF2,
+            160,
+            &l.nolace.window,
+        ),
     ];
     let mut r = Rng(0xc0b_f117);
     for (name, [kl, gl, ggl], cfg, fdim, window) in cases {
@@ -141,9 +270,22 @@ fn adacomb() {
             nndsp::adacomb_process_frame(&mut st, &mut out, &feat, kl, gl, ggl, lag, &cfg, window);
             unsafe {
                 c::ref_adacomb_process_frame(
-                    cst.0, out_c.as_mut_ptr(), x.as_ptr(), feat.as_ptr(), ck, cg, cgg, lag as c_int, fdim as c_int,
-                    cfg.frame_size as c_int, cfg.overlap_size as c_int, cfg.kernel_size as c_int,
-                    cfg.left_padding as c_int, cfg.filter_gain_a, cfg.filter_gain_b, cfg.log_gain_limit,
+                    cst.0,
+                    out_c.as_mut_ptr(),
+                    x.as_ptr(),
+                    feat.as_ptr(),
+                    ck,
+                    cg,
+                    cgg,
+                    lag as c_int,
+                    fdim as c_int,
+                    cfg.frame_size as c_int,
+                    cfg.overlap_size as c_int,
+                    cfg.kernel_size as c_int,
+                    cfg.left_padding as c_int,
+                    cfg.filter_gain_a,
+                    cfg.filter_gain_b,
+                    cfg.log_gain_limit,
                     window.as_ptr(),
                 )
             };
@@ -159,11 +301,51 @@ fn adashape() {
     let n = &l.nolace.layers;
     let b = &l.bbwenet.layers;
     let cases: [(&str, [&LinearLayer; 3], nndsp::AdaShapeConfig); 5] = [
-        ("nolace_tdshape1", [&n.nolace_tdshape1_alpha1_f, &n.nolace_tdshape1_alpha1_t, &n.nolace_tdshape1_alpha2], rn::TDSHAPE1),
-        ("nolace_tdshape2", [&n.nolace_tdshape2_alpha1_f, &n.nolace_tdshape2_alpha1_t, &n.nolace_tdshape2_alpha2], rn::TDSHAPE2),
-        ("nolace_tdshape3", [&n.nolace_tdshape3_alpha1_f, &n.nolace_tdshape3_alpha1_t, &n.nolace_tdshape3_alpha2], rn::TDSHAPE3),
-        ("bbwenet_tdshape1", [&b.bbwenet_tdshape1_alpha1_f, &b.bbwenet_tdshape1_alpha1_t, &b.bbwenet_tdshape1_alpha2], rb::TDSHAPE1),
-        ("bbwenet_tdshape2", [&b.bbwenet_tdshape2_alpha1_f, &b.bbwenet_tdshape2_alpha1_t, &b.bbwenet_tdshape2_alpha2], rb::TDSHAPE2),
+        (
+            "nolace_tdshape1",
+            [
+                &n.nolace_tdshape1_alpha1_f,
+                &n.nolace_tdshape1_alpha1_t,
+                &n.nolace_tdshape1_alpha2,
+            ],
+            rn::TDSHAPE1,
+        ),
+        (
+            "nolace_tdshape2",
+            [
+                &n.nolace_tdshape2_alpha1_f,
+                &n.nolace_tdshape2_alpha1_t,
+                &n.nolace_tdshape2_alpha2,
+            ],
+            rn::TDSHAPE2,
+        ),
+        (
+            "nolace_tdshape3",
+            [
+                &n.nolace_tdshape3_alpha1_f,
+                &n.nolace_tdshape3_alpha1_t,
+                &n.nolace_tdshape3_alpha2,
+            ],
+            rn::TDSHAPE3,
+        ),
+        (
+            "bbwenet_tdshape1",
+            [
+                &b.bbwenet_tdshape1_alpha1_f,
+                &b.bbwenet_tdshape1_alpha1_t,
+                &b.bbwenet_tdshape1_alpha2,
+            ],
+            rb::TDSHAPE1,
+        ),
+        (
+            "bbwenet_tdshape2",
+            [
+                &b.bbwenet_tdshape2_alpha1_f,
+                &b.bbwenet_tdshape2_alpha1_t,
+                &b.bbwenet_tdshape2_alpha2,
+            ],
+            rb::TDSHAPE2,
+        ),
     ];
     let mut r = Rng(0x5aa9e);
     for (name, [a1f, a1t, a2], cfg) in cases {
@@ -181,8 +363,16 @@ fn adashape() {
             nndsp::adashape_process_frame(&mut st, &mut out, &feat, a1f, a1t, a2, &cfg);
             unsafe {
                 c::ref_adashape_process_frame(
-                    cst.0, out_c.as_mut_ptr(), x.as_ptr(), feat.as_ptr(), ca1f, ca1t, ca2,
-                    cfg.feature_dim as c_int, cfg.frame_size as c_int, cfg.avg_pool_k as c_int,
+                    cst.0,
+                    out_c.as_mut_ptr(),
+                    x.as_ptr(),
+                    feat.as_ptr(),
+                    ca1f,
+                    ca1t,
+                    ca2,
+                    cfg.feature_dim as c_int,
+                    cfg.frame_size as c_int,
+                    cfg.avg_pool_k as c_int,
                     cfg.interpolate_k as c_int,
                 )
             };
@@ -195,8 +385,14 @@ fn adashape() {
 fn numbits_embedding() {
     use opus_rs::dnn::models::lace::*;
     let scales = [
-        LACE_NUMBITS_SCALE_0, LACE_NUMBITS_SCALE_1, LACE_NUMBITS_SCALE_2, LACE_NUMBITS_SCALE_3,
-        LACE_NUMBITS_SCALE_4, LACE_NUMBITS_SCALE_5, LACE_NUMBITS_SCALE_6, LACE_NUMBITS_SCALE_7,
+        LACE_NUMBITS_SCALE_0,
+        LACE_NUMBITS_SCALE_1,
+        LACE_NUMBITS_SCALE_2,
+        LACE_NUMBITS_SCALE_3,
+        LACE_NUMBITS_SCALE_4,
+        LACE_NUMBITS_SCALE_5,
+        LACE_NUMBITS_SCALE_6,
+        LACE_NUMBITS_SCALE_7,
     ];
     let lo = 50f64.ln() as f32;
     let hi = 650f64.ln() as f32;
@@ -222,7 +418,11 @@ struct Synth {
 
 impl Synth {
     fn new() -> Self {
-        Synth { phase: 0.0, f0: 140.0, t: 0 }
+        Synth {
+            phase: 0.0,
+            f0: 140.0,
+            t: 0,
+        }
     }
     fn frame(&mut self, r: &mut Rng, len: usize) -> Vec<i16> {
         let mut out = Vec::with_capacity(len);
@@ -282,8 +482,15 @@ fn c_set(d: *mut c_void, p: &rs::OsceFrameInput) {
     let pred: Vec<i16> = p.pred_coef_q12.iter().flatten().copied().collect();
     unsafe {
         c::ref_osce_dec_set(
-            d, p.fs_khz, p.nb_subfr as c_int, p.lpc_order as c_int, p.signal_type, p.pitch_l.as_ptr(),
-            p.gains_q16.as_ptr(), pred.as_ptr(), p.ltp_coef_q14.as_ptr(),
+            d,
+            p.fs_khz,
+            p.nb_subfr as c_int,
+            p.lpc_order as c_int,
+            p.signal_type,
+            p.pitch_l.as_ptr(),
+            p.gains_q16.as_ptr(),
+            pred.as_ptr(),
+            p.ltp_coef_q14.as_ptr(),
         )
     };
 }
@@ -307,7 +514,16 @@ fn features() {
         let mut nbc = [0.0f32; 2];
         let mut perc = [0i32; 4];
         c_set(d.0, &p);
-        unsafe { c::ref_osce_dec_features(d.0, xq.as_ptr(), p.num_bits, fc.as_mut_ptr(), nbc.as_mut_ptr(), perc.as_mut_ptr()) };
+        unsafe {
+            c::ref_osce_dec_features(
+                d.0,
+                xq.as_ptr(),
+                p.num_bits,
+                fc.as_mut_ptr(),
+                nbc.as_mut_ptr(),
+                perc.as_mut_ptr(),
+            )
+        };
         let n = nb_subfr * rs::OSCE_FEATURE_DIM;
         check(&format!("features frame {frame}"), &f[..n], &fc[..n]);
         check(&format!("numbits frame {frame}"), &nb, &nbc);
@@ -337,10 +553,30 @@ fn lace_nolace_frames() {
         let mut out = [0.0f32; 320];
         let mut out_c = [0.0f32; 320];
         rl::lace_process_20ms_frame(&m.rs.lace, &mut ls, &mut out, &x, &f, &nb, &per);
-        unsafe { c::ref_lace_process_20ms_frame(m.c.0, cls.0, out_c.as_mut_ptr(), x.as_ptr(), f.as_ptr(), nb.as_ptr(), per.as_ptr()) };
+        unsafe {
+            c::ref_lace_process_20ms_frame(
+                m.c.0,
+                cls.0,
+                out_c.as_mut_ptr(),
+                x.as_ptr(),
+                f.as_ptr(),
+                nb.as_ptr(),
+                per.as_ptr(),
+            )
+        };
         check(&format!("lace frame {frame}"), &out, &out_c);
         rn::nolace_process_20ms_frame(&m.rs.nolace, &mut ns, &mut out, &x, &f, &nb, &per);
-        unsafe { c::ref_nolace_process_20ms_frame(m.c.0, cns.0, out_c.as_mut_ptr(), x.as_ptr(), f.as_ptr(), nb.as_ptr(), per.as_ptr()) };
+        unsafe {
+            c::ref_nolace_process_20ms_frame(
+                m.c.0,
+                cns.0,
+                out_c.as_mut_ptr(),
+                x.as_ptr(),
+                f.as_ptr(),
+                nb.as_ptr(),
+                per.as_ptr(),
+            )
+        };
         check(&format!("nolace frame {frame}"), &out, &out_c);
     }
 }
@@ -395,15 +631,35 @@ fn enhance_frame_sequence() {
             let mut xq_c = xq.clone();
             let before = xq.clone();
             rs::osce_enhance_frame(loaded.then_some(&m.rs), &mut st, &p, &mut xq);
-            changed += (xq.iter().zip(&before).filter(|(a, b)| a.abs_diff(**b) > 1).count() > 100) as usize;
+            changed += (xq
+                .iter()
+                .zip(&before)
+                .filter(|(a, b)| a.abs_diff(**b) > 1)
+                .count()
+                > 100) as usize;
             c_set(d.0, &p);
             unsafe { c::ref_osce_enhance_frame(m.c.0, d.0, xq_c.as_mut_ptr(), p.num_bits) };
-            let what = format!("seed {seed} frame {frame} ({:?}, fs {fs}, nb_subfr {nb_subfr}, loaded {loaded})", st.method);
+            let what = format!(
+                "seed {seed} frame {frame} ({:?}, fs {fs}, nb_subfr {nb_subfr}, loaded {loaded})",
+                st.method
+            );
             check_i16(&what, &xq, &xq_c);
-            assert_eq!(unsafe { c::ref_osce_method(d.0) }, st.method as c_int, "{what}");
-            assert_eq!(unsafe { c::ref_osce_reset_count(d.0) }, st.features.reset, "{what}");
+            assert_eq!(
+                unsafe { c::ref_osce_method(d.0) },
+                st.method as c_int,
+                "{what}"
+            );
+            assert_eq!(
+                unsafe { c::ref_osce_reset_count(d.0) },
+                st.features.reset,
+                "{what}"
+            );
             let smooth = unsafe { c::ref_osce_numbits_smooth(d.0) };
-            assert_eq!(smooth.to_bits(), st.features.numbits_smooth.to_bits(), "{what}");
+            assert_eq!(
+                smooth.to_bits(),
+                st.features.numbits_smooth.to_bits(),
+                "{what}"
+            );
         }
         unsafe { c::ref_osce_model_set_loaded(m.c.0, 1) };
         total_changed += changed;
@@ -476,8 +732,21 @@ fn bbwenet_frames() {
         let mut out = vec![0.0f32; 480 * num_frames];
         let mut out_c = out.clone();
         rb::bbwenet_process_frames(&m.rs.bbwenet, &mut st, &mut out, &x, &f, num_frames);
-        unsafe { c::ref_bbwenet_process_frames(m.c.0, cst.0, out_c.as_mut_ptr(), x.as_ptr(), f.as_ptr(), num_frames as c_int) };
-        check(&format!("bbwenet frame {frame} ({num_frames} frames)"), &out, &out_c);
+        unsafe {
+            c::ref_bbwenet_process_frames(
+                m.c.0,
+                cst.0,
+                out_c.as_mut_ptr(),
+                x.as_ptr(),
+                f.as_ptr(),
+                num_frames as c_int,
+            )
+        };
+        check(
+            &format!("bbwenet frame {frame} ({num_frames} frames)"),
+            &out,
+            &out_c,
+        );
     }
 }
 
@@ -501,7 +770,15 @@ fn bwe_sequence() {
         let mut out = vec![0i16; 3 * len];
         let mut out_c = out.clone();
         rs::osce_bwe(&m.rs, &mut st, &mut out, &xq);
-        unsafe { c::ref_osce_bwe(m.c.0, cst.0, out_c.as_mut_ptr(), xq_c.as_mut_ptr(), len as c_int) };
+        unsafe {
+            c::ref_osce_bwe(
+                m.c.0,
+                cst.0,
+                out_c.as_mut_ptr(),
+                xq_c.as_mut_ptr(),
+                len as c_int,
+            )
+        };
         check_i16(&format!("osce_bwe frame {frame} (len {len})"), &out, &out_c);
         energy += out.iter().map(|&v| (v as f64).powi(2)).sum::<f64>();
     }

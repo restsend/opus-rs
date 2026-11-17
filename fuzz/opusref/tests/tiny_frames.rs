@@ -17,10 +17,14 @@ fn packets(force: i32, n: usize) -> Vec<Vec<u8>> {
     let out = (0..n)
         .map(|f| {
             let pcm: Vec<f32> = (0..FRAME)
-                .map(|i| (((f * FRAME + i) as f32) * 0.031).sin() * 0.3 + (((f * FRAME + i) as f32) * 0.0071).sin() * 0.2)
+                .map(|i| {
+                    (((f * FRAME + i) as f32) * 0.031).sin() * 0.3
+                        + (((f * FRAME + i) as f32) * 0.0071).sin() * 0.2
+                })
                 .collect();
             let mut b = [0u8; 1500];
-            let len = unsafe { opus_encode_float(enc, pcm.as_ptr(), FRAME as i32, b.as_mut_ptr(), 1500) };
+            let len =
+                unsafe { opus_encode_float(enc, pcm.as_ptr(), FRAME as i32, b.as_mut_ptr(), 1500) };
             b[..len as usize].to_vec()
         })
         .collect();
@@ -45,7 +49,8 @@ fn max_diff(pkts: &[Vec<u8>]) -> f32 {
     let mut worst = 0f32;
     for p in pkts {
         let n = rs.decode(p, 5760, &mut a).unwrap();
-        let m = unsafe { opus_decode_float(c, p.as_ptr(), p.len() as i32, b.as_mut_ptr(), 5760, 0) };
+        let m =
+            unsafe { opus_decode_float(c, p.as_ptr(), p.len() as i32, b.as_mut_ptr(), 5760, 0) };
         assert_eq!(n as i32, m);
         for i in 0..n {
             worst = worst.max((a[i] - b[i]).abs());
@@ -62,7 +67,10 @@ fn check(force: i32) {
         seq.push(with_tiny_first(&p[3], tiny));
         seq.extend_from_slice(&p[4..]);
         let d = max_diff(&seq);
-        assert!(d <= 4e-6, "mode {force}, {tiny}-byte frame: max difference {d}");
+        assert!(
+            d <= 4e-6,
+            "mode {force}, {tiny}-byte frame: max difference {d}"
+        );
     }
 }
 

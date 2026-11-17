@@ -153,8 +153,7 @@ fn build_dnn(src: &PathBuf) -> Vec<PathBuf> {
     for def in DNN_DEFINES {
         d.define(def, None);
     }
-    d
-        .include(src)
+    d.include(src)
         .include(src.join("include"))
         .include(src.join("celt"))
         .include(src.join("silk"))

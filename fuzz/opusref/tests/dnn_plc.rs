@@ -8,7 +8,6 @@ use opus_rs::dnn::{builtin, freq::FRAME_SIZE};
 use opusref::dnn::{Rng, same_bits, speechlike};
 use opusref::dnn_plc as c;
 
-
 /// The features of every frame of `sig` (int16-range floats).
 fn features_of(sig: &[f32]) -> Vec<[f32; NB_TOTAL_FEATURES]> {
     let mut st = LpcnetEncState::new(builtin::pitchdnn().unwrap());
@@ -28,8 +27,14 @@ fn fargan_matches() {
     let cst = unsafe { c::ref_fargan_create() };
     let mut rst = FarganState::new(builtin::fargan().unwrap());
     for start in [10usize, 120] {
-        let pcm0: Vec<f32> = sig[start * FRAME_SIZE - 320..start * FRAME_SIZE].iter().map(|x| x / 32768.0).collect();
-        let f0: Vec<f32> = feats[start - 5..start].iter().flat_map(|f| f[..NB_FEATURES].to_vec()).collect();
+        let pcm0: Vec<f32> = sig[start * FRAME_SIZE - 320..start * FRAME_SIZE]
+            .iter()
+            .map(|x| x / 32768.0)
+            .collect();
+        let f0: Vec<f32> = feats[start - 5..start]
+            .iter()
+            .flat_map(|f| f[..NB_FEATURES].to_vec())
+            .collect();
         unsafe { c::ref_fargan_cont(cst, pcm0.as_ptr(), f0.as_ptr()) };
         fargan::fargan_cont(&mut rst, &pcm0, &f0);
         for k in 0..40 {
@@ -58,7 +63,10 @@ fn plc_sequences_match() {
     let mut rst = LpcnetPlcState::new(PlcModels::builtin().unwrap());
     let mut lost = 0;
     for (f, x) in sig.chunks_exact(FRAME_SIZE).enumerate() {
-        let mut pcm: Vec<i16> = x.iter().map(|&v| v.clamp(-32768.0, 32767.0) as i16).collect();
+        let mut pcm: Vec<i16> = x
+            .iter()
+            .map(|&v| v.clamp(-32768.0, 32767.0) as i16)
+            .collect();
         let roll = r.below(100);
         if f % 211 == 210 {
             unsafe { c::ref_lpcnet_plc_reset(cst) };

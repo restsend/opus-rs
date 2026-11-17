@@ -18,9 +18,12 @@ fn packets(force: i32, fec: bool, n: usize) -> Vec<Vec<u8>> {
     }
     let out = (0..n)
         .map(|f| {
-            let pcm: Vec<f32> = (0..FRAME).map(|i| (((f * FRAME + i) as f32) * 0.07).sin() * 0.4).collect();
+            let pcm: Vec<f32> = (0..FRAME)
+                .map(|i| (((f * FRAME + i) as f32) * 0.07).sin() * 0.4)
+                .collect();
             let mut b = [0u8; 1500];
-            let len = unsafe { opus_encode_float(enc, pcm.as_ptr(), FRAME as i32, b.as_mut_ptr(), 1500) };
+            let len =
+                unsafe { opus_encode_float(enc, pcm.as_ptr(), FRAME as i32, b.as_mut_ptr(), 1500) };
             b[..len as usize].to_vec()
         })
         .collect();
@@ -37,10 +40,28 @@ fn run(first: &[Vec<u8>], dtx: u8, fec_pkt: &[u8]) -> (u32, u32) {
     let mut out = vec![0f32; FRAME];
     for p in first.iter().chain([&vec![dtx]]) {
         rs.decode(p, FRAME, &mut out).unwrap();
-        unsafe { opus_decode_float(c, p.as_ptr(), p.len() as i32, out.as_mut_ptr(), FRAME as i32, 0) };
+        unsafe {
+            opus_decode_float(
+                c,
+                p.as_ptr(),
+                p.len() as i32,
+                out.as_mut_ptr(),
+                FRAME as i32,
+                0,
+            )
+        };
     }
     rs.decode_fec(fec_pkt, FRAME, &mut out).unwrap();
-    unsafe { opus_decode_float(c, fec_pkt.as_ptr(), fec_pkt.len() as i32, out.as_mut_ptr(), FRAME as i32, 1) };
+    unsafe {
+        opus_decode_float(
+            c,
+            fec_pkt.as_ptr(),
+            fec_pkt.len() as i32,
+            out.as_mut_ptr(),
+            FRAME as i32,
+            1,
+        )
+    };
     let mut r = 0u32;
     unsafe { opus_decoder_ctl(c, GET_FINAL_RANGE, &mut r as *mut u32) };
     unsafe { opus_decoder_destroy(c) };
@@ -53,7 +74,10 @@ fn fec_after_silk_dtx_following_celt() {
     let silk = packets(1000, true, 4);
     // ToC of a SILK WB 20 ms mono packet, without payload.
     let (rs, c) = run(&celt, silk[3][0] & 0xfc, &silk[3]);
-    assert_eq!(rs, c, "libopus decodes the LBRR after a SILK ToC-only packet");
+    assert_eq!(
+        rs, c,
+        "libopus decodes the LBRR after a SILK ToC-only packet"
+    );
 }
 
 #[test]
