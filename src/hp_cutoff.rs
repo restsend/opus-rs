@@ -50,7 +50,16 @@ pub fn hp_cutoff(
     channels: usize,
     fs: i32,
 ) {
-    hp_cutoff_with(input, crate::float2int16, cutoff_hz, output, hp_mem, len, channels, fs);
+    hp_cutoff_with(
+        input,
+        crate::float2int16,
+        cutoff_hz,
+        output,
+        hp_mem,
+        len,
+        channels,
+        fs,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]

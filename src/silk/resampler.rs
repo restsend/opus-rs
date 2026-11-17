@@ -792,7 +792,10 @@ pub fn silk_resampler_private_up2_hq(s: &mut [i32], out: &mut [i16], input: &[i1
 pub fn silk_resampler_down2(s: &mut [i32], out: &mut [i16], input: &[i16], in_len: i32) {
     let len2 = (in_len >> 1) as usize;
     let (mut s0, mut s1) = (s[0], s[1]);
-    for (o, pair) in out[..len2].iter_mut().zip(input[..2 * len2].chunks_exact(2)) {
+    for (o, pair) in out[..len2]
+        .iter_mut()
+        .zip(input[..2 * len2].chunks_exact(2))
+    {
         // All-pass section for the even input sample.
         let in32 = (pair[0] as i32) << 10;
         let y = in32.wrapping_sub(s0);
