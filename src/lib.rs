@@ -50,6 +50,8 @@ pub mod error;
 /// Opus packet extensions, which carry DRED.
 pub mod extensions;
 pub mod hp_cutoff;
+#[cfg(feature = "std")]
+mod mapping_matrix;
 pub mod kiss_fft;
 mod mathops;
 pub mod mdct;
@@ -63,6 +65,10 @@ pub mod multistream;
 /// like the multistream decoder.
 #[cfg(feature = "std")]
 pub mod multistream_encoder;
+/// The ambisonics projection encoder and decoder (channel mapping family
+/// 3), built on the multistream codecs.
+#[cfg(feature = "std")]
+pub mod projection;
 pub mod packet;
 pub mod pitch;
 pub mod pvq;
@@ -231,6 +237,9 @@ pub struct OpusEncoder {
     vbr_constraint: bool,
     /// libopus `lsb_depth` (`OPUS_SET_LSB_DEPTH`), 8 to 24.
     lsb_depth: i32,
+    /// The `lsb_depth` argument of the current `opus_encode_native` call:
+    /// 16 for 16-bit input, 24 otherwise.
+    call_depth: i32,
     /// libopus `variable_duration` (`OPUS_SET_EXPERT_FRAME_DURATION`).
     variable_duration: FrameDuration,
     /// libopus `fec_config == 2` (`OPUS_SET_INBAND_FEC(2)`): in-band FEC
@@ -1356,6 +1365,7 @@ impl OpusEncoder {
             complexity: 9,
             vbr_constraint: true,
             lsb_depth: 24,
+            call_depth: 24,
             variable_duration: FrameDuration::Argument,
             fec_keeps_mode: false,
             prev_framesize: 0,
@@ -1669,12 +1679,12 @@ impl OpusEncoder {
     fn analyse(
         &mut self,
         input: PcmInput<'_>,
-        analysis24: Option<&[i32]>,
+        analysis_pcm: Option<analysis::AnalysisPcm<'_>>,
         analysis_frame_size: usize,
         frame_size: usize,
     ) -> (AnalysisInfo, bool) {
         let (info, is_silence) =
-            self.run_analysis(input, analysis24, analysis_frame_size, frame_size);
+            self.run_analysis(input, analysis_pcm, analysis_frame_size, frame_size);
         // The speech estimate of the mode decision: from the analysis's
         // music probability, the one for staying in the previous mode; the
         // last one is kept through digital silence.
@@ -1829,7 +1839,7 @@ impl OpusEncoder {
     fn run_analysis(
         &mut self,
         input: PcmInput<'_>,
-        analysis24: Option<&[i32]>,
+        analysis_pcm: Option<analysis::AnalysisPcm<'_>>,
         analysis_frame_size: usize,
         frame_size: usize,
     ) -> (AnalysisInfo, bool) {
@@ -1843,8 +1853,8 @@ impl OpusEncoder {
         let info = if self.complexity >= 7 && self.sampling_rate >= 16000 {
             self.analysis_read_bak = Some(self.analysis.read_position());
             let na = analysis_frame_size * self.channels;
-            let pcm = match (analysis24, input) {
-                (Some(s), _) => analysis::AnalysisPcm::I24(&s[..na]),
+            let pcm = match (analysis_pcm, input) {
+                (Some(p), _) => p,
                 (None, PcmInput::F32(s)) => analysis::AnalysisPcm::F32(&s[..na]),
                 (None, PcmInput::I16(s)) => analysis::AnalysisPcm::I16(&s[..na]),
             };
@@ -1914,26 +1924,35 @@ impl OpusEncoder {
         output: &mut [u8],
         analysis24: Option<&[i32]>,
     ) -> Result<usize, &'static str> {
+        let depth = match input {
+            PcmInput::I16(_) => 16,
+            PcmInput::F32(_) => 24,
+        };
+        let analysis_pcm = analysis24.map(analysis::AnalysisPcm::I24);
         self.range_final = 0;
         // The frame coded from the call's `frame_size` samples (libopus
         // `frame_size_select`), which the analysis reads all of.
         let coded = self
             .select_frame_size(frame_size)
             .ok_or("Invalid frame size for sampling rate")?;
-        self.encode_selected(input, frame_size, coded, output, analysis24)
+        self.encode_selected(input, frame_size, coded, output, depth, analysis_pcm)
     }
 
     /// libopus `opus_encode_native` itself: codes `frame_size` samples of
-    /// `input`, whose signal analysis reads `analysis_frame_size`.
+    /// `input` of `depth` bits (its `lsb_depth`), whose signal analysis
+    /// reads `analysis_frame_size` samples of `analysis_pcm`, or of `input`
+    /// when it is `None`.
     pub(crate) fn encode_selected(
         &mut self,
         input: PcmInput<'_>,
         analysis_frame_size: usize,
         frame_size: usize,
         output: &mut [u8],
-        analysis24: Option<&[i32]>,
+        depth: i32,
+        analysis_pcm: Option<analysis::AnalysisPcm<'_>>,
     ) -> Result<usize, &'static str> {
         self.range_final = 0;
+        self.call_depth = depth;
         let frame_rate = frame_rate_from_params(self.sampling_rate, frame_size)
             .ok_or("Invalid frame size for sampling rate")?;
         // A 1-byte buffer takes a ToC-only packet, except at 100 ms
@@ -1991,7 +2010,7 @@ impl OpusEncoder {
         // libopus's signal analysis of the packet; the frames of a multiframe
         // packet read their part of it.
         let (analysis_info, is_silence) =
-            self.analyse(input, analysis24, analysis_frame_size, frame_size);
+            self.analyse(input, analysis_pcm, analysis_frame_size, frame_size);
 
         // How far stereo input is from mono (libopus compute_stereo_width).
         let stereo_width = if self.channels == 2 && self.force_channels != Some(1) {

@@ -225,13 +225,11 @@ impl OpusEncoder {
         frame_size_select(self.sampling_rate, frame_size, self.variable_duration)
     }
 
-    /// The depth the encoder assumes for `input`: the set depth, at most
-    /// 16 for 16-bit input (libopus `IMIN(lsb_depth, st->lsb_depth)`).
-    pub(crate) fn input_depth(&self, input: PcmInput<'_>) -> i32 {
-        match input {
-            PcmInput::F32(_) => self.lsb_depth,
-            PcmInput::I16(_) => self.lsb_depth.min(16),
-        }
+    /// The depth the encoder assumes for the call's input: the set depth,
+    /// at most the call's (16 for 16-bit input; libopus
+    /// `IMIN(lsb_depth, st->lsb_depth)`).
+    pub(crate) fn input_depth(&self, _input: PcmInput<'_>) -> i32 {
+        self.lsb_depth.min(self.call_depth)
     }
 }
 

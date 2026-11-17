@@ -11,4 +11,5 @@ pub mod diff_encoder;
 pub mod diff_kernels;
 pub mod diff_ms_encoder;
 pub mod diff_multistream;
+pub mod diff_projection;
 pub mod diff_repacketizer;

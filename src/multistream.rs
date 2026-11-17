@@ -302,6 +302,12 @@ impl MultistreamDecoder {
         Ok(n)
     }
 
+    /// The channels the streams decode: two per coupled stream, one per
+    /// mono stream.
+    pub(crate) fn decoded_channels(&self) -> usize {
+        self.table.decoded_channel_count()
+    }
+
     /// Restarts every stream (libopus `OPUS_RESET_STATE`).
     pub fn reset(&mut self) {
         self.decoders.iter_mut().for_each(OpusDecoder::reset);
@@ -374,10 +380,36 @@ impl MultistreamDecoder {
         decode_fec: bool,
         soft_clip: bool,
     ) -> Result<usize, &'static str> {
+        let out_channels = self.table.channels as usize;
+        let (frames_decoded, decoded) = self.decode_checked(packet, frame_size, out.len(), decode_fec, soft_clip)?;
+        let decoded_channels = self.table.decoded_channel_count();
+        for f in 0..frames_decoded {
+            for (out_c, &src) in self.table.mapping.iter().enumerate() {
+                out[f * out_channels + out_c] = if src == SILENT_CHANNEL {
+                    0.0
+                } else {
+                    decoded[f * decoded_channels + src as usize]
+                };
+            }
+        }
+        Ok(frames_decoded)
+    }
+
+    /// `opus_multistream_decode_native` up to the channel output: its
+    /// checks for an output of `out_len` samples, then the streams decoded
+    /// (see [`Self::decode_streams`]).
+    pub(crate) fn decode_checked(
+        &mut self,
+        packet: &[u8],
+        frame_size: usize,
+        out_len: usize,
+        decode_fec: bool,
+        soft_clip: bool,
+    ) -> Result<(usize, Vec<f32>), &'static str> {
         // libopus limits frame_size to 120 ms.
         let frame_size = frame_size.min(self.decoders[0].sampling_rate as usize / 25 * 3);
         let out_channels = self.table.channels as usize;
-        if out.len() < frame_size * out_channels {
+        if out_len < frame_size * out_channels {
             return Err("output buffer too small for frame_size * channels");
         }
 
@@ -398,6 +430,19 @@ impl MultistreamDecoder {
             }
         }
 
+        self.decode_streams(packet, frame_size, decode_fec, soft_clip)
+    }
+
+    /// The decoding of every stream of `opus_multistream_decode_native`
+    /// after its checks: the samples per channel and the decoded channels
+    /// (coupled streams' left and right, then mono streams) interleaved.
+    pub(crate) fn decode_streams(
+        &mut self,
+        packet: &[u8],
+        frame_size: usize,
+        decode_fec: bool,
+        soft_clip: bool,
+    ) -> Result<(usize, Vec<f32>), &'static str> {
         let decoded_channels = self.table.decoded_channel_count();
         let mut decoded = vec![0.0f32; frame_size * decoded_channels];
         let mut decoded_offset_channels = 0usize;
@@ -442,18 +487,7 @@ impl MultistreamDecoder {
             }
             decoded_offset_channels += ch;
         }
-
-        for f in 0..frames_decoded {
-            for (out_c, &src) in self.table.mapping.iter().enumerate() {
-                out[f * out_channels + out_c] = if src == SILENT_CHANNEL {
-                    0.0
-                } else {
-                    decoded[f * decoded_channels + src as usize]
-                };
-            }
-        }
-
-        Ok(frames_decoded)
+        Ok((frames_decoded, decoded))
     }
 }
 

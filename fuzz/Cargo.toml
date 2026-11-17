@@ -172,5 +172,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "diff_projection"
+path = "fuzz_targets/diff_projection.rs"
+test = false
+doc = false
+bench = false
+
 [profile.release]
 debug = 1

@@ -77,6 +77,34 @@ unsafe extern "C" {
         data: *mut c_uchar,
         max: i32,
     ) -> i32;
+    pub fn opus_projection_ambisonics_encoder_create(
+        fs: i32,
+        channels: c_int,
+        mapping_family: c_int,
+        streams: *mut c_int,
+        coupled: *mut c_int,
+        application: c_int,
+        err: *mut c_int,
+    ) -> *mut c_void;
+    pub fn opus_projection_encoder_destroy(st: *mut c_void);
+    pub fn opus_projection_encoder_ctl(st: *mut c_void, req: c_int, ...) -> c_int;
+    pub fn opus_projection_encode(st: *mut c_void, pcm: *const i16, frame_size: c_int, data: *mut c_uchar, max: i32) -> c_int;
+    pub fn opus_projection_encode24(st: *mut c_void, pcm: *const i32, frame_size: c_int, data: *mut c_uchar, max: i32) -> c_int;
+    pub fn opus_projection_encode_float(st: *mut c_void, pcm: *const f32, frame_size: c_int, data: *mut c_uchar, max: i32) -> c_int;
+    pub fn opus_projection_decoder_create(
+        fs: i32,
+        channels: c_int,
+        streams: c_int,
+        coupled: c_int,
+        demixing_matrix: *mut c_uchar,
+        demixing_matrix_size: i32,
+        err: *mut c_int,
+    ) -> *mut c_void;
+    pub fn opus_projection_decoder_destroy(st: *mut c_void);
+    pub fn opus_projection_decoder_ctl(st: *mut c_void, req: c_int, ...) -> c_int;
+    pub fn opus_projection_decode(st: *mut c_void, data: *const c_uchar, len: i32, pcm: *mut i16, frame_size: c_int, fec: c_int) -> c_int;
+    pub fn opus_projection_decode24(st: *mut c_void, data: *const c_uchar, len: i32, pcm: *mut i32, frame_size: c_int, fec: c_int) -> c_int;
+    pub fn opus_projection_decode_float(st: *mut c_void, data: *const c_uchar, len: i32, pcm: *mut f32, frame_size: c_int, fec: c_int) -> c_int;
     pub fn opus_encode(
         st: *mut OpusEncoder,
         pcm: *const i16,
@@ -385,6 +413,9 @@ pub const SET_IGNORE_EXTENSIONS: c_int = 4058;
 pub const GET_IGNORE_EXTENSIONS: c_int = 4059;
 pub const RESET_STATE: c_int = 4028;
 pub const SET_FORCE_MODE: c_int = 11002;
+pub const PROJECTION_GET_DEMIXING_MATRIX_GAIN: c_int = 6001;
+pub const PROJECTION_GET_DEMIXING_MATRIX_SIZE: c_int = 6003;
+pub const PROJECTION_GET_DEMIXING_MATRIX: c_int = 6005;
 
 unsafe extern "C" {
     /// `clt_mdct_forward_c`/`clt_mdct_backward_c` of the static 48 kHz mode,

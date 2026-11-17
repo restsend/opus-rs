@@ -6,6 +6,8 @@
 
 use crate::encoder_ctl::frame_size_select;
 use crate::error::{BAD_ARG, BUFFER_TOO_SMALL, INTERNAL_ERROR};
+use crate::analysis::AnalysisPcm;
+use crate::mapping_matrix::MappingMatrix;
 use crate::repacketizer::Repacketizer;
 use crate::{Application, Bandwidth, FrameDuration, OpusEncoder, PcmInput, Signal, bits_to_bitrate, bitrate_to_bits};
 
@@ -31,6 +33,10 @@ pub struct MultistreamEncoder {
     application: Application,
     sampling_rate: i32,
     variable_duration: FrameDuration,
+    /// The projection encoder's mixing matrix, which forms each stream's
+    /// channels from all input channels (libopus
+    /// `opus_projection_copy_channel_in_*`).
+    pub(crate) mixing: Option<MappingMatrix<'static>>,
 }
 
 impl MultistreamEncoder {
@@ -75,6 +81,7 @@ impl MultistreamEncoder {
             application,
             sampling_rate,
             variable_duration: FrameDuration::Argument,
+            mixing: None,
         };
         if (0..streams).any(|s| enc.stream_channels(s).is_none()) {
             return Err(BAD_ARG);
@@ -178,6 +185,9 @@ impl MultistreamEncoder {
         }
         let n = analysis_frame_size;
         let mut f32_buf = vec![0.0f32; 2 * n];
+        // The stream's input channels for the signal analysis when the
+        // coded ones are mixed.
+        let mut raw_f32 = vec![0.0f32; 2 * n];
         let mut i16_buf = vec![0i16; 2 * n];
         let mut i24_buf = vec![0i32; 2 * n];
         let mut tmp = vec![0u8; MS_FRAME_TMP];
@@ -194,13 +204,30 @@ impl MultistreamEncoder {
             for (k, &ch) in chans.iter().enumerate() {
                 for i in 0..n {
                     let at = i * self.channels + ch;
-                    match pcm {
-                        MsPcm::F32(x) => f32_buf[i * c + k] = x[at],
-                        MsPcm::I16(x) => i16_buf[i * c + k] = x[at],
-                        MsPcm::I24(x) => {
+                    match (pcm, self.mixing.is_some()) {
+                        (MsPcm::F32(x), false) => f32_buf[i * c + k] = x[at],
+                        (MsPcm::F32(x), true) => raw_f32[i * c + k] = x[at],
+                        (MsPcm::I16(x), _) => i16_buf[i * c + k] = x[at],
+                        (MsPcm::I24(x), false) => {
                             i24_buf[i * c + k] = x[at];
                             f32_buf[i * c + k] = (1.0 / 32768.0 / 256.0) * x[at] as f32;
                         }
+                        // opus_projection_encode24 analyses with
+                        // downmix_int, which reads the 32-bit samples as
+                        // 16-bit ones (little endian).
+                        (MsPcm::I24(x), true) => {
+                            let k16 = i * self.channels + ch;
+                            let w = x[k16 / 2];
+                            i16_buf[i * c + k] = if k16 % 2 == 0 { w as i16 } else { (w >> 16) as i16 };
+                        }
+                    }
+                }
+                if let Some(m) = &self.mixing {
+                    let out = &mut f32_buf[k..];
+                    match pcm {
+                        MsPcm::F32(x) => m.in_float(x, self.channels, out, ch, c, n),
+                        MsPcm::I16(x) => m.in_short(x, self.channels, out, ch, c, n),
+                        MsPcm::I24(x) => m.in_int24(x, self.channels, out, ch, c, n),
                     }
                 }
             }
@@ -222,16 +249,22 @@ impl MultistreamEncoder {
                 return Err(BAD_ARG);
             }
             let tmp = &mut tmp[..curr_max as usize];
-            let len = match pcm {
-                MsPcm::F32(_) => enc.encode_selected(PcmInput::F32(&f32_buf[..n * c]), n, frame_size, tmp, None),
-                MsPcm::I16(_) => enc.encode_selected(PcmInput::I16(&i16_buf[..n * c]), n, frame_size, tmp, None),
-                MsPcm::I24(_) => enc.encode_selected(
-                    PcmInput::F32(&f32_buf[..n * c]),
-                    n,
-                    frame_size,
-                    tmp,
-                    Some(&i24_buf[..n * c]),
-                ),
+            let coded = PcmInput::F32(&f32_buf[..n * c]);
+            let len = match (pcm, self.mixing.is_some()) {
+                (MsPcm::F32(_), false) => enc.encode_selected(coded, n, frame_size, tmp, 24, None),
+                (MsPcm::I16(_), false) => enc.encode_selected(PcmInput::I16(&i16_buf[..n * c]), n, frame_size, tmp, 16, None),
+                (MsPcm::I24(_), false) => {
+                    enc.encode_selected(coded, n, frame_size, tmp, 24, Some(AnalysisPcm::I24(&i24_buf[..n * c])))
+                }
+                (MsPcm::F32(_), true) => {
+                    enc.encode_selected(coded, n, frame_size, tmp, 24, Some(AnalysisPcm::F32(&raw_f32[..n * c])))
+                }
+                (MsPcm::I16(_), true) => {
+                    enc.encode_selected(coded, n, frame_size, tmp, 16, Some(AnalysisPcm::I16(&i16_buf[..n * c])))
+                }
+                (MsPcm::I24(_), true) => {
+                    enc.encode_selected(coded, n, frame_size, tmp, 24, Some(AnalysisPcm::I16(&i16_buf[..n * c])))
+                }
             }?;
             let mut rp = Repacketizer::new();
             rp.cat(&tmp[..len]).map_err(|_| INTERNAL_ERROR)?;
