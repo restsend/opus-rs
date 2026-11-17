@@ -10,8 +10,8 @@
 //! blends with its MDCT.
 
 use super::{
-    COMBFILTER_MAXPERIOD, COMBFILTER_MINPERIOD, CeltDecoder, DECODE_BUFFER_SIZE, PcmLayout,
-    comb_filter, comb_filter_inplace,
+    COMBFILTER_MINPERIOD, CeltDecoder, DECODE_BUFFER_SIZE, PcmLayout, comb_filter,
+    comb_filter_inplace,
 };
 use crate::bands::{celt_lcg_rand, denormalise_bands, log2amp, renormalise_vector};
 use crate::celt_lpc::{autocorr, lpc as celt_lpc};
@@ -107,16 +107,6 @@ impl CeltDecoder {
         }
         self.last_frame_type = frame_type;
 
-        let mem_len = DECODE_BUFFER_SIZE + mode.overlap;
-        for c in 0..cc {
-            let base = c * mem_len;
-            // The postfilter memory continues from the concealed signal.
-            self.prefilter_mem[c * COMBFILTER_MAXPERIOD..(c + 1) * COMBFILTER_MAXPERIOD]
-                .copy_from_slice(
-                    &self.decode_mem[base + DECODE_BUFFER_SIZE - COMBFILTER_MAXPERIOD
-                        ..base + DECODE_BUFFER_SIZE],
-                );
-        }
         self.deemphasis(n, pcm, layout);
         frame_size
     }

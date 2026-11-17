@@ -3150,7 +3150,6 @@ pub struct CeltDecoder {
     decode_mem: FixedVec<f32, CELT_DECODE_MEM>,
     old_band_e: FixedVec<f32, CELT_NB_X_CH>,
     preemph_mem: FixedVec<f32, CELT_MAX_CHANNELS>,
-    prefilter_mem: FixedVec<f32, CELT_PREFILTER_MEM>,
     prefilter_period: usize,
     prefilter_period_old: usize,
     prefilter_gain: f32,
@@ -3194,8 +3193,6 @@ pub struct CeltDecoder {
     w_collapse_masks: FixedVec<u32, CELT_NB_X_CH>,
     w_freq: FixedVec<f32, CELT_W_FREQ_DEC>,
     w_band_amp: FixedVec<f32, CELT_NB_X_CH>,
-    w_pcm_frame: FixedVec<f32, DECODE_BUFFER_SIZE>,
-    w_post: FixedVec<f32, { DECODE_BUFFER_SIZE + COMBFILTER_MAXPERIOD }>,
 }
 
 impl CeltDecoder {
@@ -3303,7 +3300,6 @@ impl CeltDecoder {
         decode_mem: FixedVec::new(),
         old_band_e: FixedVec::new(),
         preemph_mem: FixedVec::new(),
-        prefilter_mem: FixedVec::new(),
         prefilter_period: 0,
         prefilter_period_old: 0,
         prefilter_gain: 0.0,
@@ -3335,8 +3331,6 @@ impl CeltDecoder {
         w_collapse_masks: FixedVec::new(),
         w_freq: FixedVec::new(),
         w_band_amp: FixedVec::new(),
-        w_pcm_frame: FixedVec::new(),
-        w_post: FixedVec::new(),
     };
 
     /// Sets the decoder up as [`Self::new`] does, in place.
@@ -3363,8 +3357,6 @@ impl CeltDecoder {
             .fill_to(channels * (DECODE_BUFFER_SIZE + overlap), 0.0);
         self.old_band_e.fill_to(nb_x_ch, 0.0);
         self.preemph_mem.fill_to(channels, 0.0);
-        self.prefilter_mem
-            .fill_to(channels * COMBFILTER_MAXPERIOD, 0.0);
         self.prefilter_period = COMBFILTER_MINPERIOD;
         self.prefilter_period_old = COMBFILTER_MINPERIOD;
         self.prefilter_gain = 0.0;
@@ -3395,9 +3387,6 @@ impl CeltDecoder {
         self.w_collapse_masks.fill_to(nb_x_ch, 0);
         self.w_freq.fill_to(dec_frame_x_ch + 4, 0.0); // +4: NEON backward pre-rotation reads up to 3 elements past n2
         self.w_band_amp.fill_to(nb_x_ch, 0.0);
-        self.w_pcm_frame.fill_to(DECODE_BUFFER_SIZE, 0.0);
-        self.w_post
-            .fill_to(DECODE_BUFFER_SIZE + COMBFILTER_MAXPERIOD, 0.0);
     }
 
     pub fn decode(&mut self, compressed: &[u8], frame_size: usize, pcm: &mut [f32]) -> usize {
@@ -3421,7 +3410,6 @@ impl CeltDecoder {
         self.decode_mem.fill(0.0);
         self.old_band_e.fill(0.0);
         self.preemph_mem.fill(0.0);
-        self.prefilter_mem.fill(0.0);
         self.prefilter_period = COMBFILTER_MINPERIOD;
         self.prefilter_period_old = COMBFILTER_MINPERIOD;
         self.prefilter_gain = 0.0;
@@ -3803,8 +3791,7 @@ impl CeltDecoder {
         );
 
         // Hard bound: `out_syn_idx = DECODE_BUFFER_SIZE - frame_size` below must
-        // stay non-negative and w_pcm_frame is sized DECODE_BUFFER_SIZE. libopus
-        // rejects frame sizes beyond DECODE_BUFFER_SIZE the same way
+        // stay non-negative. libopus rejects frame sizes beyond DECODE_BUFFER_SIZE the same way
         // (celt_decoder.c). The old `+ overlap` bound let 2049..=2168 through and
         // caused an underflow/panic (issue #27 deep-scan).
         if frame_size > DECODE_BUFFER_SIZE {
@@ -4004,77 +3991,38 @@ impl CeltDecoder {
             // celt_synthesis saturates at SIG_SAT, which the float build's
             // SATURATE leaves out (celt/arch.h:323).
 
-            self.w_pcm_frame[..frame_size].fill(0.0);
-            let pcm_frame = &mut self.w_pcm_frame[..frame_size];
-
-            pcm_frame.copy_from_slice(
-                &self.decode_mem[channel_mem_offset + out_syn_idx
-                    ..channel_mem_offset + out_syn_idx + frame_size],
+            // The postfilter runs in place on the synthesis; the earlier
+            // output in decode_mem is its history (celt_decoder.c:1537-1548).
+            let out = &mut self.decode_mem[channel_mem_offset..channel_mem_offset + mem_size];
+            let short_n = mode.short_mdct_size;
+            comb_filter_inplace(
+                out,
+                out_syn_idx,
+                self.prefilter_period_old,
+                self.prefilter_period,
+                short_n,
+                self.prefilter_gain_old,
+                self.prefilter_gain,
+                self.prefilter_tapset_old,
+                self.prefilter_tapset,
+                mode.window,
+                overlap,
             );
-            if pf_on || self.prefilter_gain > 0.0 || self.prefilter_gain_old > 0.0 {
-                // Set up w_post = [prefilter_mem | pcm_frame] for history access.
-                // We apply combfilter in-place on w_post[COMBFILTER_MAXPERIOD..] so that
-                // later samples can reference already-filtered earlier samples, matching C's
-                // in-place comb_filter behavior.
-                self.w_post[..COMBFILTER_MAXPERIOD].copy_from_slice(
-                    &self.prefilter_mem[c * COMBFILTER_MAXPERIOD..(c + 1) * COMBFILTER_MAXPERIOD],
-                );
-                self.w_post[COMBFILTER_MAXPERIOD..COMBFILTER_MAXPERIOD + frame_size]
-                    .copy_from_slice(pcm_frame);
-
-                let short_n = mode.short_mdct_size;
-                // Call 1: first short_n samples, transition old→current params
-                // Apply in-place on w_post[COMBFILTER_MAXPERIOD..], output overwrites input
+            if lm != 0 {
                 comb_filter_inplace(
-                    &mut self.w_post,
-                    COMBFILTER_MAXPERIOD,
-                    self.prefilter_period_old,
+                    out,
+                    out_syn_idx + short_n,
                     self.prefilter_period,
-                    short_n,
-                    self.prefilter_gain_old,
+                    pitch_index,
+                    frame_size - short_n,
                     self.prefilter_gain,
-                    self.prefilter_tapset_old,
+                    gain1,
                     self.prefilter_tapset,
+                    prefilter_tapset as i32,
                     mode.window,
                     overlap,
                 );
-                if lm != 0 {
-                    // Call 2: remaining N-short_n samples, transition current→new params
-                    comb_filter_inplace(
-                        &mut self.w_post,
-                        COMBFILTER_MAXPERIOD + short_n,
-                        self.prefilter_period,
-                        pitch_index,
-                        frame_size - short_n,
-                        self.prefilter_gain,
-                        gain1,
-                        self.prefilter_tapset,
-                        prefilter_tapset as i32,
-                        mode.window,
-                        overlap,
-                    );
-                }
-
-                pcm_frame.copy_from_slice(
-                    &self.w_post[COMBFILTER_MAXPERIOD..COMBFILTER_MAXPERIOD + frame_size],
-                );
-
-                self.decode_mem[channel_mem_offset + out_syn_idx
-                    ..channel_mem_offset + out_syn_idx + frame_size]
-                    .copy_from_slice(pcm_frame);
             }
-            let mut new_mem = [0.0f32; COMBFILTER_MAXPERIOD];
-            if frame_size >= COMBFILTER_MAXPERIOD {
-                new_mem.copy_from_slice(&pcm_frame[frame_size - COMBFILTER_MAXPERIOD..frame_size]);
-            } else {
-                new_mem[..COMBFILTER_MAXPERIOD - frame_size].copy_from_slice(
-                    &self.prefilter_mem
-                        [c * COMBFILTER_MAXPERIOD + frame_size..(c + 1) * COMBFILTER_MAXPERIOD],
-                );
-                new_mem[COMBFILTER_MAXPERIOD - frame_size..].copy_from_slice(pcm_frame);
-            }
-            self.prefilter_mem[c * COMBFILTER_MAXPERIOD..(c + 1) * COMBFILTER_MAXPERIOD]
-                .copy_from_slice(&new_mem);
         }
         self.deemphasis(frame_size, pcm, layout);
 
