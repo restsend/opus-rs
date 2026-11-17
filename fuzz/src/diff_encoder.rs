@@ -7,6 +7,7 @@
 //! the switch has no effect yet (fuzz/DIFFERENTIAL.md).
 //! Oracles per frame:
 //! - `ctl`: a control has libopus's result and leaves the same value.
+//! - `get`: the same bitrate query (`OPUS_GET_BITRATE`) after each frame.
 //! - `result`: both encoders succeed.
 //! - `decode`: libopus decodes every opus-rs packet to a full frame, and its
 //!   final range equals the opus-rs encoder's.
@@ -15,8 +16,9 @@
 //! - `toc`: same mode, bandwidth, frame duration and channel flag
 //!   (suppress with `OFZ_SUPPRESS=toc`).
 //! - `bytes` (`OFZ_STRICT_BYTES=1`, scalar only): byte-identical packets in
-//!   CELT-only streams (`RestrictedLowDelay`), where opus-rs and libopus run
-//!   the same float algorithm. The first differing packet is reported.
+//!   the streams `common::strict_bytes` names, those where opus-rs and
+//!   libopus run the same float algorithm (CELT-only, `RestrictedLowDelay`).
+//!   The first differing packet is reported.
 //! - `silk-input`: the 16-bit samples handed to SILK are identical.
 //! - `fidelity`: per-frame SNR against the input, both streams decoded by
 //!   libopus. Flags frames where opus-rs is below 3 dB while libopus is at
@@ -79,7 +81,25 @@ enum Ctl {
     /// `set_expert_frame_duration` / `OPUS_SET_EXPERT_FRAME_DURATION`, an
     /// index into `FRAME_DURATIONS`.
     FrameDuration(u8),
+    /// `set_bitrate` / `OPUS_SET_BITRATE`.
+    Bitrate(i32),
+    /// `set_complexity` / `OPUS_SET_COMPLEXITY`.
+    Complexity(i8),
+    /// `set_packet_loss_perc` / `OPUS_SET_PACKET_LOSS_PERC`.
+    PacketLoss(i8),
+    /// `set_inband_fec` / `OPUS_SET_INBAND_FEC`.
+    InbandFec(i8),
+    /// `set_vbr` / `OPUS_SET_VBR`.
+    Vbr(bool),
+    /// `set_application` / `OPUS_SET_APPLICATION`, an index into `APPS`.
+    Application(u8),
 }
+
+const APPS: [(Application, i32); 3] = [
+    (Application::Voip, 2048),
+    (Application::Audio, 2049),
+    (Application::RestrictedLowDelay, 2051),
+];
 
 const FRAME_DURATIONS: [FrameDuration; 10] = [
     FrameDuration::Argument,
@@ -133,6 +153,38 @@ fn apply_ctl(rs: &mut [&mut OpusEncoder; 2], re: &mut RefEnc, ctl: Ctl) -> Resul
             let b = re.try_ctl(c::SET_PHASE_INVERSION_DISABLED, d as i32);
             let got = rs[0].phase_inversion_disabled() as i32;
             (0, b, got, re.get(c::GET_PHASE_INVERSION_DISABLED))
+        }
+        Ctl::Bitrate(v) => {
+            let a = code(rs[0].set_bitrate(v));
+            let _ = rs[1].set_bitrate(v);
+            (a, re.try_ctl(c::SET_BITRATE, v), rs[0].bitrate(), re.get(c::GET_BITRATE))
+        }
+        Ctl::Complexity(v) => {
+            let a = code(rs[0].set_complexity(v as i32));
+            let _ = rs[1].set_complexity(v as i32);
+            (a, re.try_ctl(c::SET_COMPLEXITY, v as i32), rs[0].complexity, re.get(c::GET_COMPLEXITY))
+        }
+        Ctl::PacketLoss(v) => {
+            let a = code(rs[0].set_packet_loss_perc(v as i32));
+            let _ = rs[1].set_packet_loss_perc(v as i32);
+            let b = re.try_ctl(c::SET_PACKET_LOSS_PERC, v as i32);
+            (a, b, rs[0].packet_loss_perc, re.get(c::GET_PACKET_LOSS_PERC))
+        }
+        Ctl::InbandFec(v) => {
+            let a = code(rs[0].set_inband_fec(v as i32));
+            let _ = rs[1].set_inband_fec(v as i32);
+            (a, re.try_ctl(c::SET_INBAND_FEC, v as i32), rs[0].inband_fec(), re.get(c::GET_INBAND_FEC))
+        }
+        Ctl::Vbr(v) => {
+            rs.iter_mut().for_each(|e| e.set_vbr(v));
+            (0, re.try_ctl(c::SET_VBR, v as i32), rs[0].vbr() as i32, re.get(c::GET_VBR))
+        }
+        Ctl::Application(i) => {
+            let (a_rs, a_c) = APPS[i as usize % APPS.len()];
+            let a = code(rs[0].set_application(a_rs));
+            let _ = rs[1].set_application(a_rs);
+            let b = re.try_ctl(c::SET_APPLICATION, a_c);
+            (a, b, rs[0].application() as i32, re.get(c::GET_APPLICATION))
         }
         Ctl::FrameDuration(i) => {
             let d = FRAME_DURATIONS[i as usize % FRAME_DURATIONS.len()];
@@ -258,7 +310,7 @@ fn apply(rs: &mut [&mut OpusEncoder; 2], re: &mut RefEnc, s: &Settings) {
         e.complexity = cx;
         e.use_cbr = s.rc % 3 == 2;
         e.set_vbr_constraint(s.rc % 3 == 1);
-        e.use_inband_fec = s.fec;
+        e.set_inband_fec(s.fec as i32).unwrap();
         e.packet_loss_perc = loss;
         e.set_dtx(s.dtx);
         e.set_signal(sig);
@@ -316,13 +368,12 @@ pub fn fuzz(data: &[u8]) {
 fn run(inp: Input) -> Result<(), Finding> {
     let fs = RATES[inp.rate as usize % 5];
     let ch = 1 + inp.stereo as usize;
-    let (app, capp) = [
+    let (mut app, mut capp) = [
         (Application::Voip, 2048),
         (Application::Audio, 2049),
         (Application::RestrictedLowDelay, 2051),
     ][inp.app as usize % 3];
     let mut frame = fs as usize / 400 * DURATIONS[inp.frame as usize % 9];
-    let strict = std::env::var("OFZ_STRICT_BYTES").is_ok() && capp == 2051;
 
     let mut e_sc = OpusEncoder::new(fs, ch, app).unwrap();
     let mut e_si = OpusEncoder::new(fs, ch, app).unwrap();
@@ -374,6 +425,8 @@ fn run(inp: Input) -> Result<(), Finding> {
         if let Some(c) = seg.call.ctl {
             apply_ctl(&mut [&mut e_sc, &mut e_si], &mut re, c)?;
             ctls.push(c);
+            app = e_sc.application();
+            capp = app as i32;
         }
         if let Some(s) = &seg.set {
             apply(&mut [&mut e_sc, &mut e_si], &mut re, s);
@@ -502,6 +555,11 @@ fn run(inp: Input) -> Result<(), Finding> {
                     "libopus {n}, opus-rs {r:?} at frame {total} {ctx}"
                 ),
             };
+            // `get`: the bitrate query after the frame.
+            let (g_rs, g_c) = (e_sc.bitrate(), re.get(c::GET_BITRATE));
+            if g_rs != g_c {
+                fail!("get", "bitrate", "frame {total}: opus-rs {g_rs}, libopus {g_c} {ctx}");
+            }
             let mut o_ref = vec![0f32; frame * ch];
             let (_, ref_syms) =
                 c::trace(|| d_ref.decode(Some(&p_ref[..n_ref]), &mut o_ref, frame, false));
@@ -567,7 +625,7 @@ fn run(inp: Input) -> Result<(), Finding> {
                         p_ref[0]
                     );
                 }
-                if *tag == "scalar" && strict && identical && pkt != &p_ref[..n_ref] {
+                if *tag == "scalar" && strict_bytes(app) && identical && pkt != &p_ref[..n_ref] {
                     // Localize: the first symbol the reference decoder reads
                     // differently from the two packets is the first coded
                     // decision where the encoders disagree.

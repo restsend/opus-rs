@@ -10,6 +10,14 @@ use opusref as c;
 
 pub const RATES: [i32; 5] = [8000, 12000, 16000, 24000, 48000];
 
+/// Whether the `bytes` oracle (`OFZ_STRICT_BYTES=1`) compares a stream of
+/// this application: those where opus-rs's encoder runs libopus's float
+/// algorithm and codes the same bytes, CELT-only streams so far. A
+/// configuration joins here when its encoder becomes byte-exact.
+pub fn strict_bytes(app: opus_rs::Application) -> bool {
+    std::env::var_os("OFZ_STRICT_BYTES").is_some() && app == opus_rs::Application::RestrictedLowDelay
+}
+
 /// A differential finding. `sig` groups findings that likely share a cause.
 pub struct Finding {
     pub oracle: &'static str,

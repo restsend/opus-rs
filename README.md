@@ -49,7 +49,9 @@ cargo run --example wav_test
 Each libopus function or control maps to an opus-rs method or function and
 is tested against libopus (`fuzz/opusref`). Constructors (`*_create`,
 `*_init`) are `new` (and `init` where a struct is built in place),
-`*_get_size` is `size_of`, and `*_destroy` is `Drop`. Functions that mirror
+`*_get_size` is `size_of`, and `*_destroy` is `Drop`. The setters with a range return libopus's error for values outside
+it; the public fields they set keep working, and are clamped when a
+frame is coded. Functions that mirror
 a libopus function return libopus's errors as the constants of
 `opus_rs::error` (`Err(error::BAD_ARG)` for `OPUS_BAD_ARG`, and so on);
 `error::code` gives the libopus number and `error::strerror` its text.
@@ -57,6 +59,12 @@ a libopus function return libopus's errors as the constants of
 | libopus | opus-rs |
 | --- | --- |
 | `opus_encoder_ctl(OPUS_RESET_STATE)` | `OpusEncoder::reset` |
+| `OPUS_SET_APPLICATION`, `OPUS_GET_APPLICATION` | `OpusEncoder::set_application`, `application` |
+| `OPUS_SET_BITRATE`, `OPUS_GET_BITRATE` | `OpusEncoder::set_bitrate`, `bitrate` (the field `bitrate_bps` holds the set value) |
+| `OPUS_SET_COMPLEXITY`, `OPUS_SET_PACKET_LOSS_PERC` | `OpusEncoder::set_complexity`, `set_packet_loss_perc` (the fields `complexity`, `packet_loss_perc` hold the values) |
+| `OPUS_SET_INBAND_FEC`, `OPUS_GET_INBAND_FEC` | `OpusEncoder::set_inband_fec`, `inband_fec` (0, 1 or 2; the field `use_inband_fec` is on for 1 and 2) |
+| `OPUS_SET_VBR`, `OPUS_GET_VBR` | `OpusEncoder::set_vbr`, `vbr` (the field `use_cbr` is the opposite) |
+| `OPUS_GET_SAMPLE_RATE` (encoder) | `OpusEncoder::sample_rate` |
 | `OPUS_SET_LSB_DEPTH`, `OPUS_GET_LSB_DEPTH` | `OpusEncoder::set_lsb_depth`, `lsb_depth` |
 | `OPUS_SET_FORCE_CHANNELS`, `OPUS_GET_FORCE_CHANNELS` | `OpusEncoder::set_force_channels`, `force_channels` (`None` for `OPUS_AUTO`) |
 | `OPUS_SET_PREDICTION_DISABLED`, `OPUS_GET_PREDICTION_DISABLED` | `OpusEncoder::set_prediction_disabled`, `prediction_disabled` |

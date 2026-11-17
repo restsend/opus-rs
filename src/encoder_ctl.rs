@@ -2,7 +2,7 @@
 //! its public fields, with libopus's checks and errors.
 
 use crate::error::BAD_ARG;
-use crate::{OpusEncoder, PcmInput, frame_rate_from_params};
+use crate::{Application, OpusEncoder, PcmInput, bits_to_bitrate, frame_rate_from_params};
 
 /// The frame duration the encoder codes, as libopus
 /// `OPUS_SET_EXPERT_FRAME_DURATION` (`OPUS_FRAMESIZE_*`).
@@ -22,6 +22,114 @@ pub enum FrameDuration {
 }
 
 impl OpusEncoder {
+    /// Sets the application before the first frame (libopus
+    /// `OPUS_SET_APPLICATION`): after it, and after a [`Self::reset`], only
+    /// the current one is accepted, others are `error::BAD_ARG`.
+    pub fn set_application(&mut self, application: Application) -> Result<(), &'static str> {
+        if !self.first && application != self.application {
+            return Err(BAD_ARG);
+        }
+        self.application = application;
+        let low_delay = application == Application::RestrictedLowDelay;
+        let fs = self.sampling_rate as usize;
+        self.encoder_buffer = if low_delay { 0 } else { fs / 100 };
+        self.delay_compensation = if low_delay { 0 } else { fs / 250 };
+        Ok(())
+    }
+
+    /// The application (libopus `OPUS_GET_APPLICATION`).
+    pub fn application(&self) -> Application {
+        self.application
+    }
+
+    /// The sampling rate (libopus `OPUS_GET_SAMPLE_RATE`).
+    pub fn sample_rate(&self) -> i32 {
+        self.sampling_rate
+    }
+
+    /// Sets [`Self::bitrate_bps`] as libopus `OPUS_SET_BITRATE` does:
+    /// [`Self::BITRATE_AUTO`], [`Self::BITRATE_MAX`], or a rate clamped to
+    /// 500 to 750000 b/s per channel; 0 and other negative values are
+    /// `error::BAD_ARG`.
+    pub fn set_bitrate(&mut self, bitrate: i32) -> Result<(), &'static str> {
+        self.bitrate_bps = match bitrate {
+            Self::BITRATE_AUTO | Self::BITRATE_MAX => bitrate,
+            ..=0 => return Err(BAD_ARG),
+            b => b.clamp(500, 750_000 * self.channels as i32),
+        };
+        Ok(())
+    }
+
+    /// The bitrate in b/s (libopus `OPUS_GET_BITRATE`): the set rate, or
+    /// what `Auto` and `Max` give for the last frame's duration (2.5 ms
+    /// before the first frame), at most what 1276 bytes hold.
+    pub fn bitrate(&self) -> i32 {
+        let fs = self.sampling_rate;
+        let frame = match self.prev_framesize {
+            0 => fs as usize / 400,
+            n => n,
+        };
+        let user = match self.bitrate_bps {
+            Self::BITRATE_AUTO => 60 * fs / frame as i32 + fs * self.channels as i32,
+            Self::BITRATE_MAX => 1_500_000,
+            b => b,
+        };
+        user.min(bits_to_bitrate(1276 * 8, fs, frame))
+    }
+
+    /// Sets [`Self::complexity`], 0 to 10 (libopus `OPUS_SET_COMPLEXITY`);
+    /// other values are `error::BAD_ARG`.
+    pub fn set_complexity(&mut self, complexity: i32) -> Result<(), &'static str> {
+        if !(0..=10).contains(&complexity) {
+            return Err(BAD_ARG);
+        }
+        self.complexity = complexity;
+        Ok(())
+    }
+
+    /// Sets [`Self::packet_loss_perc`], 0 to 100 (libopus
+    /// `OPUS_SET_PACKET_LOSS_PERC`); other values are `error::BAD_ARG`.
+    pub fn set_packet_loss_perc(&mut self, percent: i32) -> Result<(), &'static str> {
+        if !(0..=100).contains(&percent) {
+            return Err(BAD_ARG);
+        }
+        self.packet_loss_perc = percent;
+        Ok(())
+    }
+
+    /// In-band FEC as libopus `OPUS_SET_INBAND_FEC`: 0 off, 1 on (SILK is
+    /// chosen when the expected loss calls for it), 2 on without switching
+    /// to SILK for music; other values are `error::BAD_ARG`. Sets
+    /// [`Self::use_inband_fec`].
+    pub fn set_inband_fec(&mut self, fec: i32) -> Result<(), &'static str> {
+        if !(0..=2).contains(&fec) {
+            return Err(BAD_ARG);
+        }
+        self.use_inband_fec = fec != 0;
+        self.fec_keeps_mode = fec == 2;
+        Ok(())
+    }
+
+    /// The in-band FEC setting, 0, 1 or 2 (libopus `OPUS_GET_INBAND_FEC`).
+    pub fn inband_fec(&self) -> i32 {
+        match (self.use_inband_fec, self.fec_keeps_mode) {
+            (false, _) => 0,
+            (true, false) => 1,
+            (true, true) => 2,
+        }
+    }
+
+    /// Variable bitrate, on by default (libopus `OPUS_SET_VBR`); off sets
+    /// [`Self::use_cbr`].
+    pub fn set_vbr(&mut self, vbr: bool) {
+        self.use_cbr = !vbr;
+    }
+
+    /// Whether the bitrate is variable (libopus `OPUS_GET_VBR`).
+    pub fn vbr(&self) -> bool {
+        !self.use_cbr
+    }
+
     /// The depth of the input signal in bits, 8 to 24 (libopus
     /// `OPUS_SET_LSB_DEPTH`, 24 by default): the encoder treats samples
     /// below it as noise, which lowers its rate on quiet signals, and

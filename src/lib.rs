@@ -228,6 +228,12 @@ pub struct OpusEncoder {
     lsb_depth: i32,
     /// libopus `variable_duration` (`OPUS_SET_EXPERT_FRAME_DURATION`).
     variable_duration: FrameDuration,
+    /// libopus `fec_config == 2` (`OPUS_SET_INBAND_FEC(2)`): in-band FEC
+    /// that switches to SILK for speech only.
+    fec_keeps_mode: bool,
+    /// libopus `prev_framesize`: the samples of the last coded frame, 0
+    /// before the first.
+    prev_framesize: usize,
     /// libopus `silk_mode.reducedDependency`
     /// (`OPUS_SET_PREDICTION_DISABLED`).
     prediction_disabled: bool,
@@ -1346,6 +1352,8 @@ impl OpusEncoder {
             vbr_constraint: true,
             lsb_depth: 24,
             variable_duration: FrameDuration::Argument,
+            fec_keeps_mode: false,
+            prev_framesize: 0,
             prediction_disabled: false,
             use_cbr: false,
             use_inband_fec: false,
@@ -1466,6 +1474,7 @@ impl OpusEncoder {
         self.auto_bandwidth = Bandwidth::Fullband;
         self.silk_bw_switch = false;
         self.first = true;
+        self.prev_framesize = 0;
         self.width_mem = StereoWidthState::default();
         self.detected_bandwidth = None;
         self.nb_no_activity_ms_q1 = 0;
@@ -2033,7 +2042,10 @@ impl OpusEncoder {
             };
             // With in-band FEC and enough expected loss, SILK, whose LBRR
             // frames recover losses: above (128 - voice_est) / 16 percent.
-            if self.use_inband_fec && self.packet_loss_perc > (128 - voice_est) >> 4 {
+            if self.use_inband_fec
+                && self.packet_loss_perc > (128 - voice_est) >> 4
+                && (!self.fec_keeps_mode || voice_est > 25)
+            {
                 mode = OpusMode::SilkOnly;
             }
             // libopus: voice with DTX is coded in SILK, whose voice activity
@@ -3388,6 +3400,7 @@ impl OpusEncoder {
         self.rc.done();
 
         self.first = false;
+        self.prev_framesize = frame_size;
         // libopus's own DTX (decide_dtx_mode), where its analysis ran or the
         // frame is digital silence: after 200 ms without activity the frame
         // is sent as its ToC alone, with one coded frame every 400 ms.

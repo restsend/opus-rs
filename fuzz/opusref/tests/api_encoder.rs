@@ -310,3 +310,79 @@ fn expert_frame_duration_matches_libopus() {
         }
     }
 }
+
+/// The validating setters and the queries: libopus's results for valid
+/// and invalid values, and the bitrate query after frames of every
+/// duration with AUTO, MAX and fixed rates.
+#[test]
+fn setters_and_queries_match_libopus() {
+    for (fs, ch, app, _, _) in CONFIGS {
+        let mut p = Pair::new(fs, ch, app);
+        assert_eq!(p.rs.sample_rate(), p.get(GET_SAMPLE_RATE));
+        assert_eq!(p.rs.application() as i32, p.get(GET_APPLICATION));
+        for v in [i32::MIN, -1000, -2, -1, 0, 1, 499, 500, 501, 64000, 750_000, 1_500_001, i32::MAX] {
+            assert_eq!(code(p.rs.set_bitrate(v)), p.ctl(SET_BITRATE, v), "bitrate {v}");
+            assert_eq!(p.rs.bitrate(), p.get(GET_BITRATE), "bitrate {v}");
+        }
+        for v in [-1, 0, 5, 10, 11] {
+            assert_eq!(code(p.rs.set_complexity(v)), p.ctl(SET_COMPLEXITY, v));
+            let v = p.rs.complexity;
+            assert_eq!(v, p.get(GET_COMPLEXITY));
+        }
+        for v in [-1, 0, 37, 100, 101] {
+            assert_eq!(code(p.rs.set_packet_loss_perc(v)), p.ctl(SET_PACKET_LOSS_PERC, v));
+            let v = p.rs.packet_loss_perc;
+            assert_eq!(v, p.get(GET_PACKET_LOSS_PERC));
+        }
+        for v in [-1, 0, 1, 2, 3] {
+            assert_eq!(code(p.rs.set_inband_fec(v)), p.ctl(SET_INBAND_FEC, v));
+            assert_eq!(p.rs.inband_fec(), p.get(GET_INBAND_FEC));
+        }
+        for v in [false, true] {
+            p.rs.set_vbr(v);
+            p.ctl(SET_VBR, v as i32);
+            assert_eq!(p.rs.vbr() as i32, p.get(GET_VBR));
+        }
+        // The application changes before the first frame only.
+        for a in [Application::Voip, Application::Audio, Application::RestrictedLowDelay, app] {
+            assert_eq!(code(p.rs.set_application(a)), p.ctl(SET_APPLICATION, a as i32));
+        }
+        assert_eq!(p.rs.lookahead() as i32, p.get(GET_LOOKAHEAD));
+        for (k, rate) in [-1000, -1, 32000].into_iter().enumerate() {
+            p.rs.set_bitrate(rate).unwrap();
+            p.ctl(SET_BITRATE, rate);
+            for units in [1, 2, 4, 8, 16, 24, 48] {
+                let frame = fs as usize / 400 * units;
+                p.encode(frame, k * 10 + units, &format!("{fs} {ch} {app:?} rate {rate} {units}"));
+                assert_eq!(p.rs.bitrate(), p.get(GET_BITRATE), "{fs} {app:?} rate {rate} frame {frame}");
+            }
+        }
+        for a in [Application::Voip, Application::Audio, Application::RestrictedLowDelay] {
+            assert_eq!(code(p.rs.set_application(a)), p.ctl(SET_APPLICATION, a as i32));
+        }
+        p.rs.reset();
+        p.ctl(RESET_STATE, 0);
+        assert_eq!(p.rs.bitrate(), p.get(GET_BITRATE));
+    }
+}
+
+/// `OPUS_SET_INBAND_FEC(2)`: FEC without the switch to SILK for music.
+#[test]
+fn inband_fec_2_matches_libopus() {
+    for (fs, ch, app, frame, _) in CONFIGS {
+        for fec in [1, 2] {
+            let mut p = Pair::new(fs, ch, app);
+            p.rs.set_bitrate(48000).unwrap();
+            p.ctl(SET_BITRATE, 48000);
+            p.rs.set_signal(opus_rs::Signal::Music);
+            p.ctl(SET_SIGNAL, 3002);
+            p.rs.set_packet_loss_perc(30).unwrap();
+            p.ctl(SET_PACKET_LOSS_PERC, 30);
+            p.rs.set_inband_fec(fec).unwrap();
+            p.ctl(SET_INBAND_FEC, fec);
+            for f in 0..12 {
+                p.encode(frame, f, &format!("{fs} {ch} {app:?} fec {fec} frame {f}"));
+            }
+        }
+    }
+}
