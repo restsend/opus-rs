@@ -3252,14 +3252,14 @@ impl OpusEncoder {
                     PcmInput::F32(s) => PcmInput::F32(&s[start..end]),
                     PcmInput::I16(s) => PcmInput::I16(&s[start..end]),
                 };
-                self.frame_analysis = Some(if analysed.is_some() {
-                    (
-                        self.analysis.get_info(enc_frame),
-                        is_digital_silence(sub_input, enc_frame * ch),
-                    )
+                // Each frame's analysis, where it ran, and digital silence,
+                // which libopus detects for every frame (opus_encoder.c:1802).
+                let info = if analysed.is_some() {
+                    self.analysis.get_info(enc_frame)
                 } else {
-                    (AnalysisInfo::zeroed(), false)
-                });
+                    AnalysisInfo::zeroed()
+                };
+                self.frame_analysis = Some((info, is_digital_silence(sub_input, enc_frame * ch)));
                 let to_celt = transition.to_celt && i == nb - 1;
                 self.frame_transition = Some(FrameTransition {
                     redundancy: transition.redundancy
