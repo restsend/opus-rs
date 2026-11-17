@@ -1300,7 +1300,8 @@ pub fn quant_band(
         }
     }
 
-    let cm = if ctx.encode {
+    // quant_partition_encode skips the resynthesis.
+    let cm = if ctx.encode && !ctx.resynth {
         quant_partition_encode(ctx, x, n, b, b_blocks, lowband_buf, lm, gain, fill)
     } else {
         quant_partition(ctx, x, n, b, b_blocks, lowband_buf, lm, gain, fill)
