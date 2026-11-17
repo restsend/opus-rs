@@ -241,3 +241,15 @@ fn low_rate_stereo_codes_one_silk_channel() {
         p.check(10, frame, 1500, toc);
     }
 }
+
+/// OPUS_SET_MAX_BANDWIDTH rejects OPUS_AUTO and keeps the previous maximum.
+#[test]
+fn max_bandwidth_ignores_auto() {
+    let mut p = Pair::new(48000, 1, Application::Audio);
+    p.rs.set_max_bandwidth(opus_rs::Bandwidth::Wideband);
+    p.ctl(c::SET_MAX_BANDWIDTH, 1103);
+    p.rs.set_max_bandwidth(opus_rs::Bandwidth::Auto);
+    assert_ne!(unsafe { c::opus_encoder_ctl(p.re, c::SET_MAX_BANDWIDTH, -1000) }, 0);
+    p.bitrate(64000);
+    p.check(4, 960, 1500, toc);
+}

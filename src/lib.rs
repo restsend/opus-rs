@@ -1523,14 +1523,12 @@ impl OpusEncoder {
     }
 
     /// The highest bandwidth `Auto` may choose, as libopus
-    /// `OPUS_SET_MAX_BANDWIDTH` (fullband by default; `Auto` means
-    /// fullband).
+    /// `OPUS_SET_MAX_BANDWIDTH` (fullband by default). libopus rejects
+    /// `Auto` and keeps the previous maximum; so does this setter.
     pub fn set_max_bandwidth(&mut self, bandwidth: Bandwidth) {
-        self.max_bandwidth = if bandwidth == Bandwidth::Auto {
-            Bandwidth::Fullband
-        } else {
-            bandwidth
-        };
+        if bandwidth != Bandwidth::Auto {
+            self.max_bandwidth = bandwidth;
+        }
     }
 
     /// The maximum bandwidth (libopus `OPUS_GET_MAX_BANDWIDTH`).
