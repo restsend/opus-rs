@@ -217,3 +217,6 @@ unsafe extern "C" {
 /// The neural network functions of the reference (feature `dnn`).
 #[cfg(feature = "dnn")]
 pub mod dnn;
+/// Deep PLC (FARGAN, LPCNet PLC) of the reference.
+#[cfg(feature = "dnn")]
+pub mod dnn_plc;

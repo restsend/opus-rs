@@ -6,6 +6,7 @@
 //!   model and the embedded 1.6.1 weights;
 //! - `fft`, `freq`, `burg`, `common`, `lpcnet_tables`, `pitchdnn`,
 //!   `lpcnet_enc`: the LPCNet feature analysis;
+//! - `fargan`, `lpcnet_plc`: deep packet loss concealment;
 //!
 //! The arithmetic follows libopus's generic C build (no SIMD,
 //! `-ffp-contract=off`) operation for operation, including its mix of
@@ -18,9 +19,11 @@
 pub mod builtin;
 pub mod burg;
 pub mod common;
+pub mod fargan;
 pub mod fft;
 pub mod freq;
 pub mod lpcnet_enc;
+pub mod lpcnet_plc;
 #[rustfmt::skip]
 pub mod lpcnet_tables;
 #[rustfmt::skip]

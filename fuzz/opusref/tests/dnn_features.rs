@@ -5,26 +5,7 @@
 use opus_rs::dnn::{builtin, burg, fft::Cpx, freq, lpcnet_enc, pitchdnn};
 use opusref::dnn::{self as c, Rng, same_bits};
 
-/// A voiced-speech-like test signal at 16 kHz in the int16 range: a few
-/// harmonics of a gliding pitch with an envelope, plus noise and silences.
-pub fn speechlike(n: usize, seed: u64) -> Vec<f32> {
-    let mut r = Rng(seed);
-    let mut phase = 0.0f64;
-    (0..n)
-        .map(|i| {
-            let t = i as f64 / 16000.0;
-            let f0 = 110.0 + 70.0 * (t * 1.3).sin() + 30.0 * (t * 5.1).sin();
-            phase += 2.0 * std::f64::consts::PI * f0 / 16000.0;
-            let env = ((t * 2.7).sin() * 0.5 + 0.5).powi(2);
-            let gate = if (i / 4000) % 5 == 4 { 0.0 } else { 1.0 };
-            let mut v = 0.0;
-            for h in 1..12 {
-                v += (phase * h as f64).sin() / h as f64;
-            }
-            (gate * env * 9000.0 * v) as f32 + 300.0 * r.uni()
-        })
-        .collect()
-}
+pub use opusref::dnn::speechlike;
 
 #[test]
 fn forward_transform_matches() {
