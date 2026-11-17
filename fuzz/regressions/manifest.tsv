@@ -38,3 +38,4 @@ d3	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] valid decode ->hybrid	N
 d4	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] valid decode hybrid->celt	mode-transition bridge synthesised apart from libopus PLC
 d5	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode silk->celt first-2.5ms	no transition fade into a 2.5 ms frame
 d6	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode_fec hybrid->silk	no CELT fade-out in decode_fec after Hybrid
+d7	test:hybrid_lost_celt_layer	-	FAILED	Hybrid CELT layer of at most one byte left silent

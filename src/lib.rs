@@ -3949,7 +3949,10 @@ impl OpusDecoder {
 
                     let total_bits = (len * 8) as i32;
                     if len <= 1 {
-                        self.w_celt_out[..silk_out_len].fill(0.0);
+                        // A CELT layer of at most one byte is concealed, with
+                        // this frame's end band (celt_decode_with_ec 1277-1282).
+                        self.celt_dec.set_end_band(celt_end_band);
+                        self.conceal_celt(sub_frame_size, 17)?;
                     } else {
                         let (celt_dec, celt_planar) = (
                             state_mut(&mut self.celt_dec),
