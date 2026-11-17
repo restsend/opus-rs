@@ -3790,6 +3790,8 @@ pub struct OpusDecoder {
     dec_control: silk::dec_api::SilkDecControl,
     /// The output gain in Q8 dB (libopus `decode_gain`, `OPUS_SET_GAIN`).
     decode_gain: i32,
+    /// libopus `ignore_extensions` (`OPUS_SET_IGNORE_EXTENSIONS`).
+    ignore_extensions: bool,
 
     // libopus clears the fields below on a reset.
     /// Channels of the last packet (libopus `stream_channels`).
@@ -3864,6 +3866,7 @@ impl OpusDecoder {
         channels: 0,
         complexity: 0,
         decode_gain: 0,
+        ignore_extensions: false,
         dec_control: silk::dec_api::SilkDecControl {
             n_channels_api: 0,
             n_channels_internal: 0,
@@ -3901,6 +3904,7 @@ impl OpusDecoder {
             channels: 0,
             complexity: 0,
             decode_gain: 0,
+            ignore_extensions: false,
             dec_control: silk::dec_api::SilkDecControl::default(),
             stream_channels: 0,
             bandwidth: Bandwidth::Auto,
@@ -3984,6 +3988,49 @@ impl OpusDecoder {
     /// `OPUS_GET_PHASE_INVERSION_DISABLED`).
     pub fn phase_inversion_disabled(&self) -> bool {
         self.celt_dec.disable_inv
+    }
+
+    /// The sampling rate the decoder was created with (libopus
+    /// `OPUS_GET_SAMPLE_RATE`).
+    pub fn sample_rate(&self) -> i32 {
+        self.sampling_rate
+    }
+
+    /// The bandwidth of the last packet (libopus `OPUS_GET_BANDWIDTH`),
+    /// `None` before the first packet and after a reset.
+    pub fn bandwidth(&self) -> Option<Bandwidth> {
+        (self.bandwidth != Bandwidth::Auto).then_some(self.bandwidth)
+    }
+
+    /// The pitch period of the last decoded frame in samples at 48 kHz, 0
+    /// when it had none (libopus `OPUS_GET_PITCH`): CELT's postfilter
+    /// period after a CELT frame, else SILK's pitch lag of its last voiced
+    /// frame.
+    pub fn pitch(&self) -> i32 {
+        if self.prev_mode == Some(OpusMode::CeltOnly) {
+            self.celt_dec.postfilter_pitch() as i32
+        } else {
+            self.silk_dec.prev_pitch_lag
+        }
+    }
+
+    /// The duration of the last packet decoded or concealed, in samples
+    /// per channel (libopus `OPUS_GET_LAST_PACKET_DURATION`).
+    pub fn last_packet_duration(&self) -> usize {
+        self.last_packet_duration
+    }
+
+    /// Ignores the extensions in packets' padding (libopus
+    /// `OPUS_SET_IGNORE_EXTENSIONS`). The decoder reads no extension in
+    /// this build, so the setting changes no output.
+    pub fn set_ignore_extensions(&mut self, ignore: bool) {
+        self.ignore_extensions = ignore;
+    }
+
+    /// Whether extensions are ignored (libopus
+    /// `OPUS_GET_IGNORE_EXTENSIONS`).
+    pub fn ignore_extensions(&self) -> bool {
+        self.ignore_extensions
     }
 
     /// The range decoder's final state after the last frame decoded, like

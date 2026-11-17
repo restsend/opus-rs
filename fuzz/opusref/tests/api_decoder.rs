@@ -118,6 +118,21 @@ impl Pair {
         unsafe { opus_decoder_ctl(self.c, GET_FINAL_RANGE, &mut r as *mut u32) };
         assert_eq!(self.rs.final_range(), r, "{what}: final range");
         assert_close(&a[..n * self.ch], &b[..n * self.ch], what);
+        self.check_getters(what);
+    }
+
+    /// The decoder's queries agree with libopus's.
+    fn check_getters(&mut self, what: &str) {
+        let rs = &self.rs;
+        let bw = rs.bandwidth().map_or(0, |b| b as i32);
+        let got = (rs.sample_rate(), bw, rs.pitch(), rs.last_packet_duration() as i32);
+        let want = (
+            self.get(GET_SAMPLE_RATE),
+            self.get(GET_BANDWIDTH),
+            self.get(GET_PITCH),
+            self.get(GET_LAST_PACKET_DURATION),
+        );
+        assert_eq!(got, want, "{what}: sample rate, bandwidth, pitch, last packet duration");
     }
 }
 
@@ -248,4 +263,17 @@ fn phase_inversion_matches_libopus() {
             }
         }
     }
+}
+
+/// `OPUS_SET_IGNORE_EXTENSIONS`, and the queries before the first packet.
+#[test]
+fn ignore_extensions_and_initial_queries() {
+    let mut p = Pair::new(24000, 2);
+    p.check_getters("new decoder");
+    assert_eq!(p.rs.ignore_extensions() as i32, p.get(GET_IGNORE_EXTENSIONS));
+    p.rs.set_ignore_extensions(true);
+    assert_eq!(p.ctl(SET_IGNORE_EXTENSIONS, 1), 0);
+    assert_eq!(p.ctl(SET_IGNORE_EXTENSIONS, 2), -1);
+    assert_eq!(p.rs.ignore_extensions() as i32, p.get(GET_IGNORE_EXTENSIONS));
+    p.decode(None, 480, false, "loss before any packet");
 }

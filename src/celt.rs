@@ -3192,6 +3192,10 @@ pub struct CeltDecoder {
     /// No phase inversion in intensity stereo (libopus `disable_inv`,
     /// `OPUS_SET_PHASE_INVERSION_DISABLED`); set for one output channel.
     pub(crate) disable_inv: bool,
+    /// libopus `postfilter_period` (`OPUS_GET_PITCH`): the postfilter
+    /// period of the last decoded frame, 0 without the postfilter, at least
+    /// `COMBFILTER_MINPERIOD` after a noise concealment.
+    pub(crate) postfilter_pitch: usize,
     /// The deep PLC fields of libopus's decoder.
     #[cfg(feature = "deep-plc")]
     pub(crate) deep_plc: plc::deep_plc::DeepPlcMem,
@@ -3334,6 +3338,7 @@ impl CeltDecoder {
         start_band: 0,
         end_band: 0,
         disable_inv: false,
+        postfilter_pitch: 0,
         #[cfg(feature = "deep-plc")]
         deep_plc: plc::deep_plc::DeepPlcMem::EMPTY,
         w_tf_res: FixedVec::new(),
@@ -3394,6 +3399,7 @@ impl CeltDecoder {
         self.start_band = 0;
         self.end_band = mode.eff_ebands;
         self.disable_inv = channels == 1;
+        self.postfilter_pitch = 0;
         self.w_tf_res.fill_to(nb_ebands, 0);
         self.w_cap.fill_to(nb_ebands, 0);
         self.w_offsets.fill_to(nb_ebands, 0);
@@ -3446,8 +3452,15 @@ impl CeltDecoder {
         self.plc_decay = [0.0; CELT_MAX_CHANNELS];
         self.prefilter_and_fold = false;
         self.plc_lpc = [0.0; plc::LPC_ORDER * CELT_MAX_CHANNELS];
+        self.postfilter_pitch = 0;
         #[cfg(feature = "deep-plc")]
         self.deep_plc.reset();
+    }
+
+    /// The postfilter period of the last decoded frame, 0 without the
+    /// postfilter (libopus `OPUS_GET_PITCH`).
+    pub fn postfilter_pitch(&self) -> usize {
+        self.postfilter_pitch
     }
 
     pub fn decode_with_start_band(
@@ -4055,6 +4068,7 @@ impl CeltDecoder {
         self.prefilter_gain_old = self.prefilter_gain;
         self.prefilter_tapset_old = self.prefilter_tapset;
 
+        self.postfilter_pitch = if pf_on { pitch_index } else { 0 };
         if pf_on {
             self.prefilter_period = pitch_index;
             self.prefilter_gain = gain1;

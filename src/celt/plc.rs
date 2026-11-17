@@ -186,6 +186,7 @@ impl CeltDecoder {
         // Run the postfilter with the last parameters.
         self.prefilter_period = self.prefilter_period.max(COMBFILTER_MINPERIOD);
         self.prefilter_period_old = self.prefilter_period_old.max(COMBFILTER_MINPERIOD);
+        self.postfilter_pitch = self.postfilter_pitch.max(COMBFILTER_MINPERIOD);
         let short = mode.short_mdct_size;
         for c in 0..cc {
             let mem = &mut self.decode_mem[c * mem_len..(c + 1) * mem_len];

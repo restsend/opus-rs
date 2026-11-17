@@ -5,6 +5,8 @@
 //! Oracles, after every call:
 //! - `result`: same success/error and sample count as libopus.
 //! - `range`: same final range as libopus (`OPUS_GET_FINAL_RANGE`).
+//! - `get`: same sample rate, bandwidth, pitch and last packet duration.
+//! - `ctl`: a control call has libopus's result and leaves the same values.
 //! - `pcm`: opus-rs with SIMD off matches libopus within `OFZ_DEC_TOL`
 //!   (relative to max(1, peak); default 4e-6: CELT float rounding
 //!   differences stay below it, one SILK LSB, 3e-5, is above it), and
@@ -116,6 +118,8 @@ enum Setting {
     Gain(i32),
     /// `set_phase_inversion_disabled` / `OPUS_SET_PHASE_INVERSION_DISABLED`.
     PhaseInversionDisabled(bool),
+    /// `set_ignore_extensions` / `OPUS_SET_IGNORE_EXTENSIONS`.
+    IgnoreExtensions(bool),
 }
 
 /// The first five variants keep the derived encoding, which the saved
@@ -321,14 +325,28 @@ fn run(inp: Input) -> Result<(), Finding> {
                         scalar.set_phase_inversion_disabled(d);
                         (Ok(()), refd.ctl(c::SET_PHASE_INVERSION_DISABLED, d as i32))
                     }
+                    Setting::IgnoreExtensions(i) => {
+                        simd.set_ignore_extensions(i);
+                        scalar.set_ignore_extensions(i);
+                        (Ok(()), refd.ctl(c::SET_IGNORE_EXTENSIONS, i as i32))
+                    }
                 };
                 let code = r.map_or_else(|e| opus_rs::error::code(e).unwrap_or(1), |()| 0);
                 if code != c {
                     fail!("ctl", format!("{s:?}"), "op {k}: opus-rs {r:?}, libopus {c}");
                 }
-                let (g, d) = (refd.get(c::GET_GAIN), refd.get(c::GET_PHASE_INVERSION_DISABLED));
-                if scalar.gain() != g || scalar.phase_inversion_disabled() as i32 != d {
-                    fail!("ctl", "get", "op {k}: opus-rs gain {} phase inversion disabled {}, libopus {g} {d}", scalar.gain(), scalar.phase_inversion_disabled());
+                let want = (
+                    refd.get(c::GET_GAIN),
+                    refd.get(c::GET_PHASE_INVERSION_DISABLED),
+                    refd.get(c::GET_IGNORE_EXTENSIONS),
+                );
+                let got = (
+                    scalar.gain(),
+                    scalar.phase_inversion_disabled() as i32,
+                    scalar.ignore_extensions() as i32,
+                );
+                if got != want {
+                    fail!("ctl", "get", "op {k}: opus-rs {got:?}, libopus {want:?}");
                 }
                 continue;
             }
@@ -441,6 +459,26 @@ fn run(inp: Input) -> Result<(), Finding> {
         }
         if simd.final_range() != rs {
             fail!("simd", sig("range"), "op {k} {kind}: SIMD range differs");
+        }
+        // `get`: the queries after the call.
+        let want = (
+            refd.get(c::GET_SAMPLE_RATE),
+            refd.get(c::GET_BANDWIDTH),
+            refd.get(c::GET_PITCH),
+            refd.get(c::GET_LAST_PACKET_DURATION),
+        );
+        let got = (
+            scalar.sample_rate(),
+            scalar.bandwidth().map_or(0, |b| b as i32),
+            scalar.pitch(),
+            scalar.last_packet_duration() as i32,
+        );
+        if got != want {
+            fail!(
+                "get",
+                sig(""),
+                "op {k} {kind}: opus-rs (rate, bandwidth, pitch, duration) {got:?}, libopus {want:?}"
+            );
         }
         if std::env::var("OFZ_DEBUG").is_ok() {
             let pk = |v: &[f32]| v.iter().fold(0f32, |a, x| a.max(x.abs()));

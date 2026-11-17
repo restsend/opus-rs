@@ -61,6 +61,10 @@ pub struct SilkDecoder {
     /// set by [`Self::init`].
     api_sample_rate: i32,
 
+    /// The pitch lag of the last frame at 48 kHz, 0 unless it was voiced
+    /// (libopus `DecControl.prevPitchLag`, `OPUS_GET_PITCH`).
+    pub prev_pitch_lag: i32,
+
     /// Per-channel temp buffers for M/S → L/R conversion (frame_length + 2).
     w_silk_buf: [[i16; MAX_FRAME_LENGTH + 2]; 2],
 
@@ -107,6 +111,7 @@ impl SilkDecoder {
         prev_decode_only_middle: 0,
         s_stereo: StereoDecState::DEFAULT,
         api_sample_rate: 0,
+        prev_pitch_lag: 0,
         w_silk_buf: [[0; MAX_FRAME_LENGTH + 2]; 2],
         #[cfg(feature = "deep-plc")]
         lpcnet: None,
@@ -127,6 +132,7 @@ impl SilkDecoder {
         self.prev_decode_only_middle = 0;
         self.n_channels_api = 0;
         self.n_channels_internal = 0;
+        self.prev_pitch_lag = 0;
         // libopus `lpcnet_plc_init` in opus_decoder_init.
         #[cfg(feature = "deep-plc")]
         {
@@ -526,6 +532,13 @@ impl SilkDecoder {
     ) -> (i32, usize) {
         let (mut ret, n_dec, stereo_to_mono) =
             self.decode_core(ctrl, lost_flag, new_packet, range_dec);
+        // The pitch lag measured at 48 kHz (dec_API.c:470-476).
+        let st = &self.channel_state[0];
+        let mult = [6, 4, 3].get(((st.fs_khz - 8) >> 2) as usize);
+        self.prev_pitch_lag = match mult {
+            Some(m) if st.prev_signal_type == TYPE_VOICED => st.lag_prev * m,
+            _ => 0,
+        };
         if n_dec <= 0 {
             return (if ret < 0 { ret } else { -1 }, 0);
         }
