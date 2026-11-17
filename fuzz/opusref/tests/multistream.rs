@@ -118,3 +118,13 @@ fn an_empty_last_stream_is_invalid() {
     let p = two_streams(&celt(31 << 3, 60, 3), &[0]);
     rejected_without_state_change(&p[..p.len() - 1]);
 }
+
+#[test]
+fn an_empty_packet_conceals_every_stream() {
+    const FB20: u8 = 31 << 3;
+    let mut d = Pair::new(2, 0, &[1, 0]);
+    assert_same(&mut d, &two_streams(&celt(FB20, 60, 1), &celt(FB20, 60, 2)), 960);
+    assert_same(&mut d, &[], 960);
+    assert_same(&mut d, &[], 480);
+    assert_same(&mut d, &two_streams(&celt(FB20, 60, 5), &celt(FB20, 60, 6)), 960);
+}

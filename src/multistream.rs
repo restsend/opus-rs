@@ -271,8 +271,9 @@ impl MultistreamDecoder {
             // RFC 6716 Appendix B: only the last sub-packet is unframed —
             // decode it directly. Every other sub-packet must first be
             // reconstructed into a normal packet (split_self_delimited
-            // strips the injected Appendix B length field(s)).
-            let n = if i + 1 == num_streams {
+            // strips the injected Appendix B length field(s)). An empty
+            // packet is a loss: every stream conceals frame_size samples.
+            let n = if packet.is_empty() || i + 1 == num_streams {
                 decoder.decode(rest, frame_size, &mut self.stream_scratch)?
             } else {
                 let (pkt, consumed) = split_self_delimited(rest, &mut self.packet_scratch)?;

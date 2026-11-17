@@ -164,10 +164,6 @@ fn run(inp: Input) -> Result<(), Finding> {
         let r_ref = unsafe {
             c::opus_multistream_decode_float(rd.0, ptr, len, o_ref.as_mut_ptr(), size as i32, 0)
         };
-        if pkt.is_empty() && suppressed("ms-empty") {
-            // Known: opus-rs rejects an empty packet libopus conceals.
-            return Ok(());
-        }
         let r_rs = rs.decode(&pkt, size, &mut o_rs);
         let n = match (r_rs, r_ref) {
             (Ok(n), r) if r >= 0 && n == r as usize => n,
