@@ -68,13 +68,19 @@ pub fn pitch_xcorr(
 }
 
 /// `out[i]` = the inner product of `x` and `y[i..i + x.len()]`
-/// (`celt_pitch_xcorr_c` at `arch`). The kernels give each lag a vector
-/// lane, up to 64 lags at a time; with AVX2 the same code runs on 8-lane
-/// vectors. At the x86 levels the lags in whole groups of four take
-/// [`xcorr_kernel`]'s SSE arithmetic and the last `len % 4` libopus's
+/// (`celt_pitch_xcorr` at `arch`). At the Avx2 level it is
+/// [`xcorr_lags_avx2`]. Otherwise the kernels give each lag a vector lane,
+/// up to 64 lags at a time (with AVX2 on 8-lane vectors); at the Sse2 and
+/// Sse4_1 levels the lags in whole groups of four take [`xcorr_kernel`]'s
+/// SSE arithmetic and the last `max_pitch % 4` libopus's
 /// `celt_inner_prod_sse`.
 fn xcorr_lags(x: &[f32], y: &[f32], out: &mut [f32], arch: crate::Arch) {
     let sse = arch != crate::Arch::Scalar;
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if let Some(avx2) = arch.avx2() {
+        use fearless_simd::Simd;
+        return avx2.vectorize(|| xcorr_lags_avx2(avx2, x, y, out));
+    }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     if let Some(avx2) = crate::arch::cpu_avx2() {
         use fearless_simd::Simd;
@@ -86,6 +92,49 @@ fn xcorr_lags(x: &[f32], y: &[f32], out: &mut [f32], arch: crate::Arch) {
     match sse {
         true => xcorr_lags_blocks::<32, true>(x, y, out, arch),
         false => xcorr_lags_blocks::<32, false>(x, y, out, arch),
+    }
+}
+
+/// libopus `celt_pitch_xcorr_avx2`: eight lags at a time, each from eight
+/// fused multiply-add sums of every eighth product (`xcorr_kernel_avx`,
+/// the last partial block with zeros in the missing lanes), added as
+/// ((s0 + s4) + (s1 + s5)) + ((s2 + s6) + (s3 + s7)); the last
+/// `max_pitch % 8` lags are `celt_inner_prod_sse`.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[inline(always)]
+fn xcorr_lags_avx2(simd: fearless_simd::Avx2, x: &[f32], y: &[f32], out: &mut [f32]) {
+    use fearless_simd::{SimdBase, SimdFloat, f32x8};
+    let len = x.len();
+    let groups = out.len() & !7;
+    for g in (0..groups).step_by(8) {
+        let y = &y[g..];
+        let mut acc = [f32x8::splat(simd, 0.0); 8];
+        let mut i = 0;
+        while i + 8 <= len {
+            let x0 = f32x8::from_slice(simd, &x[i..i + 8]);
+            for (k, acc) in acc.iter_mut().enumerate() {
+                *acc = x0.mul_add(f32x8::from_slice(simd, &y[i + k..i + k + 8]), *acc);
+            }
+            i += 8;
+        }
+        if i != len {
+            let r = len - i;
+            let mut xb = [0.0f32; 8];
+            xb[..r].copy_from_slice(&x[i..]);
+            let x0 = f32x8::from_slice(simd, &xb);
+            for (k, acc) in acc.iter_mut().enumerate() {
+                let mut yb = [0.0f32; 8];
+                yb[..r].copy_from_slice(&y[i + k..i + k + r]);
+                *acc = x0.mul_add(f32x8::from_slice(simd, &yb), *acc);
+            }
+        }
+        for (k, acc) in acc.iter().enumerate() {
+            let c = acc.to_array();
+            out[g + k] = ((c[0] + c[4]) + (c[1] + c[5])) + ((c[2] + c[6]) + (c[3] + c[7]));
+        }
+    }
+    for (k, o) in out.iter_mut().enumerate().skip(groups) {
+        *o = inner_prod(x, &y[k..], len, crate::Arch::Avx2);
     }
 }
 

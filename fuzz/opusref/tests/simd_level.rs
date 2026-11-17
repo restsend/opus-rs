@@ -139,9 +139,6 @@ fn bits(v: &[f32]) -> Vec<u32> {
 fn pitch_correlations() {
     let mut seed = 3;
     for (arch, c) in levels() {
-        if arch == Arch::Avx2 {
-            continue;
-        }
         for k in 0..300 {
             let len = 1 + k % 97;
             let max_pitch = 1 + (k * 7) % 77;
