@@ -2662,6 +2662,10 @@ impl OpusEncoder {
                 hb_gain = hybrid_hb_gain(total_bitrate - silk_bitrate);
             }
 
+            // SILK collapses the stereo image while the switch to mono waits
+            // (silk_mode.toMono, enc_API.c:446-450).
+            state_mut(&mut self.silk_enc).to_mono = self.silk_to_mono;
+
             // C opus_encoder.c:1806-1826: prefill the fresh SILK encoder with
             // the tail of the delay buffer, zeroed before a 2.5 ms fade-in,
             // resampled through the fresh encoder resampler so its delay

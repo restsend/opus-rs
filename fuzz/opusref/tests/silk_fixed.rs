@@ -77,14 +77,19 @@ struct Cfg {
     cbr: bool,
     fec: bool,
     dtx: bool,
-    rate: i32,
+    /// Bitrate of each 200 ms part, alternating.
+    rates: [i32; 2],
 }
+
+/// The SILK input hooks and the symbol trace are process-wide: one test at a time.
+static HOOKS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Encodes the signal with both encoders; the first difference, if any.
 fn run(c: Cfg, pcm: &[i16]) -> Option<(usize, &'static str)> {
+    let _hooks = HOOKS.lock().unwrap_or_else(|e| e.into_inner());
     let n = c.fs as usize * c.ms / 1000;
     let mut rs = OpusEncoder::new(c.fs, c.ch, Application::Voip).unwrap();
-    rs.bitrate_bps = c.rate;
+    rs.bitrate_bps = c.rates[0];
     rs.complexity = c.cx;
     rs.use_cbr = c.cbr;
     rs.use_inband_fec = c.fec;
@@ -95,7 +100,7 @@ fn run(c: Cfg, pcm: &[i16]) -> Option<(usize, &'static str)> {
     let st = unsafe { opus_encoder_create(c.fs, c.ch as i32, 2048, &mut err) };
     assert_eq!(err, 0);
     unsafe {
-        opus_encoder_ctl(st, SET_BITRATE, c.rate);
+        opus_encoder_ctl(st, SET_BITRATE, c.rates[0]);
         opus_encoder_ctl(st, SET_COMPLEXITY, c.cx);
         opus_encoder_ctl(st, SET_VBR, !c.cbr as i32);
         opus_encoder_ctl(st, SET_INBAND_FEC, c.fec as i32);
@@ -124,8 +129,13 @@ fn run(c: Cfg, pcm: &[i16]) -> Option<(usize, &'static str)> {
     let mut res = None;
     for (f, frame) in pcm.chunks_exact(n * c.ch).enumerate() {
         let bw = BW[c.bws[f * c.ms / 200 % c.bws.len()]];
+        let rate = c.rates[f * c.ms / 200 % 2];
         rs.set_bandwidth(bw);
-        unsafe { opus_encoder_ctl(st, SET_BANDWIDTH, bw as i32) };
+        rs.bitrate_bps = rate;
+        unsafe {
+            opus_encoder_ctl(st, SET_BANDWIDTH, bw as i32);
+            opus_encoder_ctl(st, SET_BITRATE, rate);
+        }
         let (mut a, mut b) = ([0u8; 1500], [0u8; 1500]);
         let la = rs.encode_i16(frame, n, &mut a).unwrap();
         let lb = unsafe { opus_encode(st, frame.as_ptr(), n as i32, b.as_mut_ptr(), 1500) };
@@ -196,7 +206,7 @@ fn silk_packets_match_fixed_point_libopus() {
                             cbr,
                             fec,
                             dtx,
-                            rate,
+                            rates: [rate; 2],
                         };
                         total += 1;
                         if let Some(d) = run(c, &pcm) {
@@ -221,4 +231,38 @@ fn silk_packets_match_fixed_point_libopus() {
         count("packet")
     );
     assert_eq!(count("packet"), 0);
+}
+
+#[test]
+fn stereo_to_mono_switches_match_fixed_point_libopus() {
+    // Stereo above the stereo threshold, then mono below it, every 200 ms:
+    // SILK delays each switch to mono by two frames with toMono set.
+    let mut fails = Vec::new();
+    for fs in [16000, 48000] {
+        let pcm = signal(fs as usize, 2);
+        for ms in [10, 20, 40, 60] {
+            for cx in [0, 2, 5, 8, 10] {
+                for cbr in [false, true] {
+                    let c = Cfg {
+                        fs,
+                        bws: &[2],
+                        ch: 2,
+                        ms,
+                        cx,
+                        cbr,
+                        fec: false,
+                        dtx: false,
+                        rates: [32000, 10000],
+                    };
+                    if let Some(d) = run(c, &pcm) {
+                        fails.push((c, d));
+                    }
+                }
+            }
+        }
+    }
+    for (c, (f, kind)) in &fails {
+        eprintln!("{kind} frame {f}: {c:?}");
+    }
+    assert!(fails.is_empty(), "{} configurations differ", fails.len());
 }
