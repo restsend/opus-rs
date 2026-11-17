@@ -1835,7 +1835,8 @@ impl CeltEncoder {
             channels,
             upsample,
             end_band: mode.nb_ebands,
-            complexity: 9,
+            // celt_encoder.c:220.
+            complexity: 5,
             syn_mem: FixedVec::from_value(0.0, syn_mem_size),
             enc_decode_mem: FixedVec::from_value(0.0, syn_mem_size),
             old_band_e: FixedVec::from_value(0.0, nb_x_ch),

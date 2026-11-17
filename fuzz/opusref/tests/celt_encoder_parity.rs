@@ -147,3 +147,11 @@ fn input_beyond_65536_is_clipped() {
     let loud = |f: usize, i: usize, _| ((f * 960 + i) as f32 * 0.05).sin() * if f == 1 { 1e5 } else { 1.5 };
     assert_eq!(identical(cfg, 3, loud), [true; 3]);
 }
+
+/// A new CELT encoder runs at complexity 5 (celt_encoder.c:220).
+#[test]
+fn default_complexity_is_5() {
+    let cfg = Cfg { ch: 2, complexity: None, ..Cfg::default() };
+    let clicks = |f: usize, i: usize, c: usize| if i % 300 == 7 * c { 0.9 } else { noise(3, 0.01)(f, i, c) };
+    assert_eq!(identical(cfg, 4, clicks), [true; 4]);
+}
