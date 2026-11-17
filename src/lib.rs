@@ -2593,6 +2593,22 @@ impl OpusEncoder {
                     );
                     side.s_cmn.n_channels = 2;
                 }
+            } else {
+                // libopus controls the coded channels for every packet, so a
+                // new complexity or rate takes effect at once
+                // (control_codec.c:111-118, enc_API.c:262).
+                for enc in [&mut self.silk_enc, &mut self.silk_enc_side]
+                    .into_iter()
+                    .take(coded_channels)
+                {
+                    silk_control_encoder(
+                        state_mut(enc),
+                        silk_fs_khz,
+                        frame_ms,
+                        total_bitrate,
+                        self.complexity,
+                    );
+                }
             }
             // From one coded channel to two, both channels' resamplers
             // start from the mid's (enc_API.c:290-293).

@@ -393,6 +393,36 @@ fn fec_bandwidth_reduction_keeps_speech_decodable() {
 }
 
 #[test]
+fn silk_follows_a_change_of_complexity() {
+    // libopus sets SILK's complexity up for every packet: complexity 9, 3
+    // from 2 s and 6 from 4 s (VoIP, VBR, 20 kb/s). Hashes of every packet
+    // of fixed-point libopus 1.6.1 at the same settings.
+    for (ms, channels, expected) in [(20, 1, 0x38c89d2997089fdf_u64), (10, 2, 0x1c9046b31b92f43a)] {
+        let mono = speech_i16(16000);
+        let frame = 16 * ms;
+        let mut enc = OpusEncoder::new(16000, channels, Application::Voip).unwrap();
+        enc.bitrate_bps = 20000;
+        enc.set_signal(Signal::Voice);
+        enc.set_bandwidth(Bandwidth::Wideband);
+        let mut packet = [0u8; 1500];
+        let hash = (0..mono.len() / frame).fold(FNV_OFFSET, |h, p| {
+            enc.complexity = match p * ms {
+                ..2000 => 9,
+                ..4000 => 3,
+                _ => 6,
+            };
+            let pcm: Vec<i16> = mono[p * frame..(p + 1) * frame]
+                .iter()
+                .flat_map(|&x| std::iter::repeat_n(x, channels))
+                .collect();
+            let n = enc.encode_i16(&pcm, frame, &mut packet).unwrap();
+            packet_hash(h, &packet[..n])
+        });
+        assert_eq!(hash, expected, "{ms} ms {channels} channel(s)");
+    }
+}
+
+#[test]
 fn silk_follows_a_change_of_frame_duration() {
     // 40 ms SILK-only packets, then 40 ms hybrid packets, which are two 20 ms
     // frames: SILK must set its packet up for 20 ms frames again, as libopus
