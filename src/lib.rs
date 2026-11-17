@@ -4194,6 +4194,18 @@ impl OpusDecoder {
             self.range_final = self.celt_dec.rng();
         } else {
             self.w_celt_out[..len].fill(0.0);
+            // After Hybrid, the CELT MDCT fades out its last overlap from a
+            // decoded silence frame onto the first 2.5 ms, in FEC as in normal
+            // decoding (opus_decode_frame 613-627).
+            if self.prev_mode == Some(OpusMode::Hybrid) {
+                let end_band = if bandwidth == Bandwidth::Narrowband { 13 } else { 17 };
+                let f2_5 = self.sampling_rate as usize / 400;
+                let mut fade = [0.0f32; REDUNDANT_MAX];
+                self.decode_redundant(&[0xFF, 0xFF], end_band, f2_5, &mut fade);
+                for (o, f) in self.w_celt_out[..f2_5 * channels].iter_mut().zip(&fade) {
+                    *o = *f;
+                }
+            }
         }
         let tail = &mut output[head * channels..frame_size * channels];
         for (i, d) in tail.iter_mut().enumerate() {
