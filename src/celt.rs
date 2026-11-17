@@ -1510,7 +1510,7 @@ fn tone_lpc(x: &[f32], len: usize, delay: usize, lpc: &mut [f32; 2]) -> bool {
     r02 = rr02;
     r12 = rr12;
     let den = r00 * r11 - r01 * r01;
-    if den < 0.001 * r00 * r11 {
+    if den < 0.001 * (r00 * r11) {
         return true;
     }
     let mut lpc1 = (r02 * r11 - r01 * r12) / den;
@@ -4111,6 +4111,15 @@ impl CeltDecoder {
 mod tests {
     use super::*;
     use crate::{modes, range_coder::RangeCoder};
+
+    /// tone_lpc's singularity test is den < .001f*(r00*r11)
+    /// (celt_encoder.c:1347); this input lies between the two products.
+    #[test]
+    fn tone_lpc_tests_singularity_on_the_product() {
+        let x = [1065354220u32, 1065258483, 1064974314, 1064508070, 1063861141, 1063042093]
+            .map(f32::from_bits);
+        assert!(tone_lpc(&x, 6, 1, &mut [0.0; 2]));
+    }
 
     #[test]
     fn frames_without_a_transient_flag_are_coded_as_not_transient() {
