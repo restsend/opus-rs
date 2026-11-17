@@ -520,29 +520,53 @@ pub fn silk_warped_autocorrelation_fix(
     const QC: i32 = 10;
     const QS: i32 = 13;
 
-    let mut tmp1_qs: i32;
-    let mut tmp2_qs: i32;
     let mut state_qs = [0i32; MAX_SHAPE_LPC_ORDER + 1];
     let mut corr_qc = [0i64; MAX_SHAPE_LPC_ORDER + 1];
 
     debug_assert!((order & 1) == 0);
+    let state_qs = &mut state_qs[..=order];
+    let corr_qc = &mut corr_qc[..=order];
+    let input = &input[..length];
 
-    for &input_n in input.iter().take(length) {
-        tmp1_qs = (input_n as i32) << QS;
-
-        let mut i = 0;
-        while i < order {
-            tmp2_qs = silk_smlaww(state_qs[i], state_qs[i + 1] - tmp1_qs, warping_q16);
+    // K samples per pass: sample m's allpass section i reads sample m - 1's
+    // outputs of sections i - 1 and i, so the K chains run one section apart.
+    const K: usize = 4;
+    let mut blocks = input.chunks_exact(K);
+    for block in &mut blocks {
+        let x: [i32; K] = core::array::from_fn(|m| (block[m] as i32) << QS);
+        let mut t = x;
+        for i in 0..order {
+            let mut next = [0i32; K];
+            next[0] = silk_smlaww(state_qs[i], state_qs[i + 1] - t[0], warping_q16);
+            for m in 1..K {
+                next[m] = silk_smlaww(t[m - 1], next[m - 1] - t[m], warping_q16);
+            }
+            let mut c = 0i64;
+            for m in 0..K {
+                c += silk_rshift64(silk_smull(t[m], x[m]), 2 * QS - QC);
+            }
+            corr_qc[i] += c;
+            state_qs[i] = t[K - 1];
+            t = next;
+        }
+        state_qs[order] = t[K - 1];
+        let mut c = 0i64;
+        for m in 0..K {
+            c += silk_rshift64(silk_smull(t[m], x[m]), 2 * QS - QC);
+        }
+        corr_qc[order] += c;
+    }
+    for &input_n in blocks.remainder() {
+        let x_qs = (input_n as i32) << QS;
+        let mut tmp1_qs = x_qs;
+        for i in 0..order {
+            let tmp2_qs = silk_smlaww(state_qs[i], state_qs[i + 1] - tmp1_qs, warping_q16);
             state_qs[i] = tmp1_qs;
-            corr_qc[i] += silk_rshift64(silk_smull(tmp1_qs, state_qs[0]), 2 * QS - QC);
-
-            tmp1_qs = silk_smlaww(state_qs[i + 1], state_qs[i + 2] - tmp2_qs, warping_q16);
-            state_qs[i + 1] = tmp2_qs;
-            corr_qc[i + 1] += silk_rshift64(silk_smull(tmp2_qs, state_qs[0]), 2 * QS - QC);
-            i += 2;
+            corr_qc[i] += silk_rshift64(silk_smull(tmp1_qs, x_qs), 2 * QS - QC);
+            tmp1_qs = tmp2_qs;
         }
         state_qs[order] = tmp1_qs;
-        corr_qc[order] += silk_rshift64(silk_smull(tmp1_qs, state_qs[0]), 2 * QS - QC);
+        corr_qc[order] += silk_rshift64(silk_smull(tmp1_qs, x_qs), 2 * QS - QC);
     }
 
     let mut lsh = silk_clz64(corr_qc[0]) - 35;
