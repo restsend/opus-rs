@@ -65,9 +65,10 @@ pub const TYPE_VOICED: i32 = 2;
 
 /// The enhancement method (`OSCE_METHOD_*`). libopus's decoder picks
 /// `Lace` at complexity 6 and `Nolace` from complexity 7.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(i32)]
 pub enum OsceMethod {
+    #[default]
     None = 0,
     Lace = 1,
     Nolace = 2,

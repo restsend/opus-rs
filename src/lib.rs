@@ -3599,6 +3599,8 @@ impl OpusDecoder {
             payload_size_ms: 0,
             #[cfg(feature = "deep-plc")]
             enable_deep_plc: false,
+            #[cfg(feature = "osce")]
+            osce_method: crate::dnn::osce::OsceMethod::None,
         },
         stream_channels: 0,
         bandwidth: Bandwidth::Auto,
@@ -3959,6 +3961,15 @@ impl OpusDecoder {
             #[cfg(feature = "deep-plc")]
             {
                 self.dec_control.enable_deep_plc = self.complexity >= 5;
+            }
+            #[cfg(feature = "osce")]
+            {
+                use crate::dnn::osce::OsceMethod;
+                self.dec_control.osce_method = match self.complexity {
+                    7.. => OsceMethod::Nolace,
+                    6 => OsceMethod::Lace,
+                    _ => OsceMethod::None,
+                };
             }
 
             let lost_flag = if data.is_none() {

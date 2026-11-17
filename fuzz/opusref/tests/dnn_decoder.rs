@@ -199,3 +199,30 @@ fn deep_plc_survey() {
         }
     }
 }
+
+/// LACE (complexity 6) and NoLACE (7), with deep PLC, on every setup with
+/// random loss bursts and with two bursts two frames apart (which exercise
+/// decode_core's loss-recovery tap): bit-exact with libopus, and different
+/// from complexity 5 where OSCE applies (20 ms frames of a 16 kHz SILK
+/// layer).
+#[test]
+fn osce_matches_libopus() {
+    for (name, s, _) in SETUPS {
+        let base = encode(s, 6, 7);
+        let mut burst = base.iter().cloned().map(Some).collect::<Vec<_>>();
+        let k = 1000 / s.frame_ms;
+        for i in (k..k + 6).chain(k + 8..k + 12) {
+            burst[i] = None;
+        }
+        let random = with_losses(base, 3, 12, 6, s.frame_ms);
+        let enhanced = s.app == 2048 && s.frame_ms == 20 && s.max_bandwidth != 1101;
+        for packets in [&burst, &random] {
+            for c in [6, 7] {
+                assert_eq!(compare(s, packets, c), (0.0, None), "{name} complexity {c}");
+                if enhanced {
+                    assert!(rs_effect(s, packets, 5, c) > 0.01, "{name} complexity {c}: OSCE did not run");
+                }
+            }
+        }
+    }
+}

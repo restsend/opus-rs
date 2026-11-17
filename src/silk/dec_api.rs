@@ -28,6 +28,10 @@ pub struct SilkDecControl {
     /// Deep PLC conceals 16 kHz losses (decoder complexity 5 and above).
     #[cfg(feature = "deep-plc")]
     pub enable_deep_plc: bool,
+    /// The SILK enhancer (libopus `osce_method`): LACE at decoder
+    /// complexity 6, NoLACE from 7.
+    #[cfg(feature = "osce")]
+    pub osce_method: crate::dnn::osce::OsceMethod,
 }
 
 pub struct SilkDecoder {
@@ -54,6 +58,13 @@ pub struct SilkDecoder {
     /// created by [`Self::init_states`].
     #[cfg(feature = "deep-plc")]
     pub lpcnet: Option<crate::dnn::lpcnet_plc::LpcnetPlcState<'static>>,
+    /// The OSCE models (libopus `silk_decoder.osce_model`).
+    #[cfg(feature = "osce")]
+    pub osce_model: Option<crate::dnn::osce::OsceModel<'static>>,
+    /// The OSCE state of each channel (libopus `channel_state[n].osce`),
+    /// created by [`Self::init_states`].
+    #[cfg(feature = "osce")]
+    pub osce: Option<[crate::dnn::osce::Osce; 2]>,
 }
 
 impl Default for SilkDecoder {
@@ -84,6 +95,10 @@ impl SilkDecoder {
         w_silk_buf: [[0; MAX_FRAME_LENGTH + 2]; 2],
         #[cfg(feature = "deep-plc")]
         lpcnet: None,
+        #[cfg(feature = "osce")]
+        osce_model: None,
+        #[cfg(feature = "osce")]
+        osce: None,
     };
 
     /// libopus `silk_InitDecoder`.
@@ -100,6 +115,13 @@ impl SilkDecoder {
         {
             let models = crate::dnn::lpcnet_plc::PlcModels::builtin().expect("built-in deep PLC models");
             self.lpcnet = Some(crate::dnn::lpcnet_plc::LpcnetPlcState::new(models));
+        }
+        // silk_InitDecoder loads the built-in OSCE models; silk_init_decoder
+        // resets each channel to OSCE_DEFAULT_METHOD.
+        #[cfg(feature = "osce")]
+        {
+            self.osce_model = crate::dnn::osce::OsceModel::builtin().ok();
+            self.osce = Some([crate::dnn::osce::Osce::new(), crate::dnn::osce::Osce::new()]);
         }
     }
 
@@ -216,6 +238,10 @@ impl SilkDecoder {
         // Mono -> stereo transition in the bitstream: init the second channel.
         if ctrl.n_channels_internal > self.n_channels_internal {
             ret += silk_init_decoder(&mut self.channel_state[1]);
+            #[cfg(feature = "osce")]
+            if let Some(states) = self.osce.as_mut() {
+                crate::dnn::osce::osce_reset(&mut states[1], crate::dnn::osce::OSCE_DEFAULT_METHOD);
+            }
         }
 
         let stereo_to_mono = ctrl.n_channels_internal == 1
@@ -396,6 +422,16 @@ impl SilkDecoder {
                 let lpcnet = if n == 0 { self.lpcnet.as_mut() } else { None };
                 #[cfg(not(feature = "deep-plc"))]
                 let lpcnet = None;
+                #[cfg(feature = "osce")]
+                let osce = self.osce.as_mut().map(|states| {
+                    let state = &mut states[n];
+                    if state.method != ctrl.osce_method {
+                        crate::dnn::osce::osce_reset(state, ctrl.osce_method);
+                    }
+                    crate::silk::decode_frame::OsceArgs { model: self.osce_model.as_ref(), state }
+                });
+                #[cfg(not(feature = "osce"))]
+                let osce = None;
                 ret += silk_decode_frame(
                     &mut self.channel_state[n],
                     range_dec,
@@ -404,6 +440,7 @@ impl SilkDecoder {
                     lost_flag,
                     cond_coding,
                     lpcnet,
+                    osce,
                 );
             } else {
                 let len = n_samples_out_dec as usize;
@@ -530,6 +567,13 @@ impl SilkDecoder {
     pub fn reset(&mut self) {
         for state in &mut self.channel_state {
             silk_reset_decoder(state);
+        }
+        // silk_reset_decoder's osce_reset(OSCE_DEFAULT_METHOD).
+        #[cfg(feature = "osce")]
+        if let Some(states) = self.osce.as_mut() {
+            for st in states {
+                crate::dnn::osce::osce_reset(st, crate::dnn::osce::OSCE_DEFAULT_METHOD);
+            }
         }
         self.s_stereo = StereoDecState::DEFAULT;
         self.prev_decode_only_middle = 0;

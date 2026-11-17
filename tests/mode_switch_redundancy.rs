@@ -352,6 +352,11 @@ fn silk_layers(packets: &[Vec<u8>], sr: i32, channels: i32) -> (u64, Vec<(char, 
 }
 
 #[test]
+#[cfg_attr(
+    feature = "osce",
+    ignore = "libopus built with OSCE converts 20 ms 16 kHz SILK frames with a clamp to +-32767, which these \
+              hashes of a build without it do not have"
+)]
 fn silk_layer_follows_fixed_point_libopus_across_switches() {
     // Whole encodes of the fixture with 16-bit input: the SILK layer of
     // every packet equals fixed-point libopus 1.6.1's, through SILK's restart
