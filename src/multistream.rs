@@ -3,7 +3,7 @@
 //! `OpusDecoder`; this module just demuxes and re-routes, mirroring
 //! libopus's `opus_multistream_decoder.c` (a wrapper, not a codec change).
 
-use crate::{parse_frame_size, OpusDecoder};
+use crate::{frame_samples_from_toc, opus_packet_parse, parse_frame_size, OpusDecoder};
 
 /// `channel_mapping[]` sentinel: output silence on this channel.
 const SILENT_CHANNEL: u8 = 255;
@@ -151,6 +151,35 @@ fn push_frame(data: &[u8], cursor: usize, n: usize, out: &mut Vec<u8>) -> Result
     Ok(end)
 }
 
+/// libopus `opus_multistream_packet_validate`: parses every stream of a
+/// non-empty packet and returns their common duration in samples.
+fn packet_validate(
+    mut data: &[u8],
+    nb_streams: usize,
+    fs: i32,
+    scratch: &mut Vec<u8>,
+) -> Result<usize, &'static str> {
+    let mut samples = 0;
+    for s in 0..nb_streams {
+        if data.is_empty() {
+            return Err("truncated multistream packet");
+        }
+        let (packet, offset) = if s + 1 < nb_streams {
+            split_self_delimited(data, scratch)?
+        } else {
+            (data, data.len())
+        };
+        let frame_samples = frame_samples_from_toc(packet[0], fs).ok_or("Invalid TOC for sampling rate")?;
+        let n = opus_packet_parse(packet)?.len() * frame_samples;
+        if s != 0 && n != samples {
+            return Err("elementary streams differ in duration");
+        }
+        samples = n;
+        data = &data[offset..];
+    }
+    Ok(samples)
+}
+
 /// One [`OpusDecoder`] per elementary stream, fanned out per
 /// [`ChannelMappingTable`]. CELT/SILK still only ever see 1–2 channels.
 pub struct MultistreamDecoder {
@@ -205,6 +234,23 @@ impl MultistreamDecoder {
         let out_channels = self.table.channels as usize;
         if out.len() < frame_size * out_channels {
             return Err("output buffer too small for frame_size * channels");
+        }
+
+        // libopus checks the whole packet before decoding any stream.
+        if !packet.is_empty() {
+            let nb_streams = self.decoders.len();
+            if packet.len() < 2 * nb_streams - 1 {
+                return Err("multistream packet too short");
+            }
+            let samples = packet_validate(
+                packet,
+                nb_streams,
+                self.decoders[0].sampling_rate,
+                &mut self.packet_scratch,
+            )?;
+            if samples > frame_size {
+                return Err("frame_size too small for packet");
+            }
         }
 
         let decoded_channels = self.table.decoded_channel_count();

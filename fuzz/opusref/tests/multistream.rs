@@ -61,3 +61,60 @@ fn concealment_is_limited_to_120_ms() {
     assert_eq!(n, 5760, "libopus");
     assert_eq!(r, Ok(5760), "opus-rs");
 }
+
+/// A CELT-only frame: ToC `toc` (code 0) and `n` pseudo-random bytes.
+fn celt(toc: u8, n: usize, seed: u32) -> Vec<u8> {
+    let mut x = seed;
+    let mut p = vec![toc];
+    p.extend((0..n).map(|_| {
+        x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+        (x >> 24) as u8
+    }));
+    p
+}
+
+/// Two mono streams: `a` self-delimited, then `b`.
+fn two_streams(a: &[u8], b: &[u8]) -> Vec<u8> {
+    let mut p = vec![a[0], (a.len() - 1) as u8];
+    p.extend_from_slice(&a[1..]);
+    p.extend_from_slice(b);
+    p
+}
+
+fn assert_same(d: &mut Pair, p: &[u8], frame_size: usize) {
+    let (r, n, o_rs, o_c) = d.decode(p, frame_size);
+    assert!(n > 0, "libopus {n}");
+    assert_eq!(r, Ok(n as usize));
+    let peak = o_c.iter().fold(1f32, |m, x| m.max(x.abs()));
+    let diff = o_rs.iter().zip(&o_c).fold(0f32, |m, (a, b)| m.max((a - b).abs()));
+    assert!(diff <= 4e-6 * peak, "PCM differs by {diff}");
+}
+
+/// libopus rejects `bad` before any stream decodes it, so the packet after
+/// it decodes the same.
+fn rejected_without_state_change(bad: &[u8]) {
+    const FB20: u8 = 31 << 3;
+    let mut d = Pair::new(2, 0, &[0, 1]);
+    assert_same(&mut d, &two_streams(&celt(FB20, 60, 1), &celt(FB20, 60, 2)), 960);
+    let (r, n, ..) = d.decode(bad, 960);
+    assert!(n < 0, "libopus {n}");
+    assert!(r.is_err(), "opus-rs {r:?}");
+    assert_same(&mut d, &two_streams(&celt(FB20, 60, 5), &celt(FB20, 60, 6)), 960);
+}
+
+#[test]
+fn an_unparsable_second_stream_is_invalid() {
+    // The last stream is a ToC-only code-2 packet, which is invalid.
+    rejected_without_state_change(&two_streams(&celt(31 << 3, 60, 3), &[(31 << 3) | 2]));
+}
+
+#[test]
+fn streams_of_different_durations_are_invalid() {
+    rejected_without_state_change(&two_streams(&celt(31 << 3, 60, 3), &celt(30 << 3, 40, 4)));
+}
+
+#[test]
+fn an_empty_last_stream_is_invalid() {
+    let p = two_streams(&celt(31 << 3, 60, 3), &[0]);
+    rejected_without_state_change(&p[..p.len() - 1]);
+}
