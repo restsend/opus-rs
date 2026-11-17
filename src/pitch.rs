@@ -67,75 +67,131 @@ pub fn pitch_xcorr(
     xcorr_lags(&x[..len], y, &mut xcorr[..max_pitch], arch);
 }
 
-/// `out[i]` = the inner product of `x` and `y[i..i + x.len()]`, each summed
-/// in order as [`inner_prod`] does. The kernels give each lag a vector lane
-/// (libopus `xcorr_kernel_c`, with up to 32 lags); with AVX2 the same code
-/// runs on 8-lane vectors.
+/// `out[i]` = the inner product of `x` and `y[i..i + x.len()]`
+/// (`celt_pitch_xcorr_c` at `arch`). The kernels give each lag a vector
+/// lane, up to 64 lags at a time; with AVX2 the same code runs on 8-lane
+/// vectors. At the x86 levels the lags in whole groups of four take
+/// [`xcorr_kernel`]'s SSE arithmetic and the last `len % 4` libopus's
+/// `celt_inner_prod_sse`.
 fn xcorr_lags(x: &[f32], y: &[f32], out: &mut [f32], arch: crate::Arch) {
-    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-    let _ = arch;
+    let sse = arch != crate::Arch::Scalar;
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if let Some(avx2) = arch.avx2() {
+    if let Some(avx2) = crate::arch::cpu_avx2() {
         use fearless_simd::Simd;
-        return avx2.vectorize(|| xcorr_lags_blocks::<64>(x, y, out));
+        return match sse {
+            true => avx2.vectorize(|| xcorr_lags_blocks::<64, true>(x, y, out, arch)),
+            false => avx2.vectorize(|| xcorr_lags_blocks::<64, false>(x, y, out, arch)),
+        };
     }
-    xcorr_lags_blocks::<32>(x, y, out);
+    match sse {
+        true => xcorr_lags_blocks::<32, true>(x, y, out, arch),
+        false => xcorr_lags_blocks::<32, false>(x, y, out, arch),
+    }
 }
 
-/// [`xcorr_lags`] in blocks of `B` lags (`B` accumulators of four or eight
-/// lanes keep the in-order sums of the lags overlapping), then the rest in
-/// one block each of 32, 16 and 8 lags and one of fewer than 8. Its helpers
-/// take no closures so they inline into the caller's target features.
+/// [`xcorr_lags`] in blocks of `B` lags, then the rest in one block each of
+/// 32, 16, 8 and 4 lags and the last few. Its helpers take no closures so
+/// they inline into the caller's target features.
 #[inline(always)]
-fn xcorr_lags_blocks<const B: usize>(x: &[f32], y: &[f32], out: &mut [f32]) {
+fn xcorr_lags_blocks<const B: usize, const SSE: bool>(
+    x: &[f32],
+    y: &[f32],
+    out: &mut [f32],
+    arch: crate::Arch,
+) {
     let mut blocks = out.chunks_exact_mut(B);
     let mut y = y;
     for o in &mut blocks {
-        y = xcorr_block::<B>(x, y, o);
+        y = xcorr_block::<B, SSE>(x, y, o);
     }
     let mut rest = blocks.into_remainder();
-    for size in [32, 16, 8] {
+    for size in [32, 16, 8, 4] {
         if size < B && rest.len() >= size {
             let (o, r) = rest.split_at_mut(size);
-            y = xcorr_block::<B>(x, y, o);
+            y = xcorr_block::<B, SSE>(x, y, o);
             rest = r;
         }
     }
-    if !rest.is_empty() {
-        xcorr_block::<B>(x, y, rest);
+    if SSE {
+        let n = x.len();
+        let ys = |k: usize| &y[k..];
+        match rest.len() {
+            1 => rest.copy_from_slice(&inner_prods(x, [ys(0)], n, arch)),
+            2 => rest.copy_from_slice(&inner_prods(x, [ys(0), ys(1)], n, arch)),
+            3 => rest.copy_from_slice(&inner_prods(x, [ys(0), ys(1), ys(2)], n, arch)),
+            _ => {}
+        }
+    } else if !rest.is_empty() {
+        xcorr_block::<B, SSE>(x, y, rest);
     }
 }
 
 /// The lags of `out` from the start of `y`; returns `y` from the next lag.
 #[inline(always)]
-fn xcorr_block<'a, const B: usize>(x: &[f32], y: &'a [f32], out: &mut [f32]) -> &'a [f32] {
+fn xcorr_block<'a, const B: usize, const SSE: bool>(
+    x: &[f32],
+    y: &'a [f32],
+    out: &mut [f32],
+) -> &'a [f32] {
     let w = &y[..x.len() + out.len() - 1];
-    match out.len() {
-        1 => xcorr_kernel::<1>(x, w, out),
-        2 => xcorr_kernel::<2>(x, w, out),
-        3 => xcorr_kernel::<3>(x, w, out),
-        4 => xcorr_kernel::<4>(x, w, out),
-        5 => xcorr_kernel::<5>(x, w, out),
-        6 => xcorr_kernel::<6>(x, w, out),
-        7 => xcorr_kernel::<7>(x, w, out),
-        8 => xcorr_kernel::<8>(x, w, out),
-        16 => xcorr_kernel::<16>(x, w, out),
-        32 => xcorr_kernel::<32>(x, w, out),
-        _ => xcorr_kernel::<B>(x, w, out),
+    let o = out;
+    match o.len() {
+        1 => o.copy_from_slice(&xcorr_kernel::<1, SSE>(x, w, [0.0; 1])),
+        2 => o.copy_from_slice(&xcorr_kernel::<2, SSE>(x, w, [0.0; 2])),
+        3 => o.copy_from_slice(&xcorr_kernel::<3, SSE>(x, w, [0.0; 3])),
+        4 => o.copy_from_slice(&xcorr_kernel::<4, SSE>(x, w, [0.0; 4])),
+        8 => o.copy_from_slice(&xcorr_kernel::<8, SSE>(x, w, [0.0; 8])),
+        16 => o.copy_from_slice(&xcorr_kernel::<16, SSE>(x, w, [0.0; 16])),
+        32 => o.copy_from_slice(&xcorr_kernel::<32, SSE>(x, w, [0.0; 32])),
+        _ => o.copy_from_slice(&xcorr_kernel::<B, SSE>(x, w, [0.0; B])),
     }
-    &y[out.len()..]
+    &y[o.len()..]
 }
 
+/// libopus `xcorr_kernel`: `sum[k]` plus the products `x[j] * y[j + k]`.
+/// The scalar kernel adds them in order. The SSE kernel
+/// (`xcorr_kernel_sse`) adds the even-`j` products in order to `sum[k]`
+/// and the odd-`j` ones in order to a second sum from zero, then adds the
+/// two; lanes do not interact, so any number of lags give the four-lag
+/// kernel's values.
 #[inline(always)]
-fn xcorr_kernel<const L: usize>(x: &[f32], y: &[f32], out: &mut [f32]) {
-    let mut acc = [0.0f32; L];
-    for (&xj, w) in x.iter().zip(y.windows(L)) {
-        let w: &[f32; L] = w.try_into().unwrap();
+pub(crate) fn xcorr_kernel<const L: usize, const SSE: bool>(
+    x: &[f32],
+    y: &[f32],
+    sum: [f32; L],
+) -> [f32; L] {
+    let y = &y[..x.len() + L - 1];
+    let mut even = sum;
+    if !SSE {
+        for (&xj, w) in x.iter().zip(y.windows(L)) {
+            let w: &[f32; L] = w.try_into().unwrap();
+            for k in 0..L {
+                even[k] += xj * w[k];
+            }
+        }
+        return even;
+    }
+    let mut odd = [0.0f32; L];
+    let mut pairs = x.chunks_exact(2);
+    for (p, xp) in (&mut pairs).enumerate() {
+        let w: &[f32; L] = (&y[2 * p..2 * p + L]).try_into().unwrap();
+        let v: &[f32; L] = (&y[2 * p + 1..2 * p + 1 + L]).try_into().unwrap();
         for k in 0..L {
-            acc[k] += xj * w[k];
+            even[k] += xp[0] * w[k];
+            odd[k] += xp[1] * v[k];
         }
     }
-    out.copy_from_slice(&acc);
+    if let [xj] = pairs.remainder() {
+        let j = x.len() - 1;
+        let w: &[f32; L] = (&y[j..j + L]).try_into().unwrap();
+        for k in 0..L {
+            even[k] += xj * w[k];
+        }
+    }
+    for k in 0..L {
+        even[k] += odd[k];
+    }
+    even
 }
 
 /// `K` inner products of `x[..n]` with the `ys`, interleaved so they run in

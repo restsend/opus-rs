@@ -130,3 +130,58 @@ fn remove_doubling_and_band_kernels() {
         }
     }
 }
+
+fn bits(v: &[f32]) -> Vec<u32> {
+    v.iter().map(|v| v.to_bits()).collect()
+}
+
+#[test]
+fn pitch_correlations() {
+    let mut seed = 3;
+    for (arch, c) in levels() {
+        if arch == Arch::Avx2 {
+            continue;
+        }
+        for k in 0..300 {
+            let len = 1 + k % 97;
+            let max_pitch = 1 + (k * 7) % 77;
+            let x = noise(len, &mut seed, 1e3);
+            let y = noise(len + max_pitch, &mut seed, 1.0);
+            let mut a = vec![0.0f32; max_pitch];
+            let mut b = vec![0.0f32; max_pitch];
+            opus_rs::pitch::pitch_xcorr(&x, &y, &mut a, len, max_pitch, arch);
+            unsafe {
+                ref_celt_pitch_xcorr(
+                    x.as_ptr(),
+                    y.as_ptr(),
+                    b.as_mut_ptr(),
+                    len as i32,
+                    max_pitch as i32,
+                    c,
+                )
+            };
+            assert_eq!(
+                bits(&a),
+                bits(&b),
+                "pitch_xcorr len={len} max_pitch={max_pitch}"
+            );
+
+            let n = 24 + k % 200;
+            let x = noise(n, &mut seed, 1e2);
+            let (mut a, mut b) = (vec![0.0f32; 5], vec![0.0f32; 5]);
+            opus_rs::celt_lpc::autocorr(&x, &mut a, None, 0, 4, n, arch);
+            unsafe {
+                _celt_autocorr(
+                    x.as_ptr(),
+                    b.as_mut_ptr(),
+                    core::ptr::null(),
+                    0,
+                    4,
+                    n as i32,
+                    c,
+                )
+            };
+            assert_eq!(bits(&a), bits(&b), "autocorr n={n}");
+        }
+    }
+}

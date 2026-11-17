@@ -15,7 +15,7 @@ use super::{
 };
 use crate::bands::{celt_lcg_rand, denormalise_bands, log2amp, renormalise_vector};
 use crate::celt_lpc::{autocorr, lpc as celt_lpc};
-use crate::pitch::{pitch_downsample, pitch_search};
+use crate::pitch::{pitch_downsample, pitch_search, xcorr_kernel};
 
 #[cfg(not(feature = "std"))]
 use crate::compat::Math;
@@ -316,11 +316,23 @@ impl CeltDecoder {
                 celt_lpc(lpc, &ac, LPC_ORDER);
             }
 
-            // The excitation: sig whitened (celt_fir with history).
-            for (i, out) in exc.iter_mut().enumerate() {
+            // The excitation: sig whitened (libopus celt_fir with history:
+            // xcorr_kernel on groups of four outputs, the rest in order).
+            let rnum: [f32; LPC_ORDER] = core::array::from_fn(|j| lpc[LPC_ORDER - 1 - j]);
+            let groups = exc.len() & !3;
+            for (i, out) in exc[..groups].chunks_exact_mut(4).enumerate() {
+                let i = 4 * i;
+                let sum = core::array::from_fn(|k| sig[LPC_ORDER + i + k]);
+                let sum = match self.arch {
+                    crate::Arch::Scalar => xcorr_kernel::<4, false>(&rnum, &sig[i..], sum),
+                    _ => xcorr_kernel::<4, true>(&rnum, &sig[i..], sum),
+                };
+                out.copy_from_slice(&sum);
+            }
+            for (i, out) in exc.iter_mut().enumerate().skip(groups) {
                 let mut sum = sig[LPC_ORDER + i];
-                for k in (0..LPC_ORDER).rev() {
-                    sum += lpc[k] * sig[LPC_ORDER + i - k - 1];
+                for (j, &r) in rnum.iter().enumerate() {
+                    sum += r * sig[i + j];
                 }
                 *out = sum;
             }
@@ -389,7 +401,7 @@ impl CeltDecoder {
                 *m = buf[DECODE_BUFFER_SIZE - n - 1 - i];
             }
             let out = &mut buf[DECODE_BUFFER_SIZE - n..DECODE_BUFFER_SIZE - n + extrapolation_len];
-            celt_iir(out, lpc, &lpc_mem);
+            celt_iir(out, lpc, &lpc_mem, self.arch);
 
             // Attenuate a synthesis louder than what it copies; drop an
             // explosion (written to also catch a NaN, as libopus does).
@@ -584,42 +596,37 @@ pub(super) fn prefilter_and_fold(
     }
 }
 
-/// libopus `celt_iir` (celt/celt_lpc.c:221-276), in place: `x` filtered by
-/// 1/A(z) with `den` and the past outputs `mem` (newest first), in libopus's
-/// summation order. Outputs come four at a time: each sums the history
-/// known when the group starts, oldest sample first, then adds the group's
-/// own earlier outputs, newest first.
-fn celt_iir(x: &mut [f32], den: &[f32], mem: &[f32; LPC_ORDER]) {
+/// libopus `celt_iir` (celt/celt_lpc.c:221-276) at `arch`, in place: `x`
+/// filtered by 1/A(z) with `den` and the past outputs `mem` (newest first),
+/// in libopus's arithmetic. `y` holds the negated outputs. Outputs come four
+/// at a time: [`xcorr_kernel`] sums the history known when the group
+/// starts, oldest sample first, then the group's own earlier outputs are
+/// added, newest first.
+fn celt_iir(x: &mut [f32], den: &[f32], mem: &[f32; LPC_ORDER], arch: crate::Arch) {
     const ORD: usize = LPC_ORDER;
     let n = x.len();
-    let mut rden = [0.0f32; ORD];
-    for i in 0..ORD {
-        rden[i] = den[ORD - i - 1];
-    }
-    // y[i] is the output i samples before x[0] counted from ORD down; zero
-    // where not computed yet.
+    let rden: [f32; ORD] = core::array::from_fn(|i| den[ORD - i - 1]);
     let mut y = [0.0f32; ORD + MAX_PERIOD + 2 * 120];
     for i in 0..ORD {
-        y[i] = mem[ORD - i - 1];
+        y[i] = -mem[ORD - i - 1];
     }
     let mut i = 0;
     while i + 3 < n {
-        let mut sum = [x[i], x[i + 1], x[i + 2], x[i + 3]];
-        for j in 0..ORD {
-            for (k, s) in sum.iter_mut().enumerate() {
-                *s -= rden[j] * y[i + j + k];
-            }
-        }
-        y[i + ORD] = sum[0];
-        sum[1] -= y[i + ORD] * den[0];
-        y[i + ORD + 1] = sum[1];
-        sum[2] -= y[i + ORD + 1] * den[0];
-        sum[2] -= y[i + ORD] * den[1];
-        y[i + ORD + 2] = sum[2];
-        sum[3] -= y[i + ORD + 2] * den[0];
-        sum[3] -= y[i + ORD + 1] * den[1];
-        sum[3] -= y[i + ORD] * den[2];
-        y[i + ORD + 3] = sum[3];
+        let sum = [x[i], x[i + 1], x[i + 2], x[i + 3]];
+        let mut sum = match arch {
+            crate::Arch::Scalar => xcorr_kernel::<4, false>(&rden, &y[i..], sum),
+            _ => xcorr_kernel::<4, true>(&rden, &y[i..], sum),
+        };
+        y[i + ORD] = -sum[0];
+        sum[1] += y[i + ORD] * den[0];
+        y[i + ORD + 1] = -sum[1];
+        sum[2] += y[i + ORD + 1] * den[0];
+        sum[2] += y[i + ORD] * den[1];
+        y[i + ORD + 2] = -sum[2];
+        sum[3] += y[i + ORD + 2] * den[0];
+        sum[3] += y[i + ORD + 1] * den[1];
+        sum[3] += y[i + ORD] * den[2];
+        y[i + ORD + 3] = -sum[3];
         x[i..i + 4].copy_from_slice(&sum);
         i += 4;
     }

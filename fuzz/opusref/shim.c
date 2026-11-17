@@ -112,4 +112,9 @@ void ref_dual_inner_prod(const float *x, const float *y1, const float *y2, int n
   (void)arch;
   dual_inner_prod(x, y1, y2, n, xy1, xy2, arch);
 }
+void ref_celt_pitch_xcorr(const float *x, const float *y, float *xcorr, int len, int max_pitch,
+                          int arch) {
+  (void)arch;
+  celt_pitch_xcorr(x, y, xcorr, len, max_pitch, arch);
+}
 #endif
