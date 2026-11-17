@@ -3,8 +3,10 @@
 //! segments, encoder controls, resets and new encoders, encoded by opus-rs
 //! and by the scalar libopus reference.
 //!
-//! opus-rs runs twice, with the fuzzing SIMD switch off (`scalar`) and on;
-//! the switch has no effect yet (fuzz/DIFFERENTIAL.md).
+//! opus-rs runs twice: at the level of the reference's pair (`scalar`;
+//! `OPUS_RS_ARCH`, scalar when unset) and at the CPU's level (`simd`). The
+//! `toc` and `bytes` oracles check the `simd` encoder too when the pair is
+//! at the CPU's level (fuzz/DIFFERENTIAL.md).
 //! Oracles per frame:
 //! - `ctl`: a control has libopus's result and leaves the same value.
 //! - `get`: the same bitrate query (`OPUS_GET_BITRATE`) after each frame.
@@ -382,7 +384,14 @@ fn run(inp: Input) -> Result<(), Finding> {
     }];
     let mut frame = fs as usize / 400 * DURATIONS[inp.frame as usize % 9];
 
+    // Each encoder takes its level at creation: the pair's (`scalar`) and
+    // the CPU's (`simd`). Where those are the same level, both answer to
+    // the reference's strict oracles.
+    set_simd(false);
+    let pair = opus_rs::Arch::select();
     let mut e_sc = OpusEncoder::new(fs, ch, app).unwrap();
+    set_simd(true);
+    let si_is_pair = opus_rs::Arch::select() == pair;
     let mut e_si = OpusEncoder::new(fs, ch, app).unwrap();
     let mut re = RefEnc::new(fs, ch, capp);
     let (mut d_sc, mut d_si, mut d_ref) = (
@@ -420,7 +429,9 @@ fn run(inp: Input) -> Result<(), Finding> {
                 re.reset();
             }
             Some(Restart::New) => {
+                set_simd(false);
                 e_sc = OpusEncoder::new(fs, ch, app).unwrap();
+                set_simd(true);
                 e_si = OpusEncoder::new(fs, ch, app).unwrap();
                 re = RefEnc::new(fs, ch, capp);
                 apply(&mut [&mut e_sc, &mut e_si], &mut re, &cur);
@@ -636,7 +647,8 @@ fn run(inp: Input) -> Result<(), Finding> {
                         "frame {total}: opus-rs {tag} {len} bytes, libopus {n_ref} {ctx}"
                     );
                 }
-                if *tag == "scalar" && !suppressed("toc") && pkt[0] & 0xfc != p_ref[0] & 0xfc {
+                let strict_tag = *tag == "scalar" || si_is_pair;
+                if strict_tag && !suppressed("toc") && pkt[0] & 0xfc != p_ref[0] & 0xfc {
                     fail!(
                         "toc",
                         format!("{}->{}", mode_name(p_ref[0]), mode_name(pkt[0])),
@@ -645,7 +657,7 @@ fn run(inp: Input) -> Result<(), Finding> {
                         p_ref[0]
                     );
                 }
-                if *tag == "scalar" && strict_bytes(app) && identical && pkt != &p_ref[..n_ref] {
+                if strict_tag && strict_bytes(app) && identical && pkt != &p_ref[..n_ref] {
                     // Localize: the first symbol the reference decoder reads
                     // differently from the two packets is the first coded
                     // decision where the encoders disagree.
@@ -686,7 +698,8 @@ fn run(inp: Input) -> Result<(), Finding> {
                 ));
                 decoded.push(out);
             }
-            identical &= p_sc[..r_sc.unwrap()] == p_ref[..n_ref];
+            identical &= p_sc[..r_sc.unwrap()] == p_ref[..n_ref]
+                && (!si_is_pair || suppressed("simd") || p_si[..r_si.unwrap()] == p_ref[..n_ref]);
             // Fidelity, once the lookahead has passed.
             let start = hist.len() - (la + coded) * ch;
             if total > 2 {
