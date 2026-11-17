@@ -790,30 +790,28 @@ pub fn silk_resampler_private_up2_hq(s: &mut [i32], out: &mut [i16], input: &[i1
 }
 
 pub fn silk_resampler_down2(s: &mut [i32], out: &mut [i16], input: &[i16], in_len: i32) {
-    let len2 = in_len >> 1;
-    let mut in32: i32;
-    let mut out32: i32;
-    let mut y: i32;
-    let mut x: i32;
+    let len2 = (in_len >> 1) as usize;
+    let (mut s0, mut s1) = (s[0], s[1]);
+    for (o, pair) in out[..len2].iter_mut().zip(input[..2 * len2].chunks_exact(2)) {
+        // All-pass section for the even input sample.
+        let in32 = (pair[0] as i32) << 10;
+        let y = in32.wrapping_sub(s0);
+        let x = silk_smlawb(y, y, SILK_RESAMPLER_DOWN2_1);
+        let mut out32 = s0.wrapping_add(x);
+        s0 = in32.wrapping_add(x);
 
-    for k in 0..len2 as usize {
-        in32 = (input[2 * k] as i32) << 10;
-
-        y = in32.wrapping_sub(s[0]);
-        x = silk_smlawb(y, y, SILK_RESAMPLER_DOWN2_1);
-        out32 = s[0].wrapping_add(x);
-        s[0] = in32.wrapping_add(x);
-
-        in32 = (input[2 * k + 1] as i32) << 10;
-
-        y = in32.wrapping_sub(s[1]);
-        x = silk_smulwb(y, SILK_RESAMPLER_DOWN2_0);
-        out32 = out32.wrapping_add(s[1]);
+        // All-pass section for the odd input sample, added to the output.
+        let in32 = (pair[1] as i32) << 10;
+        let y = in32.wrapping_sub(s1);
+        let x = silk_smulwb(y, SILK_RESAMPLER_DOWN2_0);
+        out32 = out32.wrapping_add(s1);
         out32 = out32.wrapping_add(x);
-        s[1] = in32.wrapping_add(x);
+        s1 = in32.wrapping_add(x);
 
-        out[k] = silk_sat16(silk_rshift_round(out32, 11)) as i16;
+        *o = silk_sat16(silk_rshift_round(out32, 11)) as i16;
     }
+    s[0] = s0;
+    s[1] = s1;
 }
 
 pub fn silk_resampler_private_ar2(
