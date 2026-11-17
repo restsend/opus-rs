@@ -186,19 +186,15 @@ pub fn silk_autocorr(
     let n = input_data_size;
     let mut shift: i32;
 
-    let xptr = input_data;
+    let input_data = &input_data[..n];
 
     let ac0_shift = ec_ilog((n + (n >> 4)) as u32) - 1;
 
+    // celt_autocorr's energy estimate; the integer sum wraps, so its order
+    // is free.
     let mut ac0: i32 = 1 + ((n as i32) << 7);
-    let mut i = n & 1;
-    if n & 1 != 0 {
-        ac0 += ((xptr[0] as i32) * (xptr[0] as i32)) >> ac0_shift;
-    }
-    while i < n {
-        ac0 += ((xptr[i] as i32) * (xptr[i] as i32)) >> ac0_shift;
-        ac0 += ((xptr[i + 1] as i32) * (xptr[i + 1] as i32)) >> ac0_shift;
-        i += 2;
+    for &x in input_data {
+        ac0 = ac0.wrapping_add((x as i32 * x as i32) >> ac0_shift);
     }
 
     ac0 += ac0 >> 7;
@@ -211,8 +207,8 @@ pub fn silk_autocorr(
     let xptr: &[i16];
 
     if shift > 0 {
-        for j in 0..n {
-            xx_buf[j] = silk_rshift_round(input_data[j] as i32, shift) as i16;
+        for (d, &x) in xx_buf[..n].iter_mut().zip(input_data) {
+            *d = silk_rshift_round(x as i32, shift) as i16;
         }
         xptr = &xx_buf[..n];
     } else {
