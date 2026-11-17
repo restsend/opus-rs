@@ -717,8 +717,8 @@ fn tf_decode(
 }
 
 fn stereo_analysis(m: &CeltMode, x: &[f32], lm: i32, n0: usize) -> bool {
-    let mut sum_lr = 1e-9f32;
-    let mut sum_ms = 1e-9f32;
+    let mut sum_lr = 1e-15f32;
+    let mut sum_ms = 1e-15f32;
 
     for i in 0..13 {
         let start = (m.e_bands[i] as usize) << lm;
