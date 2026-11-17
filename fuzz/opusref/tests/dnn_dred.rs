@@ -435,7 +435,7 @@ fn assert_dred_eq(a: &c::DredFields, b: &c::DredFields, what: &str) {
 /// values), then runs the RDOVAE decoder; everything must match.
 fn check_decode(
     bytes: &[u8],
-    min_feature_frames: i32,
+    max_dred_features: i32,
     dred_frame_offset: i32,
     process: bool,
     r: &mut Rng,
@@ -449,8 +449,8 @@ fn check_decode(
         *a = r.uni();
         *b = *a;
     }
-    let na = cd.ec_decode(bytes, min_feature_frames, dred_frame_offset);
-    let nb = rd.ec_decode(bytes, min_feature_frames, dred_frame_offset);
+    let na = cd.ec_decode(bytes, max_dred_features, dred_frame_offset);
+    let nb = rd.ec_decode(bytes, max_dred_features, dred_frame_offset);
     assert_eq!(na, nb, "{what}: return");
     assert_dred_eq(&cd.fields(), &rust_dred(&rd), what);
     if process {

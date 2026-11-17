@@ -92,7 +92,7 @@ unsafe extern "C" {
         d: *mut c_void,
         bytes: *const u8,
         num_bytes: c_int,
-        min_feature_frames: c_int,
+        max_dred_features: c_int,
         dred_frame_offset: c_int,
     ) -> c_int;
     pub fn ref_dred_ints(d: *const c_void, out: *mut c_int);
@@ -310,7 +310,7 @@ impl Dred {
     pub fn ec_decode(
         &mut self,
         bytes: &[u8],
-        min_feature_frames: i32,
+        max_dred_features: i32,
         dred_frame_offset: i32,
     ) -> i32 {
         unsafe {
@@ -318,7 +318,7 @@ impl Dred {
                 self.0,
                 bytes.as_ptr(),
                 bytes.len() as c_int,
-                min_feature_frames,
+                max_dred_features,
                 dred_frame_offset,
             )
         }

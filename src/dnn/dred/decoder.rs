@@ -62,14 +62,15 @@ pub fn dred_decode_latents(dec: &mut RangeCoder, x: &mut [f32], scale: &[u8], r:
 
 impl OpusDred {
     /// `dred_ec_decode`: reads the initial state and the latents of the
-    /// DRED payload `bytes`, enough for `min_feature_frames` 10 ms frames.
-    /// `dred_frame_offset` is the position of the DRED extension in the
-    /// packet, in 2.5 ms units. Latent slots past the decoded ones keep
-    /// their values. Returns the number of latent vectors read.
+    /// DRED payload `bytes`, enough for `max_dred_features` 10 ms frames
+    /// before the DRED offset. `dred_frame_offset` is the position of the
+    /// DRED extension in the packet, in 2.5 ms units. Latent slots past
+    /// the decoded ones keep their values. Returns the number of latent
+    /// vectors read.
     pub fn ec_decode(
         &mut self,
         bytes: &[u8],
-        min_feature_frames: i32,
+        max_dred_features: i32,
         dred_frame_offset: i32,
     ) -> i32 {
         let num_bytes = bytes.len() as i32;
@@ -83,6 +84,10 @@ impl OpusDred {
         };
         // The total offset, including the DRED position in the packet.
         self.dred_offset = 16 - ec.dec_uint(32) as i32 - extra_offset + dred_frame_offset;
+        // The 10 ms feature frames that cover the requested duration plus
+        // the offset (in 2.5 ms units).
+        let min_feature_frames =
+            ((4 * max_dred_features as i64 + self.dred_offset as i64 + 3) / 4).max(0);
         let mut qmax = 15;
         if q0 < 14 && dq > 0 {
             // Half the probability says qmax == 15, the other half is
@@ -107,7 +112,7 @@ impl OpusDred {
         );
 
         // Newest to oldest in the payload and in `latents`.
-        let n = (DRED_NUM_REDUNDANCY_FRAMES as i32).min((min_feature_frames + 1) / 2);
+        let n = (DRED_NUM_REDUNDANCY_FRAMES as i64).min((min_feature_frames + 1) / 2) as i32;
         let mut i = 0;
         while i < n {
             // libopus FIXME: a last frame of fewer than 8 bits is missed.

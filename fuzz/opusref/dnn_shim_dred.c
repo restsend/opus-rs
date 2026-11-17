@@ -166,10 +166,10 @@ void ref_filter_df2t(const float *in, float *out, int len, float b0, const float
 /* DRED decoder. */
 OpusDRED *ref_dred_create(void) { return calloc(1, sizeof(OpusDRED)); }
 void ref_dred_destroy(OpusDRED *d) { free(d); }
-int ref_dred_ec_decode(OpusDRED *d, const unsigned char *bytes, int num_bytes, int min_feature_frames,
+int ref_dred_ec_decode(OpusDRED *d, const unsigned char *bytes, int num_bytes, int max_dred_features,
                        int dred_frame_offset)
 {
-  return dred_ec_decode(d, bytes, num_bytes, min_feature_frames, dred_frame_offset);
+  return dred_ec_decode(d, bytes, num_bytes, max_dred_features, dred_frame_offset);
 }
 /* nb_latents, process_stage, dred_offset. */
 void ref_dred_ints(const OpusDRED *d, int *out)
