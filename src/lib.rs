@@ -40,6 +40,9 @@ pub mod celt_lpc;
 /// `deep-plc`, `dred`, `osce`).
 #[cfg(feature = "dnn")]
 pub mod dnn;
+/// Deep redundancy in the decoder (cargo feature `dred`).
+#[cfg(feature = "dred")]
+pub mod dred;
 /// Opus packet extensions, which carry DRED (cargo feature `dred`).
 #[cfg(feature = "dred")]
 pub mod extensions;
