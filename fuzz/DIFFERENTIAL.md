@@ -24,9 +24,10 @@ cargo +nightly fuzz run diff_decoder -- -len_control=0 -max_len=8192
 | Target | Compares | Oracles |
 | --- | --- | --- |
 | `diff_decoder` | Sequences of `decode`, `decode_fec`, loss and reset calls with arbitrary packets, frame sizes and valid libopus-encoded packets with forced mode switches | Same result and sample count, same final range after every call, PCM within `OFZ_DEC_TOL` (4e-6 of max(1, peak): below CELT float rounding, above one SILK LSB), SIMD vs scalar, no panic on absurd frame sizes |
-| `diff_encoder` | Generated signals (silence, DC, clipping, low pitch, impulses, voice-like, raw) with settings that change between segments, including bitrates up to 4 Mb/s | libopus decodes every packet with the encoder's final range, CBR packet length, lookahead, ToC, byte identity in CELT-only streams (`OFZ_STRICT_BYTES=1`), per-frame fidelity |
+| `diff_encoder` | Generated signals (silence, DC, clipping, low pitch, impulses, voice-like, raw) with settings that change between segments, including bitrates up to 4 Mb/s; per segment also the frame duration, an output buffer of 0-1599 bytes, the 16-bit entry points, and an invalid frame size | Both encoders accept or reject each call, libopus decodes every packet with the encoder's final range, CBR packet length, lookahead, ToC, SILK input, byte identity in CELT-only streams (`OFZ_STRICT_BYTES=1`), per-frame fidelity |
 | `diff_kernels` | DSP functions against the same libopus functions: `haar1`, `exp_rotation`, PVQ search, `celt_fir`, `silk_sum_sqr_shift`, `comb_filter`, SILK fixed-point macros, LPC, autocorrelation | Bit-exact where the arithmetic is element-wise or integer, a relative tolerance where the summation order differs, and for the PVQ search a pulse count of K and an objective no worse than libopus's |
 | `api_args` | Arbitrary call sequences on `RangeCoder` and the rate functions | Built with debug assertions: a violated `get_unchecked` precondition aborts, and AddressSanitizer reports out-of-bounds accesses; ordinary panics are allowed |
+| `diff_multistream` | Random channel layouts (1-8 channels, streams, coupled streams, mapping) decoding random and libopus-encoded multistream packets and losses | Both accept or reject the layout, the same result and sample count per call, PCM within `OFZ_DEC_TOL` |
 
 All targets add IJON-style feedback (`common::ijon_set`/`ijon_max`): states
 such as (previous packet mode, call, packet mode) or a value's magnitude
@@ -88,6 +89,8 @@ find the next one:
 | `toc` | The ToC comparison in `diff_encoder` |
 | `simd` | The SIMD encoder in `diff_encoder` |
 | `rate`, `icdf` | Those calls in `api_args` |
+| `ms-layout` | Layouts opus-rs accepts and libopus rejects, in `diff_multistream` |
+| `ms-empty` | Empty multistream packets, which opus-rs rejects and libopus conceals |
 
 Tolerances: `OFZ_DEC_TOL`, `OFZ_PLC_TOL`, `OFZ_SIMD_TOL`, `OFZ_KTOL`.
 

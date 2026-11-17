@@ -149,5 +149,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "diff_multistream"
+path = "fuzz_targets/diff_multistream.rs"
+test = false
+doc = false
+bench = false
+
 [profile.release]
 debug = 1

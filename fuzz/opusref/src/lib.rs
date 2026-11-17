@@ -11,6 +11,41 @@ unsafe extern "C" {
     -> *mut OpusEncoder;
     pub fn opus_encoder_destroy(st: *mut OpusEncoder);
     pub fn opus_encoder_ctl(st: *mut OpusEncoder, req: c_int, ...) -> c_int;
+    pub fn opus_multistream_decoder_create(
+        fs: i32,
+        channels: c_int,
+        streams: c_int,
+        coupled: c_int,
+        mapping: *const c_uchar,
+        err: *mut c_int,
+    ) -> *mut c_void;
+    pub fn opus_multistream_decoder_destroy(st: *mut c_void);
+    pub fn opus_multistream_decode_float(
+        st: *mut c_void,
+        data: *const c_uchar,
+        len: i32,
+        pcm: *mut f32,
+        frame_size: c_int,
+        fec: c_int,
+    ) -> c_int;
+    pub fn opus_multistream_encoder_create(
+        fs: i32,
+        channels: c_int,
+        streams: c_int,
+        coupled: c_int,
+        mapping: *const c_uchar,
+        application: c_int,
+        err: *mut c_int,
+    ) -> *mut c_void;
+    pub fn opus_multistream_encoder_destroy(st: *mut c_void);
+    pub fn opus_multistream_encoder_ctl(st: *mut c_void, req: c_int, ...) -> c_int;
+    pub fn opus_multistream_encode_float(
+        st: *mut c_void,
+        pcm: *const f32,
+        frame_size: c_int,
+        data: *mut c_uchar,
+        max: i32,
+    ) -> i32;
     pub fn opus_encode(
         st: *mut OpusEncoder,
         pcm: *const i16,
