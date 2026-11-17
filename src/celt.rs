@@ -2994,8 +2994,6 @@ impl CeltEncoder {
             }
         }
 
-        rc.pad_to_bits(total_bits);
-
         // libopus keeps the pitch found even when the pre-filter is off (its
         // gain is then 0), and the tapset the frame started with.
         self.prefilter_period = pitch_index;

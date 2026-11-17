@@ -101,3 +101,10 @@ fn fft_matches_libopus() {
         assert_eq!(a, b, "shift {shift}");
     }
 }
+
+/// The raw bits at the end of a VBR frame with free space stay at the end
+/// (ec_enc_done zeroes the gap).
+#[test]
+fn free_space_stays_between_range_and_raw_bits() {
+    assert_eq!(identical(1, 20, 64, 0, "voice", 2), [true, true]);
+}
