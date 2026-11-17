@@ -72,6 +72,14 @@ pub(crate) fn sgemv_by(
     madd: impl Fn(f32, f32, f32) -> f32,
 ) {
     let out = &mut out[..rows];
+    if rows < 8 {
+        // A few rows: each output's sum over its column of weights.
+        for (i, o) in out.iter_mut().enumerate() {
+            let w = weights.strided(i, col_stride);
+            *o = w.zip(&x[..cols]).fold(0.0, |s, (w, &xj)| madd(w, xj, s));
+        }
+        return;
+    }
     out.fill(0.0);
     for (j, &xj) in x[..cols].iter().enumerate() {
         for (y, w) in out.iter_mut().zip(weights.iter(j * col_stride, rows)) {

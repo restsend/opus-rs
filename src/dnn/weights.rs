@@ -72,6 +72,14 @@ impl<'a> F32s<'a> {
             .iter()
             .map(|b| f32::from_le_bytes(*b))
     }
+    /// Values `start`, `start + step`, ... to the end.
+    #[inline(always)]
+    pub fn strided(&self, start: usize, step: usize) -> impl Iterator<Item = f32> + 'a {
+        self.0[start.min(self.0.len())..]
+            .iter()
+            .step_by(step)
+            .map(|b| f32::from_le_bytes(*b))
+    }
     /// Values `start..start + N`.
     #[inline(always)]
     pub fn array<const N: usize>(&self, start: usize) -> [f32; N] {
