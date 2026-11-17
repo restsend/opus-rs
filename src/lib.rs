@@ -1210,6 +1210,31 @@ mod silk_rate_tests {
             }
         }
     }
+
+    /// While SILK delays a stereo-to-mono switch, a Hybrid frame fades
+    /// CELT's input to width 0 (enc_API.c:585, opus_encoder.c:2329-2347).
+    #[test]
+    fn hybrid_fades_to_mono_while_silk_delays_the_switch() {
+        let mut enc = super::OpusEncoder::new(48000, 2, super::Application::Voip).unwrap();
+        enc.set_signal(super::Signal::Voice);
+        let mut out = [0u8; 1500];
+        let mut delayed = 0;
+        for f in 0..40 {
+            enc.bitrate_bps = if f < 20 { 40000 } else { 15000 };
+            let pcm: Vec<f32> = (0..960 * 2)
+                .map(|i| {
+                    let t = (f * 960 + i / 2) as f32 / 48000.0;
+                    (t * 900.0 * (1.0 + (i % 2) as f32)).sin() * 0.3
+                })
+                .collect();
+            enc.encode(&pcm, 960, &mut out).unwrap();
+            if enc.silk_to_mono && enc.mode == super::OpusMode::Hybrid {
+                assert_eq!(enc.stereo_width_q14, 0);
+                delayed += 1;
+            }
+        }
+        assert!(delayed > 0, "no delayed stereo-to-mono switch in Hybrid");
+    }
 }
 
 /// Uniformly borrow a codec-state field that is a `Box<T>` under the `heap`
@@ -3047,6 +3072,10 @@ impl OpusEncoder {
             } else {
                 16384 - 2048 * (32000 - equiv_rate) / (equiv_rate - 14000)
             };
+        } else if self.silk_to_mono {
+            // SILK reports no width while it delays a switch to mono
+            // (enc_API.c:585).
+            self.stereo_width_q14 = 0;
         } else {
             self.stereo_width_q14 = i32::from(self.silk_enc.stereo.smth_width_q14);
         }
