@@ -69,6 +69,17 @@ impl Pair {
         v
     }
 
+    /// Encodes `pcm` (`frame` samples per channel) on both and checks the
+    /// packets, which code `coded` samples.
+    fn encode_pcm(&mut self, pcm: &[f32], frame: usize, coded: usize, what: &str) {
+        let (mut a, mut b) = ([0u8; 1500], [0u8; 1500]);
+        let n = self.rs.encode(pcm, frame, &mut a);
+        let m = unsafe { opus_encode_float(self.c, pcm.as_ptr(), frame as i32, b.as_mut_ptr(), 1500) };
+        assert_eq!(n.is_ok(), m > 0, "{what}: {n:?} vs {m}");
+        let Ok(n) = n else { return };
+        self.check(&a[..n], &b[..m as usize], coded, what);
+    }
+
     /// Encodes frame `f` on both and checks the packets.
     fn encode(&mut self, frame: usize, f: usize, what: &str) {
         let pcm: Vec<f32> = signal(self.fs, self.ch, frame, f)
@@ -264,6 +275,37 @@ fn phase_inversion_matches_libopus() {
             assert_eq!(p.rs.phase_inversion_disabled() as i32, p.get(GET_PHASE_INVERSION_DISABLED));
             for f in 0..16 {
                 p.encode(frame, f, &format!("{fs} {ch} {app:?} disabled {disabled} frame {f}"));
+            }
+        }
+    }
+}
+
+/// `OPUS_SET_EXPERT_FRAME_DURATION`: each call codes the set duration from
+/// the start of a longer input, which the analysis reads ahead into.
+#[test]
+fn expert_frame_duration_matches_libopus() {
+    use opus_rs::FrameDuration::*;
+    for (fs, ch, app, _, rate) in CONFIGS {
+        for (d, ms) in [(Ms2_5, 2.5), (Ms10, 10.0), (Ms20, 20.0), (Ms60, 60.0), (Ms100, 100.0)] {
+            let mut p = Pair::new(fs, ch, app);
+            p.rs.bitrate_bps = rate;
+            p.ctl(SET_BITRATE, rate);
+            p.rs.complexity = 10;
+            p.ctl(SET_COMPLEXITY, 10);
+            p.rs.set_expert_frame_duration(d);
+            assert_eq!(p.ctl(SET_EXPERT_FRAME_DURATION, d as i32), 0);
+            assert_eq!(p.ctl(SET_EXPERT_FRAME_DURATION, 5010), -1);
+            assert_eq!(p.rs.expert_frame_duration() as i32, p.get(GET_EXPERT_FRAME_DURATION));
+            let coded = (fs as f32 * ms / 1000.0) as usize;
+            let long = signal(fs, ch, fs as usize * 2, 0);
+            let mut pos = 0;
+            for (k, api_ms) in [120, 100, 60, 40, 20, 120, 80].iter().cycle().take(14).enumerate() {
+                let api = fs as usize * api_ms / 1000;
+                let what = format!("{fs} {ch} {app:?} {ms} ms call {k} of {api_ms} ms");
+                p.encode_pcm(&long[pos * ch..(pos + api) * ch], api, coded, &what);
+                if coded <= api {
+                    pos += coded;
+                }
             }
         }
     }

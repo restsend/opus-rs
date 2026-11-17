@@ -27,7 +27,7 @@
 
 use crate::common::*;
 use arbitrary::Arbitrary;
-use opus_rs::{Application, Bandwidth, OpusEncoder, Signal};
+use opus_rs::{Application, Bandwidth, FrameDuration, OpusEncoder, Signal};
 use opusref as c;
 
 #[derive(Arbitrary, Debug)]
@@ -76,6 +76,32 @@ enum Ctl {
     PredictionDisabled(bool),
     /// `set_phase_inversion_disabled` / `OPUS_SET_PHASE_INVERSION_DISABLED`.
     PhaseInversionDisabled(bool),
+    /// `set_expert_frame_duration` / `OPUS_SET_EXPERT_FRAME_DURATION`, an
+    /// index into `FRAME_DURATIONS`.
+    FrameDuration(u8),
+}
+
+const FRAME_DURATIONS: [FrameDuration; 10] = [
+    FrameDuration::Argument,
+    FrameDuration::Ms2_5,
+    FrameDuration::Ms5,
+    FrameDuration::Ms10,
+    FrameDuration::Ms20,
+    FrameDuration::Ms40,
+    FrameDuration::Ms60,
+    FrameDuration::Ms80,
+    FrameDuration::Ms100,
+    FrameDuration::Ms120,
+];
+
+/// The samples per channel a call of `frame` codes with `duration`; the
+/// call fails in both encoders when that exceeds `frame`.
+fn coded_size(fs: usize, frame: usize, duration: FrameDuration) -> usize {
+    match duration {
+        FrameDuration::Argument => frame,
+        d => fs / 400 * DURATIONS[d as usize - 5001],
+    }
+    .min(frame)
 }
 
 /// Applies `ctl` to the opus-rs encoders and the libopus one and checks
@@ -107,6 +133,13 @@ fn apply_ctl(rs: &mut [&mut OpusEncoder; 2], re: &mut RefEnc, ctl: Ctl) -> Resul
             let b = re.try_ctl(c::SET_PHASE_INVERSION_DISABLED, d as i32);
             let got = rs[0].phase_inversion_disabled() as i32;
             (0, b, got, re.get(c::GET_PHASE_INVERSION_DISABLED))
+        }
+        Ctl::FrameDuration(i) => {
+            let d = FRAME_DURATIONS[i as usize % FRAME_DURATIONS.len()];
+            rs.iter_mut().for_each(|e| e.set_expert_frame_duration(d));
+            let b = re.try_ctl(c::SET_EXPERT_FRAME_DURATION, d as i32);
+            let got = rs[0].expert_frame_duration() as i32;
+            (0, b, got, re.get(c::GET_EXPERT_FRAME_DURATION))
         }
     };
     if a != b || got != want {
@@ -382,7 +415,10 @@ fn run(inp: Input) -> Result<(), Finding> {
                 return Ok(());
             }
             synth.fill(&seg.signal, &mut pcm, ch, i, n);
-            hist.extend_from_slice(&pcm);
+            // The samples a call codes: `frame`, or the expert frame
+            // duration's.
+            let coded = coded_size(fs as usize, frame, e_sc.expert_frame_duration());
+            hist.extend_from_slice(&pcm[..coded * ch]);
             let (mut p_sc, mut p_si, mut p_ref) = ([0u8; 1600], [0u8; 1600], [0u8; 1600]);
             let pcm16: Vec<i16> = pcm
                 .iter()
@@ -447,7 +483,7 @@ fn run(inp: Input) -> Result<(), Finding> {
                 (n, Err(_)) if n <= 0 => {
                     // Rejected by both (e.g. a too small buffer): nothing was
                     // coded, so this frame leaves the history.
-                    hist.truncate(hist.len() - frame * ch);
+                    hist.truncate(hist.len() - coded * ch);
                     continue;
                 }
                 (n, r) => fail!(
@@ -486,7 +522,7 @@ fn run(inp: Input) -> Result<(), Finding> {
                 let pkt = &p[..len];
                 let mut out = vec![0f32; frame * ch];
                 let (got, syms) = c::trace(|| d.decode(Some(pkt), &mut out, frame, false));
-                if got != frame as i32 {
+                if got != coded as i32 {
                     fail!(
                         "decode",
                         format!("{tag} {}", mode_name(pkt[0])),
@@ -574,9 +610,9 @@ fn run(inp: Input) -> Result<(), Finding> {
             }
             identical &= p_sc[..r_sc.unwrap()] == p_ref[..n_ref];
             // Fidelity, once the lookahead has passed.
-            let start = hist.len() - (la + frame) * ch;
+            let start = hist.len() - (la + coded) * ch;
             if total > 2 {
-                let x = &hist[start..start + frame * ch];
+                let x = &hist[start..start + coded * ch];
                 let energy = x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32;
                 if energy > 1e-5 {
                     let s_ref = snr(x, &o_ref);

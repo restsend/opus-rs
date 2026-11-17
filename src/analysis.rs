@@ -974,19 +974,20 @@ impl TonalityAnalysisState {
         info_out
     }
 
-    /// libopus `run_analysis`: analyse the `frame_size` samples per channel of
-    /// interleaved `pcm`, the frame about to be coded, and return the
-    /// analysis for it.
+    /// libopus `run_analysis`: analyse the `analysis_frame_size` samples per
+    /// channel of interleaved `pcm`, which start with the `frame_size` ones
+    /// about to be coded, and return the analysis for those.
     pub fn run(
         &mut self,
         kfft: &KissFftState,
         pcm: AnalysisPcm<'_>,
+        analysis_frame_size: usize,
         frame_size: usize,
         channels: usize,
         lsb_depth: i32,
     ) -> AnalysisInfo {
         let fs = self.fs as usize;
-        let mut analysis_frame_size = frame_size - (frame_size & 1);
+        let mut analysis_frame_size = analysis_frame_size - (analysis_frame_size & 1);
         // Avoid wrapping around the analysis buffer.
         analysis_frame_size = analysis_frame_size.min((DETECT_SIZE - 5) * fs / 50);
         let mut pcm_len = analysis_frame_size as i32 - self.analysis_offset;

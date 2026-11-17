@@ -117,6 +117,7 @@ use crate::compat::Math;
 use crate::fixedvec::FixedVec;
 use celt::AnalysisInfo;
 pub use celt::{CeltDecoder, CeltEncoder};
+pub use encoder_ctl::FrameDuration;
 use core::mem::MaybeUninit;
 use hp_cutoff::{dc_reject_float, hp_cutoff, hp_cutoff_float, hp_cutoff_i16};
 use range_coder::RangeCoder;
@@ -225,6 +226,8 @@ pub struct OpusEncoder {
     vbr_constraint: bool,
     /// libopus `lsb_depth` (`OPUS_SET_LSB_DEPTH`), 8 to 24.
     lsb_depth: i32,
+    /// libopus `variable_duration` (`OPUS_SET_EXPERT_FRAME_DURATION`).
+    variable_duration: FrameDuration,
     /// libopus `silk_mode.reducedDependency`
     /// (`OPUS_SET_PREDICTION_DISABLED`).
     prediction_disabled: bool,
@@ -1342,6 +1345,7 @@ impl OpusEncoder {
             complexity: 9,
             vbr_constraint: true,
             lsb_depth: 24,
+            variable_duration: FrameDuration::Argument,
             prediction_disabled: false,
             use_cbr: false,
             use_inband_fec: false,
@@ -1648,8 +1652,13 @@ impl OpusEncoder {
     /// analysis sees the input's actual depth: 16 for `encode_i16`'s PCM16
     /// and 24 for `encode`'s float, like libopus's two entry points
     /// (opus_encoder.c passes 16 and MAX_ENCODING_DEPTH).
-    fn analyse(&mut self, input: PcmInput<'_>, frame_size: usize) -> (AnalysisInfo, bool) {
-        let (info, is_silence) = self.run_analysis(input, frame_size);
+    fn analyse(
+        &mut self,
+        input: PcmInput<'_>,
+        analysis_frame_size: usize,
+        frame_size: usize,
+    ) -> (AnalysisInfo, bool) {
+        let (info, is_silence) = self.run_analysis(input, analysis_frame_size, frame_size);
         // The speech estimate of the mode decision: from the analysis's
         // music probability, the one for staying in the previous mode; the
         // last one is kept through digital silence.
@@ -1801,7 +1810,12 @@ impl OpusEncoder {
 
     /// The analysis of a packet and its digital-silence flag (see
     /// `analyse`).
-    fn run_analysis(&mut self, input: PcmInput<'_>, frame_size: usize) -> (AnalysisInfo, bool) {
+    fn run_analysis(
+        &mut self,
+        input: PcmInput<'_>,
+        analysis_frame_size: usize,
+        frame_size: usize,
+    ) -> (AnalysisInfo, bool) {
         self.analysis_read_bak = None;
         let n = frame_size * self.channels;
         // Digital silence is detected for every frame, at every complexity
@@ -1811,13 +1825,15 @@ impl OpusEncoder {
         let is_silence = is_digital_silence(input, n, depth);
         let info = if self.complexity >= 7 && self.sampling_rate >= 16000 {
             self.analysis_read_bak = Some(self.analysis.read_position());
+            let na = analysis_frame_size * self.channels;
             let pcm = match input {
-                PcmInput::F32(s) => analysis::AnalysisPcm::F32(&s[..n]),
-                PcmInput::I16(s) => analysis::AnalysisPcm::I16(&s[..n]),
+                PcmInput::F32(s) => analysis::AnalysisPcm::F32(&s[..na]),
+                PcmInput::I16(s) => analysis::AnalysisPcm::I16(&s[..na]),
             };
             self.analysis.run(
                 modes::default_mode().mdct.fft(0),
                 pcm,
+                analysis_frame_size,
                 frame_size,
                 self.channels,
                 depth,
@@ -1878,6 +1894,12 @@ impl OpusEncoder {
         output: &mut [u8],
     ) -> Result<usize, &'static str> {
         self.range_final = 0;
+        // The frame coded from the call's `frame_size` samples (libopus
+        // `frame_size_select`), which the analysis reads all of.
+        let analysis_frame_size = frame_size;
+        let frame_size = self
+            .select_frame_size(frame_size)
+            .ok_or("Invalid frame size for sampling rate")?;
         let frame_rate = frame_rate_from_params(self.sampling_rate, frame_size)
             .ok_or("Invalid frame size for sampling rate")?;
         // A 1-byte buffer takes a ToC-only packet, except at 100 ms
@@ -1901,7 +1923,7 @@ impl OpusEncoder {
         // The encoder consumes exactly frame_size * channels samples per call;
         // reject short input up front instead of panicking inside the HP filter
         // or the float→int conversion loops (issue #27 deep-scan).
-        if input.len() < frame_size * self.channels {
+        if input.len() < analysis_frame_size * self.channels {
             return Err("Input buffer too small for frame");
         }
 
@@ -1934,7 +1956,7 @@ impl OpusEncoder {
 
         // libopus's signal analysis of the packet; the frames of a multiframe
         // packet read their part of it.
-        let (analysis_info, is_silence) = self.analyse(input, frame_size);
+        let (analysis_info, is_silence) = self.analyse(input, analysis_frame_size, frame_size);
 
         // How far stereo input is from mono (libopus compute_stereo_width).
         let stereo_width = if self.channels == 2 && self.force_channels != Some(1) {

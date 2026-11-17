@@ -60,6 +60,7 @@ a libopus function return libopus's errors as the constants of
 | `OPUS_SET_LSB_DEPTH`, `OPUS_GET_LSB_DEPTH` | `OpusEncoder::set_lsb_depth`, `lsb_depth` |
 | `OPUS_SET_FORCE_CHANNELS`, `OPUS_GET_FORCE_CHANNELS` | `OpusEncoder::set_force_channels`, `force_channels` (`None` for `OPUS_AUTO`) |
 | `OPUS_SET_PREDICTION_DISABLED`, `OPUS_GET_PREDICTION_DISABLED` | `OpusEncoder::set_prediction_disabled`, `prediction_disabled` |
+| `OPUS_SET_EXPERT_FRAME_DURATION`, `OPUS_GET_EXPERT_FRAME_DURATION` | `OpusEncoder::set_expert_frame_duration`, `expert_frame_duration` (`FrameDuration`) |
 | `opus_decoder_ctl(OPUS_RESET_STATE)` | `OpusDecoder::reset` |
 | `OPUS_SET_GAIN`, `OPUS_GET_GAIN` | `OpusDecoder::set_gain`, `gain` |
 | `OPUS_SET_PHASE_INVERSION_DISABLED`, `OPUS_GET_PHASE_INVERSION_DISABLED` | `OpusEncoder::set_phase_inversion_disabled`, `phase_inversion_disabled`; `OpusDecoder::set_phase_inversion_disabled`, `phase_inversion_disabled` |

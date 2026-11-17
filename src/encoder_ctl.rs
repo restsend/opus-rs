@@ -2,7 +2,24 @@
 //! its public fields, with libopus's checks and errors.
 
 use crate::error::BAD_ARG;
-use crate::{OpusEncoder, PcmInput};
+use crate::{OpusEncoder, PcmInput, frame_rate_from_params};
+
+/// The frame duration the encoder codes, as libopus
+/// `OPUS_SET_EXPERT_FRAME_DURATION` (`OPUS_FRAMESIZE_*`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameDuration {
+    /// The `frame_size` of each call (`OPUS_FRAMESIZE_ARG`, the default).
+    Argument = 5000,
+    Ms2_5 = 5001,
+    Ms5 = 5002,
+    Ms10 = 5003,
+    Ms20 = 5004,
+    Ms40 = 5005,
+    Ms60 = 5006,
+    Ms80 = 5007,
+    Ms100 = 5008,
+    Ms120 = 5009,
+}
 
 impl OpusEncoder {
     /// The depth of the input signal in bits, 8 to 24 (libopus
@@ -77,6 +94,44 @@ impl OpusEncoder {
                 self.silk_enc_side.s_cmn.first_frame_after_reset = 1;
             }
         }
+    }
+
+    /// The duration of the frames to code (libopus
+    /// `OPUS_SET_EXPERT_FRAME_DURATION`, [`FrameDuration::Argument`] by
+    /// default). With a fixed duration each call codes that much of its
+    /// input, which has to be at least as long, and the signal analysis
+    /// looks at all `frame_size` samples it is given.
+    pub fn set_expert_frame_duration(&mut self, duration: FrameDuration) {
+        self.variable_duration = duration;
+    }
+
+    /// The frame duration setting (libopus
+    /// `OPUS_GET_EXPERT_FRAME_DURATION`).
+    pub fn expert_frame_duration(&self) -> FrameDuration {
+        self.variable_duration
+    }
+
+    /// libopus `frame_size_select`: the samples per channel a call of
+    /// `frame_size` codes, `None` when that is no valid frame.
+    pub(crate) fn select_frame_size(&self, frame_size: usize) -> Option<usize> {
+        let fs = self.sampling_rate as usize;
+        if frame_size < fs / 400 {
+            return None;
+        }
+        let d = self.variable_duration as usize;
+        let new_size = match self.variable_duration {
+            FrameDuration::Argument => frame_size,
+            FrameDuration::Ms2_5
+            | FrameDuration::Ms5
+            | FrameDuration::Ms10
+            | FrameDuration::Ms20
+            | FrameDuration::Ms40 => (fs / 400) << (d - 5001),
+            _ => (d - 5001 - 2) * fs / 50,
+        };
+        if new_size > frame_size {
+            return None;
+        }
+        frame_rate_from_params(self.sampling_rate, new_size).map(|_| new_size)
     }
 
     /// The depth the encoder assumes for `input`: the set depth, at most
