@@ -5,7 +5,7 @@ use crate::silk::tables::SILK_QUANTIZATION_OFFSETS_Q10;
 
 pub fn silk_decode_core(
     ps_dec: &mut SilkDecoderState,
-    ps_dec_ctrl: &SilkDecoderControl,
+    ps_dec_ctrl: &mut SilkDecoderControl,
     xq: &mut [i16],
     pulses: &[i16],
 ) {
@@ -84,6 +84,10 @@ pub fn silk_decode_core(
             // decoding: a weak pitch tap at the last concealed lag.
             b_q14 = [0; LTP_ORDER];
             b_q14[LTP_ORDER / 2] = 4096; // 0.25 in Q14
+            // libopus writes the tap and the lag into the decoder control
+            // (B_Q14 points into LTPCoef_Q14), where OSCE reads them.
+            ps_dec_ctrl.ltp_coef_q14[k * LTP_ORDER..(k + 1) * LTP_ORDER].copy_from_slice(&b_q14);
+            ps_dec_ctrl.pitch_l[k] = ps_dec.lag_prev;
             (TYPE_VOICED, ps_dec.lag_prev)
         } else {
             (signal_type as i32, ps_dec_ctrl.pitch_l[k])
