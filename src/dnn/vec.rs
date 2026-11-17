@@ -170,13 +170,15 @@ pub fn sparse_cgemv8x4(
 }
 
 /// `lpcnet_exp2`: 2^x from a cubic polynomial of the fraction, with the
-/// integer part added to the exponent bits.
+/// integer part added to the exponent bits. The input is clamped to
+/// [-50, 50]; NaN and inputs at or below -50 give 0.
 #[inline]
 pub fn lpcnet_exp2(x: f32) -> f32 {
-    let integer = c_int((x as f64).floor());
-    if integer < -50 {
+    if !(x > -50.0) {
         return 0.0;
     }
+    let x = if x > 50.0 { 50.0 } else { x };
+    let integer = (x as f64).floor() as i32;
     let frac = x - integer as f32;
     let f = 0.99992522f32 + frac * (0.69583354f32 + frac * (0.22606716f32 + 0.078024523f32 * frac));
     let bits = f.to_bits().wrapping_add((integer << 23) as u32) & 0x7fff_ffff;
@@ -251,6 +253,8 @@ mod tests {
     #[test]
     fn exp2_matches_known_values() {
         assert_eq!(lpcnet_exp2(-60.0), 0.0);
+        assert_eq!(lpcnet_exp2(f32::NAN), 0.0);
+        assert_eq!(lpcnet_exp2(1e30), lpcnet_exp2(50.0));
         assert!((lpcnet_exp2(3.0) - 8.0).abs() < 1e-3);
         assert!((lpcnet_exp(1.0) - core::f32::consts::E).abs() < 1e-3);
     }
