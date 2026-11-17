@@ -327,6 +327,10 @@ pub struct OpusEncoder {
     /// (C `st->hp_mem[4]`, opus_val32 in the float build).
     hp_mem_float: [f32; 4],
     prev_hb_gain: f32,
+    /// libopus `hybrid_stereo_width_Q14` and `silk_mode.stereoWidth_Q14`:
+    /// the stereo width the CELT input faded to last and the one it fades to.
+    hybrid_stereo_width_q14: i32,
+    stereo_width_q14: i32,
     /// libopus `silk_mode.opusCanSwitch` and `silk_bw_switch`: SILK asked to
     /// change its internal rate, which the next packet does.
     silk_opus_can_switch: bool,
@@ -949,6 +953,26 @@ fn gain_fade(pcm: &mut [f32], previous: f32, gain: f32, channels: usize, fs: i32
     }
 }
 
+/// libopus `stereo_fade` (opus_encoder.c:548-575): moves the two channels
+/// towards their mid by 1 - width, cross-fading over the overlap.
+fn stereo_fade(pcm: &mut [f32], g1: f32, g2: f32, fs: i32) {
+    let window = modes::default_mode().window;
+    let inc = (48000 / fs as usize).max(1);
+    let overlap = window.len() / inc;
+    let (g1, g2) = (1.0 - g1, 1.0 - g2);
+    for (i, s) in pcm.chunks_exact_mut(2).enumerate() {
+        let g = if i < overlap {
+            let w = window[i * inc] * window[i * inc];
+            w * g2 + (1.0 - w) * g1
+        } else {
+            g2
+        };
+        let diff = g * (0.5 * (s[0] - s[1]));
+        s[0] -= diff;
+        s[1] += diff;
+    }
+}
+
 #[cfg(all(test, feature = "std"))]
 mod silk_rate_tests {
     use super::{Bandwidth, compute_silk_rate_for_hybrid, gain_fade, hybrid_hb_gain};
@@ -1324,6 +1348,8 @@ impl OpusEncoder {
             hp_mem: FixedVec::from_value(0, channels * 2),
             hp_mem_float: [0.0; 4],
             prev_hb_gain: 1.0,
+            hybrid_stereo_width_q14: 1 << 14,
+            stereo_width_q14: 0,
             silk_opus_can_switch: false,
             silk_bw_switch: false,
             #[cfg(not(feature = "heap"))]
@@ -2813,6 +2839,39 @@ impl OpusEncoder {
                     self.sampling_rate,
                 );
             }
+        }
+
+        // The stereo width (opus_encoder.c:2320-2348): from the rate, or in
+        // Hybrid stereo SILK's; below full width the CELT input fades
+        // towards mono.
+        if mode != OpusMode::Hybrid || ch == 1 {
+            let equiv_rate = compute_equiv_rate(
+                self.bitrate_bps,
+                ch,
+                frame_rate,
+                !self.use_cbr,
+                Some(mode),
+                self.complexity,
+                self.packet_loss_perc,
+            );
+            self.stereo_width_q14 = if equiv_rate > 32000 {
+                16384
+            } else if equiv_rate < 16000 {
+                0
+            } else {
+                16384 - 2048 * (32000 - equiv_rate) / (equiv_rate - 14000)
+            };
+        } else {
+            self.stereo_width_q14 = i32::from(self.silk_enc.stereo.smth_width_q14);
+        }
+        if ch == 2 && (self.hybrid_stereo_width_q14 < 1 << 14 || self.stereo_width_q14 < 1 << 14) {
+            stereo_fade(
+                &mut self.buf_celt_pcm[..frame_size * 2],
+                self.hybrid_stereo_width_q14 as f32 * (1.0 / 16384.0),
+                self.stereo_width_q14 as f32 * (1.0 / 16384.0),
+                self.sampling_rate,
+            );
+            self.hybrid_stereo_width_q14 = self.stereo_width_q14;
         }
 
         // The CELT settings of every frame (opus_encoder.c:2262-2295):

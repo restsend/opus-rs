@@ -233,3 +233,10 @@ fn stereo_frames_use_the_pre_filter() {
 fn stereo_angle_uses_rate_distortion_choice() {
     assert_eq!(identical(2, 10.0, 32, 2, "voice", 12), [true; 12]);
 }
+
+/// Below 32 kb/s equivalent, the stereo CELT input fades towards mono
+/// (opus_encoder.c:2320-2348).
+#[test]
+fn low_rate_stereo_fades_towards_mono() {
+    assert_eq!(identical(2, 10.0, 24, 0, "noise", 10), [true; 10]);
+}
