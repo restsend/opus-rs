@@ -170,6 +170,9 @@ fn run(inp: Input) -> Result<(), Finding> {
     let mut synth = Synth::new(fs);
     let mut valid = true;
 
+    if std::env::var("OFZ_DEBUG").is_ok() {
+        eprintln!("script {fs} {ch}");
+    }
     for (k, op) in inp.ops.iter().take(48).enumerate() {
         let generated;
         let op = match op {
@@ -192,6 +195,23 @@ fn run(inp: Input) -> Result<(), Finding> {
                 op
             }
         };
+        if std::env::var("OFZ_DEBUG").is_ok() {
+            // One line per call, replayable: `fs ch` then `d|f <hex> <n>`,
+            // `l <n>`, `r`.
+            let hex = |p: &[u8]| p.iter().map(|b| format!("{b:02x}")).collect::<String>();
+            let n = |s: &Size| match *s {
+                Size::Max => fs as usize * 120 / 1000,
+                Size::Ms(m) => (m as usize % 48 + 1) * fs as usize / 400,
+                Size::Raw(r) => r as usize,
+            };
+            match op {
+                Op::Decode { pkt, size } => eprintln!("script d {} {}", hex(pkt), n(size)),
+                Op::Fec { pkt, size } => eprintln!("script f {} {}", hex(pkt), n(size)),
+                Op::Lost { size } => eprintln!("script l {}", n(size)),
+                Op::Reset => eprintln!("script r"),
+                Op::Encoded { .. } => {}
+            }
+        }
         let size = match op {
             Op::Reset => {
                 // opus-rs has no reset; a new decoder is the same state.
