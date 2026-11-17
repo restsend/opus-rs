@@ -197,3 +197,10 @@ fn small_split_angles_match_libopus() {
 fn split_angles_match_libopus() {
     assert_eq!(itheta_mismatches(1.0, &[false, true]), 0);
 }
+
+/// The intra/inter choice weighs only the coarse-energy changes the budget
+/// forces, after the decay bound (quant_bands.c:212, 246).
+#[test]
+fn intra_decision_counts_only_budget_changes() {
+    assert_eq!(identical(1, 20.0, 24, 2, "voice", 3), [true; 3]);
+}
