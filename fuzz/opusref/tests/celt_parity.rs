@@ -108,3 +108,9 @@ fn fft_matches_libopus() {
 fn free_space_stays_between_range_and_raw_bits() {
     assert_eq!(identical(1, 20, 64, 0, "voice", 2), [true, true]);
 }
+
+/// transient_analysis's harmonic mean reads libopus's inv_table.
+#[test]
+fn transient_analysis_uses_libopus_inv_table() {
+    assert_eq!(identical(1, 20, 32, 1, "noise", 1), [true]);
+}
