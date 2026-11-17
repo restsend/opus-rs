@@ -9,6 +9,7 @@ const PITCH_BUF_MAX: usize = 1024;
 use crate::celt_lpc::{autocorr, lpc};
 
 /// libopus `celt_inner_prod` at `arch`: [`inner_prods`] of one vector.
+#[inline]
 pub fn inner_prod(x: &[f32], y: &[f32], n: usize, arch: crate::Arch) -> f32 {
     inner_prods(x, [y], n, arch)[0]
 }
@@ -262,13 +263,14 @@ fn inner_prods<const K: usize>(
     let mut j = 0;
     if arch != crate::Arch::Scalar {
         let mut lanes = [[0.0f32; 4]; K];
-        while j + 4 <= n {
+        j = n & !3;
+        for (b, xb) in x[..j].chunks_exact(4).enumerate() {
             for k in 0..K {
+                let yb = &ys[k][4 * b..4 * b + 4];
                 for l in 0..4 {
-                    lanes[k][l] += x[j + l] * ys[k][j + l];
+                    lanes[k][l] += xb[l] * yb[l];
                 }
             }
-            j += 4;
         }
         for k in 0..K {
             let s = lanes[k];
