@@ -54,3 +54,4 @@ d19	test:dec_uint_overflow	-	FAILED	ec_dec_uint returns values past its range
 d20	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] valid decode silk->silk	silk_lpc_inverse_pred_gain uses a wrong A_LIMIT
 e1	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	celt rate.c:418	stereo_analysis scales sumMS by 0.707107
 e2	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	celt celt_decoder.c:1332	the first frame's pre-filter sees a previous period of 0
+e3	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	celt celt_decoder.c:1359	a new CELT encoder starts as a reset one (delayedIntra 1)

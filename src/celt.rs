@@ -1814,7 +1814,9 @@ impl CeltEncoder {
         let nb_x_ch = nb_ebands * channels;
         let frame_x_ch = MAX_FRAME_SIZE * channels;
         let bufstride_x_ch = (MAX_FRAME_SIZE + overlap) * channels;
-        Self {
+        // libopus initialises through OPUS_RESET_STATE
+        // (celt_encoder.c:229).
+        let mut enc = Self {
             mode,
             channels,
             upsample,
@@ -1893,7 +1895,9 @@ impl CeltEncoder {
             force_intra: false,
             #[cfg(test)]
             decisions: FrameDecisions::default(),
-        }
+        };
+        enc.reset_state();
+        enc
     }
 
     /// libopus `OPUS_RESET_STATE`: forget the signal history and the rate
