@@ -1,5 +1,5 @@
 //! Differential decoder fuzzer: sequences of API calls (decode, decode_fec,
-//! loss concealment, reset) with arbitrary packets and frame sizes, run on
+//! loss concealment, reset, a new decoder) with arbitrary packets and frame sizes, run on
 //! opus-rs and on the scalar libopus reference.
 //!
 //! Oracles, after every call:
@@ -32,6 +32,7 @@ fn discriminant(op: &Op) -> u8 {
         Op::Lost { .. } => 2,
         Op::Reset => 3,
         Op::Encoded { .. } => 4,
+        Op::NewDecoder => 5,
     }
 }
 
@@ -77,7 +78,7 @@ fn new_ref(fs: i32, ch: usize, inp: &Input) -> RefDec {
     d
 }
 
-#[derive(Arbitrary, Debug)]
+#[derive(Debug)]
 enum Op {
     Decode {
         pkt: Vec<u8>,
@@ -98,7 +99,42 @@ enum Op {
     Lost {
         size: Size,
     },
+    /// `reset()` and `OPUS_RESET_STATE`.
     Reset,
+    /// New decoders on both sides.
+    NewDecoder,
+}
+
+/// The first five variants keep the derived encoding, which the saved
+/// reproducers use; `NewDecoder` takes the top sixteenth of the variant
+/// word, which selected `Reset` there.
+impl<'a> Arbitrary<'a> for Op {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let x = u32::arbitrary(u)?;
+        if x >= 0xf000_0000 {
+            return Ok(Op::NewDecoder);
+        }
+        Ok(match (u64::from(x) * 5) >> 32 {
+            0 => Op::Decode {
+                pkt: Arbitrary::arbitrary(u)?,
+                size: Arbitrary::arbitrary(u)?,
+            },
+            1 => Op::Encoded {
+                signal: Arbitrary::arbitrary(u)?,
+                kbps: Arbitrary::arbitrary(u)?,
+                ms: Arbitrary::arbitrary(u)?,
+                force: Arbitrary::arbitrary(u)?,
+            },
+            2 => Op::Fec {
+                pkt: Arbitrary::arbitrary(u)?,
+                size: Arbitrary::arbitrary(u)?,
+            },
+            3 => Op::Lost {
+                size: Arbitrary::arbitrary(u)?,
+            },
+            _ => Op::Reset,
+        })
+    }
 }
 
 #[derive(Arbitrary, Debug, Clone, Copy)]
@@ -132,7 +168,7 @@ fn call(d: &mut OpusDecoder, op: &Op, fs: usize, out: &mut [f32]) -> Result<usiz
         Op::Decode { pkt, .. } => d.decode(pkt, fs, out),
         Op::Fec { pkt, .. } => d.decode_fec(pkt, fs, out),
         Op::Lost { .. } => d.decode(&[], fs, out),
-        Op::Reset | Op::Encoded { .. } => unreachable!(),
+        Op::Reset | Op::NewDecoder | Op::Encoded { .. } => unreachable!(),
     }
 }
 
@@ -219,7 +255,7 @@ fn run(inp: Input) -> Result<(), Finding> {
             }
             Op::Decode { .. } | Op::Fec { .. } if inp.valid_only => continue,
             op => {
-                valid &= matches!(op, Op::Lost { .. } | Op::Reset);
+                valid &= matches!(op, Op::Lost { .. } | Op::Reset | Op::NewDecoder);
                 op
             }
         };
@@ -237,15 +273,18 @@ fn run(inp: Input) -> Result<(), Finding> {
                 Op::Fec { pkt, size } => eprintln!("script f {} {}", hex(pkt), n(size)),
                 Op::Lost { size } => eprintln!("script l {}", n(size)),
                 Op::Reset => eprintln!("script r"),
+                Op::NewDecoder => eprintln!("script n"),
                 Op::Encoded { .. } => {}
             }
         }
         let size = match op {
             Op::Reset => {
-                // opus-rs has no reset: both sides start new decoders.
-                // libopus's OPUS_RESET_STATE keeps the FARGAN state of the
-                // deep PLC, so a reset libopus decoder conceals differently
-                // from a new one.
+                scalar.reset();
+                simd.reset();
+                refd.reset();
+                continue;
+            }
+            Op::NewDecoder => {
                 scalar = new_dec(fs, ch, &inp);
                 simd = new_dec(fs, ch, &inp);
                 refd = new_ref(fs, ch, &inp);

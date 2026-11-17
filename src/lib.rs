@@ -3882,6 +3882,32 @@ impl OpusDecoder {
         self.frame_size = sampling_rate as usize / 400;
     }
 
+    /// Restarts the stream, keeping the settings (libopus
+    /// `OPUS_RESET_STATE`): the next packet decodes like the first one of
+    /// a new decoder. As in libopus, the deep PLC (feature `deep-plc`)
+    /// keeps its FARGAN state, so a concealment after a reset can differ
+    /// from one by a new decoder.
+    pub fn reset(&mut self) {
+        self.stream_channels = self.channels;
+        self.bandwidth = Bandwidth::Auto;
+        self.mode = None;
+        self.prev_mode = None;
+        self.frame_size = self.sampling_rate as usize / 400;
+        self.prev_redundancy = false;
+        self.last_packet_duration = 0;
+        self.range_final = 0;
+        self.celt_dec.reset_state();
+        self.silk_dec.reset();
+        #[cfg(feature = "osce")]
+        {
+            self.dec_control.prev_osce_extended_mode = crate::dnn::osce::OSCE_MODE_CELT_ONLY;
+        }
+        #[cfg(feature = "deep-plc")]
+        if let Some(lpcnet) = self.silk_dec.lpcnet.as_mut() {
+            lpcnet.reset();
+        }
+    }
+
     /// The range decoder's final state after the last frame decoded, like
     /// libopus `OPUS_GET_FINAL_RANGE`: it equals the encoder's final range
     /// for that frame (the value an Opus test vector stores with each

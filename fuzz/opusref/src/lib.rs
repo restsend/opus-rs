@@ -280,20 +280,57 @@ w1!(ref_silk_sat16 ref_silk_clz32 ref_silk_sqrt_approx ref_silk_rand);
 
 // CTL request numbers (opus_defines.h, opus_private.h).
 pub const SET_APPLICATION: c_int = 4000;
+pub const GET_APPLICATION: c_int = 4001;
 pub const SET_BITRATE: c_int = 4002;
+pub const GET_BITRATE: c_int = 4003;
 pub const SET_MAX_BANDWIDTH: c_int = 4004;
+pub const GET_MAX_BANDWIDTH: c_int = 4005;
 pub const SET_VBR: c_int = 4006;
+pub const GET_VBR: c_int = 4007;
 pub const SET_BANDWIDTH: c_int = 4008;
+pub const GET_BANDWIDTH: c_int = 4009;
 pub const SET_COMPLEXITY: c_int = 4010;
+pub const GET_COMPLEXITY: c_int = 4011;
 pub const SET_INBAND_FEC: c_int = 4012;
+pub const GET_INBAND_FEC: c_int = 4013;
 pub const SET_PACKET_LOSS_PERC: c_int = 4014;
+pub const GET_PACKET_LOSS_PERC: c_int = 4015;
 pub const SET_DTX: c_int = 4016;
+pub const GET_DTX: c_int = 4017;
 pub const SET_VBR_CONSTRAINT: c_int = 4020;
+pub const GET_VBR_CONSTRAINT: c_int = 4021;
+pub const SET_FORCE_CHANNELS: c_int = 4022;
+pub const GET_FORCE_CHANNELS: c_int = 4023;
 pub const SET_SIGNAL: c_int = 4024;
+pub const GET_SIGNAL: c_int = 4025;
 pub const GET_LOOKAHEAD: c_int = 4027;
+pub const GET_SAMPLE_RATE: c_int = 4029;
 pub const GET_FINAL_RANGE: c_int = 4031;
+pub const GET_PITCH: c_int = 4033;
+pub const SET_GAIN: c_int = 4034;
+pub const GET_GAIN: c_int = 4045;
+pub const SET_LSB_DEPTH: c_int = 4036;
+pub const GET_LSB_DEPTH: c_int = 4037;
+pub const GET_LAST_PACKET_DURATION: c_int = 4039;
+pub const SET_EXPERT_FRAME_DURATION: c_int = 4040;
+pub const GET_EXPERT_FRAME_DURATION: c_int = 4041;
+pub const SET_PREDICTION_DISABLED: c_int = 4042;
+pub const GET_PREDICTION_DISABLED: c_int = 4043;
 pub const SET_PHASE_INVERSION_DISABLED: c_int = 4046;
+pub const GET_PHASE_INVERSION_DISABLED: c_int = 4047;
+pub const GET_IN_DTX: c_int = 4049;
+pub const SET_DRED_DURATION: c_int = 4050;
+pub const GET_DRED_DURATION: c_int = 4051;
+pub const SET_DNN_BLOB: c_int = 4052;
+pub const GET_DNN_BLOB: c_int = 4053;
+pub const SET_OSCE_BWE: c_int = 4054;
+pub const GET_OSCE_BWE: c_int = 4055;
+pub const SET_QEXT: c_int = 4056;
+pub const GET_QEXT: c_int = 4057;
+pub const SET_IGNORE_EXTENSIONS: c_int = 4058;
+pub const GET_IGNORE_EXTENSIONS: c_int = 4059;
 pub const RESET_STATE: c_int = 4028;
+pub const SET_FORCE_MODE: c_int = 11002;
 
 unsafe extern "C" {
     /// `clt_mdct_forward_c`/`clt_mdct_backward_c` of the static 48 kHz mode,

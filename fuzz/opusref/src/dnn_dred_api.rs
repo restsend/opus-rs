@@ -147,8 +147,7 @@ unsafe extern "C" {
 
 /// `OPUS_SET_DRED_DURATION_REQUEST` and `OPUS_GET_DRED_DURATION_REQUEST`
 /// (include/opus_defines.h).
-pub const SET_DRED_DURATION: c_int = 4050;
-pub const GET_DRED_DURATION: c_int = 4051;
+pub use crate::{GET_DRED_DURATION, SET_DRED_DURATION};
 
 /// Sets the DRED duration (in 10 ms frames) of a reference encoder.
 pub unsafe fn set_dred_duration(enc: *mut OpusEncoder, frames: i32) -> c_int {
