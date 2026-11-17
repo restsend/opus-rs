@@ -4678,17 +4678,19 @@ fn smooth_fade_into_in2(
 }
 
 fn frame_rate_from_params(sampling_rate: i32, frame_size: usize) -> Option<i32> {
-    let frame_size = frame_size as i32;
-    if frame_size <= 0 {
-        return None;
-    }
+    let fs = sampling_rate;
+    // Every legal duration is at most 120 ms: a frame longer than a second
+    // is rejected before the products below can overflow
+    // (opus_encoder.c:845-851).
+    let frame_size = i32::try_from(frame_size)
+        .ok()
+        .filter(|&n| n > 0 && n <= fs)?;
     // libopus `frame_size_select`: a frame is 2.5, 5, 10, 20, 40, 60, 80, 100
     // or 120 ms. Validating by duration (not by `sampling_rate % frame_size
     // == 0`) is what lets 60 ms through: its rate is 16.67 frames/s, so the
     // old divisibility test rejected it before encoding could start (issue
     // #35). Frames over 60 ms are coded as several shorter frames
     // (`encode_multiframe`).
-    let fs = sampling_rate;
     let valid = frame_size == fs / 400
         || frame_size == fs / 200
         || frame_size == fs / 100
@@ -5102,6 +5104,17 @@ mod tests {
 
             let _ = decoder.decode(&[0x80, 0, 0, 0], frame_size, &mut output);
         }
+    }
+
+    /// Frame sizes longer than a second are invalid, also those whose
+    /// products with 50 overflow or whose low 32 bits are a valid size.
+    #[test]
+    fn huge_frame_sizes_are_invalid() {
+        assert_eq!(frame_rate_from_params(8000, 1073741864), None);
+        if let Ok(n) = usize::try_from((1u64 << 32) + 960) {
+            assert_eq!(frame_rate_from_params(48000, n), None);
+        }
+        assert_eq!(frame_rate_from_params(48000, 5760), Some(8));
     }
 
     // Regression test for: "index out of bounds: the len is 48 but the index is 119"
