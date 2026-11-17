@@ -146,6 +146,9 @@ pub struct SilkShapeState {
     pub harm_boost_smth_q16: i32,
     pub harm_shape_gain_smth_q16: i32,
     pub tilt_smth_q16: i32,
+    /// The float encoder's smoothing (libopus `silk_shape_state_FLP`).
+    pub harm_shape_gain_smth: f32,
+    pub tilt_smth: f32,
 }
 
 #[derive(Clone, Copy)]

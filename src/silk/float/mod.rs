@@ -6,6 +6,7 @@ pub mod control_flp;
 pub mod find_pitch_lags_flp;
 pub mod lpc_analysis_flp;
 pub mod ltp_analysis_flp;
+pub mod noise_shape_analysis_flp;
 pub mod pitch_analysis_core_flp;
 pub mod sigproc_flp;
 pub mod structs_flp;
