@@ -429,7 +429,8 @@ fn transient_analysis(
     // C (celt_encoder.c:460-461): tf_max = max(0, sqrt(27*mask_metric) - 42);
     // tf_estimate = sqrt(max(0, 0.0069*min(163, tf_max) - 0.139))  [float build]
     let tf_max = ((27.0 * mask_metric).sqrt() - 42.0).max(0.0);
-    *tf_estimate = (0.0069 * tf_max.min(163.0) - 0.139).max(0.0).sqrt();
+    // The product is float, the 0.139, the max and the sqrt are double.
+    *tf_estimate = (f64::from(0.0069 * tf_max.min(163.0)) - 0.139).max(0.0).sqrt() as f32;
 
     is_transient
 }
@@ -4179,6 +4180,31 @@ mod tests {
             0.3807991147041321, 1.0, 10,
         );
         assert_eq!(pitch_index, 16);
+    }
+
+    /// tf_estimate = celt_sqrt(MAX32(0, 0.0069f*min(163, tf_max) - 0.139))
+    /// with the subtraction and root in double (celt_encoder.c:461). The
+    /// first frame of a 527.1533 Hz tone at 48 kHz gives libopus's
+    /// 0.8355611562728882.
+    #[test]
+    fn tf_estimate_subtracts_in_double() {
+        let mode = modes::default_mode();
+        let (n, overlap) = (960, mode.overlap);
+        let mut input = vec![0.0f32; n + overlap];
+        let mut m = 0.0f32;
+        for i in 0..n {
+            let x = (i as f64 * 527.1533f32 as f64 / 48000.0 * core::f64::consts::TAU).sin() as f32 * 0.5 * 32768.0;
+            input[overlap + i] = x - m;
+            m = x * mode.preemph[0];
+        }
+        let (mut tf_estimate, mut tf_chan, mut weak) = (0.0, 0, false);
+        let (mut tmp, mut tmp2) = (vec![0.0; MAX_TRANSIENT_LEN], vec![0.0; MAX_TRANSIENT_LEN / 2]);
+        let (tone_freq, toneishness) = tone_detect(&input, 1, n + overlap, 48000);
+        transient_analysis(
+            &input, n + overlap, 1, &mut tf_estimate, &mut tf_chan, false, &mut weak, tone_freq,
+            toneishness, &mut tmp, &mut tmp2,
+        );
+        assert_eq!(tf_estimate, 0.8355611562728882);
     }
 
     #[test]
