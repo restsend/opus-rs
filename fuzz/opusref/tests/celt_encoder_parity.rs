@@ -44,6 +44,16 @@ impl Default for Cfg {
 /// Encodes `frames` frames of `signal(frame, sample, channel)` with both
 /// encoders; returns per frame whether the packets are identical.
 fn identical(cfg: Cfg, frames: usize, signal: impl Fn(usize, usize, usize) -> f32) -> Vec<bool> {
+    identical_ends(cfg, frames, signal, |_| cfg.end)
+}
+
+/// [`identical`] with the end band of each frame from `end(frame)`.
+fn identical_ends(
+    cfg: Cfg,
+    frames: usize,
+    signal: impl Fn(usize, usize, usize) -> f32,
+    end: impl Fn(usize) -> usize,
+) -> Vec<bool> {
     let Cfg {
         fs, ch, n, bytes, ..
     } = cfg;
@@ -69,6 +79,8 @@ fn identical(cfg: Cfg, frames: usize, signal: impl Fn(usize, usize, usize) -> f3
         .map(|f| {
             let pcm: Vec<f32> = (0..n * ch).map(|i| signal(f, i / ch, i % ch)).collect();
             let planar: Vec<f32> = (0..n * ch).map(|i| pcm[(i % n) * ch + i / n]).collect();
+            e.set_end_band(end(f));
+            unsafe { ref_celt_encoder_ctl(r, 10012, end(f) as i32) };
             let mut rc = RangeCoder::new_encoder(bytes as u32);
             let vbr = cfg.vbr && cfg.bitrate != MAX;
             e.encode_with_budget_vbr(&planar, n, &mut rc, cfg.start, (bytes * 8) as i32, vbr);
@@ -97,6 +109,18 @@ fn noise(seed: u32, amp: f32) -> impl Fn(usize, usize, usize) -> f32 {
         }
         ((s >> 9) as f32 / (1u32 << 23) as f32 - 0.5) * 2.0 * amp
     }
+}
+
+/// Bands from the end band on restart from zero energy at the end of
+/// every frame (celt_encoder.c:2790-2804), so a band that comes back when
+/// the end band widens predicts its energy from 0.
+#[test]
+fn bands_beyond_the_end_band_restart_from_zero_energy() {
+    let ends = |f: usize| if f % 6 < 3 { 13 } else { 21 };
+    assert_eq!(
+        identical_ends(Cfg::default(), 12, noise(2, 0.3), ends),
+        [true; 12]
+    );
 }
 
 /// The CELT layer of a Hybrid frame (start band 17) runs the dynalloc
