@@ -1486,7 +1486,6 @@ fn dynalloc_analysis_simple(
     effective_bytes: usize,
     is_transient: bool,
     offsets: &mut [i32],
-    cap: &[i32],
     lsb_depth: i32,
     vbr: bool,
     constrained_vbr: bool,
@@ -1696,16 +1695,8 @@ fn dynalloc_analysis_simple(
             break;
         }
 
-        let quanta = (width << BITRES).min((6 << BITRES).max(width));
-        let mut boost_count = boost;
-        let mut as_bits = boost_count * quanta;
-        if as_bits > cap[i] {
-            as_bits = cap[i];
-            boost_count = as_bits / quanta;
-        }
-
-        offsets[i] = boost_count.max(0);
-        tot_boost += boost_bits.max(0);
+        offsets[i] = boost;
+        tot_boost += boost_bits;
     }
     (max_depth, tot_boost)
 }
@@ -2422,7 +2413,6 @@ impl CeltEncoder {
             effective_bytes,
             is_transient,
             offsets,
-            cap,
             self.lsb_depth,
             self.vbr,
             self.constrained_vbr,
