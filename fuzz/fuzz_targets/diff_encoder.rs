@@ -292,7 +292,7 @@ fn run(inp: Input) -> Result<(), Finding> {
             // `silk-input`: both encoders hand SILK the same 16-bit samples
             // (after the high-pass or DC filter and the conversion).
             let (si_rs, si_ref) = (opus_rs::fuzzing::take_silk_input(), c::take_silk_input());
-            if !si_rs.is_empty() && !si_ref.is_empty() {
+            if !si_rs.is_empty() && !si_ref.is_empty() && !suppressed("silk-input") {
                 if let Some(i) = (0..si_rs.len().min(si_ref.len())).find(|&i| si_rs[i] != si_ref[i])
                 {
                     let worst = si_rs

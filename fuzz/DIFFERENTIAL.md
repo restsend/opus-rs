@@ -89,8 +89,24 @@ find the next one:
 | `toc` | The ToC comparison in `diff_encoder` |
 | `simd` | The SIMD encoder in `diff_encoder` |
 | `rate`, `icdf` | Those calls in `api_args` |
+| `silk-input` | The SILK input comparison in `diff_encoder` |
 
 Tolerances: `OFZ_DEC_TOL`, `OFZ_PLC_TOL`, `OFZ_SIMD_TOL`, `OFZ_KTOL`.
+
+## Fixed-point reference
+
+`--features fixed` builds the reference as fixed-point libopus
+(`opusref/build.rs`), whose SILK encoder is the one opus-rs ports. Against it,
+SILK packets and the VoIP SILK input are exact; the Audio and low-delay SILK
+input follows the float build in opus-rs, so skip that comparison:
+
+```sh
+cargo +nightly fuzz build diff_encoder --features fixed
+OFZ_SUPPRESS=toc,simd,silk-input <target-dir>/release/diff_encoder ...
+```
+
+Fidelity differences against the float reference in SILK and Hybrid frames
+that this build does not show come from libopus's float SILK encoder.
 
 ## Neural network features
 
