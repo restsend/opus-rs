@@ -369,3 +369,25 @@ fn mono_stream_of_stereo_input_sees_the_whole_frame() {
         assert_eq!(&a[..n], &b[..m as usize], "frame {f}");
     }
 }
+
+/// A Hybrid split that would leave CELT 500 b/s or less codes SILK-only
+/// wideband (opus_encoder.c:1703-1716).
+#[test]
+fn starved_hybrid_codes_silk_only() {
+    for (fs, bw, cbr) in [(48000, 1104, false), (48000, 1104, true), (24000, 1104, false), (48000, 1105, false)] {
+        for bps in (2500..=8000).step_by(500) {
+            let mut p = Pair::new(fs, 1, Application::Voip);
+            p.rs.set_bandwidth(if bw == 1104 {
+                opus_rs::Bandwidth::Superwideband
+            } else {
+                opus_rs::Bandwidth::Fullband
+            });
+            p.ctl(c::SET_BANDWIDTH, bw);
+            if cbr {
+                p.cbr();
+            }
+            p.bitrate(bps);
+            p.check(5, fs as usize / 50, 1500, toc);
+        }
+    }
+}

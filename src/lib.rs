@@ -776,13 +776,13 @@ fn compute_silk_rate_for_hybrid(
 
 /// The CELT encoder's bitrate for a frame. libopus sets it to
 /// `OPUS_BITRATE_MAX` for every frame and, under VBR only, to the requested
-/// rate, which in hybrid mode is what the SILK share leaves
-/// (opus_encoder.c:2286, 2448-2464). CELT's `OPUS_SET_BITRATE` refuses rates
+/// rate, which in hybrid mode is what the SILK share leaves, at least 501 b/s
+/// (opus_encoder.c:2286, 2471-2497). CELT's `OPUS_SET_BITRATE` refuses rates
 /// of 500 b/s or less, so CELT then keeps the unlimited rate, and caps the
 /// rate at 750 kb/s per channel (celt_encoder.c:3001-3009).
 fn celt_bitrate(mode: OpusMode, vbr: bool, bitrate: i32, silk_rate: i32, channels: usize) -> i32 {
     let requested = if mode == OpusMode::Hybrid {
-        bitrate - silk_rate
+        (bitrate - silk_rate).max(501)
     } else {
         bitrate
     };
@@ -1144,10 +1144,10 @@ mod silk_rate_tests {
         use super::{OpusMode, celt_bitrate};
         let max = crate::celt::OPUS_BITRATE_MAX;
         assert_eq!(celt_bitrate(OpusMode::Hybrid, true, 12000, 9966, 1), 2034);
-        // At or below 500 b/s CELT keeps the unlimited rate.
-        assert_eq!(celt_bitrate(OpusMode::Hybrid, true, 2500, 2050, 1), max);
-        assert_eq!(celt_bitrate(OpusMode::Hybrid, true, 2500, 2000, 1), max);
-        assert_eq!(celt_bitrate(OpusMode::Hybrid, true, 2501, 2000, 1), 501);
+        // Hybrid gives CELT at least 501 b/s.
+        assert_eq!(celt_bitrate(OpusMode::Hybrid, true, 2500, 2050, 1), 501);
+        assert_eq!(celt_bitrate(OpusMode::Hybrid, true, 2500, 2000, 1), 501);
+        assert_eq!(celt_bitrate(OpusMode::Hybrid, true, 2502, 2000, 1), 502);
         // CBR never sets a CELT rate.
         assert_eq!(celt_bitrate(OpusMode::Hybrid, false, 32000, 22000, 1), max);
         assert_eq!(celt_bitrate(OpusMode::CeltOnly, false, 64000, 0, 1), max);
@@ -2080,6 +2080,22 @@ impl OpusEncoder {
                 || bandwidth == Bandwidth::Wideband)
         {
             mode = OpusMode::SilkOnly;
+        }
+        // A Hybrid split that leaves CELT 500 b/s or less codes SILK-only
+        // wideband (opus_encoder.c:1703-1716).
+        if mode == OpusMode::Hybrid {
+            let silk_rate = compute_silk_rate_for_hybrid(
+                self.rate,
+                bandwidth,
+                frame_rate == 50,
+                !self.use_cbr,
+                lbrr_coded != 0,
+                self.stream_channels,
+            );
+            if self.rate - silk_rate <= 500 {
+                mode = OpusMode::SilkOnly;
+                self.bandwidth = Bandwidth::Wideband;
+            }
         }
         self.mode = mode;
 

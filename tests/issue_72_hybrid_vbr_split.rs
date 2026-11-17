@@ -89,14 +89,13 @@ fn hybrid_speech_vbr_tracks_libopus_with_and_without_fec() {
 }
 
 #[test]
-fn hybrid_vbr_celt_share_below_501_bps_keeps_an_unlimited_rate() {
-    // At 24 kHz, 20 ms and 2500 b/s the super-wideband SILK share leaves
-    // CELT 450 b/s. libopus's OPUS_SET_BITRATE refuses rates of 500 b/s or
-    // less, so CELT keeps the unlimited rate it was given for the frame and
-    // fills the packet (1276 bytes in libopus 1.6.1), digital silence too,
-    // as only a CELT rate makes CELT VBR. At 48 kHz there is no
-    // super-wideband boost, CELT gets 750 b/s and packets stay small.
-    for (sr, unlimited) in [(24000usize, true), (48000, false)] {
+fn hybrid_vbr_celt_share_below_501_bps_codes_silk_only() {
+    // At 20 ms and 2500 b/s the SILK share of a super-wideband (24 kHz) or
+    // fullband (48 kHz) Hybrid packet leaves CELT 500 b/s or less, which
+    // CELT's OPUS_SET_BITRATE refuses. libopus main codes these packets
+    // SILK-only wideband (opus_encoder.c:1703-1716); the opusref test
+    // starved_hybrid_codes_silk_only compares the ToCs with libopus.
+    for sr in [24000usize, 48000] {
         let frame = sr / 50;
         let mut enc = OpusEncoder::new(sr as i32, 1, Application::Voip).unwrap();
         enc.bitrate_bps = 2500;
@@ -117,8 +116,12 @@ fn hybrid_vbr_celt_share_below_501_bps_keeps_an_unlimited_rate() {
             let n = enc
                 .encode(&input[p * frame..(p + 1) * frame], frame, &mut packet)
                 .unwrap();
-            assert!((12..16).contains(&(packet[0] >> 3)), "hybrid TOC");
-            assert_eq!(n == 1276, unlimited, "{sr} Hz packet {p}: {n} bytes");
+            assert_eq!(
+                packet[0] >> 3,
+                9,
+                "{sr} Hz packet {p}: SILK-only wideband 20 ms"
+            );
+            assert!(n < 40, "{sr} Hz packet {p}: {n} bytes");
             assert_eq!(
                 decoder
                     .decode_float(&packet[..n], &mut decoded, false)
