@@ -2191,8 +2191,7 @@ impl OpusEncoder {
         let frame_rate = frame_rate_from_params(self.sampling_rate, frame_size)
             .ok_or("Invalid frame size for sampling rate")?;
         let max_data_bytes = output.len();
-        #[cfg_attr(not(feature = "dred"), allow(unused_mut))]
-        let mut n_bytes = max_data_bytes.min(OPUS_MAX_PACKET_BYTES);
+        let n_bytes = max_data_bytes.min(OPUS_MAX_PACKET_BYTES);
         let silk_use_dtx = self.silk_use_dtx;
 
         // The frame's voice activity (opus_encode_frame_native:1916-1931).
@@ -2993,20 +2992,22 @@ impl OpusEncoder {
             redundancy_bytes = 0;
         }
 
+        // The bytes CELT may code into (libopus `nb_compr_bytes`).
+        #[cfg_attr(not(feature = "dred"), allow(unused_mut))]
+        let mut nb_compr_bytes = n_bytes - 1 - redundancy_bytes;
         if mode == OpusMode::Hybrid {
-            let nb_compr_bytes = (n_bytes - 1 - redundancy_bytes) as u32;
-            self.rc.shrink(nb_compr_bytes);
+            self.rc.shrink(nb_compr_bytes as u32);
         }
         // With DRED, CELT may take up to 25% of DRED's bytes, and at least
         // 5 bytes (opus_encode_frame_native).
         #[cfg(feature = "dred")]
         if mode != OpusMode::SilkOnly && self.dred.duration > 0 {
-            let nb_compr_bytes = (n_bytes - 1 - redundancy_bytes) as i32;
             let dred_bytes = bitrate_to_bits(self.dred_bitrate(), self.sampling_rate, frame_size) / 8;
-            let max_celt_bytes = ((self.rc.tell() + 7) / 8 + 5).max(nb_compr_bytes - dred_bytes * 3 / 4);
-            if max_celt_bytes < nb_compr_bytes {
+            let max_celt_bytes =
+                ((self.rc.tell() + 7) / 8 + 5).max(nb_compr_bytes as i32 - dred_bytes * 3 / 4);
+            if max_celt_bytes < nb_compr_bytes as i32 {
                 self.rc.shrink(max_celt_bytes as u32);
-                n_bytes = max_celt_bytes as usize + 1 + redundancy_bytes;
+                nb_compr_bytes = max_celt_bytes as usize;
             }
         }
 
@@ -3198,7 +3199,7 @@ impl OpusEncoder {
                 state_ref(&self.buf_celt_input)
             };
 
-            let total_packet_bits = ((n_bytes - 1 - redundancy_bytes) * 8) as i32;
+            let total_packet_bits = (nb_compr_bytes * 8) as i32;
             if self.rc.tell() <= total_packet_bits {
                 self.celt_enc.encode_with_budget_vbr(
                     celt_input,
@@ -3273,46 +3274,21 @@ impl OpusEncoder {
         // what even the damage-control re-encode fits, which is exactly the
         // case this fallback exists for.
         if self.rc.error != 0 || self.rc.tell() > (n_bytes as i32 - 1) * 8 {
-            if output.len() < 2 {
+            if n_bytes < 2 {
                 return Err("Output buffer too small");
             }
-            let mut ret = 2usize;
-            if self.use_cbr && n_bytes >= 2 {
-                // CBR: libopus pads that 2-byte packet, the ToC and a zero
-                // byte, to the nominal size (opus_packet_pad): a code-3
-                // packet of the 1-byte frame.
-                let target_total = n_bytes.min(output.len());
-                if target_total > 2 {
-                    let pad_amount = target_total - 3;
-                    output[0] = toc | 0x03;
-                    // 1 frame, CBR, and the padding flag if there is any.
-                    output[1] = if pad_amount > 0 { 0x41 } else { 0x01 };
-                    let mut ptr = 2;
-                    if pad_amount > 0 {
-                        let nb_255s = (pad_amount - 1) / 255;
-                        for _ in 0..nb_255s {
-                            output[ptr] = 255;
-                            ptr += 1;
-                        }
-                        output[ptr] = (pad_amount - 255 * nb_255s - 1) as u8;
-                        ptr += 1;
-                    }
-                    // The frame's zero byte, then the zero padding.
-                    for b in &mut output[ptr..target_total] {
-                        *b = 0;
-                    }
-                    self.prev_enc_mode = Some(next_prev_mode);
-                self.prev_channels = self.stream_channels;
-                    return Ok(target_total);
-                }
-                ret = target_total.max(1);
-            }
-            // VBR: the 2-byte code-0 packet.
+            // The ToC and a zero byte, with the redundancy's bytes still
+            // counted (opus_encoder.c:2601); CBR pads it.
             output[0] = toc;
             output[1] = 0;
+            let end = 2 + redundancy_bytes;
+            output[2..end].copy_from_slice(&self.rc.buf[1..1 + redundancy_bytes]);
             self.prev_enc_mode = Some(next_prev_mode);
-                self.prev_channels = self.stream_channels;
-            return Ok(ret);
+            self.prev_channels = self.stream_channels;
+            if self.use_cbr {
+                return Ok(pad_packet(output, end, max_data_bytes));
+            }
+            return Ok(end);
         }
         self.range_final = self.rc.rng ^ redundant_rng;
 
