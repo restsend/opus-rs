@@ -295,7 +295,11 @@ impl SilkResampler {
         }
 
         self.input_delay = DELAY_MATRIX_DEC[in_id][out_id] as i32;
-        self.init_common(fs_hz_in, fs_hz_out)
+        let ret = self.init_common(fs_hz_in, fs_hz_out);
+        if ret != 0 {
+            return ret;
+        }
+        self.init_down_fir(fs_hz_in, fs_hz_out)
     }
 
     /// Encoder-direction init: `silk_resampler_init(..., forEnc = 1)`
@@ -317,9 +321,12 @@ impl SilkResampler {
             return ret;
         }
 
-        // Downsample: private down-FIR with the per-ratio tables
-        // (resampler.c:117-150). The 3:4 ratio (16 -> 12 kHz) and integer
-        // down ratios 1:2 .. 1:6 are all reachable encoder combinations.
+        self.init_down_fir(fs_hz_in, fs_hz_out)
+    }
+
+    /// Downsampling, for the encoder and the decoder alike: the private
+    /// down-FIR with the per-ratio tables (resampler.c:117-150).
+    fn init_down_fir(&mut self, fs_hz_in: i32, fs_hz_out: i32) -> i32 {
         if fs_hz_out < fs_hz_in {
             let (fracs, order, coefs): (i32, usize, &'static [i16]) = if fs_hz_out * 4 == fs_hz_in * 3
             {
@@ -365,9 +372,8 @@ impl SilkResampler {
         } else if fs_hz_out == fs_hz_in * 2 {
             self.mode = ResamplerMode::Up2HQ;
         } else {
-            // IirFir covers every other ratio (upsampling in the decoder;
-            // downsampling ratios get the concrete down-FIR table in
-            // init_for_enc).
+            // IirFir covers the other upsampling ratios; init_down_fir
+            // replaces it with the down-FIR for downsampling.
             self.mode = ResamplerMode::IirFir;
         }
 

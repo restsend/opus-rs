@@ -32,3 +32,4 @@ n7	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	cbr] scalar 20ms	CBR pa
 n8	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	lost silk->	SILK concealment differs (libopus output beyond full scale)
 n9	diff_encoder	OFZ_SUPPRESS=toc,simd	range celt	encoder final range differs from the decoder's for its own packet
 n10	diff_encoder	OFZ_SUPPRESS=toc,simd	returns -4	encoder emits a 2-byte packet libopus rejects
+d1	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode ->hybrid	SILK resampling to 8 kHz misses the down-FIR
