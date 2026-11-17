@@ -2556,7 +2556,7 @@ impl CeltEncoder {
             rc,
             channels,
             lm,
-            (total_bits / 8) as usize,
+            nb_available,
             self.force_intra,
             &mut self.delayed_intra,
             self.complexity >= 4,
