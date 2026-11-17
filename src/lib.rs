@@ -953,6 +953,29 @@ fn gain_fade(pcm: &mut [f32], previous: f32, gain: f32, channels: usize, fs: i32
     }
 }
 
+/// libopus `opus_packet_pad` of a code 0 packet `output[..len]` to `total`
+/// bytes: a code 3 packet of the one frame and zero padding.
+fn pad_packet(output: &mut [u8], len: usize, total: usize) -> usize {
+    if total <= len {
+        return len;
+    }
+    let frame = len - 1;
+    let pad_amount = total - frame - 2;
+    let nb_255s = pad_amount.saturating_sub(1) / 255;
+    let header = if pad_amount == 0 { 2 } else { 3 + nb_255s };
+    output.copy_within(1..len, header);
+    output[0] |= 0x03;
+    if pad_amount == 0 {
+        output[1] = 0x01;
+    } else {
+        output[1] = 0x41;
+        output[2..2 + nb_255s].fill(255);
+        output[2 + nb_255s] = (pad_amount - 255 * nb_255s - 1) as u8;
+    }
+    output[header + frame..total].fill(0);
+    total
+}
+
 /// libopus `stereo_fade` (opus_encoder.c:548-575): moves the two channels
 /// towards their mid by 1 - width, cross-fading over the overlap.
 fn stereo_fade(pcm: &mut [f32], g1: f32, g2: f32, fs: i32) {
@@ -3092,7 +3115,7 @@ impl OpusEncoder {
             }
 
             let target_total = if self.use_cbr {
-                n_bytes.min(output.len())
+                cbr_bytes.min(max_data_bytes).max(1)
             } else {
                 (ret + 1).min(output.len())
             };
@@ -3149,6 +3172,11 @@ impl OpusEncoder {
             return Err("Output buffer too small");
         }
         output[1 + payload_len..end].copy_from_slice(redundant);
+        // CBR pads the packet to its size, which can exceed the 1276 bytes
+        // of one frame (opus_encoder.c:2602, 2646-2653).
+        if self.use_cbr {
+            return Ok(pad_packet(output, end, cbr_bytes.min(max_data_bytes)));
+        }
         Ok(end)
     }
 
@@ -3218,11 +3246,9 @@ impl OpusEncoder {
         // (encode_multiframe_packet).
         let cbr_total = if self.use_cbr {
             let bits = self.bitrate_bps as i64 * frame_size as i64 / self.sampling_rate as i64;
-            Some(
-                (((bits + 4) / 8) as usize)
-                    .clamp(1, OPUS_MAX_PACKET_BYTES)
-                    .min(output.len()),
-            )
+            // max_data_bytes is at most six frames of 1275 bytes
+            // (opus_encoder.c:1221).
+            Some((((bits + 4) / 8) as usize).clamp(1, 6 * 1275).min(output.len()))
         } else {
             None
         };
