@@ -253,8 +253,8 @@ pub fn compute_qn(n: usize, b: i32, offset: i32, pulse_cap: i32, stereo: bool) -
 #[inline(always)]
 pub fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i32 {
     let (x, y) = (&x[..n], &y[..n]);
-    let mut emid = 1e-15f32;
-    let mut eside = 1e-15f32;
+    let mut emid = 0.0f32;
+    let mut eside = 0.0f32;
     if stereo {
         for (&a, &b) in x.iter().zip(y) {
             let m = a + b;

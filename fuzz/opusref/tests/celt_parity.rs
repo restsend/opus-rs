@@ -154,3 +154,12 @@ fn coarse_energy_follows_the_previous_error() {
 fn split_angle_is_truncated_from_q30() {
     assert_eq!(identical(1, 20.0, 64, 0, "voice", 5), [true; 5]);
 }
+
+/// Silent halves give a zero angle: the energies start at 0 (vq.c:729), so
+/// celt_atan2p_norm sees them below its 1e-18 floor.
+#[test]
+fn silent_split_has_zero_angle() {
+    let z = [0f32; 4];
+    let c = unsafe { stereo_itheta(z.as_ptr(), z.as_ptr(), 0, 4, 0) };
+    assert_eq!(opus_rs::bands::stereo_itheta(&z, &z, false, 4), c);
+}
