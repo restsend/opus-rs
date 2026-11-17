@@ -247,7 +247,14 @@ impl CeltDecoder {
             self.last_pitch_index = pitch;
             (pitch, 1.0f32)
         } else {
-            (self.last_pitch_index, 0.8)
+            // Fade once a whole pitch period is concealed.
+            let concealed = self.plc_duration as usize * mode.short_mdct_size;
+            let fade = if concealed >= self.last_pitch_index {
+                0.8
+            } else {
+                1.0
+            };
+            (self.last_pitch_index, fade)
         };
         #[cfg(feature = "deep-plc")]
         let mut lpcnet = lpcnet;
@@ -318,11 +325,17 @@ impl CeltDecoder {
                     .fold(1.0f32, |e, &x| e + x * x)
             };
 
-            // How fast the waveform decays, so concealment adds no energy.
+            // How fast the waveform decays, so concealment adds no energy,
+            // measured on the first lost frame and kept for the next ones.
             // (The float build's SHR32 is a no-op: no halving of E1.)
-            let e1 = energy(exc_length - pitch_index);
-            let e2 = energy(exc_length - 2 * pitch_index);
-            let decay = (e1.min(e2) / e2).sqrt();
+            let decay = if first {
+                let e1 = energy(exc_length - pitch_index);
+                let e2 = energy(exc_length - 2 * pitch_index);
+                self.plc_decay[c] = (e1.min(e2) / e2).sqrt();
+                self.plc_decay[c]
+            } else {
+                self.plc_decay[c]
+            };
 
             // Repeat the largest multiple of the pitch period whose periods
             // all stay within 6 dB of the last one, so a short period does

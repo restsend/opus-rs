@@ -3178,6 +3178,9 @@ pub struct CeltDecoder {
     last_frame_type: u8,
     /// Pitch period the periodic concealment repeats.
     last_pitch_index: usize,
+    /// Decay of the periodic concealment per channel, measured on the
+    /// first lost frame (`plc_decay`).
+    plc_decay: [f32; CELT_MAX_CHANNELS],
     /// Whether the next frame must fold a concealed overlap first.
     prefilter_and_fold: bool,
     /// Concealment LPC filter per channel.
@@ -3322,6 +3325,7 @@ impl CeltDecoder {
         skip_plc: true,
         last_frame_type: plc::FRAME_NONE,
         last_pitch_index: 0,
+        plc_decay: [0.0; CELT_MAX_CHANNELS],
         prefilter_and_fold: false,
         plc_lpc: [0.0; plc::LPC_ORDER * CELT_MAX_CHANNELS],
         start_band: 0,
@@ -3380,6 +3384,7 @@ impl CeltDecoder {
         self.skip_plc = true;
         self.last_frame_type = plc::FRAME_NONE;
         self.last_pitch_index = 0;
+        self.plc_decay = [0.0; CELT_MAX_CHANNELS];
         self.prefilter_and_fold = false;
         self.plc_lpc = [0.0; plc::LPC_ORDER * CELT_MAX_CHANNELS];
         self.start_band = 0;
@@ -3433,6 +3438,7 @@ impl CeltDecoder {
         self.skip_plc = true;
         self.last_frame_type = plc::FRAME_NONE;
         self.last_pitch_index = 0;
+        self.plc_decay = [0.0; CELT_MAX_CHANNELS];
         self.prefilter_and_fold = false;
         self.plc_lpc = [0.0; plc::LPC_ORDER * CELT_MAX_CHANNELS];
         #[cfg(feature = "deep-plc")]
