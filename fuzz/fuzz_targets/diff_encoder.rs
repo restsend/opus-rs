@@ -18,6 +18,9 @@
 //! - `fidelity`: per-frame SNR against the input, both streams decoded by
 //!   libopus. Flags frames where opus-rs is below 3 dB while libopus is at
 //!   least 6 dB better.
+//!
+//! With `--features dnn` the settings also choose a DRED duration (both
+//! encoders, so the packets carry the DRED extension and its bits).
 #![no_main]
 
 #[macro_use]
@@ -57,6 +60,9 @@ struct Settings {
     signal: u8,
     bandwidth: u8,
     max_bandwidth: u8,
+    /// With the `dnn` feature: the DRED duration in 10 ms frames (0-104).
+    #[cfg(feature = "dnn")]
+    dred: u8,
 }
 
 #[derive(Arbitrary, Debug, Clone, Copy)]
@@ -79,6 +85,8 @@ impl Default for Settings {
             signal: 0,
             bandwidth: 0,
             max_bandwidth: 0,
+            #[cfg(feature = "dnn")]
+            dred: 0,
         }
     }
 }
@@ -131,6 +139,15 @@ fn apply(rs: &mut [&mut OpusEncoder; 2], re: &mut RefEnc, s: &Settings) {
     re.ctl(c::SET_SIGNAL, sig as i32);
     re.ctl(c::SET_BANDWIDTH, bw as i32);
     re.ctl(c::SET_MAX_BANDWIDTH, mbw as i32);
+    // OPUS_SET_DRED_DURATION; the packet loss above sets DRED's bitrate.
+    #[cfg(feature = "dnn")]
+    {
+        let dred = (s.dred % 105) as i32;
+        for e in rs.iter_mut() {
+            e.set_dred_duration(dred).unwrap();
+        }
+        re.ctl(4050, dred);
+    }
 }
 
 fn mode_name(toc: u8) -> &'static str {
