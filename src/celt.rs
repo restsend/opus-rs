@@ -1683,13 +1683,15 @@ fn dynalloc_analysis_simple(
             (b, (b * 6) << BITRES)
         };
 
-        // Cap only for CBR / non-transient constrained VBR (libopus 1254-1257)
-        if !vbr || (constrained_vbr && !is_transient) {
-            let cap_bits = ((2 * effective_bytes as i32) / 3) << (BITRES + 3);
-            if tot_boost + boost_bits > cap_bits {
-                offsets[i] = ((cap_bits - tot_boost) >> BITRES).max(0);
-                break;
-            }
+        // For CBR and non-transient CVBR frames, limit dynalloc to 2/3 of
+        // the bits (celt_encoder.c:1253-1260); the last band gets the rest
+        // of the cap in eighth bits.
+        if (!vbr || (constrained_vbr && !is_transient))
+            && (tot_boost + boost_bits) >> BITRES >> 3 > 2 * effective_bytes as i32 / 3
+        {
+            let cap_bits = (2 * effective_bytes as i32 / 3) << BITRES << 3;
+            offsets[i] = cap_bits - tot_boost;
+            break;
         }
 
         let quanta = (width << BITRES).min((6 << BITRES).max(width));

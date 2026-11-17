@@ -280,3 +280,10 @@ fn renormalise_uses_reciprocal_sqrt() {
 fn renormalise_adds_epsilon_after_the_sum() {
     assert_eq!(renormalise_mismatches(1e-7), 0);
 }
+
+/// The CBR/CVBR dynalloc cap triggers on whole bytes and leaves the last
+/// boosted band the rest of the cap in eighth bits (celt_encoder.c:1253-1260).
+#[test]
+fn dynalloc_cap_follows_libopus() {
+    assert_eq!(identical(2, 20.0, 32, 1, "sine", 4), [true; 4]);
+}
