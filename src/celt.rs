@@ -1493,6 +1493,21 @@ fn median5(v: &[f32]) -> f32 {
     x[2]
 }
 
+/// The largest of `init` and the magnitudes in `x`. `f32::max` skips NaN
+/// and otherwise gives the same result in any order, so eight running
+/// maxima equal the sequential fold.
+fn max_abs(x: &[f32], init: f32) -> f32 {
+    let mut m = [init; 8];
+    let blocks = x.chunks_exact(8);
+    let rest = blocks.remainder();
+    for b in blocks {
+        for (m, v) in m.iter_mut().zip(b) {
+            *m = m.max(v.abs());
+        }
+    }
+    rest.iter().chain(&m).fold(init, |m, v| m.max(v.abs()))
+}
+
 const TONE_LAGS: [usize; 8] = [0, 1, 2, 4, 8, 16, 32, 64];
 
 /// Adds x[i]*x[i+TONE_LAGS[j]] to acc[j] for i in start..end, j < K.
@@ -2203,9 +2218,7 @@ impl CeltEncoder {
         let tail = overlap / upsample;
         let channel_max = |r: core::ops::Range<usize>, init: f32| {
             (0..cc).fold(init, |m, c| {
-                pcm[c * api_frame_size..][r.clone()]
-                    .iter()
-                    .fold(m, |m, v| m.max(v.abs()))
+                max_abs(&pcm[c * api_frame_size..][r.clone()], m)
             })
         };
         let sample_max = channel_max(0..head, self.overlap_max);
@@ -2231,18 +2244,26 @@ impl CeltEncoder {
             // internal samples.
             let syn = &mut self.syn_mem[channel_offset + syn_mem_size - frame_size..][..frame_size];
             let input = &pcm[c * api_frame_size..];
+            let scale = |v: f32| {
+                let x = v * 32768.0;
+                if need_clip {
+                    x.clamp(-65536.0, 65536.0)
+                } else {
+                    x
+                }
+            };
+            if upsample == 1 {
+                for (y, &v) in syn.iter_mut().zip(input) {
+                    let x = scale(v);
+                    *y = x - m;
+                    m = x * coef;
+                }
+                self.preemph_mem[c] = m;
+                continue;
+            }
             for (chunk, &v) in syn.chunks_mut(upsample).zip(input) {
                 for (k, y) in chunk.iter_mut().enumerate() {
-                    let x = if k == 0 {
-                        let x = v * 32768.0;
-                        if need_clip {
-                            x.clamp(-65536.0, 65536.0)
-                        } else {
-                            x
-                        }
-                    } else {
-                        0.0
-                    };
+                    let x = if k == 0 { scale(v) } else { 0.0 };
                     *y = x - m;
                     m = x * coef;
                 }
