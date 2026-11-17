@@ -11,7 +11,7 @@ use super::nnet::{
     Activation, compute_generic_conv1d, compute_generic_dense, compute_generic_gru, compute_glu,
     compute_glu_inplace,
 };
-use super::pitchdnn::PITCH_MAX_PERIOD;
+use super::pitchdnn::{PITCH_MAX_PERIOD, PITCH_MIN_PERIOD};
 use super::vec::{c_int, max32, min32};
 
 pub const FARGAN_CONT_SAMPLES: usize = 320;
@@ -61,13 +61,15 @@ impl<'a> FarganState<'a> {
     }
 }
 
-/// The pitch period of a feature vector:
-/// `(int)floor(.5+256./pow(2.f,((1./60.)*((features[NB_BANDS]+1.5)*60))))`.
+/// `fargan_period`: the pitch period of a feature vector,
+/// `(int)floor(.5+256./pow(2.f,((1./60.)*((features[NB_BANDS]+1.5)*60))))`,
+/// clamped to the range of the pitch buffer.
 pub(crate) fn feature_period(features: &[f32]) -> i32 {
     c_int(
         (0.5 + 256.0 / 2.0f64.powf((1.0 / 60.0) * ((features[NB_BANDS] as f64 + 1.5) * 60.0)))
             .floor(),
     )
+    .clamp(PITCH_MIN_PERIOD as i32, PITCH_MAX_PERIOD as i32)
 }
 
 /// `compute_fargan_cond`.

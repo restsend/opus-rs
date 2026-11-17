@@ -54,6 +54,43 @@ fn fargan_matches() {
     unsafe { c::ref_fargan_destroy(cst) };
 }
 
+/// Pitch features whose period lies outside the pitch buffer range (above
+/// 256 and below 32 samples): libopus main clamps the period to [32, 256].
+#[test]
+fn fargan_clamps_the_period() {
+    use opus_rs::dnn::freq::NB_BANDS;
+    let sig = speechlike(16000, 12);
+    let feats = features_of(&sig);
+    let cst = unsafe { c::ref_fargan_create() };
+    let mut rst = FarganState::new(builtin::fargan().unwrap());
+    let pcm0: Vec<f32> = sig[10 * FRAME_SIZE - 320..10 * FRAME_SIZE]
+        .iter()
+        .map(|x| x / 32768.0)
+        .collect();
+    let f0: Vec<f32> = feats[5..10]
+        .iter()
+        .flat_map(|f| f[..NB_FEATURES].to_vec())
+        .collect();
+    unsafe { c::ref_fargan_cont(cst, pcm0.as_ptr(), f0.as_ptr()) };
+    fargan::fargan_cont(&mut rst, &pcm0, &f0);
+    // Periods of about 362, 23, 300 and 16 samples.
+    for (k, pitch) in [-2.0f32, 2.0, -1.73, 3.0]
+        .into_iter()
+        .cycle()
+        .take(12)
+        .enumerate()
+    {
+        let mut f = feats[10 + k];
+        f[NB_BANDS] = pitch;
+        let mut a = [0f32; 160];
+        let mut b = [0f32; 160];
+        unsafe { c::ref_fargan_synthesize(cst, a.as_mut_ptr(), f.as_ptr()) };
+        fargan::fargan_synthesize(&mut rst, &mut b, &f);
+        assert_eq!(same_bits(&a, &b), None, "frame {k}");
+    }
+    unsafe { c::ref_fargan_destroy(cst) };
+}
+
 #[test]
 fn plc_sequences_match() {
     let sig = speechlike(16000 * 6, 12);
