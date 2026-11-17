@@ -3638,7 +3638,9 @@ impl CeltDecoder {
             lm as i32,
             coded_bands,
             true,
-            false,
+            // libopus sets disable_inv for one output channel
+            // (celt_decoder_init), so a mono decoder ignores the inversion.
+            out_channels == 1,
             &mut self.rng,
         );
         // Trace X values for comparison with C decoder
