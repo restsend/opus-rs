@@ -892,9 +892,10 @@ fn comb_filter(
     }
 }
 
-/// In-place comb filter: buf[y_idx..y_idx+n] is both input and output.
-/// Reference samples at buf[y_idx + i - T + offset] may already be filtered
-/// if T < i, matching C libopus's in-place comb_filter(out, out, ...) behavior.
+/// comb_filter (celt.c) in place on `buf[y_idx..][..n]`, as the decoder
+/// calls it: the reads at `y_idx + i - T` see the history before `y_idx` and
+/// the samples already filtered.
+#[allow(clippy::too_many_arguments)]
 fn comb_filter_inplace(
     buf: &mut [f32],
     y_idx: usize,
@@ -909,7 +910,6 @@ fn comb_filter_inplace(
     overlap: usize,
 ) {
     if g0 == 0.0 && g1 == 0.0 {
-        // nothing to do; buf[y_idx..] already holds the input
         return;
     }
 
@@ -924,48 +924,40 @@ fn comb_filter_inplace(
     let g11 = g1 * PREFILTER_GAINS[tapset1 as usize][1];
     let g12 = g1 * PREFILTER_GAINS[tapset1 as usize][2];
 
-    let mut inner_overlap = overlap;
-    if g0 == g1 && t0 == t1 && tapset0 == tapset1 {
-        inner_overlap = 0;
-    }
-
-    let mut i = 0;
-    while i < inner_overlap && i < n {
+    // The filter did not change: no cross-fade.
+    let overlap = if g0 == g1 && t0 == t1 && tapset0 == tapset1 {
+        0
+    } else {
+        overlap.min(n)
+    };
+    for i in 0..overlap {
         let idx = y_idx + i;
         let f = window[i] * window[i];
-        let s = buf[idx]; // original input (not yet overwritten at idx)
-        let r0 = buf[idx - t0];
-        let r0p1 = buf[idx - t0 + 1];
-        let r0m1 = buf[idx - t0 - 1];
-        let r0p2 = buf[idx - t0 + 2];
-        let r0m2 = buf[idx - t0 - 2];
-        let r1 = buf[idx - t1];
-        let r1p1 = buf[idx - t1 + 1];
-        let r1m1 = buf[idx - t1 - 1];
-        let r1p2 = buf[idx - t1 + 2];
-        let r1m2 = buf[idx - t1 - 2];
         // celt.c:283-289: each gain is scaled by the window before use.
-        buf[idx] = s
-            + ((1.0 - f) * g00) * r0
-            + ((1.0 - f) * g01) * (r0p1 + r0m1)
-            + ((1.0 - f) * g02) * (r0p2 + r0m2)
-            + (f * g10) * r1
-            + (f * g11) * (r1p1 + r1m1)
-            + (f * g12) * (r1p2 + r1m2);
-        i += 1;
+        buf[idx] = buf[idx]
+            + ((1.0 - f) * g00) * buf[idx - t0]
+            + ((1.0 - f) * g01) * (buf[idx - t0 + 1] + buf[idx - t0 - 1])
+            + ((1.0 - f) * g02) * (buf[idx - t0 + 2] + buf[idx - t0 - 2])
+            + (f * g10) * buf[idx - t1]
+            + (f * g11) * (buf[idx - t1 + 1] + buf[idx - t1 - 1])
+            + (f * g12) * (buf[idx - t1 + 2] + buf[idx - t1 - 2]);
+    }
+    if g1 == 0.0 {
+        return;
     }
 
-    // Constant region: only new filter (t1, g1)
-    while i < n {
-        let idx = y_idx + i;
-        let s = buf[idx];
-        let r1 = buf[idx - t1];
-        let r1p1 = buf[idx - t1 + 1];
-        let r1m1 = buf[idx - t1 - 1];
-        let r1p2 = buf[idx - t1 + 2];
-        let r1m2 = buf[idx - t1 - 2];
-        buf[idx] = s + g10 * r1 + g11 * (r1p1 + r1m1) + g12 * (r1p2 + r1m2);
-        i += 1;
+    // comb_filter_const_c: x[i - t1 + k - 2] is buf[start + i + k] here.
+    let start = y_idx + overlap - t1 - 2;
+    let x = &mut buf[start..y_idx + n];
+    let (mut x4, mut x3, mut x2, mut x1) = (x[0], x[1], x[2], x[3]);
+    for i in 0..n - overlap {
+        let x0 = x[i + 4];
+        let y = &mut x[i + t1 + 2];
+        *y = *y + g10 * x2 + g11 * (x1 + x3) + g12 * (x0 + x4);
+        x4 = x3;
+        x3 = x2;
+        x2 = x1;
+        x1 = x0;
     }
 }
 
