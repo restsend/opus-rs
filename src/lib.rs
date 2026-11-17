@@ -1274,52 +1274,6 @@ impl OpusEncoder {
             return Err("SILK encoder initialization failed");
         }
 
-        let (opus_mode, bw) = match application {
-            Application::Voip => {
-                let bw = match sampling_rate {
-                    8000 => Bandwidth::Narrowband,
-                    12000 => Bandwidth::Mediumband,
-                    16000 => Bandwidth::Wideband,
-                    24000 => Bandwidth::Superwideband,
-                    48000 => Bandwidth::Fullband,
-                    _ => Bandwidth::Narrowband,
-                };
-
-                let mode = if sampling_rate > 16000 {
-                    OpusMode::Hybrid
-                } else {
-                    OpusMode::SilkOnly
-                };
-                (mode, bw)
-            }
-            Application::RestrictedLowDelay => {
-                let bw = match sampling_rate {
-                    8000 => Bandwidth::Narrowband,
-                    12000 => Bandwidth::Mediumband,
-                    16000 => Bandwidth::Wideband,
-                    24000 => Bandwidth::Superwideband,
-                    _ => Bandwidth::Fullband,
-                };
-                (OpusMode::CeltOnly, bw)
-            }
-            Application::Audio => {
-                if sampling_rate <= 16000 {
-                    let bw = match sampling_rate {
-                        8000 => Bandwidth::Narrowband,
-                        12000 => Bandwidth::Mediumband,
-                        _ => Bandwidth::Wideband,
-                    };
-                    (OpusMode::SilkOnly, bw)
-                } else {
-                    let bw = match sampling_rate {
-                        24000 => Bandwidth::Superwideband,
-                        _ => Bandwidth::Fullband,
-                    };
-                    (OpusMode::Hybrid, bw)
-                }
-            }
-        };
-
         use silk::lin2log::silk_lin2log;
         let variable_hp_smth2_q15 = silk_lin2log(60) << 8;
 
@@ -1330,7 +1284,9 @@ impl OpusEncoder {
             application,
             sampling_rate,
             channels,
-            bandwidth: bw,
+            // libopus starts in Hybrid at fullband (opus_encoder.c:319-320),
+            // which a ToC-only first packet signals.
+            bandwidth: Bandwidth::Fullband,
             bitrate_bps: Self::BITRATE_AUTO,
             complexity: 9,
             vbr_constraint: true,
@@ -1343,7 +1299,7 @@ impl OpusEncoder {
             silk_initialized: false,
             prev_enc_mode: None,
             nonfinal_frame: false,
-            mode: opus_mode,
+            mode: OpusMode::Hybrid,
             variable_hp_smth2_q15,
             width_mem: StereoWidthState::default(),
             signal: Signal::Auto,

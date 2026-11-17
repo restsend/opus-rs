@@ -152,3 +152,17 @@ fn small_buffer_threshold_floors_to_bytes() {
     p.bitrate(12000);
     p.check(8, 160, 11, toc);
 }
+
+/// A new encoder is at fullband (and in Hybrid mode) at every rate and
+/// application, like libopus (opus_encoder.c:319-320).
+#[test]
+fn initial_bandwidth_is_fullband() {
+    for fs in [8000, 12000, 16000, 24000, 48000] {
+        for app in [Application::Voip, Application::Audio, Application::RestrictedLowDelay] {
+            let p = Pair::new(fs, 1, app);
+            let mut bw = 0i32;
+            unsafe { c::opus_encoder_ctl(p.re, 4009, &mut bw as *mut i32) }; // OPUS_GET_BANDWIDTH
+            assert_eq!(p.rs.bandwidth() as i32, bw, "{fs} Hz {app:?}");
+        }
+    }
+}
