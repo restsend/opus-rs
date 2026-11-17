@@ -6,9 +6,10 @@
 //! two NLSFs come out of the analysis in the wrong order, the weights of the
 //! stabilized vector differ, and so do the coded NLSF indices. The test
 //! encodes all 18 s of the fixture with 16-bit input at 16 kHz, 20 ms,
-//! 12 kb/s, CBR, VoIP, complexity 9, where that happens at packet 526, and
-//! compares every packet with a hash of fixed-point libopus main's at the
-//! same settings (voice signal, wideband, mono; loss rate 10% with FEC).
+//! 12 kb/s, CBR, VoIP, complexity 9, where that happens, and compares every
+//! packet with a hash of the packets of fixed-point libopus main, with the
+//! patches of fuzz/opusref/patches, at the same settings (voice signal,
+//! wideband, mono; loss rate 10% with FEC).
 
 // Only the fixture reader is used here.
 #[allow(dead_code)]
@@ -63,7 +64,7 @@ fn silk_nlsf_weights_match_fixed_point_libopus() {
         }
         assert_eq!(
             (hash, packets),
-            (0x5b5df5b7faabfdc1, 902),
+            (0xee611830a7b7c417, 902),
             "16 kHz 20 ms 12 kb/s CBR, FEC {fec}"
         );
     }

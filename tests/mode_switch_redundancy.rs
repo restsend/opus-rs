@@ -365,11 +365,11 @@ fn silk_layer_follows_fixed_point_libopus_across_switches() {
     // history moved through the new resampler, the shaping state reset) and
     // FEC turning off (the previous packet's LBRR data still coded).
     let cases: [(Schedule, bool, usize, usize, usize, u64, usize); 5] = [
-        (silk_celt, true, 24000, 20, 1, 0xec900bd287c49dc8, 483),
-        (silk_celt, true, 48000, 10, 1, 0x593fd9bce234bcd4, 943),
-        (silk_celt, true, 24000, 20, 2, 0x52d63c73fe878cca, 483),
-        (hybrid_silk, true, 24000, 20, 1, 0x44b88c83569b985b, 902),
-        (hybrid_celt, false, 24000, 20, 1, 0x681800419a482e5a, 483),
+        (silk_celt, true, 24000, 20, 1, 0xcfbbb722a1efd6fb, 483),
+        (silk_celt, true, 48000, 10, 1, 0x4264d2f0a1f685e9, 943),
+        (silk_celt, true, 24000, 20, 2, 0x487332582d4237da, 483),
+        (hybrid_silk, true, 24000, 20, 1, 0x905e33ffe5939ed2, 902),
+        (hybrid_celt, false, 24000, 20, 1, 0x976a1c08a409da59, 483),
     ];
     for (schedule, fec, sr, ms, channels, expected, layers) in cases {
         let input = speech_i16(sr, channels);

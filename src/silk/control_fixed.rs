@@ -23,7 +23,6 @@ pub fn silk_find_pred_coefs_fix(
     let mut local_gains = [0i32; MAX_NB_SUBFR];
     let mut nlsf_q15 = [0i16; MAX_LPC_ORDER];
     let mut min_gain_q16: i32;
-    let mut min_inv_gain_q30: i32;
 
     min_gain_q16 = i32::MAX >> 6;
     for i in 0..ps_enc.s_cmn.nb_subfr as usize {
@@ -102,28 +101,14 @@ pub fn silk_find_pred_coefs_fix(
         ps_enc_ctrl.ltp_scale_q14 = 0;
     }
 
-    if ps_enc.s_cmn.first_frame_after_reset != 0 {
-        min_inv_gain_q30 =
-            (1.0f32 / MAX_PREDICTION_POWER_GAIN_AFTER_RESET * 1073741824.0f32) as i32;
+    let min_inv_gain_q30 = if ps_enc.s_cmn.first_frame_after_reset != 0 {
+        (1.0f32 / MAX_PREDICTION_POWER_GAIN_AFTER_RESET * 1073741824.0f32) as i32
     } else {
-        min_inv_gain_q30 = silk_log2lin(silk_smlawb(
-            16 << 7,
+        silk_min_inv_gain_q30(
             ps_enc_ctrl.ltp_red_cod_gain_q7,
-            (1.0f32 / 3.0f32 * 65536.0f32) as i32,
-        ));
-        min_inv_gain_q30 = silk_div32_varq(
-            min_inv_gain_q30,
-            silk_smulww(
-                MAX_PREDICTION_POWER_GAIN as i32,
-                silk_smlawb(
-                    (0.25f32 * 262144.0f32) as i32,
-                    (0.75f32 * 262144.0f32) as i32,
-                    ps_enc_ctrl.coding_quality_q14,
-                ),
-            ),
-            14,
-        );
-    }
+            ps_enc_ctrl.coding_quality_q14,
+        )
+    };
 
     silk_find_lpc_fix(
         &mut ps_enc.s_cmn,
@@ -144,6 +129,31 @@ pub fn silk_find_pred_coefs_fix(
         ps_enc.s_cmn.nb_subfr,
         ps_enc.s_cmn.predict_lpc_order,
     );
+}
+
+/// `minInvGain_Q30` of find_pred_coefs_FIX.c, the inverse of the largest
+/// LPC prediction gain, as find_pred_coefs_FLP.c computes it:
+/// `2^(LTPredCodGain / 3) / (MAX_PREDICTION_POWER_GAIN * (0.25 + 0.75 *
+/// coding_quality))`.
+/// The constant 0.75 is in Q20, so its product with the Q14 coding quality
+/// is in the Q18 of 0.25, and the quotient of the Q16 gain by the Q2
+/// denominator is in Q30 (fuzz/opusref/patches/silk-fixed-min-inv-gain.patch).
+pub fn silk_min_inv_gain_q30(ltp_red_cod_gain_q7: i32, coding_quality_q14: i32) -> i32 {
+    let gain_q16 = silk_log2lin(silk_smlawb(
+        16 << 7,
+        ltp_red_cod_gain_q7,
+        (1.0f32 / 3.0f32 * 65536.0f32) as i32,
+    ));
+    let quality_q18 = silk_smlawb(
+        (0.25f32 * 262144.0f32) as i32,
+        (0.75f32 * 1048576.0f32) as i32,
+        coding_quality_q14,
+    );
+    silk_div32_varq(
+        gain_q16,
+        silk_smulww(MAX_PREDICTION_POWER_GAIN as i32, quality_q18),
+        16,
+    )
 }
 
 pub fn silk_process_gains_fix(
@@ -271,4 +281,28 @@ pub fn silk_ltp_scale_ctrl_fix(
     }
     ps_enc_ctrl.ltp_scale_q14 =
         SILK_LTP_SCALES_TABLE_Q14[ps_enc.s_cmn.indices.ltp_scale_index as usize] as i32;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(not(feature = "std"))]
+    use crate::compat::Math;
+
+    /// The fixed-point limit on the LPC prediction gain follows the float
+    /// encoder's 2^(g / 3) / (1e4 * (0.25 + 0.75 * coding_quality)) at every
+    /// coding quality.
+    #[test]
+    fn min_inv_gain_is_the_float_encoders() {
+        let mut worst = 0.0f64;
+        for g_q7 in [0, 128, 3 * 128, 10 * 128, 20 * 128] {
+            for cq_q14 in 0..=16384 {
+                let fixed = f64::from(silk_min_inv_gain_q30(g_q7, cq_q14)) / f64::from(1 << 30);
+                let cq = f64::from(cq_q14) / 16384.0;
+                let float = 2f64.powf(f64::from(g_q7) / 128.0 / 3.0) / 1e4 / (0.25 + 0.75 * cq);
+                worst = worst.max((fixed / float - 1.0).abs());
+            }
+        }
+        assert!(worst < 0.008, "largest relative difference {worst}");
+    }
 }

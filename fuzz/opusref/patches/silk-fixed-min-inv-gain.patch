@@ -1,0 +1,56 @@
+Subject: [PATCH] silk: fix the Q formats of minInvGain_Q30 in the fixed-point encoder
+
+silk_find_pred_coefs_FLP() limits the LPC prediction gain with
+
+    minInvGain = 2^(LTPredCodGain / 3)
+                 / (MAX_PREDICTION_POWER_GAIN * (0.25 + 0.75 * coding_quality))
+
+silk_find_pred_coefs_FIX() computes it with two Q-format slips:
+silk_SMLAWB( SILK_FIX_CONST( 0.25, 18 ), SILK_FIX_CONST( 0.75, 18 ),
+coding_quality_Q14 ) adds the Q16 product 0.75 * coding_quality to the Q18
+constant 0.25, giving 0.25 + 0.1875 * coding_quality, and silk_DIV32_varQ()
+of the Q16 gain by the resulting Q2 denominator with Qres 14 returns Q28
+into the Q30 variable. The fixed-point limit is therefore
+
+    2^(LTPredCodGain / 3)
+    / (MAX_PREDICTION_POWER_GAIN * (1 + 0.75 * coding_quality))
+
+so the fixed-point encoder allows 1.75 to 4 times (2.4 to 6 dB) the
+prediction gain of the float encoder, most at low coding quality. With
+0.75 in Q20 and Qres 16 the fixed-point value equals the float one.
+
+The higher gain shows after a loud onset at low bitrates: the gains fall
+by at most 4 indices per subframe, and a frame without pulses decodes to
+the quantization offset at that gain through the more resonant synthesis
+filter. 8 kHz mono VoIP, 10 ms, 6 kb/s, complexity 0, a step to 0.156 full
+scale: the second frame decodes at -11.5 dB SNR (float: -1.6 dB); with
+this patch, -1.9 dB.
+
+Range: silk_quant_LTP_gains() returns LTPredCodGain_Q7 in -6141..6144.
+Over that range and every coding_quality_Q14 the patched expression runs
+clean under -fsanitize=undefined without -fwrapv: minInvGain_Q30 spans 1
+to 2147483644 (silk_log2lin() saturates, silk_DIV32_varQ() stays just
+below 2.0) and reaches 1.0 from an LTP gain of 33.9 dB. With a limit of
+1.0 or more silk_burg_modified() takes rc = 0 (silk_SQRT_APPROX() of a
+non-positive value), a flat filter; silk_burg_modified_FLP() takes
+rc = sqrt(1 - minInvGain / invGain), NaN for a float limit above 1. The
+encoder stays below that: find_LTP normalizes the correlations by the
+target energy, so the residual silk_VQ_WMat_EC() returns stays near 0.001
+or above and the LTP gain near 31 dB or below; strictly periodic test
+signals reach 25.5 dB.
+
+Affects the FIXED_POINT build only.
+---
+diff --git a/silk/fixed/find_pred_coefs_FIX.c b/silk/fixed/find_pred_coefs_FIX.c
+index c49e44f..cc17aaf 100644
+--- a/silk/fixed/find_pred_coefs_FIX.c
++++ b/silk/fixed/find_pred_coefs_FIX.c
+@@ -128,7 +128,7 @@ void silk_find_pred_coefs_FIX(
+         minInvGain_Q30 = silk_log2lin( silk_SMLAWB( 16 << 7, (opus_int32)psEncCtrl->LTPredCodGain_Q7, SILK_FIX_CONST( 1.0 / 3, 16 ) ) );      /* Q16 */
+         minInvGain_Q30 = silk_DIV32_varQ( minInvGain_Q30,
+             silk_SMULWW( SILK_FIX_CONST( MAX_PREDICTION_POWER_GAIN, 0 ),
+-                silk_SMLAWB( SILK_FIX_CONST( 0.25, 18 ), SILK_FIX_CONST( 0.75, 18 ), psEncCtrl->coding_quality_Q14 ) ), 14 );
++                silk_SMLAWB( SILK_FIX_CONST( 0.25, 18 ), SILK_FIX_CONST( 0.75, 20 ), psEncCtrl->coding_quality_Q14 ) ), 16 );
+     }
+ 
+     /* LPC_in_pre contains the LTP-filtered input for voiced, and the unfiltered input for unvoiced */

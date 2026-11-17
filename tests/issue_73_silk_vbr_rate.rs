@@ -1,6 +1,7 @@
 //! SILK conformance and the hybrid VBR rate of #73.
 //!
 //! The reference values come from fixed-point libopus main at f1afc4222a
+//! with the patches of fuzz/opusref/patches
 //! (scalar build), which the opus-rs SILK encoder follows: its symbols, the
 //! packets of whole encodes and the helper functions below match it exactly.
 
@@ -291,7 +292,7 @@ fn fec_bandwidth_switch_waits_like_libopus() {
             packet_hash(h, p)
         }
     });
-    assert_eq!(hash, 0xe7aec3da7b851507);
+    assert_eq!(hash, 0x53eef2e810c802d9);
 }
 
 #[test]
@@ -397,7 +398,7 @@ fn silk_follows_a_change_of_complexity() {
     // libopus sets SILK's complexity up for every packet: complexity 9, 3
     // from 2 s and 6 from 4 s (VoIP, VBR, 20 kb/s). Hashes of every packet
     // of fixed-point libopus main at the same settings.
-    for (ms, channels, expected) in [(20, 1, 0xa443e174eb41ca7b_u64), (10, 2, 0x52f02a004df80d3b)] {
+    for (ms, channels, expected) in [(20, 1, 0xc2b4123c72d2001d_u64), (10, 2, 0x13bab6f47995f635)] {
         let mono = speech_i16(16000);
         let frame = 16 * ms;
         let mut enc = OpusEncoder::new(16000, channels, Application::Voip).unwrap();
@@ -442,7 +443,7 @@ fn float_voip_input_rounds_like_libopus() {
         let n = enc.encode(frame, 320, &mut packet).unwrap();
         packet_hash(h, &packet[..n])
     });
-    assert_eq!(hash, 0xa9c2ad491baa34b3);
+    assert_eq!(hash, 0x5fdf12e5a3df2fea);
 }
 
 #[test]
@@ -550,30 +551,31 @@ fn hybrid_vbr_rate_tracks_libopus() {
     }
 }
 
-/// libopus main fixed point, 41 frames per hash.
+/// opus-rs, whose SILK packets equal patched fixed-point libopus main's
+/// (fuzz/opusref/tests/silk_fixed.rs), 41 frames per hash.
 const TRACE_BLOCKS: [u64; 22] = [
-    0x9b94207267f3cce2,
-    0xc249d84095965c6d,
-    0xdee4897c8fc8b941,
-    0xe8ce03faa82aac2c,
-    0x820f80188d3f4d9f,
-    0xab70991bb4a5c988,
-    0xc8b66a44bcee2611,
-    0x898e8cd8edb66767,
-    0xe1df8d161d21e2f4,
-    0x95b7e77ba7938acc,
-    0x413a8933547e15ac,
-    0x03c8896a627228ba,
-    0x7e3eb4730b96005c,
-    0xfe68d00b53e3f066,
-    0x39ba2044050b9af2,
-    0xd16459dfadfcb80f,
-    0x08536a3fee78dfbd,
-    0x39d261e38fc41771,
-    0x675fcac3f4e65541,
-    0x267d6bdeb31428b4,
-    0x9e7111dfd16928cc,
-    0x6773e0a9fb13f0e2,
+    0xef0e22ef06b524cc,
+    0x42840a8ea5bc5ebe,
+    0xc2b7acacf2be3800,
+    0x783a6b2da8953933,
+    0x66026bdd4586a864,
+    0x6eed661b974b1240,
+    0x5fab1d089df61d7a,
+    0x3724bb1f981437d5,
+    0x21f73470eb9cc406,
+    0xf63c550c92ee5144,
+    0xe07bff6b1dfda685,
+    0x65043fe5156f455c,
+    0x98823529c211241d,
+    0xfca1b521407b4c86,
+    0xd27b6b985e932953,
+    0xc8d2524918391d3b,
+    0x96e43011966a383e,
+    0x0ce7ef9cc3d0f846,
+    0xd97120eed0ae2680,
+    0x6286cbf46ed45af0,
+    0xfc949fd2791bd800,
+    0xad7941cc419cd65b,
 ];
 
 /// libopus main fixed point: sample rate, frame ms, bitrate, channels and
@@ -586,11 +588,11 @@ const PACKET_BLOCKS: [(usize, usize, i32, usize, &[u64]); 5] = [
         20000,
         1,
         &[
-            0xbbbffbaa5b14e31c,
-            0x2dc69a9e5e98548d,
-            0xef61a9fd9b1ef646,
-            0x9c78f89ce3cfc884,
-            0x428ac9b37b7e55ca,
+            0x336fafd05cbc1929,
+            0x537e0e5f99fe3c43,
+            0xf3a3ab6941299249,
+            0xbd530a03e5c15180,
+            0xb475dca8ac88a5a5,
         ],
     ),
     (
@@ -599,11 +601,11 @@ const PACKET_BLOCKS: [(usize, usize, i32, usize, &[u64]); 5] = [
         24000,
         1,
         &[
-            0x5b9daf3f7fe92361,
-            0x63a7a5734964f4cb,
-            0xb1cb8d6755a1007d,
-            0x61180493015c6737,
-            0xd400d7bf9dcb7fc8,
+            0x678749bc9f8fc56d,
+            0x8bde1075dab1641c,
+            0xb6c5f7e0482a364f,
+            0xe44b7de79b47a3a6,
+            0x097d92bffee1146c,
         ],
     ),
     (
@@ -612,16 +614,16 @@ const PACKET_BLOCKS: [(usize, usize, i32, usize, &[u64]); 5] = [
         20000,
         1,
         &[
-            0xa76425b27e5a239a,
-            0x7330afcdc1cb9572,
-            0xc4b85fb0ace3f729,
-            0x036ebd7492116770,
-            0xc463992d28d77a87,
-            0x4f25ca3d1a82b88d,
-            0x5abf3b27d0c6a06b,
-            0x5c094f52998606e8,
-            0xf7975e3537382a79,
-            0xfe158e67f4e5bab9,
+            0xdf718265f0079649,
+            0x5ad18ed8d57cb0ee,
+            0x634d3d6d9963360e,
+            0x8ff602cfe1b58444,
+            0x87d0a49d6d713d89,
+            0xa0ae19a527ad0779,
+            0x6e62c00546dafe94,
+            0x96272563821572c0,
+            0x91b1ca65f4bab004,
+            0xf91a53a18012bce9,
         ],
     ),
     (
@@ -630,16 +632,16 @@ const PACKET_BLOCKS: [(usize, usize, i32, usize, &[u64]); 5] = [
         12000,
         2,
         &[
-            0x3020ef11b8d4875b,
-            0xadf196cc617c628d,
-            0x84e07226a57cbf66,
-            0x08a9a909173f6515,
-            0x534ce49592e26f8a,
-            0x12de7e3158ee6907,
-            0x2a52196ba2f14e8c,
-            0xba5e1edf984c0608,
-            0xe5c94cc302ca001a,
-            0x46929b72af2fe1ec,
+            0x7d75c694186bbec1,
+            0x23b3e15982fd7da3,
+            0xccd4d3cda7f58f25,
+            0xaeac731e62b00198,
+            0x19120f8c80530adb,
+            0x63a3e75a6aa32dee,
+            0x512cfa05d42cda7f,
+            0xdd62b0959d2952a2,
+            0x0de2cd31d596b40f,
+            0x7d33cd19ec91c0d3,
         ],
     ),
     (
