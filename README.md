@@ -2,7 +2,7 @@
 
 # opus-rs
 
-A pure-Rust implementation of the [Opus audio codec](https://opus-codec.org/) (RFC 6716), ported from the reference C implementation, libopus. It tracks libopus main at f1afc4222a (after 1.6.1) and is tested bit for bit against it: CELT against the scalar float build, SILK against the fixed-point build ([fuzz/DIFFERENTIAL.md](fuzz/DIFFERENTIAL.md)).
+A pure-Rust implementation of the [Opus audio codec](https://opus-codec.org/) (RFC 6716), ported from the reference C implementation, libopus. It tracks libopus main at f1afc4222a (after 1.6.1) and is tested bit for bit against it: CELT and SILK against the scalar float build, and the fixed-point SILK encoder of the `silk-fixed` feature against the fixed-point build ([fuzz/DIFFERENTIAL.md](fuzz/DIFFERENTIAL.md)).
 
 ## Features
 
@@ -154,6 +154,17 @@ The public API (`OpusEncoder`/`OpusDecoder` with `encode`/`decode` writing into 
 | `portable-atomic` | no | No effect; kept for compatibility. The mode table is a compile-time `static`, so the crate uses no atomics and builds on targets without compare-and-swap like `thumbv6m-none-eabi` (Cortex-M0/M0+) or `riscv32imc-unknown-none-elf` (ESP32-C3). |
 
 > Runtime dependencies: `libm` (pure Rust) in `no_std` builds, and `fearless_simd` (no dependencies of its own) on x86 and x86-64.
+
+### SILK encoder
+
+The SILK encoder is libopus's float encoder (`silk/float/`), the one of
+libopus's default and SIMD builds. The feature `silk-fixed` (off by
+default) selects the encoder of fixed-point libopus (`silk/fixed/`, a
+`FIXED_POINT` build) with its 16-bit SILK input for VoIP; its packets
+follow fixed-point libopus's with the fix of
+`fuzz/opusref/patches/silk-fixed-min-inv-gain.patch`, a Q-format slip in
+the fixed-point limit on the LPC prediction gain, which the fixed-point
+reference build applies too.
 
 ### Neural network features
 

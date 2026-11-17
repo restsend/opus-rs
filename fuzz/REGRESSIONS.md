@@ -211,9 +211,10 @@ still show their bug when their fix is reverted. n3, n8 and n9 were recorded as 
 ## Reproducers that need another build
 
 - m8 (`diff_decoder@dnn`): `cargo test --features dnn --test regressions`.
-- n2, n4 (`diff_encoder@fixed`): the VoIP SILK input follows fixed-point
-  libopus by design; absent against the fixed-point reference,
-  `cargo test --features fixed --test regressions`.
+- n2, n4 (`diff_encoder@fixed`): the VoIP SILK input of `silk-fixed`
+  follows fixed-point libopus by design; absent against the fixed-point
+  reference, `cargo test --features fixed --test regressions` (the fuzz
+  crate's `fixed` turns `silk-fixed` on).
 - 12, 15b, 16 (`@aarch64`): NEON kernels that are gone; they run only on
   aarch64 (check.sh with the qemu build, see `DIFFERENTIAL.md`).
 - n1 (`stack-buffer-overflow`): needs AddressSanitizer, so only check.sh

@@ -38,18 +38,21 @@ dropped when the pinned libopus revision contains the fix.
 `scripts/test-all.sh` (from the repository root) runs everything and prints a
 summary; it exits non-zero if a step fails:
 
-- `cargo test --release`, with and without `--features deep-plc,dred,osce`;
+- `cargo test --release`, with and without `--features deep-plc,dred,osce`,
+  and with `--features silk-fixed`;
 - the `no_std` builds (`--no-default-features --features libm`, also with the
-  neural features) and the `no_std` library and integration tests;
-- the opusref tests: float, `--features dnn`, `--features fixed --test
-  silk_fixed`;
+  neural features and with `silk-fixed`) and the `no_std` library and
+  integration tests;
+- the opusref tests: float (with the float SILK grid `silk_float`),
+  `--features dnn`, `--features fixed --test silk_fixed`;
 - `opusref/examples/parity.rs`, which must report every 48 kHz CELT
   configuration byte-identical with libopus;
 - the regression replay `tests/regressions.rs` (below) for the default, dnn
   and fixed builds.
 
 `scripts/test-all.sh --fuzz` also builds the targets with `cargo fuzz build`
-(nightly cargo and cargo-fuzz on `PATH`) and runs `regressions/check.sh`.
+(nightly cargo and cargo-fuzz on `PATH`) and runs `regressions/check.sh`,
+then the same for the fixed build (`--features fixed`, `OFZ_BUILD=fixed`).
 The script needs stable cargo, a C and C++ compiler, pkg-config, cmake,
 libopus (for the interop dev-dependencies) and the pinned libopus sources
 (`OPUSREF_SRC` or `libopus/`); the dev shell provides them.
@@ -166,20 +169,36 @@ OPUS_RS_ARCH=sse2 OPUSREF_ARCH=2 <target-dir>/release/diff_encoder ...
 
 The `simd` encoder and decoder of the targets run at the CPU's level.
 
+## SILK encoder
+
+opus-rs's SILK encoder is libopus's float encoder (`silk/float/`), the one of
+libopus's default and SIMD builds, and its SILK input is the float build's:
+against the default reference, SILK packets, the SILK input of every
+application and the DTX decisions are exact (`opusref/tests/silk_float.rs`
+over a grid of SILK configurations, `diff_encoder`'s `silk-input` oracle).
+At the Avx2 level the SIMD build's float SILK takes an FMA inner product,
+which opus-rs does not run yet, so `silk_float` skips the `simd` reference.
+
 ## Fixed-point reference
 
 `--features fixed` builds the reference as fixed-point libopus
-(`opusref/build.rs`), whose SILK encoder is the one opus-rs ports. Against it,
-SILK packets and the VoIP SILK input are exact; the Audio and low-delay SILK
-input follows the float build in opus-rs, so skip that comparison:
+(`opusref/build.rs`) and opus-rs with its Cargo feature `silk-fixed`, the
+SILK encoder of fixed-point libopus (`silk/fixed/`). Against it, SILK
+packets and the VoIP SILK input are exact (`opusref/tests/silk_fixed.rs`);
+the Audio and low-delay SILK input follows the float build in opus-rs, so
+skip that comparison:
 
 ```sh
 cargo +nightly fuzz build diff_encoder --features fixed
 OFZ_SUPPRESS=toc,simd,silk-input <target-dir>/release/diff_encoder ...
 ```
 
-Fidelity differences against the float reference in SILK and Hybrid frames
-that this build does not show come from libopus's float SILK encoder.
+Both opus-rs's fixed-point SILK encoder and this reference carry the fix of
+`opusref/patches/silk-fixed-min-inv-gain.patch`. Lower fidelity of SILK
+frames of the fixed build than of the float reference comes from the
+fixed-point encoder, for example its LPC analysis of the rounded 16-bit
+`LPC_in_pre` on quiet frames after loud ones (reproducers f1 and f2 hold
+such frames).
 
 ## Neural network features
 
