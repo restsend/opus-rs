@@ -1,8 +1,20 @@
-//! FFI to the reference libopus build (float, scalar C).
+//! FFI to the reference libopus build (float, scalar C; with `simd` as configure builds it on x86-64).
 #![allow(non_camel_case_types, clippy::missing_safety_doc)]
 use core::ffi::{c_int, c_uchar, c_uint, c_void};
 
 pub type OpusEncoder = c_void;
+
+#[cfg(feature = "simd")]
+unsafe extern "C" {
+    static mut opusref_forced_arch: c_int;
+}
+
+/// The libopus level (0 C, 1 SSE, 2 SSE2, 3 SSE4.1, 4 AVX2) that codec
+/// states created afterwards take; -1 detects the CPU's.
+#[cfg(feature = "simd")]
+pub fn set_arch(arch: c_int) {
+    unsafe { opusref_forced_arch = arch };
+}
 pub type OpusDecoder = c_void;
 pub type CELTMode = c_void;
 

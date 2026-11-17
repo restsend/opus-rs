@@ -3,24 +3,34 @@
 //! `-ffp-contract=off` and no intrinsics/RTCD, so results are reproducible
 //! and match a straightforward float port operation for operation. With the
 //! feature `fixed` it builds the fixed-point libopus (FIXED_POINT, SILK from
-//! silk/fixed/), the reference of opus-rs's SILK encoder.
+//! silk/fixed/), the reference of opus-rs's SILK encoder. With the feature
+//! `simd` it builds libopus as its configure does on x86-64: intrinsics and
+//! RTCD, each instruction set's files with its flags, and GCC's default
+//! floating-point contraction (fused multiply-adds in the `-mfma` files).
 use std::{env, fs, path::PathBuf};
 
 fn list(src: &PathBuf, mk: &str, var: &str) -> Vec<PathBuf> {
     let text = fs::read_to_string(src.join(mk)).unwrap();
     let mut out = Vec::new();
     let mut on = false;
+    // `VAR = file` or `VAR = \` and one file per line, each but the last
+    // ending in `\`.
     for line in text.lines() {
         let l = line.trim();
-        if l.starts_with(&format!("{var} =")) {
-            on = true;
-            continue;
-        }
-        if on {
-            if l.is_empty() {
-                break;
+        let item = match l.strip_prefix(&format!("{var} =")) {
+            Some(rest) => {
+                on = true;
+                rest.trim()
             }
-            out.push(src.join(l.trim_end_matches('\\').trim()));
+            None if on => l,
+            None => continue,
+        };
+        let file = item.trim_end_matches('\\').trim();
+        if !file.is_empty() {
+            out.push(src.join(file));
+        }
+        if !item.ends_with('\\') {
+            break;
         }
     }
     assert!(!out.is_empty(), "{var} empty");
@@ -42,20 +52,75 @@ fn main() {
     println!("cargo:rerun-if-changed=shim.c");
     let fixed = env::var_os("CARGO_FEATURE_FIXED").is_some();
     let silk = if fixed { "fixed" } else { "float" };
-    let mut b = cc::Build::new();
-    for (mk, var) in [
-        ("celt_sources.mk", "CELT_SOURCES"),
-        ("silk_sources.mk", "SILK_SOURCES"),
+    let simd = env::var_os("CARGO_FEATURE_SIMD").is_some();
+    let dnn = env::var_os("CARGO_FEATURE_DNN").is_some();
+    assert!(
+        !(dnn && fixed),
+        "the features dnn and fixed exclude each other"
+    );
+    let mut base = cc::Build::new();
+    base.include(&src)
+        .include(manifest_dir())
+        .include(src.join("include"))
+        .include(src.join("celt"))
+        .include(src.join("silk"))
+        .include(src.join("silk").join(silk))
+        .include(src.join("src"))
+        .define("OPUS_BUILD", None)
+        .define("VAR_ARRAYS", None)
+        .define("HAVE_LRINTF", None)
+        .define("HAVE_LRINT", None)
+        .define("PACKAGE_VERSION", "\"f1afc4222a-ref\"")
+        .opt_level(2)
+        .flag("-fno-fast-math")
+        .flag("-fwrapv")
+        .warnings(false);
+    if simd {
+        for d in X86_DEFINES {
+            base.define(d, None);
+        }
+    } else {
+        base.flag("-ffp-contract=off");
+    }
+    if fixed {
+        base.define("FIXED_POINT", None);
+    }
+    if dnn {
+        // libopus's `--enable-deep-plc --enable-dred --enable-osce`: these
+        // change the CELT, SILK and Opus layers too.
+        for d in DNN_DEFINES {
+            base.define(d, None);
+        }
+        base.include(src.join("dnn"));
+    }
+    let mut b = base.clone();
+    let mut lists = vec![
+        ("celt_sources.mk", "CELT_SOURCES".to_owned()),
+        ("silk_sources.mk", "SILK_SOURCES".to_owned()),
         (
             "silk_sources.mk",
-            &format!("SILK_SOURCES_{}", silk.to_uppercase()),
+            format!("SILK_SOURCES_{}", silk.to_uppercase()),
         ),
-        ("opus_sources.mk", "OPUS_SOURCES"),
-        ("opus_sources.mk", "OPUS_SOURCES_FLOAT"),
-    ] {
+        ("opus_sources.mk", "OPUS_SOURCES".to_owned()),
+        ("opus_sources.mk", "OPUS_SOURCES_FLOAT".to_owned()),
+    ];
+    if simd {
+        // The baseline instruction sets: SSE and SSE2 are part of x86-64.
+        for (mk, var) in [
+            ("celt_sources.mk", "CELT_SOURCES_X86_RTCD"),
+            ("celt_sources.mk", "CELT_SOURCES_SSE"),
+            ("celt_sources.mk", "CELT_SOURCES_SSE2"),
+            ("silk_sources.mk", "SILK_SOURCES_X86_RTCD"),
+        ] {
+            lists.push((mk, var.to_owned()));
+        }
+        b.objects(x86_objects(&src, &base, fixed, false));
+    }
+    for (mk, var) in &lists {
         // Files compiled through `wrap/`: the decoder files trace each
         // range-decoder call (trace.h); opus_encoder.c records the samples it
-        // hands to SILK (silk_hook.h).
+        // hands to SILK (silk_hook.h); x86cpu.c lets tests force the level
+        // opus_select_arch() returns.
         let wrapped = [
             "celt_decoder.c",
             "bands.c",
@@ -70,6 +135,7 @@ fn main() {
             "code_signs.c",
             "shell_coder.c",
             "stereo_decode_pred.c",
+            "x86cpu.c",
         ];
         for f in list(&src, mk, var) {
             let name = f.file_name().unwrap().to_str().unwrap().to_owned();
@@ -84,43 +150,76 @@ fn main() {
     println!("cargo:rerun-if-changed=trace.c");
     println!("cargo:rerun-if-changed=trace.h");
     println!("cargo:rerun-if-changed=silk_hook.h");
-    let dnn = env::var_os("CARGO_FEATURE_DNN").is_some();
-    assert!(
-        !(dnn && fixed),
-        "the features dnn and fixed exclude each other"
-    );
-    if fixed {
-        b.define("FIXED_POINT", None);
-    }
     if dnn {
-        b.objects(build_dnn(&src));
-        // libopus's `--enable-deep-plc --enable-dred --enable-osce`: these
-        // change the CELT, SILK and Opus layers too.
-        for d in DNN_DEFINES {
-            b.define(d, None);
-        }
-        b.include(src.join("dnn"));
+        b.objects(build_dnn(&src, simd, &base));
     }
-    b.file("trace.c")
-        .include(&src)
-        .include(manifest_dir())
-        .file("shim.c")
-        .include(src.join("include"))
-        .include(src.join("celt"))
-        .include(src.join("silk"))
-        .include(src.join("silk").join(silk))
-        .include(src.join("src"))
-        .define("OPUS_BUILD", None)
-        .define("VAR_ARRAYS", None)
-        .define("HAVE_LRINTF", None)
-        .define("HAVE_LRINT", None)
-        .define("PACKAGE_VERSION", "\"f1afc4222a-ref\"")
-        .opt_level(2)
-        .flag("-ffp-contract=off")
-        .flag("-fno-fast-math")
-        .flag("-fwrapv")
-        .warnings(false);
+    b.file("trace.c").file("shim.c");
     b.compile("opusref");
+}
+
+/// The configure defines of libopus on x86-64 with intrinsics and RTCD: SSE
+/// and SSE2 presumed, SSE4.1 and AVX2 chosen at run time.
+const X86_DEFINES: [&str; 8] = [
+    "OPUS_HAVE_RTCD",
+    "CPU_INFO_BY_ASM",
+    "OPUS_X86_MAY_HAVE_SSE",
+    "OPUS_X86_PRESUME_SSE",
+    "OPUS_X86_MAY_HAVE_SSE2",
+    "OPUS_X86_PRESUME_SSE2",
+    "OPUS_X86_MAY_HAVE_SSE4_1",
+    "OPUS_X86_MAY_HAVE_AVX2",
+];
+
+/// The SSE4.1 and AVX2 files (of the DNN code with `dnn`), each set built
+/// with its configure flags (`X86_SSE4_1_CFLAGS`, `X86_AVX2_CFLAGS`).
+fn x86_objects(src: &PathBuf, base: &cc::Build, fixed: bool, dnn: bool) -> Vec<PathBuf> {
+    let sets: [(&[&str], Vec<(&str, &str)>); 2] = if dnn {
+        [
+            (
+                &["-msse4.1"],
+                vec![("lpcnet_sources.mk", "DNN_SOURCES_SSE4_1")],
+            ),
+            (
+                &["-mavx", "-mfma", "-mavx2"],
+                vec![("lpcnet_sources.mk", "DNN_SOURCES_AVX2")],
+            ),
+        ]
+    } else {
+        let silk = if fixed {
+            ("silk_sources.mk", "SILK_SOURCES_FIXED_SSE4_1")
+        } else {
+            ("silk_sources.mk", "SILK_SOURCES_FLOAT_AVX2")
+        };
+        let mut sse4_1 = vec![
+            ("celt_sources.mk", "CELT_SOURCES_SSE4_1"),
+            ("silk_sources.mk", "SILK_SOURCES_SSE4_1"),
+        ];
+        let mut avx2 = vec![
+            ("celt_sources.mk", "CELT_SOURCES_AVX2"),
+            ("silk_sources.mk", "SILK_SOURCES_AVX2"),
+        ];
+        if fixed {
+            sse4_1.push(silk)
+        } else {
+            avx2.push(silk)
+        }
+        [
+            (&["-msse4.1"], sse4_1),
+            (&["-mavx", "-mfma", "-mavx2"], avx2),
+        ]
+    };
+    let mut objects = Vec::new();
+    for (flags, lists) in sets {
+        let mut b = base.clone();
+        for flag in flags {
+            b.flag(flag);
+        }
+        for (mk, var) in lists {
+            b.files(list(src, mk, var));
+        }
+        objects.extend(b.compile_intermediates());
+    }
+    objects
 }
 
 /// The configure defines of a libopus built with `--enable-deep-plc
@@ -136,15 +235,20 @@ const DNN_DEFINES: [&str; 5] = [
 ];
 
 /// Compiles libopus's `dnn/` sources (DEEP_PLC, DRED and OSCE lists of
-/// lpcnet_sources.mk) with the model data. `-U__SSE2__` makes `dnn/vec.h`
-/// use its generic C kernels: x86-64 compilers always define `__SSE2__`,
-/// which would select `vec_avx.h` (SSE intrinsics, unsigned int8 inputs
-/// with `USE_SU_BIAS`). A file with a `wrap/dnn/<name>` counterpart is
-/// compiled through it, so tests can call its static functions. The
-/// objects go into the one `opusref` archive.
-fn build_dnn(src: &PathBuf) -> Vec<PathBuf> {
+/// lpcnet_sources.mk) with the model data. Without `simd`, `-U__SSE2__`
+/// makes `dnn/vec.h` use its generic C kernels: x86-64 compilers always
+/// define `__SSE2__`, which would select `vec_avx.h` (SSE intrinsics,
+/// unsigned int8 inputs with `USE_SU_BIAS`). With `simd` the files build as
+/// configure builds them, with the x86 kernels. A file with a
+/// `wrap/dnn/<name>` counterpart is compiled through it, so tests can call
+/// its static functions. The objects go into the one `opusref` archive.
+fn build_dnn(src: &PathBuf, simd: bool, base: &cc::Build) -> Vec<PathBuf> {
     let mut d = cc::Build::new();
-    for var in ["DEEP_PLC_SOURCES", "DRED_SOURCES", "OSCE_SOURCES"] {
+    let mut lists = vec!["DEEP_PLC_SOURCES", "DRED_SOURCES", "OSCE_SOURCES"];
+    if simd {
+        lists.extend(["DNN_SOURCES_X86_RTCD", "DNN_SOURCES_SSE2"]);
+    }
+    for var in lists {
         for f in list(src, "lpcnet_sources.mk", var) {
             let name = f.file_name().unwrap().to_str().unwrap().to_owned();
             let wrapped = PathBuf::from(format!("wrap/dnn/{name}"));
@@ -186,10 +290,20 @@ fn build_dnn(src: &PathBuf) -> Vec<PathBuf> {
         .define("HAVE_LRINTF", None)
         .define("HAVE_LRINT", None)
         .opt_level(2)
-        .flag("-U__SSE2__")
-        .flag("-ffp-contract=off")
         .flag("-fno-fast-math")
         .flag("-fwrapv")
         .warnings(false);
-    d.compile_intermediates()
+    let mut objects = Vec::new();
+    if simd {
+        for def in X86_DEFINES {
+            d.define(def, None);
+        }
+        let mut dnn_base = base.clone();
+        dnn_base.include(src.join("silk/float"));
+        objects = x86_objects(src, &dnn_base, false, true);
+    } else {
+        d.flag("-U__SSE2__").flag("-ffp-contract=off");
+    }
+    objects.extend(d.compile_intermediates());
+    objects
 }

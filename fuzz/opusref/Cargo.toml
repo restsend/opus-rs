@@ -20,3 +20,7 @@ dnn = ["opus-rs/deep-plc", "opus-rs/dred", "opus-rs/osce"]
 # encoder comparison in `tests/silk_fixed.rs`; excludes `dnn`. The float-only
 # kernel wrappers of shim.c are left out.
 fixed = []
+# Builds the reference as libopus's configure does on x86-64 (intrinsics,
+# RTCD, the instruction sets' flags, GCC's default contraction), the
+# reference of opus-rs's SIMD levels. `set_arch` forces the level.
+simd = []
