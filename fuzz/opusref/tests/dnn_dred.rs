@@ -2,9 +2,10 @@
 //! DRED of opus-rs (quantizer tables and schedule, Laplace coder, RDOVAE
 //! encoder and decoder, `DREDEnc` and `OpusDRED`) against libopus: every
 //! float must have the same bits and every payload the same bytes.
-use opus_rs::dnn::dred::{coding, laplace, stats};
+use opus_rs::dnn::builtin;
+use opus_rs::dnn::dred::{coding, laplace, rdovae_dec, rdovae_enc, stats};
 use opus_rs::range_coder::RangeCoder;
-use opusref::dnn::Rng;
+use opusref::dnn::{Rng, same_bits};
 use opusref::dnn_dred as c;
 
 #[test]
@@ -102,3 +103,99 @@ fn laplace_p0_matches() {
     }
 }
 
+fn rdovae_enc_state(s: &rdovae_enc::RdovaeEncState) -> (Vec<f32>, bool) {
+    let v = [
+        &s.gru1_state[..],
+        &s.gru2_state,
+        &s.gru3_state,
+        &s.gru4_state,
+        &s.gru5_state,
+        &s.conv1_state,
+        &s.conv2_state,
+        &s.conv3_state,
+        &s.conv4_state,
+        &s.conv5_state,
+    ]
+    .concat();
+    (v, s.initialized)
+}
+
+fn rdovae_dec_state(s: &rdovae_dec::RdovaeDecState) -> (Vec<f32>, bool) {
+    let v = [
+        &s.gru1_state[..],
+        &s.gru2_state,
+        &s.gru3_state,
+        &s.gru4_state,
+        &s.gru5_state,
+        &s.conv1_state,
+        &s.conv2_state,
+        &s.conv3_state,
+        &s.conv4_state,
+        &s.conv5_state,
+    ]
+    .concat();
+    (v, s.initialized)
+}
+
+fn assert_state_eq(a: &(Vec<f32>, bool), b: &(Vec<f32>, bool), what: &str) {
+    assert_eq!(a.0.len(), b.0.len(), "{what}: state size");
+    assert_eq!(same_bits(&a.0, &b.0), None, "{what}: state");
+    assert_eq!(a.1, b.1, "{what}: initialized");
+}
+
+#[test]
+fn rdovae_encoder_matches() {
+    let model = builtin::dred_rdovae_enc().unwrap();
+    for (seed, scale) in [(21u64, 1.0f32), (22, 4.0), (23, 0.05)] {
+        let mut r = Rng(seed);
+        let mut cst = c::RdovaeEnc::new();
+        let mut rst = rdovae_enc::RdovaeEncState::default();
+        assert_state_eq(&cst.state(), &rdovae_enc_state(&rst), "initial");
+        for f in 0..300 {
+            let input: [f32; 40] = core::array::from_fn(|_| r.uni() * scale);
+            let (mut la, mut sa) = ([0f32; 25], [0f32; 50]);
+            let (mut lb, mut sb) = ([0f32; 25], [0f32; 50]);
+            cst.encode_dframe(&mut la, &mut sa, &input);
+            rdovae_enc::dred_rdovae_encode_dframe(&mut rst, &model, &mut lb, &mut sb, &input);
+            assert_eq!(same_bits(&la, &lb), None, "seed {seed} frame {f}: latents");
+            assert_eq!(same_bits(&sa, &sb), None, "seed {seed} frame {f}: initial state");
+            assert_state_eq(&cst.state(), &rdovae_enc_state(&rst), &format!("seed {seed} frame {f}"));
+        }
+    }
+}
+
+#[test]
+fn rdovae_decoder_matches() {
+    let model = builtin::dred_rdovae_dec().unwrap();
+    for (seed, scale) in [(31u64, 1.0f32), (32, 6.0), (33, 0.1)] {
+        let mut r = Rng(seed);
+        let mut cst = c::RdovaeDec::new();
+        let mut rst = rdovae_dec::RdovaeDecState::default();
+        for f in 0..300 {
+            if f % 60 == 0 {
+                // A new initial state; the conv states keep their history
+                // except the first, as in libopus.
+                let init: [f32; 50] = core::array::from_fn(|_| r.uni() * scale);
+                cst.init_states(&init);
+                rdovae_dec::dred_rdovae_dec_init_states(&mut rst, &model, &init);
+                assert_state_eq(&cst.state(), &rdovae_dec_state(&rst), &format!("seed {seed} init {f}"));
+            }
+            let mut z: [f32; 26] = core::array::from_fn(|_| r.uni() * scale);
+            z[25] = (r.below(16) as f64 * 0.125 - 1.0) as f32;
+            let mut qa = [0f32; 80];
+            let mut qb = [0f32; 80];
+            cst.decode_qframe(&mut qa, &z);
+            rdovae_dec::dred_rdovae_decode_qframe(&mut rst, &model, &mut qb, &z);
+            assert_eq!(same_bits(&qa, &qb), None, "seed {seed} frame {f}");
+            assert_state_eq(&cst.state(), &rdovae_dec_state(&rst), &format!("seed {seed} frame {f}"));
+        }
+        for nb in [0usize, 1, 2, 7, 26] {
+            let init: [f32; 50] = core::array::from_fn(|_| r.uni() * scale);
+            let lat: Vec<f32> = (0..26 * nb).map(|_| r.uni() * scale).collect();
+            let a = cst.decode_all(&init, &lat, nb);
+            let mut b = vec![0f32; 80 * nb];
+            rdovae_dec::dred_rdovae_decode_all(&model, &mut b, &init, &lat, nb);
+            assert_eq!(same_bits(&a, &b), None, "seed {seed} decode_all {nb}");
+        }
+    }
+}

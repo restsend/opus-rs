@@ -13,6 +13,8 @@
 
 pub mod coding;
 pub mod laplace;
+pub mod rdovae_dec;
+pub mod rdovae_enc;
 pub mod stats;
 
 
