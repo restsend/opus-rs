@@ -38,6 +38,24 @@ portable-atomic = []
 # Exposes internals to the differential fuzz harnesses in `fuzz/`.
 fuzzing = ["std"]
 
+# Neural network features of libopus 1.6.1 (its `dnn/` folder), all off by
+# default as in libopus. They mirror libopus's configure options:
+#
+# `dnn`: the code every neural feature needs (the layer kernels, the weight
+# blob parser, the built-in models, PitchDNN, FARGAN, the PLC model and the
+# LPCNet feature analysis); libopus compiles these sources whenever one of
+# the options below is on. Alone it changes no codec behaviour.
+dnn = []
+# `deep-plc`: `--enable-deep-plc` (ENABLE_DEEP_PLC), deep packet loss
+# concealment at decoder complexity 5 and above.
+deep-plc = ["dnn"]
+# `dred`: `--enable-dred` (ENABLE_DRED), deep redundancy: the RDOVAE encoder
+# and decoder and the DRED packet extension.
+dred = ["dnn"]
+# `osce`: `--enable-osce` (ENABLE_OSCE and ENABLE_OSCE_BWE), the LACE and
+# NoLACE SILK enhancers and the BBWENet bandwidth extension.
+osce = ["dnn"]
+
 [dependencies]
 libm = { version = "0.2", optional = true, default-features = false }
 

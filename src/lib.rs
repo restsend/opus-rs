@@ -36,6 +36,10 @@ pub mod analysis;
 pub mod bands;
 pub mod celt;
 pub mod celt_lpc;
+/// The neural network features of libopus 1.6.1 (cargo features `dnn`,
+/// `deep-plc`, `dred`, `osce`).
+#[cfg(feature = "dnn")]
+pub mod dnn;
 pub mod hp_cutoff;
 pub mod kiss_fft;
 mod mathops;
