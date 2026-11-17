@@ -3499,6 +3499,7 @@ impl OpusDecoder {
             .fill_to(OPUS_MAX_SUBFRAME * channels, 0.0);
         self.w_celt_out.fill_to(OPUS_MAX_SUBFRAME * channels, 0.0);
         self.prev_pcm_tail.fill_to(240 * channels, 0.0);
+        self.frame_size = sampling_rate as usize / 400;
         self.silk_dec
             .init(sampling_rate.min(16000), channels as i32);
         self.silk_dec.channel_state[0].fs_api_hz = sampling_rate;
@@ -3552,7 +3553,6 @@ impl OpusDecoder {
         let frame_payloads = frame_payloads(input)?;
         let frame_count = frame_payloads.len();
 
-        self.frame_size = frame_size;
         self.bandwidth = bandwidth;
 
         // Derive the actual per-frame sample count from the TOC, not from the
@@ -3568,6 +3568,9 @@ impl OpusDecoder {
         if output.len() < decoded_total * self.channels {
             return Err("Output buffer too small for packet");
         }
+        // The packet's samples per frame (libopus `st->frame_size`) bound
+        // later concealment.
+        self.frame_size = toc_frame_size;
         // The packet's channel count steers both layers from here on.
         self.stream_channels = packet_channels;
         self.celt_dec.set_stream_channels(packet_channels);
@@ -4154,7 +4157,7 @@ impl OpusDecoder {
 
         let bandwidth = bandwidth_from_toc(toc);
         let packet_channels = channels_from_toc(toc);
-        self.frame_size = frame_size;
+        self.frame_size = packet_frame;
         self.bandwidth = bandwidth;
         self.stream_channels = packet_channels;
         self.celt_dec.set_stream_channels(packet_channels);
@@ -4260,6 +4263,7 @@ impl OpusDecoder {
                 if frame_size < total {
                     return Err("frame_size too small for packet");
                 }
+                self.frame_size = per_frame;
                 total
             }
         };
@@ -4281,7 +4285,9 @@ impl OpusDecoder {
             self.prev_mode
         };
         while pos < total {
-            let remaining = total - pos;
+            // Each concealed frame is at most the last packet's frame size
+            // (opus_decode_frame 316-321), then at most F20.
+            let remaining = (total - pos).min(self.frame_size).min(f20);
             let dst = &mut output[pos * channels..total * channels];
             let produced = match mode {
                 None => {
