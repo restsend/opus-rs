@@ -359,7 +359,7 @@ fn kf_bfly3(
     n: usize,
     mm: usize,
 ) {
-    let epi3_i: f32 = -0.866_025_4;
+    let epi3_i = twiddles[fstride * m].i;
     for g in groups(fout, 3, m, n, mm) {
         let (f0, rest) = g.split_at_mut(m);
         let (f1, f2) = rest.split_at_mut(m);
@@ -392,8 +392,8 @@ fn kf_bfly5(
     n: usize,
     mm: usize,
 ) {
-    let ya = KissCpx::new(0.309_017, -0.95105652);
-    let yb = KissCpx::new(-0.809_017, -0.58778525);
+    let ya = twiddles[fstride * m];
+    let yb = twiddles[2 * fstride * m];
     for g in groups(fout, 5, m, n, mm) {
         let (f0, rest) = g.split_at_mut(m);
         let (f1, rest) = rest.split_at_mut(m);
@@ -419,13 +419,13 @@ fn kf_bfly5(
             let scratch9 = c_sub(&scratch2, &scratch3);
 
             *f0 = KissCpx::new(
-                scratch0.r + scratch7.r + scratch8.r,
-                scratch0.i + scratch7.i + scratch8.i,
+                scratch0.r + (scratch7.r + scratch8.r),
+                scratch0.i + (scratch7.i + scratch8.i),
             );
 
             let scratch5 = KissCpx::new(
-                scratch0.r + scratch7.r * ya.r + scratch8.r * yb.r,
-                scratch0.i + scratch7.i * ya.r + scratch8.i * yb.r,
+                scratch0.r + (scratch7.r * ya.r + scratch8.r * yb.r),
+                scratch0.i + (scratch7.i * ya.r + scratch8.i * yb.r),
             );
 
             let scratch6 = KissCpx::new(
@@ -437,8 +437,8 @@ fn kf_bfly5(
             *f4 = c_add(&scratch5, &scratch6);
 
             let scratch11 = KissCpx::new(
-                scratch0.r + scratch7.r * yb.r + scratch8.r * ya.r,
-                scratch0.i + scratch7.i * yb.r + scratch8.i * ya.r,
+                scratch0.r + (scratch7.r * yb.r + scratch8.r * ya.r),
+                scratch0.i + (scratch7.i * yb.r + scratch8.i * ya.r),
             );
 
             let scratch12 = KissCpx::new(

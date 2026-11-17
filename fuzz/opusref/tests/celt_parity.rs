@@ -78,3 +78,26 @@ fn static_mode_tables_are_libopus_literals() {
     }
     assert_eq!(mode.window, unsafe { std::slice::from_raw_parts(ref_window(), 120) });
 }
+
+/// The static mode's FFTs round like libopus's kiss_fft butterflies.
+#[test]
+fn fft_matches_libopus() {
+    use opus_rs::kiss_fft::{KissCpx, opus_fft_impl};
+    let mode = opus_rs::modes::default_mode();
+    let mut seed = 7u32;
+    for shift in 0..4 {
+        let n = 480 >> shift;
+        let x: Vec<f32> = (0..2 * n)
+            .map(|_| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                ((seed >> 9) as f32 / (1u32 << 23) as f32 - 0.5) * 2000.0
+            })
+            .collect();
+        let mut a: Vec<KissCpx> = x.chunks(2).map(|c| KissCpx::new(c[0], c[1])).collect();
+        opus_fft_impl(mode.mdct.fft(shift), &mut a);
+        let mut b = x.clone();
+        unsafe { ref_fft_impl(b.as_mut_ptr(), shift as i32) };
+        let a: Vec<f32> = a.iter().flat_map(|c| [c.r, c.i]).collect();
+        assert_eq!(a, b, "shift {shift}");
+    }
+}
