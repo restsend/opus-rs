@@ -356,10 +356,11 @@ pub(crate) fn cgemv8x4(
 
 fearless_simd::kernel!(
     /// `sgemv` with AVX2: the outputs in libopus's blocks of 16, 8 and 4
-    /// rows sum fused multiply-adds (`_mm256_fmadd_ps`, `_mm_fmadd_ps`);
-    /// the last `rows % 4` take libopus's C loop, `out[i] +=
-    /// weights[...]*x[j]`, which GCC compiles to a multiply and an add
-    /// (`vmulss`, `vaddss` in the reference's `compute_linear_avx2`).
+    /// rows sum fused multiply-adds (`_mm256_fmadd_ps`, `_mm_fmadd_ps`) in
+    /// registers over the columns; the last `rows % 4` take libopus's C
+    /// loop, `out[i] += weights[...]*x[j]`, which GCC compiles to a
+    /// multiply and an add (`vmulss`, `vaddss` in the reference's
+    /// `compute_linear_avx2`).
     pub(crate) fn sgemv(
         simd: Avx2,
         out: &mut [f32],
@@ -369,12 +370,42 @@ fearless_simd::kernel!(
         col_stride: usize,
         x: &[f32],
     ) {
-        let r4 = rows & !3;
-        sgemv_by(out, w, r4, cols, col_stride, x, |w, x, y| w.mul_add(x, y));
-        let rest = rows - r4;
+        let x = &x[..cols];
+        let mut i = 0;
+        while i + 16 <= rows {
+            let (mut y0, mut y8) = (f32x8::splat(simd, 0.0), f32x8::splat(simd, 0.0));
+            for (j, &xj) in x.iter().enumerate() {
+                let xj = f32x8::splat(simd, xj);
+                let wj = w.array::<16>(j * col_stride + i);
+                y0 = f32x8::from_slice(simd, &wj[..8]).mul_add(xj, y0);
+                y8 = f32x8::from_slice(simd, &wj[8..]).mul_add(xj, y8);
+            }
+            y0.store_slice(&mut out[i..i + 8]);
+            y8.store_slice(&mut out[i + 8..i + 16]);
+            i += 16;
+        }
+        if i + 8 <= rows {
+            let mut y = f32x8::splat(simd, 0.0);
+            for (j, &xj) in x.iter().enumerate() {
+                let wj = f32x8::from_slice(simd, &w.array::<8>(j * col_stride + i));
+                y = wj.mul_add(f32x8::splat(simd, xj), y);
+            }
+            y.store_slice(&mut out[i..i + 8]);
+            i += 8;
+        }
+        if i + 4 <= rows {
+            let mut y = f32x4::splat(simd, 0.0);
+            for (j, &xj) in x.iter().enumerate() {
+                let wj = f32x4::from_slice(simd, &w.array::<4>(j * col_stride + i));
+                y = wj.mul_add(f32x4::splat(simd, xj), y);
+            }
+            y.store_slice(&mut out[i..i + 4]);
+            i += 4;
+        }
+        let rest = rows - i;
         sgemv_by(
-            &mut out[r4..],
-            w.from(r4),
+            &mut out[i..],
+            w.from(i),
             rest,
             cols,
             col_stride,

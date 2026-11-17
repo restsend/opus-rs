@@ -74,9 +74,8 @@ pub(crate) fn sgemv_by(
     let out = &mut out[..rows];
     out.fill(0.0);
     for (j, &xj) in x[..cols].iter().enumerate() {
-        let w = weights.from(j * col_stride);
-        for (i, y) in out.iter_mut().enumerate() {
-            *y = madd(w.at(i), xj, *y);
+        for (y, w) in out.iter_mut().zip(weights.iter(j * col_stride, rows)) {
+            *y = madd(w, xj, *y);
         }
     }
 }
@@ -119,10 +118,11 @@ pub(crate) fn sparse_sgemv8x4_by(
             let pos = idx.at(p) as usize;
             p += 1;
             let xj = [x[pos], x[pos + 1], x[pos + 2], x[pos + 3]];
+            let wb = w.array::<32>(wp);
             let y = &mut out[i..i + 8];
             for (c, &xc) in xj.iter().enumerate() {
                 for (k, yk) in y.iter_mut().enumerate() {
-                    *yk = madd(w.at(wp + 8 * c + k), xc, *yk);
+                    *yk = madd(wb[8 * c + k], xc, *yk);
                 }
             }
             wp += 32;
