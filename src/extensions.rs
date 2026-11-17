@@ -1,6 +1,7 @@
-//! Opus packet extensions (libopus `src/extensions.c`) and the parts of
+//! Opus packet extensions (libopus `src/extensions.c`), the parts of
 //! packet parsing that locate them (`opus_packet_parse_impl` of
-//! `src/opus.c`).
+//! `src/opus.c`) and the packet writer that adds them
+//! (`opus_repacketizer_out_range_impl` of `src/repacketizer.c`).
 //!
 //! Extensions live in the padding of a code 3 packet. Each starts with an
 //! ID byte (ID in the upper 7 bits, the `L` flag in bit 0): ID 0 is
@@ -8,8 +9,12 @@
 //! extensions of 0 or 1 payload bytes, and 32 to 127 long extensions with a
 //! lacing-coded length (or, with `L` = 0, the rest of the padding).
 
-/// libopus `OPUS_INVALID_PACKET`, the error of everything here.
+/// libopus `OPUS_INVALID_PACKET`: the error of the parsers.
 pub const INVALID_PACKET: &str = "invalid packet";
+/// libopus `OPUS_BAD_ARG`.
+pub const BAD_ARG: &str = "invalid argument";
+/// libopus `OPUS_BUFFER_TOO_SMALL`.
+pub const BUFFER_TOO_SMALL: &str = "buffer too small";
 
 /// libopus `opus_extension_data`: one extension of a packet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -453,6 +458,345 @@ pub fn parse_packet(data: &[u8]) -> Result<PacketParts<'_>, &'static str> {
         pos += sizes[i];
     }
     Ok(PacketParts { toc, count, frames, padding: &data[pos..pos + pad] })
+}
+
+/// `write_extension_payload`: writes the payload of `ext` at `pos` (with
+/// its length unless `last`) and returns the new position. With `data`
+/// `None` it only counts.
+fn write_extension_payload(
+    data: &mut Option<&mut [u8]>,
+    len: usize,
+    mut pos: usize,
+    ext: &ExtensionData<'_>,
+    last: bool,
+) -> Result<usize, &'static str> {
+    debug_assert!((3..=127).contains(&ext.id));
+    if ext.id < 32 {
+        if ext.data.len() > 1 {
+            return Err(BAD_ARG);
+        }
+        if let Some(&b) = ext.data.first() {
+            if len - pos < 1 {
+                return Err(BUFFER_TOO_SMALL);
+            }
+            if let Some(d) = data {
+                d[pos] = b;
+            }
+            pos += 1;
+        }
+    } else {
+        let n = ext.data.len();
+        let length_bytes = if last { 0 } else { 1 + n / 255 };
+        if len - pos < length_bytes + n {
+            return Err(BUFFER_TOO_SMALL);
+        }
+        if !last {
+            for _ in 0..n / 255 {
+                if let Some(d) = data {
+                    d[pos] = 255;
+                }
+                pos += 1;
+            }
+            if let Some(d) = data {
+                d[pos] = (n % 255) as u8;
+            }
+            pos += 1;
+        }
+        if let Some(d) = data {
+            d[pos..pos + n].copy_from_slice(ext.data);
+        }
+        pos += n;
+    }
+    Ok(pos)
+}
+
+/// `write_extension`: the ID byte and the payload of `ext`.
+fn write_extension(
+    data: &mut Option<&mut [u8]>,
+    len: usize,
+    pos: usize,
+    ext: &ExtensionData<'_>,
+    last: bool,
+) -> Result<usize, &'static str> {
+    if len - pos < 1 {
+        return Err(BUFFER_TOO_SMALL);
+    }
+    debug_assert!((3..=127).contains(&ext.id));
+    if let Some(d) = data {
+        d[pos] = (ext.id << 1) + if ext.id < 32 { ext.data.len() as u8 } else { u8::from(!last) };
+    }
+    write_extension_payload(data, len, pos + 1, ext, last)
+}
+
+/// libopus `opus_packet_extensions_generate`: writes `extensions` for a
+/// packet of `nb_frames` frames into `data` (at most `len` bytes; with
+/// `None` it only measures), with separators and the repeat mechanism,
+/// and with `pad` fills the rest of `len` with padding in front. Returns
+/// the bytes written.
+pub fn generate_extensions(
+    mut data: Option<&mut [u8]>,
+    len: usize,
+    extensions: &[ExtensionData<'_>],
+    nb_frames: usize,
+    pad: bool,
+) -> Result<usize, &'static str> {
+    if nb_frames > 48 {
+        return Err(BAD_ARG);
+    }
+    let nb_extensions = extensions.len();
+    let mut frame_min_idx = [nb_extensions; 48];
+    let mut frame_max_idx = [0usize; 48];
+    let mut frame_repeat_idx = [0usize; 48];
+    for (i, ext) in extensions.iter().enumerate() {
+        let f = ext.frame;
+        if f >= nb_frames || !(3..=127).contains(&ext.id) {
+            return Err(BAD_ARG);
+        }
+        frame_min_idx[f] = frame_min_idx[f].min(i);
+        frame_max_idx[f] = frame_max_idx[f].max(i + 1);
+    }
+    frame_repeat_idx[..nb_frames].copy_from_slice(&frame_min_idx[..nb_frames]);
+    let mut curr_frame = 0;
+    let mut pos = 0;
+    let mut written = 0;
+    for f in 0..nb_frames {
+        let mut last_long_idx: Option<usize> = None;
+        let mut repeat_count = 0;
+        if f + 1 < nb_frames {
+            for i in frame_min_idx[f]..frame_max_idx[f] {
+                if extensions[i].frame != f {
+                    continue;
+                }
+                // Can this extension repeat in all later frames?
+                let mut g = f + 1;
+                while g < nb_frames {
+                    if frame_repeat_idx[g] >= frame_max_idx[g] {
+                        break;
+                    }
+                    let other = &extensions[frame_repeat_idx[g]];
+                    debug_assert_eq!(other.frame, g);
+                    if other.id != extensions[i].id {
+                        break;
+                    }
+                    if other.id < 32 && other.data.len() != extensions[i].data.len() {
+                        break;
+                    }
+                    g += 1;
+                }
+                if g < nb_frames {
+                    break;
+                }
+                // It can. The last instance of a long one changes its L
+                // flag.
+                if extensions[i].id >= 32 {
+                    last_long_idx = Some(frame_repeat_idx[nb_frames - 1]);
+                }
+                for g in f + 1..nb_frames {
+                    let mut j = frame_repeat_idx[g] + 1;
+                    while j < frame_max_idx[g] && extensions[j].frame != g {
+                        j += 1;
+                    }
+                    frame_repeat_idx[g] = j;
+                }
+                repeat_count += 1;
+                frame_repeat_idx[f] = i;
+            }
+        }
+        for i in frame_min_idx[f]..frame_max_idx[f] {
+            if extensions[i].frame != f {
+                continue;
+            }
+            // A separator where the frame changes.
+            if f != curr_frame {
+                let diff = f - curr_frame;
+                if len - pos < 2 {
+                    return Err(BUFFER_TOO_SMALL);
+                }
+                if diff == 1 {
+                    if let Some(d) = &mut data {
+                        d[pos] = 0x02;
+                    }
+                    pos += 1;
+                } else {
+                    if let Some(d) = &mut data {
+                        d[pos] = 0x03;
+                        d[pos + 1] = diff as u8;
+                    }
+                    pos += 2;
+                }
+                curr_frame = f;
+            }
+            pos = write_extension(&mut data, len, pos, &extensions[i], written == nb_extensions - 1)?;
+            written += 1;
+            if repeat_count > 0 && frame_repeat_idx[f] == i {
+                // The repeat indicator, then the repeated payloads.
+                let nb_repeated = repeat_count * (nb_frames - (f + 1));
+                let last = written + nb_repeated == nb_extensions
+                    || (last_long_idx.is_none() && i + 1 >= frame_max_idx[f]);
+                if len - pos < 1 {
+                    return Err(BUFFER_TOO_SMALL);
+                }
+                if let Some(d) = &mut data {
+                    d[pos] = 0x04 + u8::from(!last);
+                }
+                pos += 1;
+                for g in f + 1..nb_frames {
+                    let mut j = frame_min_idx[g];
+                    while j < frame_repeat_idx[g] {
+                        if extensions[j].frame == g {
+                            pos = write_extension_payload(
+                                &mut data,
+                                len,
+                                pos,
+                                &extensions[j],
+                                last && Some(j) == last_long_idx,
+                            )?;
+                            written += 1;
+                        }
+                        j += 1;
+                    }
+                    frame_min_idx[g] = j;
+                }
+                if last {
+                    curr_frame += 1;
+                }
+            }
+        }
+    }
+    debug_assert_eq!(written, nb_extensions);
+    // Padding goes in front, as 0x01 bytes.
+    if pad && pos < len {
+        let padding = len - pos;
+        if let Some(d) = &mut data {
+            d.copy_within(..pos, padding);
+            d[..padding].fill(0x01);
+        }
+        pos += padding;
+    }
+    Ok(pos)
+}
+
+/// libopus `encode_size`: a frame length in one or two bytes.
+fn encode_size(size: usize, data: &mut [u8]) -> usize {
+    if size < 252 {
+        data[0] = size as u8;
+        1
+    } else {
+        let first = 252 + (size & 3);
+        data[0] = first as u8;
+        data[1] = ((size - first) >> 2) as u8;
+        2
+    }
+}
+
+/// libopus `opus_repacketizer_out_range_impl` without self-delimiting:
+/// writes a packet of `frames` (sharing the ToC `toc`, at most 48) with
+/// `extensions` in its padding into `out`, at most `maxlen` bytes, and
+/// with `pad` padded to `maxlen`. Returns the packet length.
+pub fn write_packet(
+    out: &mut [u8],
+    toc: u8,
+    frames: &[&[u8]],
+    extensions: &[ExtensionData<'_>],
+    maxlen: usize,
+    pad: bool,
+) -> Result<usize, &'static str> {
+    let count = frames.len();
+    if count == 0 || count > 48 {
+        return Err(BAD_ARG);
+    }
+    let maxlen = maxlen.min(out.len());
+    let len = |i: usize| frames[i].len();
+    let mut tot_size = 0;
+    let mut ptr = 0;
+    if count == 1 {
+        tot_size += len(0) + 1;
+        if tot_size > maxlen {
+            return Err(BUFFER_TOO_SMALL);
+        }
+        out[0] = toc & 0xfc;
+        ptr = 1;
+    } else if count == 2 {
+        if len(1) == len(0) {
+            tot_size += 2 * len(0) + 1;
+            if tot_size > maxlen {
+                return Err(BUFFER_TOO_SMALL);
+            }
+            out[0] = (toc & 0xfc) | 1;
+            ptr = 1;
+        } else {
+            tot_size += len(0) + len(1) + 2 + usize::from(len(0) >= 252);
+            if tot_size > maxlen {
+                return Err(BUFFER_TOO_SMALL);
+            }
+            out[0] = (toc & 0xfc) | 2;
+            ptr = 1 + encode_size(len(0), &mut out[1..]);
+        }
+    }
+    let mut ext_len = 0;
+    let mut ext_begin = 0;
+    let (mut ones_begin, mut ones_end) = (0, 0);
+    if count > 2 || (pad && tot_size < maxlen) || !extensions.is_empty() {
+        // Code 3, also for the padding.
+        let vbr = (1..count).any(|i| len(i) != len(0));
+        if vbr {
+            tot_size = 2 + (0..count - 1).map(|i| 1 + usize::from(len(i) >= 252) + len(i)).sum::<usize>() + len(count - 1);
+            if tot_size > maxlen {
+                return Err(BUFFER_TOO_SMALL);
+            }
+            out[0] = (toc & 0xfc) | 3;
+            out[1] = count as u8 | 0x80;
+        } else {
+            tot_size = count * len(0) + 2;
+            if tot_size > maxlen {
+                return Err(BUFFER_TOO_SMALL);
+            }
+            out[0] = (toc & 0xfc) | 3;
+            out[1] = count as u8;
+        }
+        ptr = 2;
+        let mut pad_amount = if pad { maxlen - tot_size } else { 0 };
+        if !extensions.is_empty() {
+            ext_len = generate_extensions(None, maxlen - tot_size, extensions, count, false)?;
+            if !pad {
+                pad_amount = ext_len + if ext_len != 0 { ext_len.div_ceil(254) } else { 1 };
+            }
+        }
+        if pad_amount != 0 {
+            out[1] |= 0x40;
+            let nb_255s = (pad_amount - 1) / 255;
+            if tot_size + ext_len + nb_255s + 1 > maxlen {
+                return Err(BUFFER_TOO_SMALL);
+            }
+            ext_begin = tot_size + pad_amount - ext_len;
+            // 0x01 padding in front of the extensions.
+            ones_begin = tot_size + nb_255s + 1;
+            ones_end = tot_size + pad_amount - ext_len;
+            out[ptr..ptr + nb_255s].fill(255);
+            ptr += nb_255s;
+            out[ptr] = (pad_amount - 255 * nb_255s - 1) as u8;
+            ptr += 1;
+            tot_size += pad_amount;
+        }
+        if vbr {
+            for i in 0..count - 1 {
+                ptr += encode_size(len(i), &mut out[ptr..]);
+            }
+        }
+    }
+    for f in frames {
+        out[ptr..ptr + f.len()].copy_from_slice(f);
+        ptr += f.len();
+    }
+    if ext_len > 0 {
+        let n = generate_extensions(Some(&mut out[ext_begin..ext_begin + ext_len]), ext_len, extensions, count, false)?;
+        debug_assert_eq!(n, ext_len);
+    }
+    out[ones_begin..ones_end].fill(0x01);
+    if pad && extensions.is_empty() {
+        out[ptr..maxlen].fill(0);
+    }
+    Ok(tot_size)
 }
 
 #[cfg(all(test, feature = "std"))]

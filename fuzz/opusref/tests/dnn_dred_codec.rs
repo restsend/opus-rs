@@ -552,3 +552,139 @@ fn dred_decode_i16_matches_libopus() {
     }
     assert!(n_dred > 10, "{n_dred}");
 }
+
+/// A random extension list for `nb_frames` frames, mostly in frame order.
+fn random_extensions(r: &mut Rng, nb_frames: usize, store: &mut Vec<Vec<u8>>) -> Vec<(u8, usize, usize)> {
+    let n = r.below(8) as usize;
+    store.clear();
+    let mut exts = Vec::new();
+    for k in 0..n {
+        let id = if r.below(2) == 0 { 3 + r.below(29) } else { 32 + r.below(96) } as u8;
+        let len = match r.below(4) {
+            0 => 0,
+            1 => 1,
+            2 => r.below(20) as usize,
+            _ => r.below(600) as usize,
+        };
+        let len = if id < 32 { len.min(1) } else { len };
+        store.push((0..len).map(|_| r.next_u32() as u8).collect());
+        exts.push((id, r.below(nb_frames as u32) as usize, k));
+    }
+    if r.below(4) != 0 {
+        exts.sort_by_key(|e| e.1);
+    }
+    exts
+}
+
+/// opus-rs writes extensions byte for byte as libopus's
+/// opus_packet_extensions_generate, with and without padding, and fails
+/// where it fails.
+#[test]
+fn extension_writing_matches_libopus() {
+    let mut r = Rng(0xe7);
+    let mut store = Vec::new();
+    let mut written = 0;
+    for case in 0..20000 {
+        let nb_frames = 1 + r.below(if case % 2 == 0 { 4 } else { 48 }) as usize;
+        let exts = random_extensions(&mut r, nb_frames, &mut store);
+        let c_exts: Vec<OpusExtensionData> = exts
+            .iter()
+            .map(|&(id, frame, k)| OpusExtensionData { id: id as i32, frame: frame as i32, data: store[k].as_ptr(), len: store[k].len() as i32 })
+            .collect();
+        let rs_exts: Vec<opus_rs::extensions::ExtensionData> =
+            exts.iter().map(|&(id, frame, k)| opus_rs::extensions::ExtensionData { id, frame, data: &store[k] }).collect();
+        let pad = r.below(2) == 1;
+        let cap = if r.below(3) == 0 { r.below(800) as usize } else { 8000 };
+        let mut a = vec![0u8; cap];
+        let mut b = vec![0u8; cap];
+        let ca = unsafe { opus_packet_extensions_generate(a.as_mut_ptr(), cap as i32, c_exts.as_ptr(), c_exts.len() as i32, nb_frames as i32, pad as i32) };
+        let rb = opus_rs::extensions::generate_extensions(Some(&mut b), cap, &rs_exts, nb_frames, pad);
+        let measured = opus_rs::extensions::generate_extensions(None, cap, &rs_exts, nb_frames, pad);
+        match rb {
+            Ok(n) => {
+                assert_eq!(ca, n as i32, "case {case}");
+                assert_eq!(a[..n], b[..n], "case {case}");
+                assert_eq!(measured, Ok(n), "case {case}");
+                written += 1;
+            }
+            Err(_) => assert!(ca < 0 && measured.is_err(), "case {case}: libopus {ca}"),
+        }
+    }
+    assert!(written > 10000, "{written}");
+}
+
+/// opus-rs's packet writer against libopus's opus_packet_pad_impl (one
+/// frame) and repacketizer (several frames), with extensions and padding:
+/// the same bytes, or both fail.
+#[test]
+fn packet_writing_matches_libopus() {
+    let mut r = Rng(0x9a);
+    let mut store = Vec::new();
+    let mut ok = 0;
+    for case in 0..5000 {
+        let count = if case % 2 == 0 { 1 } else { 1 + r.below(6) as usize };
+        // 20 ms SILK WB frames: up to 6 fit in 120 ms.
+        let toc = 0x48u8;
+        let same = r.below(2) == 0;
+        let base = r.below(300) as usize;
+        let frames: Vec<Vec<u8>> = (0..count)
+            .map(|_| {
+                let n = if same { base } else { r.below(300) as usize };
+                (0..n).map(|_| r.next_u32() as u8).collect()
+            })
+            .collect();
+        let exts = random_extensions(&mut r, count, &mut store);
+        let c_exts: Vec<OpusExtensionData> = exts
+            .iter()
+            .map(|&(id, frame, k)| OpusExtensionData { id: id as i32, frame: frame as i32, data: store[k].as_ptr(), len: store[k].len() as i32 })
+            .collect();
+        let rs_exts: Vec<opus_rs::extensions::ExtensionData> =
+            exts.iter().map(|&(id, frame, k)| opus_rs::extensions::ExtensionData { id, frame, data: &store[k] }).collect();
+        let pad = r.below(2) == 1;
+        let total: usize = frames.iter().map(|f| f.len()).sum();
+        let maxlen = total + r.below(3000) as usize;
+        let mut a = vec![0u8; maxlen.max(1)];
+        let ca = unsafe {
+            let rp = opus_repacketizer_create();
+            let mut ret = 0;
+            let mut pkts = Vec::new();
+            for f in &frames {
+                let mut p = vec![toc];
+                p.extend_from_slice(f);
+                pkts.push(p);
+            }
+            for p in &pkts {
+                ret = opus_repacketizer_cat(rp, p.as_ptr(), p.len() as i32);
+                if ret != 0 {
+                    break;
+                }
+            }
+            if ret == 0 {
+                ret = opus_repacketizer_out_range_impl(rp, 0, count as i32, a.as_mut_ptr(), maxlen as i32, 0, pad as i32, c_exts.as_ptr(), c_exts.len() as i32);
+            }
+            opus_repacketizer_destroy(rp);
+            ret
+        };
+        // The single-frame path as the encoder uses it.
+        if count == 1 && !frames[0].is_empty() {
+            let mut p = vec![0u8; maxlen.max(1 + frames[0].len())];
+            p[0] = toc;
+            p[1..1 + frames[0].len()].copy_from_slice(&frames[0]);
+            let cp = unsafe { opus_packet_pad_impl(p.as_mut_ptr(), 1 + frames[0].len() as i32, maxlen as i32, pad as i32, c_exts.as_ptr(), c_exts.len() as i32) };
+            if cp > 1 && ca > 0 {
+                assert_eq!(p[..cp as usize], a[..ca as usize], "case {case}: pad_impl and repacketizer");
+            }
+        }
+        let frame_refs: Vec<&[u8]> = frames.iter().map(|f| &f[..]).collect();
+        let mut b = vec![0u8; maxlen.max(1)];
+        match opus_rs::extensions::write_packet(&mut b, toc, &frame_refs, &rs_exts, maxlen, pad) {
+            Ok(n) => {
+                assert!(ca > 0, "case {case}: libopus {ca}, opus-rs {n}");
+                assert_eq!(a[..ca as usize], b[..n], "case {case}");
+                ok += 1;
+            }
+            Err(_) => assert!(ca < 0, "case {case}: libopus wrote {ca} bytes"),
+        }
+    }
+    assert!(ok > 2000, "{ok}");
+}

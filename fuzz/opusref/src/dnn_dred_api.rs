@@ -6,6 +6,7 @@ use core::ffi::{c_int, c_uchar, c_void};
 use crate::{OpusDecoder, OpusEncoder};
 
 pub type OpusDREDDecoder = c_void;
+pub type OpusRepacketizer = c_void;
 
 /// `DRED_NUM_REDUNDANCY_FRAMES` (dnn/dred_config.h).
 pub const DRED_NUM_REDUNDANCY_FRAMES: usize = 52;
@@ -109,6 +110,31 @@ unsafe extern "C" {
         padding: *mut *const c_uchar,
         padding_len: *mut i32,
     ) -> c_int;
+}
+
+unsafe extern "C" {
+    pub fn opus_repacketizer_create() -> *mut OpusRepacketizer;
+    pub fn opus_repacketizer_destroy(rp: *mut OpusRepacketizer);
+    pub fn opus_repacketizer_cat(rp: *mut OpusRepacketizer, data: *const c_uchar, len: i32) -> c_int;
+    pub fn opus_repacketizer_out_range_impl(
+        rp: *mut OpusRepacketizer,
+        begin: c_int,
+        end: c_int,
+        data: *mut c_uchar,
+        maxlen: i32,
+        self_delimited: c_int,
+        pad: c_int,
+        extensions: *const OpusExtensionData,
+        nb_extensions: c_int,
+    ) -> i32;
+    pub fn opus_packet_pad_impl(
+        data: *mut c_uchar,
+        len: i32,
+        new_len: i32,
+        pad: c_int,
+        extensions: *const OpusExtensionData,
+        nb_extensions: c_int,
+    ) -> i32;
 }
 
 /// `OPUS_SET_DRED_DURATION_REQUEST` and `OPUS_GET_DRED_DURATION_REQUEST`
