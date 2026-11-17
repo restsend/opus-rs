@@ -225,6 +225,9 @@ pub struct OpusEncoder {
     vbr_constraint: bool,
     /// libopus `lsb_depth` (`OPUS_SET_LSB_DEPTH`), 8 to 24.
     lsb_depth: i32,
+    /// libopus `silk_mode.reducedDependency`
+    /// (`OPUS_SET_PREDICTION_DISABLED`).
+    prediction_disabled: bool,
     pub use_cbr: bool,
 
     pub use_inband_fec: bool,
@@ -1339,6 +1342,7 @@ impl OpusEncoder {
             complexity: 9,
             vbr_constraint: true,
             lsb_depth: 24,
+            prediction_disabled: false,
             use_cbr: false,
             use_inband_fec: false,
             packet_loss_perc: 0,
@@ -2772,6 +2776,7 @@ impl OpusEncoder {
                         .process(int_l, &pre_l[..eb], eb as i32);
                     self.silk_resampler_enc_right
                         .process(int_r, &pre_r[..eb], eb as i32);
+                    self.silk_reduced_dependency();
                     silk_encode_prefill_stereo(
                         state_mut(&mut self.silk_enc),
                         state_mut(&mut self.silk_enc_side),
@@ -2808,6 +2813,7 @@ impl OpusEncoder {
                             *a = ((i32::from(*a) + i32::from(*b)) >> 1) as i16;
                         }
                     }
+                    self.silk_reduced_dependency();
                     silk_encode_prefill(state_mut(&mut self.silk_enc), pre_internal, activity);
                 }
             }
@@ -2968,6 +2974,12 @@ impl OpusEncoder {
             fuzzing::record_silk_input(
                 &state_ref(&self.buf_filtered)[..frame_size * self.channels],
             );
+            if self.prediction_disabled {
+                self.silk_enc.s_cmn.first_frame_after_reset = 1;
+                if self.channels == 2 {
+                    self.silk_enc_side.s_cmn.first_frame_after_reset = 1;
+                }
+            }
             let ret = if coded_channels == 2 {
                 silk_encode_stereo_packet(
                     state_mut(&mut self.silk_enc),
@@ -3228,7 +3240,9 @@ impl OpusEncoder {
             self.celt_enc.set_bitrate(celt::OPUS_BITRATE_MAX);
         }
         if mode != OpusMode::SilkOnly {
-            self.celt_enc.set_prediction(2);
+            // No prediction across frames with OPUS_SET_PREDICTION_DISABLED.
+            self.celt_enc
+                .set_prediction(if self.prediction_disabled { 0 } else { 2 });
         }
 
         // Leaving CELT, the packet starts with a 5 ms CELT frame of all

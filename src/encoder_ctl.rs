@@ -39,6 +39,32 @@ impl OpusEncoder {
         self.force_channels
     }
 
+    /// Codes every frame without prediction from the frames before
+    /// (libopus `OPUS_SET_PREDICTION_DISABLED`, off by default), so that
+    /// each packet decodes without the ones before it, at a cost in
+    /// quality: SILK codes each frame as the first after a reset and CELT
+    /// without inter-frame prediction.
+    pub fn set_prediction_disabled(&mut self, disabled: bool) {
+        self.prediction_disabled = disabled;
+    }
+
+    /// Whether prediction is disabled (libopus
+    /// `OPUS_GET_PREDICTION_DISABLED`).
+    pub fn prediction_disabled(&self) -> bool {
+        self.prediction_disabled
+    }
+
+    /// libopus `silk_Encode` with `reducedDependency`: every channel of the
+    /// input codes its next frame as the first after a reset.
+    pub(crate) fn silk_reduced_dependency(&mut self) {
+        if self.prediction_disabled {
+            self.silk_enc.s_cmn.first_frame_after_reset = 1;
+            if self.channels == 2 {
+                self.silk_enc_side.s_cmn.first_frame_after_reset = 1;
+            }
+        }
+    }
+
     /// The depth the encoder assumes for `input`: the set depth, at most
     /// 16 for 16-bit input (libopus `IMIN(lsb_depth, st->lsb_depth)`).
     pub(crate) fn input_depth(&self, input: PcmInput<'_>) -> i32 {

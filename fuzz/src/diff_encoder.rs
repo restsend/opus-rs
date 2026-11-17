@@ -72,6 +72,8 @@ enum Ctl {
     LsbDepth(i8),
     /// `set_force_channels` / `OPUS_SET_FORCE_CHANNELS`; negative is auto.
     ForceChannels(i8),
+    /// `set_prediction_disabled` / `OPUS_SET_PREDICTION_DISABLED`.
+    PredictionDisabled(bool),
 }
 
 /// Applies `ctl` to the opus-rs encoders and the libopus one and checks
@@ -92,6 +94,11 @@ fn apply_ctl(rs: &mut [&mut OpusEncoder; 2], re: &mut RefEnc, ctl: Ctl) -> Resul
             let b = re.try_ctl(c::SET_FORCE_CHANNELS, v.map_or(-1000, |v| v as i32));
             let got = rs[0].force_channels().map_or(-1000, |v| v as i32);
             (a, b, got, re.get(c::GET_FORCE_CHANNELS))
+        }
+        Ctl::PredictionDisabled(d) => {
+            rs.iter_mut().for_each(|e| e.set_prediction_disabled(d));
+            let b = re.try_ctl(c::SET_PREDICTION_DISABLED, d as i32);
+            (0, b, rs[0].prediction_disabled() as i32, re.get(c::GET_PREDICTION_DISABLED))
         }
     };
     if a != b || got != want {

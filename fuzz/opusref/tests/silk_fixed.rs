@@ -79,6 +79,8 @@ struct Cfg {
     dtx: bool,
     /// Bitrate of each 200 ms part, alternating.
     rates: [i32; 2],
+    /// `OPUS_SET_PREDICTION_DISABLED`.
+    pred_off: bool,
 }
 
 /// The SILK input hooks and the symbol trace are process-wide: one test at a time.
@@ -96,6 +98,7 @@ fn run(c: Cfg, pcm: &[i16]) -> Option<(usize, &'static str)> {
     rs.packet_loss_perc = if c.fec { 20 } else { 0 };
     rs.set_dtx(c.dtx);
     rs.set_signal(Signal::Voice);
+    rs.set_prediction_disabled(c.pred_off);
     let mut err = 0;
     let st = unsafe { opus_encoder_create(c.fs, c.ch as i32, 2048, &mut err) };
     assert_eq!(err, 0);
@@ -107,6 +110,7 @@ fn run(c: Cfg, pcm: &[i16]) -> Option<(usize, &'static str)> {
         opus_encoder_ctl(st, SET_PACKET_LOSS_PERC, if c.fec { 20 } else { 0 });
         opus_encoder_ctl(st, SET_DTX, c.dtx as i32);
         opus_encoder_ctl(st, SET_SIGNAL, 3001);
+        opus_encoder_ctl(st, SET_PREDICTION_DISABLED, c.pred_off as i32);
     }
     let (d_rs, d_c) = unsafe {
         (
@@ -209,6 +213,7 @@ fn silk_packets_match_fixed_point_libopus() {
                             fec,
                             dtx,
                             rates: [rate; 2],
+                            pred_off: false,
                         };
                         total += 1;
                         if let Some(d) = run(c, &pcm) {
@@ -259,6 +264,7 @@ fn stereo_to_mono_switches_match_fixed_point_libopus() {
                             fec: false,
                             dtx: false,
                             rates: [32000, 10000],
+                            pred_off: false,
                         };
                         if let Some(d) = run(c, &pcm) {
                             fails.push((c, d));
@@ -272,4 +278,37 @@ fn stereo_to_mono_switches_match_fixed_point_libopus() {
         eprintln!("{kind} frame {f}: {c:?}");
     }
     assert!(fails.is_empty(), "{} configurations differ", fails.len());
+}
+
+/// `OPUS_SET_PREDICTION_DISABLED`: every SILK frame coded as the first
+/// after a reset.
+#[test]
+fn prediction_disabled_matches_fixed_point_libopus() {
+    let mut fails = Vec::new();
+    for (fs, bws) in [(16000, &[2usize][..]), (8000, &[0][..]), (48000, &[2, 0, 1][..])] {
+        for ch in 1..=2 {
+            let pcm = signal(fs as usize, ch);
+            for ms in [10, 20, 60] {
+                for cx in [0, 5, 10] {
+                    let c = Cfg {
+                        fs,
+                        bws,
+                        ch,
+                        ms,
+                        cx,
+                        cbr: cx == 5,
+                        fec: cx == 10,
+                        dtx: false,
+                        rates: [16000 * ch as i32, 24000 * ch as i32],
+                        pred_off: true,
+                    };
+                    if let Some(d) = run(c, &pcm) {
+                        eprintln!("{d:?}: {c:?}");
+                        fails.push(d.1);
+                    }
+                }
+            }
+        }
+    }
+    assert!(!fails.contains(&"packet"), "{fails:?}");
 }

@@ -216,3 +216,25 @@ fn force_channels_matches_libopus() {
         }
     }
 }
+
+/// `OPUS_SET_PREDICTION_DISABLED`: streams without inter-frame prediction
+/// in every mode.
+#[test]
+fn prediction_disabled_matches_libopus() {
+    for (fs, ch, app, frame, rate) in CONFIGS {
+        let mut p = Pair::new(fs, ch, app);
+        p.rs.bitrate_bps = rate;
+        p.ctl(SET_BITRATE, rate);
+        p.rs.set_prediction_disabled(true);
+        assert_eq!(p.ctl(SET_PREDICTION_DISABLED, 1), 0);
+        assert_eq!(p.ctl(SET_PREDICTION_DISABLED, 2), -1);
+        assert_eq!(p.rs.prediction_disabled() as i32, p.get(GET_PREDICTION_DISABLED));
+        for f in 0..16 {
+            if f == 10 {
+                p.rs.set_prediction_disabled(false);
+                p.ctl(SET_PREDICTION_DISABLED, 0);
+            }
+            p.encode(frame, f, &format!("{fs} {ch} {app:?} frame {f}"));
+        }
+    }
+}
