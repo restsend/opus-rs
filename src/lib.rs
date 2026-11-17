@@ -2487,7 +2487,7 @@ impl OpusEncoder {
                 self.silk_initialized = false;
             }
             let allow_switch = self.silk_enc.allow_bandwidth_switch != 0;
-            let rate_control = |enc: &mut SilkEncoderState, can_switch: bool| {
+            let rate_control = |enc: &mut SilkEncoderState, allow_switch: bool, can_switch: bool| {
                 let (mut ready, mut unused_max_bits) = (false, 0);
                 let fs = silk_control_audio_bandwidth(
                     &mut enc.s_cmn,
@@ -2504,16 +2504,13 @@ impl OpusEncoder {
                 // A fresh encoder starts at the desired rate.
                 rate_limits.desired_fs_hz.min(rate_limits.api_fs_hz) / 1000
             } else {
+                let can_switch = self.silk_opus_can_switch;
                 let (fs, ready) =
-                    rate_control(state_mut(&mut self.silk_enc), self.silk_opus_can_switch);
+                    rate_control(state_mut(&mut self.silk_enc), allow_switch, can_switch);
                 // The side follows the mid's rate (force_fs_kHz) but keeps
                 // its own low-pass state machine, which can be ready too.
                 let side_ready = coded_channels == 2
-                    && rate_control(
-                        state_mut(&mut self.silk_enc_side),
-                        self.silk_opus_can_switch,
-                    )
-                    .1;
+                    && rate_control(state_mut(&mut self.silk_enc_side), allow_switch, can_switch).1;
                 silk_switch_room += u32::from(ready) + u32::from(side_ready);
                 if !silk_switch_prefill {
                     silk_switch_ready = ready || side_ready;
@@ -2744,12 +2741,14 @@ impl OpusEncoder {
             if silk_prefilled {
                 // The prefill coded the packet's channels already.
                 prev_silk_channels = coded_channels;
-                // The coding call controls again, now unable to switch, and
-                // repeats the LBRR setup of the prefill call, which counts
-                // as a packet with LBRR.
-                let (_, ready) = rate_control(state_mut(&mut self.silk_enc), false);
-                let side_ready =
-                    coded_channels == 2 && rate_control(state_mut(&mut self.silk_enc_side), false).1;
+                // The coding call controls again, now unable to switch (the
+                // prefill call cleared allowBandwidthSwitch and opusCanSwitch,
+                // enc_API.c:343, opus_encoder.c:2205), and repeats the LBRR
+                // setup of the prefill call, which counts as a packet with
+                // LBRR.
+                let (_, ready) = rate_control(state_mut(&mut self.silk_enc), false, false);
+                let side_ready = coded_channels == 2
+                    && rate_control(state_mut(&mut self.silk_enc_side), false, false).1;
                 silk_switch_room += u32::from(ready) + u32::from(side_ready);
                 silk_switch_ready = ready || side_ready;
                 for enc in [&mut self.silk_enc, &mut self.silk_enc_side]
