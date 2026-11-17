@@ -2711,6 +2711,11 @@ impl CeltEncoder {
                 end,
                 self.lsb_depth,
             );
+            dumpi!(
+                "vbr_in",
+                &[base_target, lm as i32, equiv_rate, self.last_coded_bands, channels as i32, self.intensity, self.constrained_vbr as i32, tot_boost, pitch_change as i32]
+            );
+            dumpf!("vbr_inf", &[self.stereo_saving, tf_estimate, max_depth, temporal_vbr]);
             let mut target = if !hybrid {
                 compute_vbr(
                     mode,

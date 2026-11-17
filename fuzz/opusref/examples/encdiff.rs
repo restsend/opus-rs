@@ -48,7 +48,12 @@ fn main() {
                 match sig.as_str() {
                     "voice" => voice,
                     "noise" => noise * 0.5,
+                    "quiet" => noise * 3e-6,
                     "sine" => (440.0 * t * 6.2832).sin() * 0.5,
+                    "split" if i % ch == 0 => noise * 0.5,
+                    "split" => voice,
+                    "switch" => (if f < 4 { 440.0 } else { 3000.0 } * t * 6.2832).sin() * 0.5,
+                    "grow" => noise * (0.0005 * 2f32.powf(t * 75.0)).min(0.5),
                     _ => if f < 10 { 0.0 } else { voice },
                 }
             })

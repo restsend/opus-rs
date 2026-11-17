@@ -47,6 +47,8 @@ POINTS = [
      'ofz_dumpi("pulses", pulses, end); ofz_dumpi("fine_quant", fine_quant, end); ofz_dumpi("fine_priority", fine_priority, end); ofz_dump1i("codedBands", codedBands); ofz_dump1i("balance", balance);', 'before'),
     ('   if (anti_collapse_rsv > 0)\n   {\n      anti_collapse_on',
      'ofz_dumpf("Xq", X, C*N);', 'before'),
+    ('        target = compute_vbr(mode, &st->analysis, base_target, LM, equiv_rate,',
+     'ofz_dumpi("vbr_in", (int[]){base_target, LM, equiv_rate, st->lastCodedBands, C, st->intensity, st->constrained_vbr, tot_boost, pitch_change}, 9); ofz_dumpf("vbr_inf", (float[]){st->stereo_saving, tf_estimate, maxDepth, temporal_vbr}, 4);', 'before'),
     ('      quant_energy_finalise(mode, start, end, oldBandE, error, fine_quant, fine_priority, nbCompressedBytes*8-ec_tell(enc), enc, C);',
      'ofz_dumpf("error_fine", error, C*nbEBands); ofz_dump1i("bits_left", nbCompressedBytes*8-ec_tell(enc));', 'before'),
 ]
