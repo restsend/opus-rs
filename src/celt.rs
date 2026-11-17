@@ -2575,7 +2575,8 @@ impl CeltEncoder {
             rc,
         );
 
-        let mut dual_stereo_val = if channels == 2 {
+        // 2.5 ms frames always use M/S (celt_encoder.c:2399-2401).
+        let mut dual_stereo_val = if channels == 2 && lm != 0 {
             stereo_analysis(mode, x, lm as i32, frame_size) as i32
         } else {
             0

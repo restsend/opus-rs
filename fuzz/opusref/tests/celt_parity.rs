@@ -20,6 +20,9 @@ fn signal(sig: &str, f: usize, frame: usize, ch: usize, seed: &mut u32) -> Vec<f
                 "noise" => noise * 0.5,
                 "quiet" => noise * 3e-6,
                 "sine" => (440.0 * t * 6.2832).sin() * 0.5,
+                // Noise on the first channel, voice on the second.
+                "split" if i % ch == 0 => noise * 0.5,
+                "split" => voice,
                 // Noise growing by 9 dB per 20 ms, up to -6 dBFS.
                 "grow" => noise * (0.0005 * 2f32.powf(t * 75.0)).min(0.5),
                 _ => unreachable!(),
@@ -311,4 +314,10 @@ fn rising_band_energy_patches_the_transient_flag() {
 #[test]
 fn low_rate_stereo_codes_a_mono_stream() {
     assert_eq!(identical(2, 10.0, 24, 2, "voice", 10), [true; 10]);
+}
+
+/// 2.5 ms stereo frames always use M/S stereo (celt_encoder.c:2399-2401).
+#[test]
+fn short_stereo_frames_use_mid_side() {
+    assert_eq!(identical(2, 2.5, 96, 0, "split", 12), [true; 12]);
 }
