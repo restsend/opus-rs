@@ -40,3 +40,4 @@ d5	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode silk->celt first
 d6	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode_fec hybrid->silk	no CELT fade-out in decode_fec after Hybrid
 d7	test:hybrid_lost_celt_layer	-	FAILED	Hybrid CELT layer of at most one byte left silent
 d8	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] valid lost silk->	concealment ignores the last packet frame size
+d9	test:packet_limits	-	FAILED	frames over 1275 bytes and code-3 packets over 120 ms accepted

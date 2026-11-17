@@ -3550,7 +3550,7 @@ impl OpusDecoder {
         let bandwidth = bandwidth_from_toc(toc);
         let frame_duration_ms = frame_duration_ms_from_toc(toc);
 
-        let frame_payloads = frame_payloads(input)?;
+        let frame_payloads = opus_packet_parse(input)?;
         let frame_count = frame_payloads.len();
 
         self.bandwidth = bandwidth;
@@ -4126,11 +4126,7 @@ impl OpusDecoder {
             .ok_or("Invalid TOC for sampling rate")?;
         // A ToC-only packet of code 0 or 1 holds empty frames; codes 2 and 3
         // need more bytes, and libopus rejects them.
-        let payloads = match (input.len(), toc & 0x03) {
-            (1, 0 | 1) => FixedVec::from_slice(&[&input[1..]]),
-            (1, _) => return Err("ToC-only packet of code 2 or 3"),
-            _ => frame_payloads(input)?,
-        };
+        let payloads = opus_packet_parse(input)?;
         // No FEC can be present: conceal it all (opus_decode_native).
         if frame_size < packet_frame
             || mode == OpusMode::CeltOnly
@@ -4715,6 +4711,119 @@ fn frame_samples_from_toc(toc: u8, sampling_rate: i32) -> Option<usize> {
 
 fn channels_from_toc(toc: u8) -> usize {
     if toc & 0x04 != 0 { 2 } else { 1 }
+}
+
+/// The frames of a packet (libopus `opus_packet_parse_impl`, not
+/// self-delimited).
+fn opus_packet_parse(
+    data: &[u8],
+) -> Result<FixedVec<&[u8], OPUS_MAX_PACKET_FRAMES>, &'static str> {
+    const INVALID: &str = "Invalid packet";
+    let size = |d: &[u8]| -> Result<(usize, usize), &'static str> {
+        parse_frame_size(d).map_err(|_| INVALID)
+    };
+    let Some((&toc, mut rest)) = data.split_first() else {
+        return Err(INVALID);
+    };
+    let framesize = frame_samples_from_toc(toc, 48000).ok_or(INVALID)?;
+    let mut sizes = [0usize; OPUS_MAX_PACKET_FRAMES];
+    let count;
+    let last_size;
+    match toc & 0x3 {
+        // One frame.
+        0 => {
+            count = 1;
+            last_size = rest.len();
+        }
+        // Two CBR frames.
+        1 => {
+            count = 2;
+            if rest.len() & 1 != 0 {
+                return Err(INVALID);
+            }
+            last_size = rest.len() / 2;
+            sizes[0] = last_size;
+        }
+        // Two VBR frames.
+        2 => {
+            count = 2;
+            let (s, bytes) = size(rest)?;
+            rest = &rest[bytes..];
+            if s > rest.len() {
+                return Err(INVALID);
+            }
+            sizes[0] = s;
+            last_size = rest.len() - s;
+        }
+        // Multiple CBR/VBR frames (from 0 to 120 ms).
+        _ => {
+            let Some((&ch, r)) = rest.split_first() else {
+                return Err(INVALID);
+            };
+            rest = r;
+            count = (ch & 0x3F) as usize;
+            if count == 0 || framesize * count > 5760 {
+                return Err(INVALID);
+            }
+            // Padding flag is bit 6.
+            let mut len = rest.len() as i64;
+            if ch & 0x40 != 0 {
+                loop {
+                    let Some((&p, r)) = rest.split_first() else {
+                        return Err(INVALID);
+                    };
+                    rest = r;
+                    len -= 1;
+                    let tmp = if p == 255 { 254 } else { p as i64 };
+                    len -= tmp;
+                    if p != 255 {
+                        break;
+                    }
+                }
+            }
+            if len < 0 {
+                return Err(INVALID);
+            }
+            // The padding sits at the end of the packet.
+            rest = &rest[..len as usize];
+            // VBR flag is bit 7.
+            if ch & 0x80 != 0 {
+                let mut last = rest.len() as i64;
+                for s in sizes.iter_mut().take(count - 1) {
+                    let (n, bytes) = size(rest)?;
+                    rest = &rest[bytes..];
+                    if n > rest.len() {
+                        return Err(INVALID);
+                    }
+                    *s = n;
+                    last -= (bytes + n) as i64;
+                }
+                if last < 0 {
+                    return Err(INVALID);
+                }
+                last_size = last as usize;
+            } else {
+                last_size = rest.len() / count;
+                if last_size * count != rest.len() {
+                    return Err(INVALID);
+                }
+                sizes[..count - 1].fill(last_size);
+            }
+        }
+    }
+    // The last frame's size (all frames' in CBR) is not coded and may exceed
+    // 1275 bytes.
+    if last_size > 1275 {
+        return Err(INVALID);
+    }
+    sizes[count - 1] = last_size;
+    let mut frames = FixedVec::new();
+    for &s in &sizes[..count] {
+        let (frame, r) = rest.split_at(s);
+        frames.push(frame);
+        rest = r;
+    }
+    Ok(frames)
 }
 
 /// The frames of a packet of at least 2 bytes, split as its ToC's code says
