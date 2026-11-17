@@ -212,3 +212,10 @@ fn intra_decision_counts_only_budget_changes() {
 fn vbr_target_uses_dynalloc_max_depth() {
     assert_eq!(identical(1, 20.0, 128, 0, "quiet", 4), [true; 4]);
 }
+
+/// The constrained-VBR drift follows the float build's alpha, 1/(count+20)
+/// and a truncating conversion (celt_encoder.c:2501-2516).
+#[test]
+fn vbr_drift_uses_the_float_alpha() {
+    assert_eq!(identical(1, 10.0, 128, 1, "noise", 8), [true; 8]);
+}

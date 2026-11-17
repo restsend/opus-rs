@@ -2738,19 +2738,19 @@ impl CeltEncoder {
             if self.vbr_count < 970 {
                 self.vbr_count += 1;
             }
+            // The float build's alpha: celt_rcp is 1/x and QCONST16 the plain
+            // constant (celt_encoder.c:2501-2506).
             let alpha = if self.vbr_count < 970 {
-                // celt_rcp((vbr_count+20)<<16) in Q15 is 32768/(vbr_count+20)
-                let v = self.vbr_count + 20;
-                32768 / v  // Q15
+                1.0 / (self.vbr_count + 20) as f32
             } else {
-                33 // QCONST16(0.001,15) ~33
+                0.001
             };
             if self.constrained_vbr {
                 self.vbr_reservoir += target - vbr_rate;
                 // drift: MULT16_32_Q15(alpha, delta*(1<<lm_diff) - offset - drift) (libopus 2516)
                 let delta_scaled = delta * (1 << lm_diff);
                 let delta_minus = delta_scaled - self.vbr_offset - self.vbr_drift;
-                self.vbr_drift += ((alpha as i64 * delta_minus as i64) >> 15) as i32;
+                self.vbr_drift += (alpha * delta_minus as f32) as i32;
                 self.vbr_offset = -self.vbr_drift;
             }
             if self.constrained_vbr && self.vbr_reservoir < 0 {
