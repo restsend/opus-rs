@@ -815,8 +815,10 @@ fn encode_celt_side_frame(
     rc.rng
 }
 
+/// libopus's Hybrid high-band gain, Q15ONE - SHR32(celt_exp2(-rate/1024), 1)
+/// (opus_encoder.c:2061), in the float build, where SHR32 shifts nothing.
 fn hybrid_hb_gain(celt_rate: i32) -> f32 {
-    1.0 - 0.5 * (-(celt_rate as f32) / 1024.0).exp2()
+    1.0 - mathops::celt_exp2(-celt_rate as f32 * (1.0 / 1024.0))
 }
 
 /// libopus `pcm_buf` and `delay_buffer` (opus_encoder.c:1966-2028,
@@ -1144,10 +1146,11 @@ mod silk_rate_tests {
 
     #[test]
     fn high_band_gain_follows_the_celt_share() {
-        assert_eq!(hybrid_hb_gain(0), 0.5);
-        assert_eq!(hybrid_hb_gain(1024), 0.75);
-        assert_eq!(hybrid_hb_gain(2048), 0.875);
-        assert!(hybrid_hb_gain(8000) > 0.997);
+        // The float build: 1 - 2^(-rate/1024).
+        assert_eq!(hybrid_hb_gain(0), 0.0);
+        assert_eq!(hybrid_hb_gain(1024), 0.5);
+        assert_eq!(hybrid_hb_gain(2048), 0.75);
+        assert!(hybrid_hb_gain(8000) > 0.995);
     }
 
     #[test]
