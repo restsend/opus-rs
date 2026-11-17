@@ -45,31 +45,59 @@ pub fn pitch_xcorr(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitc
 
 /// `out[i]` = the inner product of `x` and `y[i..i + x.len()]`, each summed
 /// in order as [`inner_prod`] does. The kernels give each lag a vector lane
-/// (libopus `xcorr_kernel_c`, with up to 32 lags).
+/// (libopus `xcorr_kernel_c`, with up to 32 lags); with AVX2 the same code
+/// runs on 8-lane vectors.
 fn xcorr_lags(x: &[f32], y: &[f32], out: &mut [f32]) {
-    let len = x.len();
-    let mut i = 0;
-    // 32 lags keep eight SSE accumulators busy, so the in-order sums of the
-    // lags overlap instead of waiting on each other.
-    let mut many = out.chunks_exact_mut(32);
-    for o in &mut many {
-        xcorr_kernel::<32>(x, &y[i..i + len + 31], o);
-        i += 32;
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if let Some(avx2) = crate::compat::avx2() {
+        use fearless_simd::Simd;
+        return avx2.vectorize(|| xcorr_lags_blocks::<64>(x, y, out));
     }
-    let mut eights = many.into_remainder().chunks_exact_mut(8);
-    for o in &mut eights {
-        xcorr_kernel::<8>(x, &y[i..i + len + 7], o);
-        i += 8;
+    xcorr_lags_blocks::<32>(x, y, out);
+}
+
+/// [`xcorr_lags`] in blocks of `B` lags (`B` accumulators of four or eight
+/// lanes keep the in-order sums of the lags overlapping), then the rest in
+/// one block each of 32, 16 and 8 lags and one of fewer than 8. Its helpers
+/// take no closures so they inline into the caller's target features.
+#[inline(always)]
+fn xcorr_lags_blocks<const B: usize>(x: &[f32], y: &[f32], out: &mut [f32]) {
+    let mut blocks = out.chunks_exact_mut(B);
+    let mut y = y;
+    for o in &mut blocks {
+        y = xcorr_block::<B>(x, y, o);
     }
-    let mut fours = eights.into_remainder().chunks_exact_mut(4);
-    for o in &mut fours {
-        xcorr_kernel::<4>(x, &y[i..i + len + 3], o);
-        i += 4;
+    let mut rest = blocks.into_remainder();
+    for size in [32, 16, 8] {
+        if size < B && rest.len() >= size {
+            let (o, r) = rest.split_at_mut(size);
+            y = xcorr_block::<B>(x, y, o);
+            rest = r;
+        }
     }
-    for o in fours.into_remainder() {
-        *o = inner_prod(x, &y[i..], len);
-        i += 1;
+    if !rest.is_empty() {
+        xcorr_block::<B>(x, y, rest);
     }
+}
+
+/// The lags of `out` from the start of `y`; returns `y` from the next lag.
+#[inline(always)]
+fn xcorr_block<'a, const B: usize>(x: &[f32], y: &'a [f32], out: &mut [f32]) -> &'a [f32] {
+    let w = &y[..x.len() + out.len() - 1];
+    match out.len() {
+        1 => xcorr_kernel::<1>(x, w, out),
+        2 => xcorr_kernel::<2>(x, w, out),
+        3 => xcorr_kernel::<3>(x, w, out),
+        4 => xcorr_kernel::<4>(x, w, out),
+        5 => xcorr_kernel::<5>(x, w, out),
+        6 => xcorr_kernel::<6>(x, w, out),
+        7 => xcorr_kernel::<7>(x, w, out),
+        8 => xcorr_kernel::<8>(x, w, out),
+        16 => xcorr_kernel::<16>(x, w, out),
+        32 => xcorr_kernel::<32>(x, w, out),
+        _ => xcorr_kernel::<B>(x, w, out),
+    }
+    &y[out.len()..]
 }
 
 #[inline(always)]
