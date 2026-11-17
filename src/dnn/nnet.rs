@@ -292,7 +292,10 @@ pub fn compute_generic_conv1d_dilation(
     }
 }
 
-/// `conv2d_float`: each product is added to the output on its own.
+/// `conv2d_float`: each product is added to the output on its own, with
+/// `madd(w, x, y)`.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
 fn conv2d_float(
     out: &mut [f32],
     weights: F32s<'_>,
@@ -303,6 +306,7 @@ fn conv2d_float(
     input: &[f32],
     height: usize,
     hstride: usize,
+    madd: impl Fn(f32, f32, f32) -> f32,
 ) {
     let in_stride = height + kheight - 1;
     for i in 0..out_channels {
@@ -317,7 +321,7 @@ fn conv2d_float(
                         + h);
                     let x = &input[t * in_channels * in_stride + m * in_stride + h..];
                     for j in 0..height {
-                        o[j] += w * x[j];
+                        o[j] = madd(w, x[j], o[j]);
                     }
                 }
             }
@@ -325,8 +329,11 @@ fn conv2d_float(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 /// `conv2d_3x3_float`: the nine products of an input channel are summed
-/// first, then added to the output.
+/// first, then added to the output. `madd(w, x, y)` adds the first
+/// product to the second and each later product to the sum.
+#[inline(always)]
 fn conv2d_3x3_float(
     out: &mut [f32],
     weights: F32s<'_>,
@@ -335,6 +342,7 @@ fn conv2d_3x3_float(
     input: &[f32],
     height: usize,
     hstride: usize,
+    madd: impl Fn(f32, f32, f32) -> f32,
 ) {
     let in_stride = height + 2;
     for i in 0..out_channels {
@@ -347,21 +355,42 @@ fn conv2d_3x3_float(
             let x1 = &input[in_channels * in_stride + m * in_stride..];
             let x2 = &input[2 * in_channels * in_stride + m * in_stride..];
             for j in 0..height {
-                o[j] += w[0] * x0[j]
-                    + w[1] * x0[j + 1]
-                    + w[2] * x0[j + 2]
-                    + w[3] * x1[j]
-                    + w[4] * x1[j + 1]
-                    + w[5] * x1[j + 2]
-                    + w[6] * x2[j]
-                    + w[7] * x2[j + 1]
-                    + w[8] * x2[j + 2];
+                let mut sum = madd(w[0], x0[j], w[1] * x0[j + 1]);
+                sum = madd(w[2], x0[j + 2], sum);
+                sum = madd(w[3], x1[j], sum);
+                sum = madd(w[4], x1[j + 1], sum);
+                sum = madd(w[5], x1[j + 2], sum);
+                sum = madd(w[6], x2[j], sum);
+                sum = madd(w[7], x2[j + 1], sum);
+                sum = madd(w[8], x2[j + 2], sum);
+                o[j] += sum;
             }
         }
     }
 }
 
-/// `compute_conv2d_c`: one time step of a 2D convolution whose memory holds
+/// The convolution of `compute_conv2d` on `input` (memory and new input),
+/// with `madd(w, x, y)` adding a product to a sum.
+#[inline(always)]
+pub(crate) fn conv2d_by(
+    conv: &Conv2dLayer<'_>,
+    out: &mut [f32],
+    input: &[f32],
+    height: usize,
+    hstride: usize,
+    madd: impl Fn(f32, f32, f32) -> f32,
+) {
+    let w = conv.float_weights.expect("conv2d layer without weights");
+    let (inc, outc) = (conv.in_channels, conv.out_channels);
+    if conv.kheight == 3 && conv.ktime == 3 {
+        conv2d_3x3_float(out, w, inc, outc, input, height, hstride, madd);
+    } else {
+        let (kt, kh) = (conv.ktime, conv.kheight);
+        conv2d_float(out, w, inc, outc, kt, kh, input, height, hstride, madd);
+    }
+}
+
+/// `compute_conv2d` at `arch`: one time step of a 2D convolution whose memory holds
 /// the previous `ktime - 1` inputs.
 pub fn compute_conv2d(
     conv: &Conv2dLayer<'_>,
@@ -380,30 +409,14 @@ pub fn compute_conv2d(
     in_buf[..hist].copy_from_slice(&mem[..hist]);
     in_buf[hist..hist + time_stride].copy_from_slice(&input[..time_stride]);
     mem[..hist].copy_from_slice(&in_buf[time_stride..time_stride + hist]);
-    let w = conv.float_weights.expect("conv2d layer without weights");
-    if conv.kheight == 3 && conv.ktime == 3 {
-        conv2d_3x3_float(
-            out,
-            w,
-            conv.in_channels,
-            conv.out_channels,
-            &in_buf,
-            height,
-            hstride,
-        );
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if let Some(avx2) = arch.avx2() {
+        super::vec_x86::conv2d(avx2, conv, out, &in_buf, height, hstride);
     } else {
-        conv2d_float(
-            out,
-            w,
-            conv.in_channels,
-            conv.out_channels,
-            conv.ktime,
-            conv.kheight,
-            &in_buf,
-            height,
-            hstride,
-        );
+        conv2d_by(conv, out, &in_buf, height, hstride, |w, x, y| y + w * x);
     }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    conv2d_by(conv, out, &in_buf, height, hstride, |w, x, y| y + w * x);
     if let Some(bias) = conv.bias {
         for i in 0..conv.out_channels {
             for j in 0..height {

@@ -22,7 +22,7 @@ use core::arch::x86_64::*;
 
 use fearless_simd::{Avx2, Sse2, f32x4, f32x8, prelude::*, u8x32};
 
-use super::nnet::diag_by;
+use super::nnet::{Conv2dLayer, conv2d_by, diag_by};
 use super::vec::{Elem, MAX_INPUTS, c_floor, sgemv_by, sparse_sgemv8x4_by};
 use super::weights::{F32s, I32s};
 use crate::Arch;
@@ -377,5 +377,24 @@ fearless_simd::kernel!(
     /// none in a `-ffp-contract=off` build of it).
     pub(crate) fn diag(simd: Avx2, out: &mut [f32], diag: F32s<'_>, input: &[f32], m: usize) {
         diag_by(out, diag, input, m, |d, x, y| d.mul_add(x, y));
+    }
+);
+
+fearless_simd::kernel!(
+    /// The convolution of `compute_conv2d_avx2`. GCC contracts nnet_arch.h's
+    /// `out[...] += w0*x0 + w1*x1 + ... + w8*x8` (conv2d_3x3_float) to
+    /// fma(w0, x0, w1*x1), then fma(wk, xk, sum) for k = 2..8, then adds
+    /// the sum to the output (one `vmulss`, eight `vfmadd*ss` and one
+    /// `vaddss` in the reference object), and conv2d_float's
+    /// `out[...] += w*in[...]` to fma(w, in, out) (one `vfmadd132ss`).
+    pub(crate) fn conv2d(
+        simd: Avx2,
+        conv: &Conv2dLayer<'_>,
+        out: &mut [f32],
+        input: &[f32],
+        height: usize,
+        hstride: usize,
+    ) {
+        conv2d_by(conv, out, input, height, hstride, |w, x, y| w.mul_add(x, y));
     }
 );
