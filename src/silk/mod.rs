@@ -36,6 +36,8 @@ pub mod nsq;
 pub mod nsq_del_dec;
 #[cfg(target_arch = "aarch64")]
 mod nsq_del_dec_neon;
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+mod nsq_del_dec_wasm;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 mod nsq_del_dec_x86;
 pub mod pitch_analysis;

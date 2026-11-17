@@ -9,16 +9,25 @@ use crate::silk::tables::*;
 pub(crate) type Lanes = [i32; NSQ_MAX_STATES_OPERATING];
 
 /// The token of the platform's filter kernel when the CPU has it: AVX2
-/// (runtime detected, which needs `std`) or NEON.
+/// (runtime detected, which needs `std`), NEON or simd128.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 type Simd = Option<fearless_simd::Avx2>;
 #[cfg(target_arch = "aarch64")]
 type Simd = Option<fearless_simd::Neon>;
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+type Simd = Option<fearless_simd::WasmSimd128>;
+#[cfg(not(any(
+    target_arch = "x86",
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+)))]
 type Simd = Option<core::convert::Infallible>;
 
 #[cfg(target_arch = "aarch64")]
 use crate::silk::nsq_del_dec_neon::short_prediction_and_shaping_neon as short_prediction_and_shaping_simd;
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+use crate::silk::nsq_del_dec_wasm::short_prediction_and_shaping_wasm as short_prediction_and_shaping_simd;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use crate::silk::nsq_del_dec_x86::short_prediction_and_shaping_avx2 as short_prediction_and_shaping_simd;
 
@@ -27,7 +36,14 @@ fn detect_simd() -> Simd {
     return crate::compat::avx2();
     #[cfg(target_arch = "aarch64")]
     return crate::compat::neon();
-    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    return crate::compat::wasm_simd128();
+    #[cfg(not(any(
+        target_arch = "x86",
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        all(target_arch = "wasm32", target_feature = "simd128")
+    )))]
     None
 }
 
@@ -327,11 +343,21 @@ pub fn silk_noise_shape_quantizer_del_dec<const N: usize>(
         let s_ar2 = &mut filters.s_ar2_q14[..shaping_order];
         let args = (a_q12, predict_order, ar_shp_q13, warping_q16, tilt_q14);
         let [lpc_pred_q14, n_ar_q14] = match simd {
-            #[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
+            #[cfg(any(
+                target_arch = "x86",
+                target_arch = "x86_64",
+                target_arch = "aarch64",
+                all(target_arch = "wasm32", target_feature = "simd128")
+            ))]
             Some(simd) => short_prediction_and_shaping_simd(
                 simd, lpc, args.0, args.1, s_ar2, args.2, &diff_q14, &lf_ar_q14, args.3, args.4,
             ),
-            #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+            #[cfg(not(any(
+                target_arch = "x86",
+                target_arch = "x86_64",
+                target_arch = "aarch64",
+                all(target_arch = "wasm32", target_feature = "simd128")
+            )))]
             Some(never) => match never {},
             None => short_prediction_and_shaping::<N>(
                 lpc, args.0, args.1, s_ar2, args.2, &diff_q14, &lf_ar_q14, args.3, args.4,
@@ -804,7 +830,12 @@ mod tests {
 
     /// The SIMD kernel and the scalar filters agree bit for bit, also on
     /// states and coefficients at the edges of their ranges.
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(any(
+        target_arch = "x86",
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        all(target_arch = "wasm32", target_feature = "simd128")
+    ))]
     #[test]
     fn simd_filters_match_scalar() {
         let Some(token) = detect_simd() else {
