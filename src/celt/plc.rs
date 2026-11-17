@@ -130,7 +130,12 @@ impl CeltDecoder {
             }
         }
 
-        let decay = if self.loss_duration == 0 { 1.5 } else { 0.5 };
+        // 3 dB per 20 ms, and on the first noise frame the decay the
+        // periodic or neural concealment before it skipped.
+        let mut decay = (1 << lm) as f32 * 0.0625;
+        if self.last_frame_type != FRAME_PLC_NOISE {
+            decay += 1f32.max(self.loss_duration.min(160) as f32 * 0.0625);
+        }
         for c in 0..cc {
             for i in start..end {
                 let e = &mut self.old_band_e[c * nb + i];
