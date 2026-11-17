@@ -28,9 +28,10 @@ fn hex_to_bytes(s: &str) -> Vec<u8> {
 // arches fall back to size/determinism/decode checks only.
 #[cfg(target_arch = "x86_64")]
 fn sine_fixture_hex() -> Option<&'static str> {
-    // Validated against libopus 1.6.1-51-g03647f52 (float, x86 SSE2/AVX2).
+    // The packet of libopus main (f1afc4222a) built with intrinsics, at its
+    // SSE2 and AVX2 levels alike, which opus-rs's x86 levels reproduce.
     Some(
-        "f87b5e0950b78c08d0bbae9ae1d725a72fe5ee25c2740398a4615b113822973b042c80fdb66da4a3a2cb9c192af55d6bf6dd65c5c7653367144ecc6b0565efad221c5de2215ab8fc6f9f4f48cad42d1c1999da21cfa221cfa037aa44b81ad91d4a8d1d581540cf6c39176eeab2770f00b461d43fa328ae650837e79c9e8f6c417951dc2e4d32634de493b88e0d167016e2646590e686571dcf2104af43ab137d",
+        "f87b5e0950b78c08d0bbae9ae1d725a823beaa25c2740398a4615b113822973b042c80fdb66da4a3a2cb9c192af55d6bf6dd65c5c7653367144ecc6b0565efad221c5de2215ab8fc6f9f4f48cad42d1c1999da21cfa221cfa037aa44b81ad91d4a8d1d581540cf6c39176eeab2770f00b461d43fa328ae650837e79c9e8f6c417951dc2e4d32634de493b88e0d167016e2646593ed86571dcf2104af43ab137d",
     )
 }
 
