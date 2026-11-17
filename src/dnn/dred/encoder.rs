@@ -337,7 +337,7 @@ impl<'a> DredEnc<'a> {
             delayed_dred = true;
             self.last_extra_dred_offset = 0;
         }
-        while latent_offset < self.latents_buffer_fill
+        while latent_offset < self.latents_buffer_fill - 1
             && !dred_voice_active(activity_mem, latent_offset)
         {
             latent_offset += 1;
