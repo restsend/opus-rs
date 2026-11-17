@@ -3304,8 +3304,9 @@ impl CeltDecoder {
                 PcmLayout::Interleaved { accum } => (c, cc, accum),
             };
             if ds == 1 && accum {
+                // libopus adds VERY_SMALL last on this path.
                 for (j, &xj) in x.iter().enumerate() {
-                    let tmp = (xj + VERY_SMALL + m).clamp(-SIG_SAT, SIG_SAT);
+                    let tmp = (xj + m + VERY_SMALL).clamp(-SIG_SAT, SIG_SAT);
                     m = coef0 * tmp;
                     pcm[base + j * stride] += (1.0 / 32768.0) * tmp;
                 }
