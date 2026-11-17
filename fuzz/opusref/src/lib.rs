@@ -1,6 +1,6 @@
 //! FFI to the reference libopus build (float, scalar C).
 #![allow(non_camel_case_types, clippy::missing_safety_doc)]
-use core::ffi::{c_int, c_uchar, c_void};
+use core::ffi::{c_int, c_uchar, c_uint, c_void};
 
 pub type OpusEncoder = c_void;
 pub type OpusDecoder = c_void;
@@ -426,6 +426,14 @@ pub const SET_FORCE_MODE: c_int = 11002;
 pub const PROJECTION_GET_DEMIXING_MATRIX_GAIN: c_int = 6001;
 pub const PROJECTION_GET_DEMIXING_MATRIX_SIZE: c_int = 6003;
 pub const PROJECTION_GET_DEMIXING_MATRIX: c_int = 6005;
+
+unsafe extern "C" {
+    /// `ec_laplace_encode` of `*value` twice (the second time with the
+    /// value the first call coded) into `cap` bytes, then `ec_enc_done`.
+    pub fn ref_laplace_encode(value: *mut c_int, fs: c_uint, decay: c_int, buf: *mut c_uchar, cap: c_int);
+    /// `ec_laplace_decode` of the first value of `buf`.
+    pub fn ref_laplace_decode(fs: c_uint, decay: c_int, buf: *mut c_uchar, len: c_int) -> c_int;
+}
 
 unsafe extern "C" {
     /// `clt_mdct_forward_c`/`clt_mdct_backward_c` of the static 48 kHz mode,

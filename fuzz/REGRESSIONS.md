@@ -38,7 +38,7 @@ where noted.
 
 ## Counts
 
-148 fix commits: 92 guarded (G), 25 reproducer only (R), 1 fuzz-findable (F), 24 unguarded (U), 3 SIMD kernel removed (X), 3 no behaviour change (N).
+149 fix commits: 93 guarded (G), 25 reproducer only (R), 1 fuzz-findable (F), 24 unguarded (U), 3 SIMD kernel removed (X), 3 no behaviour change (N).
 
 ## Fixes
 
@@ -192,6 +192,7 @@ where noted.
 | 213 | `sztrnrtw` | silk: zero the padding pulses of a 10 ms frame at 12 kHz | G | opusref silk_frame_switch_range (s1) | reverted: fails opusref (ten_ms_silk_frames_after_longer_frames_keep_the_range) |
 | 214 | `ppnxtost` | decoder: reject an out-of-range complexity with error::BAD_ARG | R | regression x1 (diff_multistream `ctl`) | x1 present before the fix |
 | 215 | `qoyyxyzs` | dred: report the whole concealment as the last packet duration | G | opusref dnn_dred_codec::dred_decode_i16_matches_libopus (--features dnn, x2) | fails before the fix |
+| 216 | `qvrtskxs` | range_coder: Laplace coding in libopus's unsigned arithmetic | G | opusref laplace::laplace_codes_like_libopus (x3) | reverted: fails opusref (laplace_codes_like_libopus) |
 
 ## Reproducers that no longer reach their bug
 

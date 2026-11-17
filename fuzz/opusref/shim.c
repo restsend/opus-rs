@@ -35,6 +35,25 @@ opus_int32 ref_silk_rand(opus_int32 a) { return silk_RAND(a); }
 
 const CELTMode *ref_celt_mode48(void) { return opus_custom_mode_create(48000, 960, NULL); }
 
+#include "laplace.h"
+/* ec_laplace_encode of `*value` into `cap` bytes, twice: the buffer after
+   ec_enc_done and the value the first call codes. */
+void ref_laplace_encode(int *value, unsigned fs, int decay, unsigned char *buf, int cap) {
+  ec_enc enc;
+  int again;
+  ec_enc_init(&enc, buf, cap);
+  ec_laplace_encode(&enc, value, fs, decay);
+  again = *value;
+  ec_laplace_encode(&enc, &again, fs, decay);
+  ec_enc_done(&enc);
+}
+/* ec_laplace_decode of the first value in `buf`. */
+int ref_laplace_decode(unsigned fs, int decay, unsigned char *buf, int len) {
+  ec_dec dec;
+  ec_dec_init(&dec, buf, len);
+  return ec_laplace_decode(&dec, fs, decay);
+}
+
 #ifndef FIXED_POINT
 /* The static mode's MDCT and FFT, for kernel comparisons. */
 #include "mdct.h"

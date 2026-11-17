@@ -497,77 +497,83 @@ impl RangeCoder {
         self.normalize_decoder();
     }
 
+    /// libopus `ec_laplace_encode`, in its unsigned 32-bit arithmetic. The
+    /// codec passes `fs` up to 32640 and `decay` below 16384; other
+    /// arguments code what libopus codes, and where libopus leaves a zero
+    /// range (some `fs` above 32736), this call loops forever as libopus's
+    /// does.
     pub fn laplace_encode(&mut self, value: &mut i32, fs: u32, decay: i32) {
         let mut val = *value;
-        let mut fl = 0;
+        let mut fl = 0u32;
         let mut fs_val = fs;
 
         if val != 0 {
             let s = if val < 0 { -1 } else { 0 };
-            val = (val + s) ^ s;
+            val = val.wrapping_add(s) ^ s;
             fl = fs_val;
             fs_val = self.laplace_get_freq1(fs_val, decay);
 
             let mut i = 1;
             while fs_val > 0 && i < val {
-                fs_val *= 2;
-                fl += fs_val + 2;
-                fs_val = ((fs_val as i32 * decay) >> 15) as u32;
+                fs_val = fs_val.wrapping_mul(2);
+                fl = fl.wrapping_add(fs_val.wrapping_add(2));
+                fs_val = fs_val.wrapping_mul(decay as u32) >> 15;
                 i += 1;
             }
 
             if fs_val == 0 {
-                let ndi_max = 32768 - fl + 1 - 1;
-                let ndi_max = (ndi_max as i32 - s) >> 1;
-                let di = (val - i).min(ndi_max - 1);
-                fl += (2 * di + 1 + s) as u32;
-                fs_val = 1u32.min(32768 - fl);
-                *value = (i + di + s) ^ s;
+                let ndi_max = 32768u32.wrapping_sub(fl) as i32;
+                let ndi_max = ndi_max.wrapping_sub(s) >> 1;
+                let di = val.wrapping_sub(i).min(ndi_max.wrapping_sub(1));
+                fl = fl.wrapping_add(di.wrapping_mul(2).wrapping_add(1 + s) as u32);
+                fs_val = 1u32.min(32768u32.wrapping_sub(fl));
+                *value = (i.wrapping_add(di).wrapping_add(s)) ^ s;
             } else {
                 fs_val += 1;
-                fl += fs_val & (!s as u32);
+                fl = fl.wrapping_add(fs_val & !(s as u32));
             }
         }
         self.encode(fl, fl.wrapping_add(fs_val), 1 << 15);
     }
 
     fn laplace_get_freq1(&self, fs0: u32, decay: i32) -> u32 {
-        let ft = 32768 - (2 * 16) - fs0;
-        ((ft as i32 * (16384 - decay)) >> 15) as u32
+        let ft = (32768u32 - 2 * 16).wrapping_sub(fs0);
+        ft.wrapping_mul(16384i32.wrapping_sub(decay) as u32) >> 15
     }
 
     pub fn laplace_decode(&mut self, fs: u32, decay: i32) -> i32 {
         let fm = self.decode(1 << 15);
-        let mut fl = 0;
+        let mut fl = 0u32;
         let mut fs_val = fs;
-        let mut val = 0;
+        let mut val = 0i32;
 
+        // libopus `ec_laplace_decode`, with its unsigned 32-bit arithmetic.
         if fm >= fs_val {
             val += 1;
             fl = fs_val;
-            fs_val = self.laplace_get_freq1(fs_val, decay) + 1;
+            fs_val = self.laplace_get_freq1(fs_val, decay).wrapping_add(1);
 
-            while fs_val > 1 && fm >= fl + 2 * fs_val {
-                fs_val *= 2;
-                fl += fs_val;
-                fs_val = (((fs_val as i32 - 2) * decay) >> 15) as u32 + 1;
+            while fs_val > 1 && fm >= fl.wrapping_add(fs_val.wrapping_mul(2)) {
+                fs_val = fs_val.wrapping_mul(2);
+                fl = fl.wrapping_add(fs_val);
+                fs_val = (fs_val.wrapping_sub(2).wrapping_mul(decay as u32) >> 15).wrapping_add(1);
                 val += 1;
             }
 
             if fs_val <= 1 {
-                let di = (fm - fl) >> 1;
-                val += di as i32;
-                fl += 2 * di;
+                let di = fm.wrapping_sub(fl) >> 1;
+                val = val.wrapping_add(di as i32);
+                fl = fl.wrapping_add(di.wrapping_mul(2));
             }
 
-            if fm < fl + fs_val {
-                val = -val;
+            if fm < fl.wrapping_add(fs_val) {
+                val = val.wrapping_neg();
             } else {
-                fl += fs_val;
+                fl = fl.wrapping_add(fs_val);
             }
         }
 
-        self.update(fl, fl.wrapping_add(fs_val.min(32768 - fl)), 1 << 15);
+        self.update(fl, fl.wrapping_add(fs_val).min(32768), 1 << 15);
         val
     }
 
