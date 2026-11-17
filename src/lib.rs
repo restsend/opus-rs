@@ -1861,15 +1861,11 @@ impl OpusEncoder {
             bitrate => bitrate,
         };
         self.rate = user_bitrate.min(bits_to_bitrate(max_data_bytes as i32 * 8, fs, frame_size));
-        let mut repacketize_len = output.len();
         if self.use_cbr {
             let cbr_bytes =
                 ((bitrate_to_bits(self.rate, fs, frame_size) + 4) / 8).min(max_data_bytes as i32);
             self.rate = bits_to_bitrate(cbr_bytes * 8, fs, frame_size);
             max_data_bytes = cbr_bytes.max(1) as usize;
-            if self.bitrate_bps != Self::BITRATE_MAX {
-                repacketize_len = (cbr_bytes as usize).min(output.len());
-            }
         }
         #[cfg(feature = "dred")]
         {
@@ -2107,7 +2103,8 @@ impl OpusEncoder {
         if (mode != OpusMode::SilkOnly && frame_size > self.sampling_rate as usize / 50)
             || frame_size > 3 * self.sampling_rate as usize / 50
         {
-            let output = &mut output[..repacketize_len];
+            // The packet's room is max_data_bytes (libopus `repacketize_len`).
+            let output = &mut output[..max_data_bytes];
             return self.encode_multiframe(
                 input, frame_size, transition, lbrr_coded, equiv_rate, output,
             );
@@ -3503,8 +3500,8 @@ impl OpusEncoder {
         // Where each sub-packet's frame starts in `sub`.
         let mut offs = [0usize; MAX_SUB];
         // `output` is the packet's room (libopus `repacketize_len`): the
-        // output buffer, or under CBR the CBR size, to which the packet is
-        // padded.
+        // output buffer capped at six frames, or under CBR the CBR size, to
+        // which the packet is padded.
         let cbr_total = self.use_cbr.then_some(output.len());
         // Each frame gets at most its share of the packet less the
         // worst-case header, and no more than the bitrate's bytes per frame,

@@ -391,3 +391,15 @@ fn starved_hybrid_codes_silk_only() {
         }
     }
 }
+
+/// A multiframe packet is sized from the packet cap, also with a larger
+/// buffer: under CBR at OPUS_BITRATE_MAX it is padded to at most six
+/// 1276-byte frames (opus_encoder.c:1771-1774).
+#[test]
+fn multiframe_packets_ignore_a_larger_buffer() {
+    let mut p = Pair::new(48000, 2, Application::Audio);
+    p.check(2, 5760, 100000, bytes);
+    p.cbr();
+    p.bitrate(-1);
+    p.check(2, 5760, 100000, bytes);
+}
