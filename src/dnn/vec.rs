@@ -171,6 +171,33 @@ pub fn sparse_cgemv8x4(
     }
 }
 
+/// `cgemv8x4` (`idx` `None`) or `sparse_cgemv8x4` at `arch`. Returns
+/// true at the x86 levels, whose kernels take the inputs as unsigned
+/// bytes (vec_avx.h's `USE_SU_BIAS`): the layer adds its `subias`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cgemv8x4_at(
+    out: &mut [f32],
+    w: &[u8],
+    idx: Option<I32s<'_>>,
+    scale: F32s<'_>,
+    rows: usize,
+    cols: usize,
+    x: &[f32],
+    arch: Arch,
+) -> bool {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if arch != Arch::Scalar {
+        super::vec_x86::cgemv8x4(out, w, idx, scale, rows, cols, x, arch);
+        return true;
+    }
+    let _ = arch;
+    match idx {
+        Some(idx) => sparse_cgemv8x4(out, w, idx, scale, rows, cols, x),
+        None => cgemv8x4(out, w, scale, rows, cols, x),
+    }
+    false
+}
+
 /// `lpcnet_exp2`: 2^x from a cubic polynomial of the fraction, with the
 /// integer part added to the exponent bits. The input is clamped to
 /// [-50, 50]; NaN and inputs at or below -50 give 0.

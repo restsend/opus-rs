@@ -4,7 +4,7 @@
 //! Inputs and outputs may be longer than a layer reads or writes; only the
 //! first `nb_inputs`/`nb_outputs` values are used.
 
-use super::vec::{Elem, MAX_INPUTS, cgemv8x4, sgemv, sparse_cgemv8x4, sparse_sgemv8x4, vec_apply};
+use super::vec::{Elem, MAX_INPUTS, cgemv8x4_at, sgemv, sparse_sgemv8x4, vec_apply};
 use super::weights::{F32s, I32s};
 use crate::Arch;
 
@@ -46,8 +46,8 @@ pub const MAX_CONV2D_INPUTS: usize = 8192;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LinearLayer<'a> {
     pub bias: Option<F32s<'a>>,
-    /// The bias for unsigned inputs of the SIMD kernels (`USE_SU_BIAS`);
-    /// the generic kernels do not use it.
+    /// The bias of the int8 layers at the x86 levels, whose kernels take
+    /// unsigned inputs (`USE_SU_BIAS`); the generic kernels do not use it.
     pub subias: Option<F32s<'a>>,
     pub weights: Option<&'a [u8]>,
     pub float_weights: Option<F32s<'a>>,
@@ -70,10 +70,12 @@ pub struct Conv2dLayer<'a> {
     pub kheight: usize,
 }
 
-/// `compute_linear_c`.
-pub fn compute_linear(linear: &LinearLayer<'_>, out: &mut [f32], input: &[f32], _arch: Arch) {
+/// `compute_linear` at `arch` (libopus's `compute_linear_c` or the x86
+/// level's).
+pub fn compute_linear(linear: &LinearLayer<'_>, out: &mut [f32], input: &[f32], arch: Arch) {
     let m = linear.nb_inputs;
     let n = linear.nb_outputs;
+    let mut bias = linear.bias;
     if let Some(fw) = linear.float_weights {
         match linear.weights_idx {
             Some(idx) => sparse_sgemv8x4(out, fw, idx, n, input),
@@ -81,14 +83,13 @@ pub fn compute_linear(linear: &LinearLayer<'_>, out: &mut [f32], input: &[f32], 
         }
     } else if let Some(w) = linear.weights {
         let scale = linear.scale.expect("int8 layer without scale");
-        match linear.weights_idx {
-            Some(idx) => sparse_cgemv8x4(out, w, idx, scale, n, m, input),
-            None => cgemv8x4(out, w, scale, n, m, input),
+        if cgemv8x4_at(out, w, linear.weights_idx, scale, n, m, input, arch) {
+            bias = linear.subias;
         }
     } else {
         out[..n].fill(0.0);
     }
-    if let Some(bias) = linear.bias {
+    if let Some(bias) = bias {
         for (i, o) in out[..n].iter_mut().enumerate() {
             *o += bias.at(i);
         }

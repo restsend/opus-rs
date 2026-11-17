@@ -65,6 +65,12 @@ impl<'a> F32s<'a> {
     pub fn from(&self, start: usize) -> F32s<'a> {
         F32s(&self.0[start..])
     }
+    /// Values `start..start + N`.
+    #[inline(always)]
+    pub fn array<const N: usize>(&self, start: usize) -> [f32; N] {
+        let v: &[[u8; 4]; N] = self.0[start..start + N].try_into().unwrap();
+        v.map(f32::from_le_bytes)
+    }
 }
 
 /// Little-endian `i32` values borrowed from a blob.

@@ -20,9 +20,10 @@ use core::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 
-use fearless_simd::{Avx2, Sse2, f32x4, f32x8, prelude::*};
+use fearless_simd::{Avx2, Sse2, f32x4, f32x8, prelude::*, u8x32};
 
-use super::vec::Elem;
+use super::vec::{Elem, MAX_INPUTS, c_floor};
+use super::weights::{F32s, I32s};
 use crate::Arch;
 
 const TANH_N: [f32; 3] = [952.52801514, 96.39235687, 0.60863042];
@@ -167,4 +168,156 @@ pub(crate) fn apply(f: Elem, x: &mut [f32], arch: Arch) {
 /// The SSE2 token (SSE2 is in the x86-64 baseline).
 pub(crate) fn sse2() -> Sse2 {
     fearless_simd::Level::baseline().as_sse2().unwrap()
+}
+
+/// `vector_ps_to_epi8` without AVX2: the unsigned inputs of the int8
+/// layers, `127 + (int)floor(.5 + 127*x)` kept to its low 8 bits.
+fn quantize4(q: &mut [u8], x: &[f32]) {
+    for (q, &v) in q.iter_mut().zip(x) {
+        *q = c_floor(0.5f64 + (127.0f32 * v) as f64).wrapping_add(127) as u8;
+    }
+}
+
+fearless_simd::kernel!(
+    /// `vector_ps_to_epi8` with AVX2: `_mm256_cvtps_epi32(fma(x, 127,
+    /// 127))`, saturated to 0..65535 by `_mm256_packus_epi32`, then as
+    /// signed 16-bit values to 0..255 by `_mm256_packus_epi16`.
+    fn quantize8(simd: Avx2, q: &mut [u8], x: &[f32]) {
+        let c127 = _mm256_set1_ps(127.0);
+        let zero = _mm256_setzero_si256();
+        for (q, x) in q.chunks_mut(8).zip(x.chunks(8)) {
+            let mut b = [0.0f32; 8];
+            b[..x.len()].copy_from_slice(x);
+            let v = _mm256_fmadd_ps(f32x8::from_slice(simd, &b).into(), c127, c127);
+            let v = _mm256_packus_epi32(_mm256_cvtps_epi32(v), zero);
+            let v = _mm256_packus_epi16(_mm256_permute4x64_epi64::<0xD8>(v), zero);
+            let mut bytes = [0u8; 32];
+            let v: u8x32<Avx2> = v.simd_into(simd);
+            v.store_slice(&mut bytes);
+            q.copy_from_slice(&bytes[..q.len()]);
+        }
+    }
+);
+
+/// The four input bytes of the block at column `pos` as a 32-bit lane.
+#[inline(always)]
+fn word(x: &[u8], pos: usize) -> i32 {
+    i32::from_le_bytes([x[pos], x[pos + 1], x[pos + 2], x[pos + 3]])
+}
+
+/// The column blocks of the rows `i..i + 8` (`cgemv8x4`: every fourth
+/// column; `sparse_cgemv8x4`: the positions `idx` lists from `*p`).
+#[inline(always)]
+fn columns<'a>(
+    idx: Option<I32s<'a>>,
+    p: &mut usize,
+    cols: usize,
+) -> impl Iterator<Item = usize> + 'a {
+    let (start, n) = match idx {
+        Some(idx) => {
+            let n = idx.at(*p) as usize;
+            *p += 1 + n;
+            (*p - n, n)
+        }
+        None => (0, cols / 4),
+    };
+    (0..n).map(move |k| match idx {
+        Some(idx) => idx.at(start + k) as usize,
+        None => 4 * k,
+    })
+}
+
+/// The 8x4 int8 blocks at the SSE levels, `opus_mm256_dpbusds_epi32`
+/// lane by lane: SSE2 adds the four products of a row exactly, SSSE3's
+/// `_mm_maddubs_epi16` (the SSE4.1 build) adds them in pairs saturated to
+/// 16 bits.
+fn blocks4(
+    out: &mut [f32],
+    w: &[u8],
+    idx: Option<I32s<'_>>,
+    scale: F32s<'_>,
+    rows: usize,
+    cols: usize,
+    x: &[u8],
+    saturate: bool,
+) {
+    let sat = |v: i32| if saturate { v.clamp(-32768, 32767) } else { v };
+    let (mut p, mut wp) = (0, 0);
+    for i in (0..rows).step_by(8) {
+        let mut acc = [0i32; 8];
+        for pos in columns(idx, &mut p, cols) {
+            let xb = &x[pos..pos + 4];
+            let blk = &w[wp..wp + 32];
+            for (k, a) in acc.iter_mut().enumerate() {
+                let m = |c: usize| xb[c] as i32 * blk[4 * k + c] as i8 as i32;
+                *a = a.wrapping_add(sat(m(0) + m(1)) + sat(m(2) + m(3)));
+            }
+            wp += 32;
+        }
+        for (k, &a) in acc.iter().enumerate() {
+            out[i + k] = a as f32 * scale.at(i + k);
+        }
+    }
+}
+
+fearless_simd::kernel!(
+    /// The 8x4 int8 blocks with AVX2: `_mm256_maddubs_epi16` (pair sums
+    /// saturated to 16 bits), `_mm256_madd_epi16` with ones, the 32-bit
+    /// sums converted to float and scaled.
+    #[allow(clippy::too_many_arguments)]
+    fn blocks8(
+        simd: Avx2,
+        out: &mut [f32],
+        w: &[u8],
+        idx: Option<I32s<'_>>,
+        scale: F32s<'_>,
+        rows: usize,
+        cols: usize,
+        x: &[u8],
+    ) {
+        let ones = _mm256_set1_epi16(1);
+        let (mut p, mut wp) = (0, 0);
+        for i in (0..rows).step_by(8) {
+            let mut acc = _mm256_setzero_si256();
+            for pos in columns(idx, &mut p, cols) {
+                let vx = _mm256_set1_epi32(word(x, pos));
+                let vw = u8x32::from_slice(simd, &w[wp..wp + 32]).into();
+                let t = _mm256_madd_epi16(_mm256_maddubs_epi16(vx, vw), ones);
+                acc = _mm256_add_epi32(acc, t);
+                wp += 32;
+            }
+            let s = f32x8::from_slice(simd, &scale.array::<8>(i)).into();
+            let y: f32x8<Avx2> = _mm256_mul_ps(_mm256_cvtepi32_ps(acc), s).simd_into(simd);
+            y.store_slice(&mut out[i..i + 8]);
+        }
+    }
+);
+
+/// `cgemv8x4` (`idx` `None`) and `sparse_cgemv8x4` of vec_avx.h at `arch`
+/// (an x86 level): the inputs as unsigned bytes, integer sums of the
+/// products of each 8x4 block, converted to float and scaled. The layer
+/// then adds its `subias` (`USE_SU_BIAS`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cgemv8x4(
+    out: &mut [f32],
+    w: &[u8],
+    idx: Option<I32s<'_>>,
+    scale: F32s<'_>,
+    rows: usize,
+    cols: usize,
+    x_in: &[f32],
+    arch: Arch,
+) {
+    let mut x = [0u8; MAX_INPUTS];
+    let (x, x_in) = (&mut x[..cols], &x_in[..cols]);
+    match arch.avx2() {
+        Some(avx2) => {
+            quantize8(avx2, x, x_in);
+            blocks8(avx2, out, w, idx, scale, rows, cols, x);
+        }
+        None => {
+            quantize4(x, x_in);
+            blocks4(out, w, idx, scale, rows, cols, x, arch == Arch::Sse4_1);
+        }
+    }
 }
