@@ -208,38 +208,67 @@ fearless_simd::kernel!(
     }
 );
 
-/// The four input bytes of the block at column `pos` as a 32-bit lane.
+/// The 8x4 int8 blocks of `cgemv8x4` (`idx` `None`: every fourth input
+/// column of every 8 rows) or `sparse_cgemv8x4` (the columns `idx` lists):
+/// `finish(i, sum)` for the rows `i..i + 8`, with `sum` the `add` of the
+/// `prod(inputs, weights)` of their blocks (integer sums, so the grouping
+/// in fours does not change them).
+#[allow(clippy::too_many_arguments)]
 #[inline(always)]
-fn word(x: &[u8], pos: usize) -> i32 {
-    i32::from_le_bytes([x[pos], x[pos + 1], x[pos + 2], x[pos + 3]])
-}
-
-/// The column blocks of the rows `i..i + 8` (`cgemv8x4`: every fourth
-/// column; `sparse_cgemv8x4`: the positions `idx` lists from `*p`).
-#[inline(always)]
-fn columns<'a>(
-    idx: Option<I32s<'a>>,
-    p: &mut usize,
+fn blocks<A: Copy>(
+    rows: usize,
     cols: usize,
-) -> impl Iterator<Item = usize> + 'a {
-    let (start, n) = match idx {
-        Some(idx) => {
-            let n = idx.at(*p) as usize;
-            *p += 1 + n;
-            (*p - n, n)
+    idx: Option<I32s<'_>>,
+    w: &[u8],
+    x: &[u8],
+    zero: A,
+    prod: impl Fn(&[u8; 4], &[u8; 32]) -> A,
+    add: impl Fn(A, A) -> A,
+    mut finish: impl FnMut(usize, A),
+) {
+    let wb = w.as_chunks::<32>().0;
+    let xb = x[..cols].as_chunks::<4>().0;
+    let p = |(x, w): (&[u8; 4], &[u8; 32])| prod(x, w);
+    match idx {
+        None => {
+            let n = xb.len();
+            let (x4, x_rest) = xb.as_chunks::<4>();
+            for i in (0..rows).step_by(8) {
+                let row = &wb[i / 8 * n..i / 8 * n + n];
+                let (w4, w_rest) = row.as_chunks::<4>();
+                let mut s = zero;
+                for (x, w) in x4.iter().zip(w4) {
+                    let a = add(p((&x[0], &w[0])), p((&x[1], &w[1])));
+                    let b = add(p((&x[2], &w[2])), p((&x[3], &w[3])));
+                    s = add(s, add(a, b));
+                }
+                for b in x_rest.iter().zip(w_rest) {
+                    s = add(s, p(b));
+                }
+                finish(i, s);
+            }
         }
-        None => (0, cols / 4),
-    };
-    (0..n).map(move |k| match idx {
-        Some(idx) => idx.at(start + k) as usize,
-        None => 4 * k,
-    })
+        Some(idx) => {
+            let (mut p, mut wp) = (0, 0);
+            for i in (0..rows).step_by(8) {
+                let n = idx.at(p) as usize;
+                let mut s = zero;
+                for (k, w) in wb[wp..wp + n].iter().enumerate() {
+                    let pos = idx.at(p + 1 + k) as usize;
+                    s = add(s, prod(x[pos..pos + 4].try_into().unwrap(), w));
+                }
+                (p, wp) = (p + 1 + n, wp + n);
+                finish(i, s);
+            }
+        }
+    }
 }
 
 /// The 8x4 int8 blocks at the SSE levels, `opus_mm256_dpbusds_epi32`
 /// lane by lane: SSE2 adds the four products of a row exactly, SSSE3's
 /// `_mm_maddubs_epi16` (the SSE4.1 build) adds them in pairs saturated to
 /// 16 bits.
+#[allow(clippy::too_many_arguments)]
 fn blocks4(
     out: &mut [f32],
     w: &[u8],
@@ -251,22 +280,18 @@ fn blocks4(
     saturate: bool,
 ) {
     let sat = |v: i32| if saturate { v.clamp(-32768, 32767) } else { v };
-    let (mut p, mut wp) = (0, 0);
-    for i in (0..rows).step_by(8) {
-        let mut acc = [0i32; 8];
-        for pos in columns(idx, &mut p, cols) {
-            let xb = &x[pos..pos + 4];
-            let blk = &w[wp..wp + 32];
-            for (k, a) in acc.iter_mut().enumerate() {
-                let m = |c: usize| xb[c] as i32 * blk[4 * k + c] as i8 as i32;
-                *a = a.wrapping_add(sat(m(0) + m(1)) + sat(m(2) + m(3)));
-            }
-            wp += 32;
-        }
+    let prod = |x: &[u8; 4], w: &[u8; 32]| {
+        core::array::from_fn(|k| {
+            let m = |c: usize| x[c] as i32 * w[4 * k + c] as i8 as i32;
+            sat(m(0) + m(1)) + sat(m(2) + m(3))
+        })
+    };
+    let add = |a: [i32; 8], b: [i32; 8]| core::array::from_fn(|k| a[k].wrapping_add(b[k]));
+    blocks(rows, cols, idx, w, x, [0i32; 8], prod, add, |i, acc| {
         for (k, &a) in acc.iter().enumerate() {
             out[i + k] = a as f32 * scale.at(i + k);
         }
-    }
+    });
 }
 
 fearless_simd::kernel!(
@@ -285,20 +310,18 @@ fearless_simd::kernel!(
         x: &[u8],
     ) {
         let ones = _mm256_set1_epi16(1);
-        let (mut p, mut wp) = (0, 0);
-        for i in (0..rows).step_by(8) {
-            let mut acc = _mm256_setzero_si256();
-            for pos in columns(idx, &mut p, cols) {
-                let vx = _mm256_set1_epi32(word(x, pos));
-                let vw = u8x32::from_slice(simd, &w[wp..wp + 32]).into();
-                let t = _mm256_madd_epi16(_mm256_maddubs_epi16(vx, vw), ones);
-                acc = _mm256_add_epi32(acc, t);
-                wp += 32;
-            }
+        let prod = |x: &[u8; 4], w: &[u8; 32]| {
+            let vx = _mm256_set1_epi32(i32::from_le_bytes(*x));
+            let vw = u8x32::from_slice(simd, w).into();
+            _mm256_madd_epi16(_mm256_maddubs_epi16(vx, vw), ones)
+        };
+        let add = |a, b| _mm256_add_epi32(a, b);
+        let zero = _mm256_setzero_si256();
+        blocks(rows, cols, idx, w, x, zero, prod, add, |i, acc| {
             let s = f32x8::from_slice(simd, &scale.array::<8>(i)).into();
             let y: f32x8<Avx2> = _mm256_mul_ps(_mm256_cvtepi32_ps(acc), s).simd_into(simd);
             y.store_slice(&mut out[i..i + 8]);
-        }
+        });
     }
 );
 
