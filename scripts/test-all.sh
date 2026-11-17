@@ -4,7 +4,8 @@
 #   scripts/test-all.sh          everything below except the libFuzzer build
 #   scripts/test-all.sh --fuzz   also builds the fuzz targets with cargo-fuzz
 #                                (needs a nightly cargo and cargo-fuzz on PATH)
-#                                and runs fuzz/regressions/check.sh
+#                                and runs fuzz/regressions/check.sh, then
+#                                the same with --features fixed
 #
 # Needs: stable cargo, a C/C++ compiler, pkg-config, cmake, libopus (the
 # interop dev-dependencies), and the pinned libopus sources for fuzz/opusref:
@@ -14,11 +15,16 @@
 # Steps:
 #   suite            cargo test --release
 #   suite-dnn        cargo test --release --features deep-plc,dred,osce
+#   suite-silk-fixed cargo test --release --features silk-fixed (the
+#                    fixed-point SILK encoder)
 #   no_std           builds without std (libm), with and without the neural
-#                    features, then its library and integration tests
+#                    features and silk-fixed, then its library and
+#                    integration tests
 #   opusref          the differential tests against libopus built from source:
-#                    float, --features dnn, --features fixed --test silk_fixed;
-#                    opus-rs runs at the scalar level (OPUS_RS_ARCH unset)
+#                    float (with the float SILK grid, silk_float), --features
+#                    dnn, --features fixed --test silk_fixed (fixed-point
+#                    libopus against silk-fixed); opus-rs runs at the scalar
+#                    level (OPUS_RS_ARCH unset)
 #   opusref-simd     on x86-64, the same tests against libopus built as its
 #                    configure builds it (--features simd), opus-rs at the
 #                    CPU's level and at sse2 (OPUS_RS_ARCH, OPUSREF_ARCH)
@@ -79,8 +85,10 @@ simd_parity() { OPUS_RS_ARCH=native parity --features simd; }
 
 step suite cargo test --release --no-fail-fast -- "${known[@]}"
 step suite-dnn cargo test --release --no-fail-fast --features deep-plc,dred,osce -- "${known[@]}"
+step suite-silk-fixed cargo test --release --no-fail-fast --features silk-fixed -- "${known[@]}"
 step no_std-build cargo build --release --no-default-features --features libm
 step no_std-build-dnn cargo build --release --no-default-features --features libm,dred,osce
+step no_std-build-silk-fixed cargo build --release --no-default-features --features libm,silk-fixed
 # Without `heap` the codec structs are inline arrays; the tests need a big stack.
 export RUST_MIN_STACK=${RUST_MIN_STACK:-33554432}
 step no_std-lib-tests cargo test --release --no-default-features --features libm --lib
@@ -100,6 +108,8 @@ step replay-fixed in_fuzz cargo test --features fixed --test regressions
 if [ $fuzz = 1 ]; then
   step fuzz-build in_fuzz cargo fuzz build
   step check.sh fuzz/regressions/check.sh
+  step fuzz-build-fixed in_fuzz cargo fuzz build --features fixed
+  step check.sh-fixed env OFZ_BUILD=fixed fuzz/regressions/check.sh
 fi
 
 echo
