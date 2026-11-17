@@ -1,12 +1,14 @@
 use crate::fixedvec::FixedVec;
 use crate::pitch::pitch_xcorr;
 
+/// libopus `_celt_lpc` (celt_lpc.c, float build).
 pub fn lpc(lpc: &mut [f32], ac: &[f32], p: usize) {
+    // The coefficients start at zero, so those after an early stop stay
+    // zero; a NaN ac[0] fails the test and leaves them all zero.
+    lpc[..p].fill(0.0);
     let mut error = ac[0];
-    if error <= 1e-10 {
-        for x in lpc.iter_mut() {
-            *x = 0.0;
-        }
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    if !(error > 1e-10) {
         return;
     }
 
