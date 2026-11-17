@@ -1730,7 +1730,8 @@ fn dynalloc_analysis_simple(
     }
     // C 1206-1222: Compensate for Opus' under-allocation on tones
     if toneishness > 0.98 {
-        let freq_bin = (tone_freq * 120.0 / core::f32::consts::PI + 0.5).floor() as i32;
+        // The division by M_PI, the .5 and the floor are double (C 1210).
+        let freq_bin = (0.5 + f64::from(tone_freq * 120.0) / core::f64::consts::PI).floor() as i32;
         for i in start..end {
             let lo = mode.e_bands[i] as i32;
             let hi = mode.e_bands[i + 1] as i32;
@@ -4139,6 +4140,25 @@ mod tests {
         let mut lpc = [0.0; 2];
         assert!(!tone_lpc(&x, 5, 1, &mut lpc));
         assert!(lpc[0] < -1.999999, "{lpc:?}");
+    }
+
+    /// dynalloc's tone bin is floor(.5 + tone_freq*120/M_PI) in double
+    /// (celt_encoder.c:1210): 0.01308996882 rad/sample is bin 0.
+    #[test]
+    fn dynalloc_tone_bin_rounds_in_double() {
+        let mode = modes::default_mode();
+        let band_log_e: Vec<f32> = (0..21).map(|i| 4.0 - 0.3 * i as f32).collect();
+        let old = [0.0f32; 21];
+        let run = |tone_freq: f32| {
+            let (mut offsets, mut importance, mut spread_weight) = ([0; 21], [0; 21], [0; 21]);
+            let r = dynalloc_analysis_simple(
+                mode, &band_log_e, None, &old, 0, 21, 1, 3, 200, false, &mut offsets, 24, true,
+                false, &AnalysisInfo::default(), &[0.0; 21], tone_freq, 0.99, &mut importance,
+                &mut spread_weight,
+            );
+            (r, offsets, importance)
+        };
+        assert_eq!(run(0.01308996882), run(0.0));
     }
 
     #[test]
