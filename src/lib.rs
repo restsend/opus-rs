@@ -864,12 +864,14 @@ fn hybrid_hb_gain(celt_rate: i32) -> f32 {
 /// 2297-2312): `pcm` receives the delayed history, then the high-passed
 /// frame, and the delay line moves on by the frame.
 #[allow(clippy::too_many_arguments)]
-/// libopus FLOAT2INT16 (float_cast.h): scale, saturate, round to nearest
-/// with ties to even (`lrintf`). Adding and removing 1.5 * 2^23 rounds an
-/// f32 below 2^22 in magnitude to an integer in the current (nearest-even)
-/// rounding mode.
-fn float2int16(x: f32) -> i16 {
-    let x = (x * 32768.0).clamp(-32768.0, 32767.0);
+/// libopus FLOAT2INT16 (float_cast.h): scale, saturate with MAX32 then
+/// MIN32 (a NaN becomes -32768), round to nearest with ties to even
+/// (`lrintf`). Adding and removing 1.5 * 2^23 rounds an f32 below 2^22 in
+/// magnitude to an integer in the current (nearest-even) rounding mode.
+pub(crate) fn float2int16(x: f32) -> i16 {
+    let x = x * 32768.0;
+    let x = if x > -32768.0 { x } else { -32768.0 };
+    let x = if x < 32767.0 { x } else { 32767.0 };
     ((x + 12_582_912.0) - 12_582_912.0) as i16
 }
 

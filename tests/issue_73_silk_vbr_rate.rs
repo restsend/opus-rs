@@ -423,6 +423,29 @@ fn silk_follows_a_change_of_complexity() {
 }
 
 #[test]
+fn float_voip_input_rounds_like_libopus() {
+    // The fixed-point build's float entry point turns VoIP input into 16-bit
+    // samples with FLOAT2INT16, which rounds ties to even: the fixture moved
+    // by half a step, so every sample is a tie (16 kHz, 20 ms, 20 kb/s).
+    // Hash of every packet of fixed-point libopus 1.6.1 at the same settings.
+    let pcm: Vec<f32> = speech_i16(16000)
+        .iter()
+        .map(|&x| (x as f32 + 0.5) / 32768.0)
+        .collect();
+    let mut enc = OpusEncoder::new(16000, 1, Application::Voip).unwrap();
+    enc.bitrate_bps = 20000;
+    enc.complexity = 9;
+    enc.set_signal(Signal::Voice);
+    enc.set_bandwidth(Bandwidth::Wideband);
+    let mut packet = [0u8; 1500];
+    let hash = pcm.chunks_exact(320).fold(FNV_OFFSET, |h, frame| {
+        let n = enc.encode(frame, 320, &mut packet).unwrap();
+        packet_hash(h, &packet[..n])
+    });
+    assert_eq!(hash, 0xbe7b36f5a215e9ad);
+}
+
+#[test]
 fn silk_follows_a_change_of_frame_duration() {
     // 40 ms SILK-only packets, then 40 ms hybrid packets, which are two 20 ms
     // frames: SILK must set its packet up for 20 ms frames again, as libopus

@@ -81,9 +81,10 @@ pub fn hp_cutoff(
     debug_assert!(input.len() <= MAX_HP_INPUT);
     let mut input_i16_buf = [0i16; MAX_HP_INPUT];
     let input_i16 = &mut input_i16_buf[..input.len()];
-    for i in 0..input.len() {
-        let sample = (input[i] * 32768.0 + 0.5).floor().clamp(-32768.0, 32767.0);
-        input_i16[i] = sample as i16;
+    // The fixed-point build's float entry point converts with FLOAT2INT16
+    // (opus_encoder.c:2761, float_cast.h).
+    for (d, &x) in input_i16.iter_mut().zip(input) {
+        *d = crate::float2int16(x);
     }
 
     if channels == 1 {
