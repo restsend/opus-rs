@@ -19,6 +19,44 @@ cargo +nightly fuzz build
 cargo +nightly fuzz run diff_decoder -- -len_control=0 -max_len=8192
 ```
 
+## Running every check
+
+`scripts/test-all.sh` (from the repository root) runs everything and prints a
+summary; it exits non-zero if a step fails:
+
+- `cargo test --release`, with and without `--features deep-plc,dred,osce`;
+- the `no_std` builds (`--no-default-features --features libm`, also with the
+  neural features) and the `no_std` library and integration tests;
+- the opusref tests: float, `--features dnn`, `--features fixed --test
+  silk_fixed`;
+- `opusref/examples/parity.rs`, which must report every 48 kHz CELT
+  configuration byte-identical with libopus;
+- the regression replay `tests/regressions.rs` (below) for the default, dnn
+  and fixed builds.
+
+`scripts/test-all.sh --fuzz` also builds the targets with `cargo fuzz build`
+(nightly cargo and cargo-fuzz on `PATH`) and runs `regressions/check.sh`.
+The script needs stable cargo, a C and C++ compiler, pkg-config, cmake,
+libopus (for the interop dev-dependencies) and the libopus 1.6.1 sources
+(`OPUSREF_SRC` or `opus-1.6.1/`); the dev shell provides them.
+
+## Regression reproducers
+
+`regressions/manifest.tsv` and `regressions/manifest.d/*.tsv` list one
+reproducer per fixed divergence: an input for a target with its environment
+and the output pattern that shows the bug, or `test:<name>` for an opusref
+test. The target bodies live in the fuzz crate's library (`src/`), which the
+libFuzzer binaries in `fuzz_targets/` call, so `cargo test --test
+regressions` replays every input on the stable toolchain, each in its own
+process, and fails if a pattern appears; `regressions/check.sh` does the same
+with the cargo-fuzz binaries. A target suffix selects the build: `@dnn` and
+`@fixed` entries run only with `--features dnn` or `--features fixed` (and
+such a build runs only those), `@aarch64` entries only on aarch64. The
+replay keeps the test profile's debug assertions and overflow checks, as
+cargo-fuzz does; `stack-buffer-overflow` patterns need AddressSanitizer and
+show only in check.sh. `REGRESSIONS.md` maps every fix to the test or
+reproducer that guards it.
+
 ## Targets
 
 | Target | Compares | Oracles |
