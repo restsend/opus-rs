@@ -497,12 +497,21 @@ impl RangeCoder {
         self.normalize_decoder();
     }
 
-    /// libopus `ec_laplace_encode`, in its unsigned 32-bit arithmetic. The
-    /// codec passes `fs` up to 32640 and `decay` below 16384; other
-    /// arguments code what libopus codes, and where libopus leaves a zero
-    /// range (some `fs` above 32736), this call loops forever as libopus's
-    /// does.
+    /// Whether libopus's Laplace coder returns for every value and input:
+    /// `fs` from 1 to 32736 and `decay` from 0 to 16384. The codec passes
+    /// `fs` up to 32640 and `decay` up to 16320.
+    fn laplace_args_valid(fs: u32, decay: i32) -> bool {
+        (1..=32736).contains(&fs) && (0..=16384).contains(&decay)
+    }
+
+    /// libopus `ec_laplace_encode`, in its unsigned 32-bit arithmetic.
+    /// Outside [`Self::laplace_args_valid`]'s arguments, where libopus's
+    /// coder can loop forever, it sets the error flag and codes nothing.
     pub fn laplace_encode(&mut self, value: &mut i32, fs: u32, decay: i32) {
+        if !Self::laplace_args_valid(fs, decay) {
+            self.error = 1;
+            return;
+        }
         let mut val = *value;
         let mut fl = 0u32;
         let mut fs_val = fs;
@@ -541,13 +550,20 @@ impl RangeCoder {
         ft.wrapping_mul(16384i32.wrapping_sub(decay) as u32) >> 15
     }
 
+    /// libopus `ec_laplace_decode`. Outside
+    /// [`Self::laplace_args_valid`]'s arguments it sets the error flag and
+    /// returns 0 without reading.
     pub fn laplace_decode(&mut self, fs: u32, decay: i32) -> i32 {
+        if !Self::laplace_args_valid(fs, decay) {
+            self.error = 1;
+            return 0;
+        }
         let fm = self.decode(1 << 15);
         let mut fl = 0u32;
         let mut fs_val = fs;
         let mut val = 0i32;
 
-        // libopus `ec_laplace_decode`, with its unsigned 32-bit arithmetic.
+        // libopus's unsigned 32-bit arithmetic.
         if fm >= fs_val {
             val += 1;
             fl = fs_val;

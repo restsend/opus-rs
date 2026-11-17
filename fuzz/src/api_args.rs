@@ -155,10 +155,8 @@ pub fn run(inp: Input) {
             Op::EncodeBitLogp(..) => {}
             Op::EncodeIcdf(s, t) => enc.encode_icdf(*s, &icdf(t), 8),
             Op::Laplace(v, f, d) => {
-                // libopus's coder loops forever for some fs above 32736
-                // (opusref laplace.rs compares the rest).
                 let mut v = *v % 1024;
-                enc.laplace_encode(&mut v, 1 + *f % 32736, 1 + d.rem_euclid(16383))
+                enc.laplace_encode(&mut v, *f, *d)
             }
             // Unbounded targets loop for minutes; keep them near the buffer size.
             Op::PadToBits(b) => enc.pad_to_bits(*b % 4096),
@@ -190,7 +188,7 @@ pub fn run(inp: Input) {
                 std::hint::black_box(dec.decode_icdf(&icdf(t), 8));
             }
             Op::LaplaceDecode(f, d) => {
-                std::hint::black_box(dec.laplace_decode(1 + *f % 32736, 1 + d.rem_euclid(16383)));
+                std::hint::black_box(dec.laplace_decode(*f, *d));
             }
             Op::Tell => {
                 std::hint::black_box((enc.tell_frac(), dec.tell_frac()));

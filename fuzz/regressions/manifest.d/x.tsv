@@ -1,4 +1,4 @@
 # API lane: the libopus API surface; same columns as ../manifest.tsv.
 x1	diff_multistream	-	DIFF[ctl]	decoder complexity outside 0-10 rejected with a text that is no libopus error code
 x2	test:dred_decode_i16_matches_libopus	-	dred_decode_i16_matches_libopus ... FAILED	DRED concealment in pieces reports the last piece as the last packet duration
-x3	test:laplace_codes_like_libopus	-	laplace_codes_like_libopus ... FAILED	Laplace coding of fs above 32736 loops forever where libopus's unsigned sums wrap and return
+x4	test:laplace_refuses_arguments_libopus_loops_on	-	laplace_refuses_arguments_libopus_loops_on ... FAILED	Laplace coding loops forever on arguments outside libopus's terminating domain

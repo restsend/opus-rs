@@ -38,7 +38,7 @@ where noted.
 
 ## Counts
 
-149 fix commits: 93 guarded (G), 25 reproducer only (R), 1 fuzz-findable (F), 24 unguarded (U), 3 SIMD kernel removed (X), 3 no behaviour change (N).
+150 fix commits: 93 guarded (G), 25 reproducer only (R), 1 fuzz-findable (F), 24 unguarded (U), 3 SIMD kernel removed (X), 4 no behaviour change (N).
 
 ## Fixes
 
@@ -192,7 +192,8 @@ where noted.
 | 213 | `sztrnrtw` | silk: zero the padding pulses of a 10 ms frame at 12 kHz | G | opusref silk_frame_switch_range (s1) | reverted: fails opusref (ten_ms_silk_frames_after_longer_frames_keep_the_range) |
 | 214 | `ppnxtost` | decoder: reject an out-of-range complexity with error::BAD_ARG | R | regression x1 (diff_multistream `ctl`) | x1 present before the fix |
 | 215 | `qoyyxyzs` | dred: report the whole concealment as the last packet duration | G | opusref dnn_dred_codec::dred_decode_i16_matches_libopus (--features dnn, x2) | fails before the fix |
-| 216 | `qvrtskxs` | range_coder: Laplace coding in libopus's unsigned arithmetic | G | opusref laplace::laplace_codes_like_libopus (x3) | reverted: fails opusref (laplace_codes_like_libopus) |
+| 216 | `qvrtskxs` | range_coder: Laplace coding in libopus's unsigned arithmetic | N | for the arguments 217 accepts the arithmetic is unchanged; it differed only above fs 32736, which 217 refuses | its own test failed before it, until 217 |
+| 217 | `nnwwmsyx` | range_coder: refuse Laplace arguments libopus's coder can loop on | G | opusref laplace::laplace_refuses_arguments_libopus_loops_on (x4) | reverted: fails opusref (laplace_refuses_arguments_libopus_loops_on) |
 
 ## Reproducers that no longer reach their bug
 
