@@ -374,8 +374,9 @@ fn transient_analysis(
         let mut mean = 0.0f32;
         mem0 = 0.0f32;
         for i in 0..len2 {
-            let x2 = (tmp[2 * i] * tmp[2 * i] + tmp[2 * i + 1] * tmp[2 * i + 1]) / 16.0;
-            // C float build: PSHR32(x2, 12) is an identity, so mean += x2
+            // C float build: PSHR32 is an identity, so x2 is the plain sum of
+            // squares and mean += x2.
+            let x2 = tmp[2 * i] * tmp[2 * i] + tmp[2 * i + 1] * tmp[2 * i + 1];
             mean += x2;
             mem0 = x2 + (1.0 - forward_decay) * mem0;
             tmp2[i] = forward_decay * mem0;

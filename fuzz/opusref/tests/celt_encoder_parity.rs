@@ -116,3 +116,16 @@ fn frames_code_at_most_1275_bytes() {
     let cfg = Cfg { bytes: 1500, ch: 2, ..Cfg::default() };
     assert_eq!(identical(cfg, 2, noise(1, 0.3)), [true; 2]);
 }
+
+/// transient_analysis sums plain squares (celt_encoder.c:371, PSHR32 is
+/// an identity in the float build), so its 1e-15 epsilons weigh the same
+/// on a very quiet onset.
+#[test]
+fn quiet_onsets_weigh_the_epsilon_like_libopus() {
+    let cfg = Cfg { n: 240, bytes: 80, ..Cfg::default() };
+    let chirp = |f: usize, i: usize, _| {
+        let t = (f * 240 + i) as f32 / 48000.0;
+        (t * t * 20000.0).sin() * 1e-6
+    };
+    assert_eq!(identical(cfg, 2, chirp), [true; 2]);
+}
