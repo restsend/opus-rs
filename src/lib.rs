@@ -2116,8 +2116,11 @@ impl OpusEncoder {
                         1
                     };
                     output[0] = (output[0] & 0xFC) | 0x03;
-                    output[1] = 0x40 | m as u8; // padding present, CBR, m frames
+                    // CBR, m frames, and the padding flag if there is any
+                    // padding (two bytes have none).
+                    output[1] = m as u8;
                     if target_total > 2 {
+                        output[1] |= 0x40;
                         let pad_amount = target_total - 2;
                         let nb_255s = (pad_amount - 1) / 255;
                         let mut ptr = 2;
