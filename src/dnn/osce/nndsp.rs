@@ -7,11 +7,12 @@ use crate::Arch;
 #[cfg(not(feature = "std"))]
 use crate::compat::Math;
 
-use crate::dnn::common::{celt_log, celt_pitch_xcorr};
+use crate::dnn::common::celt_log;
 use crate::dnn::nnet::{
     Activation, LinearLayer, compute_activation_inplace, compute_generic_conv1d,
     compute_generic_dense,
 };
+use crate::pitch::pitch_xcorr;
 
 pub const ADACONV_MAX_KERNEL_SIZE: usize = 32;
 pub const ADACONV_MAX_INPUT_CHANNELS: usize = 3;
@@ -276,19 +277,21 @@ pub fn adaconv_process_frame(
             kernel1[..kernel_size].copy_from_slice(&kernel_buffer[k..k + kernel_size]);
             // p_input + ic*stride - left_padding, with p_input = input_buffer + kernel_size.
             let y = &input_buffer[kernel_size + ic * stride - left_padding..];
-            celt_pitch_xcorr(
+            pitch_xcorr(
                 &kernel0,
                 y,
                 &mut channel_buffer0,
                 ADACONV_MAX_KERNEL_SIZE,
                 overlap_size,
+                arch,
             );
-            celt_pitch_xcorr(
+            pitch_xcorr(
                 &kernel1,
                 y,
                 &mut channel_buffer1,
                 ADACONV_MAX_KERNEL_SIZE,
                 frame_size,
+                arch,
             );
             for i in 0..overlap_size {
                 out[i] += window[i] * channel_buffer0[i];
@@ -378,19 +381,21 @@ pub fn adacomb_process_frame(
     kernel[..kernel_size].copy_from_slice(&kernel_buffer[..kernel_size]);
     last_kernel[..kernel_size].copy_from_slice(&state.last_kernel[..kernel_size]);
 
-    celt_pitch_xcorr(
+    pitch_xcorr(
         &last_kernel,
         &input_buffer[p - left_padding - state.last_pitch_lag..],
         &mut output_buffer_last,
         ADACOMB_MAX_KERNEL_SIZE,
         overlap_size,
+        arch,
     );
-    celt_pitch_xcorr(
+    pitch_xcorr(
         &kernel,
         &input_buffer[p - left_padding - pitch_lag..],
         &mut output_buffer,
         ADACOMB_MAX_KERNEL_SIZE,
         frame_size,
+        arch,
     );
     let last_gg = state.last_global_gain;
     let p_input = &input_buffer[p..p + frame_size];

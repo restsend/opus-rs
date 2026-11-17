@@ -5,7 +5,7 @@
 #[cfg(not(feature = "std"))]
 use crate::compat::Math;
 
-use super::common::{celt_fir, celt_inner_prod, celt_log2, celt_pitch_xcorr};
+use super::common::{celt_fir, celt_log2};
 use super::fft::Cpx;
 use super::freq::{
     FRAME_SIZE, FREQ_SIZE, LPC_ORDER, NB_BANDS, OVERLAP_SIZE, PREEMPHASIS, TRAINING_OFFSET,
@@ -15,6 +15,7 @@ use super::models::pitchdnn::PitchDnn;
 use super::pitchdnn::{PITCH_MAX_PERIOD, PITCH_MIN_PERIOD, PitchDnnState, compute_pitchdnn};
 use super::vec::c_int;
 use crate::Arch;
+use crate::pitch::{inner_prod, pitch_xcorr};
 
 pub const NB_FEATURES: usize = 20;
 pub const NB_TOTAL_FEATURES: usize = 36;
@@ -188,6 +189,7 @@ pub fn compute_frame_features(st: &mut LpcnetEncState<'_>, input: &[f32], arch: 
         &mut st.lp_buf[PITCH_MAX_PERIOD..],
         FRAME_SIZE,
         LPC_ORDER,
+        arch,
     );
     for i in 0..FRAME_SIZE {
         st.exc_buf[PITCH_MAX_PERIOD + i] = st.lp_buf[PITCH_MAX_PERIOD + i] + 0.7f32 * st.pitch_filt;
@@ -202,19 +204,21 @@ pub fn compute_frame_features(st: &mut LpcnetEncState<'_>, input: &[f32], arch: 
     );
     {
         let buf = &st.exc_buf;
-        celt_pitch_xcorr(
+        pitch_xcorr(
             &buf[PITCH_MAX_PERIOD..],
             buf,
             &mut xcorr,
             FRAME_SIZE,
             PITCH_MAX_PERIOD - PITCH_MIN_PERIOD,
+            arch,
         );
-        let ener0 = celt_inner_prod(
+        let ener0 = inner_prod(
             &buf[PITCH_MAX_PERIOD..],
             &buf[PITCH_MAX_PERIOD..],
             FRAME_SIZE,
+            arch,
         );
-        let mut ener1 = celt_inner_prod(buf, buf, FRAME_SIZE) as f64;
+        let mut ener1 = inner_prod(buf, buf, FRAME_SIZE, arch) as f64;
         for i in 0..PITCH_MAX_PERIOD - PITCH_MIN_PERIOD {
             let ener = ((1.0f32 + ener0) as f64 + ener1) as f32;
             st.xcorr_features[i] = 2.0 * xcorr[i];
@@ -233,16 +237,23 @@ pub fn compute_frame_features(st: &mut LpcnetEncState<'_>, input: &[f32], arch: 
             .floor(),
     ) as usize;
     let lp = &st.lp_buf;
-    let xx = celt_inner_prod(&lp[PITCH_MAX_PERIOD..], &lp[PITCH_MAX_PERIOD..], FRAME_SIZE);
-    let yy = celt_inner_prod(
+    let xx = inner_prod(
+        &lp[PITCH_MAX_PERIOD..],
+        &lp[PITCH_MAX_PERIOD..],
+        FRAME_SIZE,
+        arch,
+    );
+    let yy = inner_prod(
         &lp[PITCH_MAX_PERIOD - pitch..],
         &lp[PITCH_MAX_PERIOD - pitch..],
         FRAME_SIZE,
+        arch,
     );
-    let xy = celt_inner_prod(
+    let xy = inner_prod(
         &lp[PITCH_MAX_PERIOD..],
         &lp[PITCH_MAX_PERIOD - pitch..],
         FRAME_SIZE,
+        arch,
     );
     let mut frame_corr = (xy as f64 / ((1.0f32 + xx * yy) as f64).sqrt()) as f32;
     frame_corr = (((1.0f32 as f64 + ((5.0f32 * frame_corr) as f64).exp()).ln())

@@ -1,34 +1,41 @@
 //! CELT helpers that the neural network code calls, with the operation
-//! order of libopus's float build (no FLOAT_APPROX): `celt_inner_prod`,
-//! `celt_pitch_xcorr`, `celt_fir` and the `mathops.h` functions.
+//! order of libopus's float build (no FLOAT_APPROX): `celt_fir` and the
+//! `mathops.h` functions. `celt_inner_prod` and `celt_pitch_xcorr` are
+//! [`crate::pitch::inner_prod`] and [`crate::pitch::pitch_xcorr`].
 
 #[cfg(not(feature = "std"))]
 use crate::compat::Math;
 
-/// `celt_inner_prod_c`: products summed in order from 0.
-#[inline]
-pub fn celt_inner_prod(x: &[f32], y: &[f32], n: usize) -> f32 {
-    let mut sum = 0.0f32;
-    for (&a, &b) in x[..n].iter().zip(&y[..n]) {
-        sum += a * b;
-    }
-    sum
-}
+use crate::Arch;
+use crate::pitch::xcorr_kernel;
 
-/// `celt_pitch_xcorr_c`: `xcorr[i] = celt_inner_prod(x, y[i..], len)`.
-pub fn celt_pitch_xcorr(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitch: usize) {
-    for (i, o) in xcorr[..max_pitch].iter_mut().enumerate() {
-        *o = celt_inner_prod(x, &y[i..], len);
-    }
-}
+/// The largest order of [`celt_fir`].
+const MAX_FIR_ORDER: usize = 24;
 
-/// `celt_fir_c`: `y[i] = x[i] + sum_j num[ord-1-j] * x[i+j-ord]` with the
-/// history in `x[..ord]` and the input in `x[ord..ord + n]`.
-pub fn celt_fir(x: &[f32], num: &[f32], y: &mut [f32], n: usize, ord: usize) {
-    for i in 0..n {
+/// `celt_fir_c` at `arch`: `y[i] = x[i] + sum_j num[ord-1-j] * x[i+j-ord]`
+/// with the history in `x[..ord]` and the input in `x[ord..ord + n]`. The
+/// outputs in whole groups of four are `xcorr_kernel` at `arch` (libopus's
+/// SSE kernel at the x86 levels), the rest sums in order.
+pub fn celt_fir(x: &[f32], num: &[f32], y: &mut [f32], n: usize, ord: usize, arch: Arch) {
+    assert!(ord <= MAX_FIR_ORDER);
+    let mut rnum = [0.0f32; MAX_FIR_ORDER];
+    for (r, &v) in rnum[..ord].iter_mut().zip(num[..ord].iter().rev()) {
+        *r = v;
+    }
+    let rnum = &rnum[..ord];
+    let groups = n & !3;
+    for i in (0..groups).step_by(4) {
+        let sum: [f32; 4] = x[ord + i..ord + i + 4].try_into().unwrap();
+        let out = match arch {
+            Arch::Scalar => xcorr_kernel::<4, false>(rnum, &x[i..], sum),
+            _ => xcorr_kernel::<4, true>(rnum, &x[i..], sum),
+        };
+        y[i..i + 4].copy_from_slice(&out);
+    }
+    for i in groups..n {
         let mut sum = x[ord + i];
-        for j in 0..ord {
-            sum += num[ord - 1 - j] * x[i + j];
+        for (j, &r) in rnum.iter().enumerate() {
+            sum += r * x[i + j];
         }
         y[i] = sum;
     }
