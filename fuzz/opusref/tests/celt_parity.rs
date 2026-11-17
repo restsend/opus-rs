@@ -18,6 +18,7 @@ fn signal(sig: &str, f: usize, frame: usize, ch: usize, seed: &mut u32) -> Vec<f
             match sig {
                 "voice" => voice,
                 "noise" => noise * 0.5,
+                "quiet" => noise * 3e-6,
                 "sine" => (440.0 * t * 6.2832).sin() * 0.5,
                 _ => unreachable!(),
             }
@@ -203,4 +204,11 @@ fn split_angles_match_libopus() {
 #[test]
 fn intra_decision_counts_only_budget_changes() {
     assert_eq!(identical(1, 20.0, 24, 2, "voice", 3), [true; 3]);
+}
+
+/// The VBR target's depth limit takes dynalloc's maxDepth, from the band
+/// energies before the coarse-energy bias (celt_encoder.c:1068-1078).
+#[test]
+fn vbr_target_uses_dynalloc_max_depth() {
+    assert_eq!(identical(1, 20.0, 128, 0, "quiet", 4), [true; 4]);
 }

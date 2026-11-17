@@ -103,33 +103,6 @@ fn compute_vbr(
     }
     target.min(2 * base_target)
 }
-const EMEANS_F: [f32; 25] = [
-    6.4375, 6.25, 5.75, 5.3125, 5.0625, 4.8125, 4.5, 4.375, 4.875, 4.6875, 4.5625, 4.4375, 4.875,
-    4.625, 4.3125, 4.5, 4.375, 4.625, 4.75, 4.4375, 3.75, 3.75, 3.75, 3.75, 3.75,
-];
-fn compute_max_depth(
-    mode: &CeltMode,
-    band_log_e: &[f32],
-    nb_ebands: usize,
-    c: usize,
-    end: usize,
-    lsb_depth: i32,
-) -> f32 {
-    let mut max_depth: f32 = -31.9;
-    for ch in 0..c {
-        for i in 0..end {
-            let log_n = mode.log_n[i] as f32;
-            let e_mean = if i < EMEANS_F.len() { EMEANS_F[i] } else { 0.0 };
-            let noise_floor = 0.0625 * log_n + 0.5 + (9 - lsb_depth) as f32 - e_mean
-                + 0.0062 * ((i + 5) * (i + 5)) as f32;
-            let v = band_log_e[ch * nb_ebands + i] - noise_floor;
-            if v > max_depth {
-                max_depth = v;
-            }
-        }
-    }
-    max_depth
-}
 
 // --- Heap-free buffer capacity constants (all sized for the worst case:
 //     2 channels, 48 kHz, max frame). Runtime construction uses smaller logical
@@ -1511,7 +1484,7 @@ fn dynalloc_analysis_simple(
     toneishness: f32,
     importance: &mut [i32],
     spread_weight: &mut [i32],
-) {
+) -> f32 {
     offsets.fill(0);
     let nb = mode.nb_ebands;
     // celt_encoder.c:1063-1117: the noise floor, the deepest band above it,
@@ -1552,7 +1525,7 @@ fn dynalloc_analysis_simple(
         for v in importance.iter_mut() {
             *v = 13;
         }
-        return;
+        return max_depth;
     }
 
     let mut follower: FixedVec<f32, CELT_NB_X_CH> = FixedVec::from_value(0.0f32, nb * channels);
@@ -1718,6 +1691,7 @@ fn dynalloc_analysis_simple(
         offsets[i] = boost_count.max(0);
         tot_boost += boost_bits.max(0);
     }
+    max_depth
 }
 
 impl CeltEncoder {
@@ -2420,7 +2394,8 @@ impl CeltEncoder {
         let surround_dynalloc = [0.0f32; 21];
         let mut importance = [13i32; MAX_NB_EBANDS];
         let mut spread_weight = [32i32; MAX_NB_EBANDS];
-        dynalloc_analysis_simple(
+        // The deepest band above the noise floor, for the VBR target.
+        let max_depth = dynalloc_analysis_simple(
             mode,
             band_log_e,
             band_log_e2_opt,
@@ -2703,14 +2678,6 @@ impl CeltEncoder {
                 }
             };
             // nbCompressedBytes is current max (after first VBR bound), effectiveBytes ~ vbr_rate>>(3+BITRES) for lambda already
-            let max_depth = compute_max_depth(
-                mode,
-                band_log_e,
-                nb_ebands,
-                channels,
-                end,
-                self.lsb_depth,
-            );
             dumpi!(
                 "vbr_in",
                 &[base_target, lm as i32, equiv_rate, self.last_coded_bands, channels as i32, self.intensity, self.constrained_vbr as i32, tot_boost, pitch_change as i32]
