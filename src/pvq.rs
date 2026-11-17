@@ -562,7 +562,9 @@ fn best_pulse_position(abs_x: &[f32], y2: &[f32], xy: f32, yy: f32) -> usize {
     best.2
 }
 
-pub fn pvq_search(x: &[f32], y: &mut [i32], k: i32, n: usize) {
+pub fn pvq_search(x: &[f32], y: &mut [i32], k: i32, n: usize, arch: crate::Arch) {
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    let _ = arch;
     // Hard contract: n must fit the scratch buffers and the input slices must
     // hold n samples (issue #27 deep scan).
     assert!(
@@ -589,7 +591,7 @@ pub fn pvq_search(x: &[f32], y: &mut [i32], k: i32, n: usize) {
         return;
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if let Some(avx2) = crate::compat::avx2() {
+    if let Some(avx2) = arch.avx2() {
         use fearless_simd::Simd;
         return pvq_search_blocks(x, y, k, n, |abs_x, y2, iy, xy, yy, pulses| {
             avx2.vectorize(|| add_pulses_simd(avx2, abs_x, y2, iy, xy, yy, pulses))
@@ -995,10 +997,11 @@ pub fn alg_quant(
     rc: &mut RangeCoder,
     gain: f32,
     resynth: bool,
+    arch: crate::Arch,
 ) -> u32 {
     with_scratch(n, |y: &mut [i32]| {
         exp_rotation(x, n, 1, stride, k, spread);
-        pvq_search(x, y, k, n);
+        pvq_search(x, y, k, n, arch);
         let mask = extract_collapse_mask(y, n, stride);
         encode_pulses(y, n as u32, k as u32, rc);
         if resynth {
@@ -1019,6 +1022,7 @@ pub fn alg_quant_qext(
     gain: f32,
     resynth: bool,
     extra_bits: Option<i32>,
+    arch: crate::Arch,
 ) -> u32 {
     if n <= 32 {
         let mut y_buf = [0i32; 32];
@@ -1077,7 +1081,7 @@ pub fn alg_quant_qext(
             return mask;
         }
 
-        pvq_search(x, y, k, n);
+        pvq_search(x, y, k, n, arch);
         let mask = extract_collapse_mask(y, n, stride);
         encode_pulses(y, n as u32, k as u32, rc);
 
@@ -1087,7 +1091,7 @@ pub fn alg_quant_qext(
         }
         mask
     } else {
-        alg_quant(x, n, k, spread, stride, rc, gain, resynth)
+        alg_quant(x, n, k, spread, stride, rc, gain, resynth, arch)
     }
 }
 
@@ -1119,7 +1123,7 @@ mod tests {
     /// positions tie, are zero, or come from a few distinct values.
     #[test]
     fn best_pulse_position_simd_matches_scan() {
-        let Some(avx2) = crate::compat::avx2() else {
+        let Some(avx2) = crate::arch::cpu_avx2() else {
             return;
         };
         let mut seed = 1u32;

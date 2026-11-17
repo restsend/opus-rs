@@ -32,7 +32,17 @@ fn test_pvq_match() {
 
     let mut rc = RangeCoder::new_encoder(1024);
     let mut x_quant = x_in.clone();
-    alg_quant(&mut x_quant, n, k, spread, 1, &mut rc, 1.0, true);
+    alg_quant(
+        &mut x_quant,
+        n,
+        k,
+        spread,
+        1,
+        &mut rc,
+        1.0,
+        true,
+        opus_rs::Arch::Scalar,
+    );
 
     rc.done();
     let nbytes_start = rc.offs as usize;
@@ -100,7 +110,17 @@ fn test_pvq_complex_match() {
 
     let mut rc = RangeCoder::new_encoder(1024);
     let mut x_quant = x_in.clone();
-    alg_quant(&mut x_quant, n, k, spread, 1, &mut rc, 1.0, true);
+    alg_quant(
+        &mut x_quant,
+        n,
+        k,
+        spread,
+        1,
+        &mut rc,
+        1.0,
+        true,
+        opus_rs::Arch::Scalar,
+    );
 
     rc.done();
 

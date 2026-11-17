@@ -69,8 +69,13 @@ fn signals() -> Vec<Vec<f32>> {
 fn mismatches(long: bool) -> (usize, usize) {
     let (mut search, mut doubling) = (0, 0);
     for (k, x) in signals().iter().enumerate() {
-        let a =
-            opus_rs::pitch::pitch_search(&x[MAX_PERIOD >> 1..], x, N, MAX_PERIOD - 3 * MIN_PERIOD);
+        let a = opus_rs::pitch::pitch_search(
+            &x[MAX_PERIOD >> 1..],
+            x,
+            N,
+            MAX_PERIOD - 3 * MIN_PERIOD,
+            opus_rs::Arch::Scalar,
+        );
         let mut b = 0;
         let mut y = x.clone();
         unsafe {
@@ -147,7 +152,7 @@ fn concealment_pitch_search_matches_libopus() {
         .chunks(4)
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect();
-    let a = opus_rs::pitch::pitch_search(&lp[360..], &lp, 1328, 620);
+    let a = opus_rs::pitch::pitch_search(&lp[360..], &lp, 1328, 620, opus_rs::Arch::Scalar);
     let mut b = 0;
     let mut y = lp.clone();
     unsafe { pitch_search(lp[360..].as_ptr(), y.as_mut_ptr(), 1328, 620, &mut b, 0) };

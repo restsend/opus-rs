@@ -30,7 +30,14 @@ pub fn dual_inner_prod(x: &[f32], y1: &[f32], y2: &[f32], n: usize) -> (f32, f32
 
 /// libopus `celt_pitch_xcorr`: `xcorr[i]` is the inner product of `x[..len]`
 /// and `y[i..i + len]`.
-pub fn pitch_xcorr(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitch: usize) {
+pub fn pitch_xcorr(
+    x: &[f32],
+    y: &[f32],
+    xcorr: &mut [f32],
+    len: usize,
+    max_pitch: usize,
+    arch: crate::Arch,
+) {
     // Every lag window reads y[i..i+len], so the contract is
     // y.len() >= len + max_pitch - 1; clamp so that direct callers with a
     // short `y` degrade gracefully (issue #27 deep scan). In-repo callers
@@ -40,16 +47,18 @@ pub fn pitch_xcorr(x: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, max_pitc
     } else {
         0
     };
-    xcorr_lags(&x[..len], y, &mut xcorr[..max_pitch]);
+    xcorr_lags(&x[..len], y, &mut xcorr[..max_pitch], arch);
 }
 
 /// `out[i]` = the inner product of `x` and `y[i..i + x.len()]`, each summed
 /// in order as [`inner_prod`] does. The kernels give each lag a vector lane
 /// (libopus `xcorr_kernel_c`, with up to 32 lags); with AVX2 the same code
 /// runs on 8-lane vectors.
-fn xcorr_lags(x: &[f32], y: &[f32], out: &mut [f32]) {
+fn xcorr_lags(x: &[f32], y: &[f32], out: &mut [f32], arch: crate::Arch) {
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    let _ = arch;
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if let Some(avx2) = crate::compat::avx2() {
+    if let Some(avx2) = arch.avx2() {
         use fearless_simd::Simd;
         return avx2.vectorize(|| xcorr_lags_blocks::<64>(x, y, out));
     }
@@ -154,7 +163,14 @@ fn celt_fir5(x: &mut [f32], num: &[f32], n: usize) {
     }
 }
 
-pub fn pitch_downsample(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, factor: usize) {
+pub fn pitch_downsample(
+    x: &[&[f32]],
+    x_lp: &mut [f32],
+    len: usize,
+    c: usize,
+    factor: usize,
+    arch: crate::Arch,
+) {
     let offset = factor / 2;
 
     if x_lp.len() < len {
@@ -175,7 +191,7 @@ pub fn pitch_downsample(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, fa
     }
 
     pitch_downsample_boundary(x, x_lp, c, offset);
-    whiten_downsampled(x_lp, len);
+    whiten_downsampled(x_lp, len, arch);
 }
 
 /// Whitening of the decimated signal, shared by every `pitch_downsample`
@@ -183,9 +199,9 @@ pub fn pitch_downsample(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, fa
 /// LPC from the decimated autocorrelation, lag-windowed, with a zero added,
 /// applied as a 5-tap FIR so the pitch search sees a flat spectrum with a
 /// sharp correlation peak.
-fn whiten_downsampled(x_lp: &mut [f32], len: usize) {
+fn whiten_downsampled(x_lp: &mut [f32], len: usize, arch: crate::Arch) {
     let mut ac = [0.0f32; 5];
-    autocorr(&x_lp[0..len], &mut ac, None, 0, 4, len);
+    autocorr(&x_lp[0..len], &mut ac, None, 0, 4, len, arch);
 
     // Noise floor -40 dB.
     ac[0] *= 1.0001;
@@ -288,7 +304,13 @@ fn find_best_pitch(
     }
 }
 
-pub fn pitch_search(x_lp: &[f32], y: &[f32], mut len: usize, mut max_pitch: usize) -> usize {
+pub fn pitch_search(
+    x_lp: &[f32],
+    y: &[f32],
+    mut len: usize,
+    mut max_pitch: usize,
+    arch: crate::Arch,
+) -> usize {
     let mut best_pitch = [0, 0];
 
     max_pitch >>= 1;
@@ -314,7 +336,7 @@ pub fn pitch_search(x_lp: &[f32], y: &[f32], mut len: usize, mut max_pitch: usiz
         y_lp4 = &mut y_lp4_stack[..lag4];
         xcorr = &mut xcorr_stack[..max_pitch];
     } else {
-        return pitch_search_heap(x_lp, y, len << 1, max_pitch << 1);
+        return pitch_search_heap(x_lp, y, len << 1, max_pitch << 1, arch);
     }
 
     for j in 0..len4 {
@@ -324,11 +346,11 @@ pub fn pitch_search(x_lp: &[f32], y: &[f32], mut len: usize, mut max_pitch: usiz
         y_lp4[j] = y[2 * j];
     }
 
-    pitch_xcorr(x_lp4, y_lp4, xcorr, len >> 1, max_pitch >> 1);
+    pitch_xcorr(x_lp4, y_lp4, xcorr, len >> 1, max_pitch >> 1, arch);
 
     find_best_pitch(xcorr, y_lp4, len >> 1, max_pitch >> 1, &mut best_pitch);
 
-    fine_xcorr(x_lp, y, &mut xcorr[..max_pitch], len, best_pitch);
+    fine_xcorr(x_lp, y, &mut xcorr[..max_pitch], len, best_pitch, arch);
 
     find_best_pitch(xcorr, y, len, max_pitch, &mut best_pitch);
 
@@ -347,7 +369,13 @@ pub fn pitch_search(x_lp: &[f32], y: &[f32], mut len: usize, mut max_pitch: usiz
     ((2 * best_pitch[0]) as isize).wrapping_sub(offset as isize) as usize
 }
 
-fn pitch_search_heap(x_lp: &[f32], y: &[f32], mut len: usize, mut max_pitch: usize) -> usize {
+fn pitch_search_heap(
+    x_lp: &[f32],
+    y: &[f32],
+    mut len: usize,
+    mut max_pitch: usize,
+    arch: crate::Arch,
+) -> usize {
     let mut best_pitch = [0, 0];
 
     max_pitch >>= 1;
@@ -365,11 +393,11 @@ fn pitch_search_heap(x_lp: &[f32], y: &[f32], mut len: usize, mut max_pitch: usi
         y_lp4[j] = y[2 * j];
     }
 
-    pitch_xcorr(&x_lp4, &y_lp4, &mut xcorr, len >> 1, max_pitch >> 1);
+    pitch_xcorr(&x_lp4, &y_lp4, &mut xcorr, len >> 1, max_pitch >> 1, arch);
 
     find_best_pitch(&xcorr, &y_lp4, len >> 1, max_pitch >> 1, &mut best_pitch);
 
-    fine_xcorr(x_lp, y, &mut xcorr[..max_pitch], len, best_pitch);
+    fine_xcorr(x_lp, y, &mut xcorr[..max_pitch], len, best_pitch, arch);
 
     find_best_pitch(&xcorr, y, len, max_pitch, &mut best_pitch);
 
@@ -390,12 +418,19 @@ fn pitch_search_heap(x_lp: &[f32], y: &[f32], mut len: usize, mut max_pitch: usi
 
 /// The full-rate correlations within 2 lags of the two coarse candidates,
 /// floored at -1, and 0 elsewhere (pitch.c:373-386).
-fn fine_xcorr(x_lp: &[f32], y: &[f32], xcorr: &mut [f32], len: usize, best_pitch: [usize; 2]) {
+fn fine_xcorr(
+    x_lp: &[f32],
+    y: &[f32],
+    xcorr: &mut [f32],
+    len: usize,
+    best_pitch: [usize; 2],
+    arch: crate::Arch,
+) {
     xcorr.fill(0.0);
     for b in best_pitch {
         let lo = (2 * b).saturating_sub(2).min(xcorr.len());
         let hi = (2 * b + 3).min(xcorr.len());
-        xcorr_lags(&x_lp[..len], &y[lo..], &mut xcorr[lo..hi]);
+        xcorr_lags(&x_lp[..len], &y[lo..], &mut xcorr[lo..hi], arch);
     }
     for v in xcorr.iter_mut() {
         if *v < -1.0 {

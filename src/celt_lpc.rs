@@ -43,6 +43,7 @@ pub fn autocorr(
     overlap: usize,
     lag: usize,
     n: usize,
+    arch: crate::Arch,
 ) {
     let xx_vec: FixedVec<f32, 2880>;
     let xx: &[f32] = if let Some(win) = window {
@@ -64,7 +65,7 @@ pub fn autocorr(
 
     let fast_n = n - lag;
 
-    pitch_xcorr(xx, xx, ac, fast_n, lag + 1);
+    pitch_xcorr(xx, xx, ac, fast_n, lag + 1, arch);
 
     for k in 0..=lag {
         let mut d = 0.0f32;

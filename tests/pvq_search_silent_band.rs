@@ -10,7 +10,7 @@ fn a_silent_band_gets_all_its_pulses_inside_the_band() {
         // Guard words after the band show any write past it.
         let mut buf = vec![0i32; n + 16];
         let (y, guard) = buf.split_at_mut(n);
-        pvq_search(&x, y, 5, n);
+        pvq_search(&x, y, 5, n, opus_rs::Arch::Scalar);
         let pulses: i32 = y.iter().map(|v| v.abs()).sum();
         assert_eq!(pulses, 5, "n = {n}: pulses in the band");
         assert!(

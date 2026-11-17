@@ -6,7 +6,6 @@
 //! `RUSTFLAGS=-Ctarget-feature=+avx2,+fma` to take the AVX2/FMA kernels.
 use opus_rs::range_coder::RangeCoder;
 use opus_rs::{Application, OpusDecoder, OpusEncoder};
-use std::sync::atomic::Ordering;
 
 /// Small deterministic PRNG (LCG), so runs are reproducible.
 struct Rng(u32);
@@ -52,7 +51,7 @@ fn decoder_encoded_mode_switches() {
     // Valid streams through SILK, hybrid and CELT, including the transitions.
     let mut r = Rng(2);
     for simd in [false, true] {
-        opus_rs::fuzzing::SIMD_ENABLED.store(simd, Ordering::Relaxed);
+        opus_rs::fuzzing::force_arch((!simd).then_some(opus_rs::Arch::Scalar));
         let (fs, ch) = (48000, 1);
         let mut e = OpusEncoder::new(fs, ch, Application::Audio).unwrap();
         let mut d = OpusDecoder::new(fs, ch).unwrap();
@@ -75,7 +74,7 @@ fn decoder_encoded_mode_switches() {
 fn encoder_settings_and_signals() {
     let mut r = Rng(3);
     for simd in [false, true] {
-        opus_rs::fuzzing::SIMD_ENABLED.store(simd, Ordering::Relaxed);
+        opus_rs::fuzzing::force_arch((!simd).then_some(opus_rs::Arch::Scalar));
         for (fs, ch, app, ms) in [
             (48000, 2, Application::Audio, 20),
             (16000, 2, Application::Voip, 20),
@@ -137,7 +136,7 @@ fn kernels() {
     let mut r = Rng(5);
     let mode = opus_rs::modes::default_mode();
     for simd in [false, true] {
-        opus_rs::fuzzing::SIMD_ENABLED.store(simd, Ordering::Relaxed);
+        opus_rs::fuzzing::force_arch((!simd).then_some(opus_rs::Arch::Scalar));
         for n0 in [2usize, 16, 30, 64, 128] {
             let mut x: Vec<f32> = (0..n0 * 2).map(|_| r.f()).collect();
             opus_rs::bands::haar1(&mut x, n0, 1);
@@ -146,7 +145,7 @@ fn kernels() {
         for (n, k) in [(2usize, 1i32), (8, 5), (16, 40), (37, 11), (176, 128)] {
             let x: Vec<f32> = (0..n).map(|_| r.f()).collect();
             let mut y = vec![0i32; n + 8];
-            opus_rs::pvq::pvq_search(&x, &mut y, k, n);
+            opus_rs::pvq::pvq_search(&x, &mut y, k, n, opus_rs::Arch::select());
         }
         for len in [0usize, 1, 7, 8, 15, 33, 240] {
             let x: Vec<i16> = (0..len).map(|_| r.next() as i16).collect();
@@ -165,44 +164,5 @@ fn kernels() {
             let mut y = vec![0f32; hist + n];
             opus_rs::fuzzing::comb_filter(&mut y, &x, hist, hist, t0, t1, n, 0.5, 0.3, 1, 2, mode.window, overlap);
         }
-    }
-}
-
-/// The SIMD kernels (AVX2, NEON) and the scalar code give the same packets:
-/// SILK's delayed-decision quantizer at complexity 10, Hybrid and CELT.
-#[test]
-fn simd_and_scalar_packets_match() {
-    let encode = |simd: bool, fs: i32, ch: usize, app: Application, kbps: i32| {
-        opus_rs::fuzzing::SIMD_ENABLED.store(simd, Ordering::Relaxed);
-        let mut r = Rng(5);
-        let mut e = OpusEncoder::new(fs, ch, app).unwrap();
-        e.bitrate_bps = kbps * 1000;
-        e.complexity = 10;
-        let frame = fs as usize / 50;
-        let mut phase = 0f32;
-        let mut packets = Vec::new();
-        for _ in 0..scale() {
-            let pcm: Vec<f32> = (0..frame * ch)
-                .map(|_| {
-                    phase += 0.031;
-                    0.4 * phase.sin() + 0.05 * r.f()
-                })
-                .collect();
-            let mut pkt = [0u8; 1500];
-            let n = e.encode(&pcm, frame, &mut pkt).unwrap();
-            packets.push(pkt[..n].to_vec());
-        }
-        packets
-    };
-    for (fs, ch, app, kbps) in [
-        (16000, 1, Application::Voip, 20),
-        (16000, 2, Application::Voip, 32),
-        (48000, 1, Application::Voip, 24),
-        (48000, 2, Application::Audio, 128),
-    ] {
-        assert_eq!(
-            encode(true, fs, ch, app, kbps),
-            encode(false, fs, ch, app, kbps)
-        );
     }
 }

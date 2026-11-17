@@ -24,7 +24,7 @@ pub struct BandCtx<'a> {
     pub intensity: usize,
     pub theta_round: i32,
     pub avoid_split_noise: bool,
-    pub arch: i32,
+    pub arch: crate::Arch,
     pub disable_inv: bool,
     pub seed: u32,
 }
@@ -529,7 +529,17 @@ fn quant_partition_n2_encode(
 
     if q != 0 {
         let k = get_pulses(q);
-        alg_quant(x, 2, k, ctx.spread, b_blocks as usize, ctx.rc, gain, false)
+        alg_quant(
+            x,
+            2,
+            k,
+            ctx.spread,
+            b_blocks as usize,
+            ctx.rc,
+            gain,
+            false,
+            ctx.arch,
+        )
     } else {
         let has_lowband = lowband.is_some();
         if has_lowband {
@@ -564,7 +574,17 @@ fn quant_partition_n4_encode(
 
     if q != 0 {
         let k = get_pulses(q);
-        alg_quant(x, 4, k, ctx.spread, b_blocks as usize, ctx.rc, gain, false)
+        alg_quant(
+            x,
+            4,
+            k,
+            ctx.spread,
+            b_blocks as usize,
+            ctx.rc,
+            gain,
+            false,
+            ctx.arch,
+        )
     } else {
         let has_lowband = lowband.is_some();
         if has_lowband {
@@ -599,7 +619,17 @@ fn quant_partition_n8_encode(
 
     if q != 0 {
         let k = get_pulses(q);
-        alg_quant(x, 8, k, ctx.spread, b_blocks as usize, ctx.rc, gain, false)
+        alg_quant(
+            x,
+            8,
+            k,
+            ctx.spread,
+            b_blocks as usize,
+            ctx.rc,
+            gain,
+            false,
+            ctx.arch,
+        )
     } else {
         let has_lowband = lowband.is_some();
         if has_lowband {
@@ -636,7 +666,17 @@ fn quant_partition_direct_encode(
 
     if q != 0 {
         let k = get_pulses(q);
-        alg_quant(x, n, k, ctx.spread, b_blocks as usize, ctx.rc, gain, false)
+        alg_quant(
+            x,
+            n,
+            k,
+            ctx.spread,
+            b_blocks as usize,
+            ctx.rc,
+            gain,
+            false,
+            ctx.arch,
+        )
     } else {
         let has_lowband = lowband.is_some();
         if has_lowband {
@@ -854,7 +894,17 @@ fn quant_partition_encode(
 
         if q != 0 {
             let k = get_pulses(q);
-            alg_quant(x, n, k, ctx.spread, b_blocks as usize, ctx.rc, gain, false)
+            alg_quant(
+                x,
+                n,
+                k,
+                ctx.spread,
+                b_blocks as usize,
+                ctx.rc,
+                gain,
+                false,
+                ctx.arch,
+            )
         } else if lowband.is_some() {
             fill
         } else {
@@ -1080,6 +1130,7 @@ pub fn quant_partition(
                     ctx.rc,
                     gain,
                     ctx.resynth,
+                    ctx.arch,
                 )
             } else {
                 alg_unquant(x, n, k, ctx.spread, b_blocks as usize, ctx.rc, gain)
@@ -1738,6 +1789,7 @@ pub fn quant_all_bands(
     resynth: bool,
     disable_inv: bool,
     seed: &mut u32,
+    arch: crate::Arch,
 ) {
     let mut balance_val = *balance;
     let b_blocks = if short_blocks { 1 << lm } else { 1 };
@@ -1865,7 +1917,7 @@ pub fn quant_all_bands(
             intensity,
             theta_round: 0,
             avoid_split_noise,
-            arch: 0,
+            arch,
             disable_inv,
             seed: ctx_seed,
         };

@@ -255,7 +255,7 @@ fn p1_pitch_xcorr_short_y_no_panic() {
     let x = vec![0.25f32; 40];
     let y = vec![0.5f32; 50]; // contract would need len + max_pitch - 1 = 99
     let mut xcorr = vec![0.0f32; 60];
-    opus_rs::pitch::pitch_xcorr(&x, &y, &mut xcorr, 40, 60);
+    opus_rs::pitch::pitch_xcorr(&x, &y, &mut xcorr, 40, 60, opus_rs::Arch::Scalar);
 }
 
 // ---------------------------------------------------------------------------

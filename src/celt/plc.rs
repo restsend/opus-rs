@@ -305,6 +305,7 @@ impl CeltDecoder {
                     overlap,
                     LPC_ORDER,
                     MAX_PERIOD,
+                    self.arch,
                 );
                 // A noise floor of -40 dB, and lag windowing for a stable recursion.
                 ac[0] *= 1.0001;
@@ -473,12 +474,14 @@ impl CeltDecoder {
             DECODE_BUFFER_SIZE >> 1,
             self.channels,
             2,
+            self.arch,
         );
         let pitch = pitch_search(
             &lp[PLC_PITCH_LAG_MAX >> 1..],
             &lp,
             DECODE_BUFFER_SIZE - PLC_PITCH_LAG_MAX,
             PLC_PITCH_LAG_MAX - PLC_PITCH_LAG_MIN,
+            self.arch,
         );
         PLC_PITCH_LAG_MAX - pitch
     }

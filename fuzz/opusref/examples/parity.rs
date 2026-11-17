@@ -1,11 +1,11 @@
-//! Byte-identity baseline: how often opus-rs (x86 SIMD off) and the scalar
+//! Byte-identity baseline: how often opus-rs (scalar level) and the scalar
 //! libopus reference produce identical CELT-only packets, per configuration.
 //! The `bytes` oracle of `diff_encoder` is only informative where this is high.
 use opus_rs::{Application, OpusEncoder};
 use opusref::*;
 
 fn main() {
-    opus_rs::fuzzing::SIMD_ENABLED.store(false, core::sync::atomic::Ordering::Relaxed);
+    opus_rs::fuzzing::force_arch(Some(opus_rs::Arch::Scalar));
     let fs = 48000;
     for ch in [1usize, 2] {
         for ms in [10usize, 20] {

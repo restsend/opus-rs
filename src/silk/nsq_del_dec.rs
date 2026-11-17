@@ -33,11 +33,11 @@ use crate::silk::nsq_del_dec_x86::short_prediction_and_shaping_avx2 as short_pre
 
 fn detect_simd() -> Simd {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    return crate::compat::avx2();
+    return crate::arch::cpu_avx2();
     #[cfg(target_arch = "aarch64")]
-    return crate::compat::neon();
+    return crate::arch::cpu_neon();
     #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-    return crate::compat::wasm_simd128();
+    return crate::arch::cpu_simd128();
     #[cfg(not(any(
         target_arch = "x86",
         target_arch = "x86_64",

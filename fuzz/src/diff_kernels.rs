@@ -160,7 +160,7 @@ fn run(which: u8, u: &mut Unstructured) -> R {
             let oc = objective(&x, &cy);
             let (sc, si) = both(|| {
                 let mut y = vec![0i32; n + 8];
-                opus_rs::pvq::pvq_search(&x, &mut y, k, n);
+                opus_rs::pvq::pvq_search(&x, &mut y, k, n, opus_rs::Arch::select());
                 y.truncate(n);
                 y
             });
@@ -497,6 +497,7 @@ fn run(which: u8, u: &mut Unstructured) -> R {
                         overlap,
                         lag,
                         n,
+                        opus_rs::Arch::select(),
                     );
                     a
                 }),

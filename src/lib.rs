@@ -25,6 +25,7 @@ macro_rules! dumpi {
     ($t:expr, $x:expr) => {};
 }
 
+pub mod arch;
 mod compat;
 mod fixedvec;
 mod mlp;
@@ -81,8 +82,8 @@ pub mod repacketizer;
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub mod fuzzing {
+    pub use crate::arch::force_arch;
     pub use crate::celt::fuzz_comb_filter as comb_filter;
-    pub use crate::compat::SIMD_ENABLED;
     use std::cell::RefCell;
     use std::vec::Vec;
 
@@ -126,6 +127,7 @@ pub use silk::{SilkResampler, SilkResamplerDown1_3, SilkResamplerDown1_6};
 #[cfg(not(feature = "std"))]
 use crate::compat::Math;
 use crate::fixedvec::FixedVec;
+pub use arch::Arch;
 use celt::AnalysisInfo;
 pub use celt::{CeltDecoder, CeltEncoder};
 pub use encoder_ctl::FrameDuration;

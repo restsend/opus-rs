@@ -1013,6 +1013,7 @@ fn run_prefilter(
     tone_freq: f32,
     toneishness: f32,
     complexity: i32,
+    arch: crate::Arch,
 ) -> (bool, f32, usize) {
     let max_period = COMBFILTER_MAXPERIOD;
     let min_period = COMBFILTER_MINPERIOD;
@@ -1055,7 +1056,14 @@ fn run_prefilter(
             for c in 0..channels {
                 pre_slices.push(&pre[c * pre_size..c * pre_size + pre_size]);
             }
-            crate::pitch::pitch_downsample(&pre_slices, pitch_buf, pitch_buf_len, channels, 2);
+            crate::pitch::pitch_downsample(
+                &pre_slices,
+                pitch_buf,
+                pitch_buf_len,
+                channels,
+                2,
+                arch,
+            );
         }
 
         let search_max = max_period - 3 * min_period;
@@ -1064,6 +1072,7 @@ fn run_prefilter(
             pitch_buf,
             frame_size,
             search_max,
+            arch,
         );
         pitch_index = (max_period - pitch_result).min(max_period - 2);
 
@@ -1267,6 +1276,9 @@ const STRIDE_ACCESS_PAD: usize = crate::pvq::MAX_PVQ_N;
 pub struct CeltEncoder {
     mode: &'static CeltMode,
     channels: usize,
+    /// libopus `CELTEncoder.arch`: the level whose arithmetic the kernels
+    /// reproduce, chosen at init.
+    arch: crate::Arch,
     /// libopus `CELTEncoder.upsample`: the API input is zero-stuffed by this
     /// factor so the encoder always works at the mode's 48 kHz geometry.
     upsample: usize,
@@ -1914,6 +1926,7 @@ impl CeltEncoder {
         let mut enc = Self {
             mode,
             channels,
+            arch: crate::Arch::select(),
             upsample,
             end_band: mode.nb_ebands,
             // celt_encoder.c:220.
@@ -2457,6 +2470,7 @@ impl CeltEncoder {
             tone_freq,
             toneishness,
             self.complexity,
+            self.arch,
         );
 
         dumpi!("pf_on", &[pf_on as i32]);
@@ -3237,6 +3251,7 @@ impl CeltEncoder {
             resynth,
             self.disable_inv,
             &mut self.rng,
+            self.arch,
         );
 
         dumpf!("Xq", &x[..frame_size * channels]);
@@ -3329,6 +3344,8 @@ pub(crate) enum PcmLayout {
 pub struct CeltDecoder {
     mode: &'static CeltMode,
     channels: usize,
+    /// libopus `CELTDecoder.arch`, chosen at init.
+    arch: crate::Arch,
     /// Channels coded in the stream (libopus `CELT_SET_CHANNELS`). It drives
     /// the bitstream; `channels` drives synthesis and the output.
     stream_channels: usize,
@@ -3493,6 +3510,7 @@ impl CeltDecoder {
     pub(crate) const EMPTY: Self = Self {
         mode: crate::modes::default_mode(),
         channels: 0,
+        arch: crate::Arch::Scalar,
         stream_channels: 0,
         downsample: 1,
         decode_mem: FixedVec::new(),
@@ -3551,6 +3569,7 @@ impl CeltDecoder {
         let dec_frame_x_ch = DECODE_BUFFER_SIZE * CELT_MAX_CHANNELS;
         // Field by field: a whole `Self` value would need a large stack frame.
         self.mode = mode;
+        self.arch = crate::Arch::select();
         self.channels = channels;
         self.stream_channels = channels;
         self.downsample = resampling_factor(sampling_rate);
@@ -4056,6 +4075,7 @@ impl CeltDecoder {
             true,
             self.disable_inv,
             &mut self.rng,
+            self.arch,
         );
         // Trace X values for comparison with C decoder
         let mut anti_collapse_on = false;
@@ -4424,6 +4444,7 @@ mod tests {
             0.3807991147041321,
             1.0,
             10,
+            crate::Arch::Scalar,
         );
         assert_eq!(pitch_index, 16);
     }
@@ -4611,6 +4632,7 @@ mod tests {
             -1.0,
             0.0,
             9,
+            crate::Arch::Scalar,
         );
         assert!(!pf_on && gain == 0.0, "expected a cancelled filter");
         let body = &in_buf[overlap..];

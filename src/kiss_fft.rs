@@ -452,10 +452,11 @@ fn kf_bfly5(
     }
 }
 
-/// The FFT stages in place; with AVX2 the butterflies compile for it.
+/// The FFT stages in place. With AVX2 the butterflies compile for it, with
+/// the scalar results (libopus has no x86 FFT kernel).
 pub fn opus_fft_impl(st: &KissFftState, fout: &mut [KissCpx]) {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if let Some(avx2) = crate::compat::avx2() {
+    if let Some(avx2) = crate::arch::cpu_avx2() {
         use fearless_simd::Simd;
         return avx2.vectorize(|| fft_stages(st, fout));
     }
@@ -550,6 +551,38 @@ pub fn opus_ifft(st: &KissFftState, fin: &[KissCpx], fout: &mut [KissCpx]) {
 mod tests {
     use super::*;
     use core::f32::consts::PI;
+
+    /// The AVX2 compile of the stages gives the scalar results.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn avx2_stages_match_scalar() {
+        use fearless_simd::Simd;
+        let Some(avx2) = crate::arch::cpu_avx2() else {
+            return;
+        };
+        let mut seed = 3u32;
+        for n in [60, 120, 240, 480] {
+            let st = KissFftState::new(n).unwrap();
+            let x: std::vec::Vec<KissCpx> = (0..n)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                    KissCpx::new(
+                        (seed >> 8) as f32 / 8e6 - 1.0,
+                        (seed >> 4) as f32 / 1.3e8 - 1.0,
+                    )
+                })
+                .collect();
+            let (mut a, mut b) = (x.clone(), x);
+            fft_stages(&st, &mut a);
+            avx2.vectorize(|| fft_stages(&st, &mut b));
+            let bits = |v: &[KissCpx]| {
+                v.iter()
+                    .map(|c| (c.r.to_bits(), c.i.to_bits()))
+                    .collect::<std::vec::Vec<_>>()
+            };
+            assert_eq!(bits(&a), bits(&b), "n {n}");
+        }
+    }
 
     fn almost_equal(a: f32, b: f32, tolerance: f32) -> bool {
         (a - b).abs() < tolerance

@@ -5,7 +5,6 @@
 
 use arbitrary::Arbitrary;
 use core::ffi::c_int;
-use core::sync::atomic::Ordering;
 use opusref as c;
 
 pub const RATES: [i32; 5] = [8000, 12000, 16000, 24000, 48000];
@@ -68,8 +67,10 @@ pub fn report(target: &str, data: &[u8], r: Result<(), Finding>) {
     eprintln!("NEW FINDING {key}: {}", f.msg);
 }
 
+/// Codec states created afterwards take the CPU's level (`on`) or the
+/// scalar one.
 pub fn set_simd(on: bool) {
-    opus_rs::fuzzing::SIMD_ENABLED.store(on, Ordering::Relaxed);
+    opus_rs::fuzzing::force_arch((!on).then_some(opus_rs::Arch::Scalar));
 }
 
 /// Reads a tolerance or switch from the environment once per process.
