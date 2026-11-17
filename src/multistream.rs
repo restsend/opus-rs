@@ -200,6 +200,8 @@ impl MultistreamDecoder {
         frame_size: usize,
         out: &mut [f32],
     ) -> Result<usize, &'static str> {
+        // libopus limits frame_size to 120 ms.
+        let frame_size = frame_size.min(self.decoders[0].sampling_rate as usize / 25 * 3);
         let out_channels = self.table.channels as usize;
         if out.len() < frame_size * out_channels {
             return Err("output buffer too small for frame_size * channels");
