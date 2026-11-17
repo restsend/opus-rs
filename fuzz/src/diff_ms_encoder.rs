@@ -31,8 +31,13 @@ struct Input {
     coupled: u8,
     mapping: [u8; 8],
     app: u8,
+    /// `opus_multistream_surround_encoder_create` with this mapping family
+    /// (an index into `FAMILIES`) in place of the given layout.
+    surround: Option<u8>,
     segs: Vec<Seg>,
 }
+
+const FAMILIES: [i32; 6] = [0, 1, 2, 255, 1, 3];
 
 #[derive(Arbitrary, Debug)]
 struct Seg {
@@ -181,24 +186,55 @@ fn tocs(p: &[u8], streams: usize) -> Option<Vec<u8>> {
 fn run(inp: Input) -> Result<(), Finding> {
     let fs = RATES[inp.rate as usize % 5];
     let channels = 1 + inp.channels as usize % 8;
-    let streams = inp.streams as usize % 9;
-    let coupled = inp.coupled as usize % 9;
-    let mapping = &inp.mapping[..channels];
+    let mut streams = inp.streams as usize % 9;
+    let mut coupled = inp.coupled as usize % 9;
+    let mut mapping = inp.mapping[..channels].to_vec();
     let app = APPS[inp.app as usize % 3];
-    let layout = format!("fs{fs} ch{channels} s{streams} c{coupled} {app:?}");
     let mut err = 0;
-    let re = unsafe {
-        c::opus_multistream_encoder_create(
-            fs,
-            channels as c_int,
-            streams as c_int,
-            coupled as c_int,
-            mapping.as_ptr(),
-            app as c_int,
-            &mut err,
-        )
+    let (re, rs) = match inp.surround {
+        None => (
+            unsafe {
+                c::opus_multistream_encoder_create(
+                    fs,
+                    channels as c_int,
+                    streams as c_int,
+                    coupled as c_int,
+                    mapping.as_ptr(),
+                    app as c_int,
+                    &mut err,
+                )
+            },
+            MultistreamEncoder::new(fs, channels, streams, coupled, &mapping, app),
+        ),
+        Some(f) => {
+            let family = FAMILIES[f as usize % FAMILIES.len()];
+            let (mut s, mut cp) = (0, 0);
+            let mut m = [0u8; 255];
+            let re = unsafe {
+                c::opus_multistream_surround_encoder_create(
+                    fs,
+                    channels as c_int,
+                    family,
+                    &mut s,
+                    &mut cp,
+                    m.as_mut_ptr(),
+                    app as c_int,
+                    &mut err,
+                )
+            };
+            let rs = MultistreamEncoder::new_surround(fs, channels, family, app);
+            if let Ok(e) = &rs {
+                if (e.streams() as i32, e.coupled_streams() as i32, e.mapping()) != (s, cp, &m[..channels]) {
+                    fail!("layout", "surround", "fs{fs} ch{channels} family {family}: streams, coupled or mapping differ");
+                }
+                (streams, coupled, mapping) = (s as usize, cp as usize, m[..channels].to_vec());
+            }
+            ijon_set(4 << 32 | (family as u64 & 0xff) << 8 | channels as u64);
+            (re, rs)
+        }
     };
-    let rs = MultistreamEncoder::new(fs, channels, streams, coupled, mapping, app);
+    let mapping = &mapping[..];
+    let layout = format!("fs{fs} ch{channels} s{streams} c{coupled} {app:?} {:?}", inp.surround);
     let mut rs = match (rs, re.is_null()) {
         (Ok(e), false) => e,
         (Err(e), true) if error::code(e) == Some(err) => return Ok(()),

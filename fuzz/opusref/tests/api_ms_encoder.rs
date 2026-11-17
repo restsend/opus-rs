@@ -48,6 +48,34 @@ impl Pair {
         Some(Pair { rs, c, dec, ch, streams, app })
     }
 
+    /// The surround encoders of `opus_multistream_surround_encoder_create`.
+    fn surround(ch: usize, family: i32, app: Application) -> Option<Self> {
+        let (mut s, mut c, mut err) = (0, 0, 0);
+        let mut mapping = [0u8; 255];
+        let p = unsafe {
+            opus_multistream_surround_encoder_create(48000, ch as i32, family, &mut s, &mut c, mapping.as_mut_ptr(), app as i32, &mut err)
+        };
+        let rs = MultistreamEncoder::new_surround(48000, ch, family, app);
+        let what = format!("family {family} channels {ch}");
+        match rs {
+            Err(e) => {
+                assert!(p.is_null(), "{what}: opus-rs {e}");
+                assert_eq!(error::code(e), Some(err), "{what}");
+                None
+            }
+            Ok(rs) => {
+                assert!(!p.is_null(), "{what}: libopus {err}");
+                assert_eq!((rs.streams() as i32, rs.coupled_streams() as i32), (s, c), "{what}");
+                assert_eq!(rs.mapping(), &mapping[..ch], "{what}");
+                let dec = unsafe {
+                    opus_multistream_decoder_create(48000, ch as i32, s, c, mapping.as_ptr(), &mut err)
+                };
+                assert!(!dec.is_null());
+                Some(Pair { rs, c: p, dec, ch, streams: s as usize, app })
+            }
+        }
+    }
+
     fn ctl(&mut self, req: i32, v: i32) -> i32 {
         unsafe { opus_multistream_encoder_ctl(self.c, req, v) }
     }
@@ -205,4 +233,28 @@ fn controls_match_libopus() {
     }
     assert!(p.rs.encoder_state(3).is_ok());
     assert_eq!(p.rs.encoder_state(4).err(), Some(error::BAD_ARG));
+}
+
+/// `opus_multistream_surround_encoder_create`: the layouts of every family,
+/// and packets with surround masking, an LFE stream and ambisonics.
+#[test]
+fn surround_matches_libopus() {
+    for family in [0, 1, 2, 255, 3, -1] {
+        for ch in 1..=12 {
+            let _ = Pair::surround(ch, family, Application::Audio);
+        }
+    }
+    for app in [Application::RestrictedLowDelay, Application::Audio, Application::Voip] {
+        for (family, ch) in [(1, 3), (1, 5), (1, 6), (1, 8), (2, 4), (2, 6), (2, 9), (255, 3), (0, 2)] {
+            for rate in [-1000, 256000, 64000, 24000] {
+                let mut p = Pair::surround(ch, family, app).unwrap();
+                p.rs.set_bitrate(rate).unwrap();
+                p.ctl(SET_BITRATE, rate);
+                for (f, (units, entry)) in [(8, 0), (4, 1), (16, 2), (8, 0), (24, 0), (2, 1), (8, 2)].into_iter().enumerate() {
+                    let what = format!("{app:?} family {family} {ch} channels rate {rate} call {f}");
+                    p.encode(120 * units, f, entry, 6000, &what);
+                }
+            }
+        }
+    }
 }

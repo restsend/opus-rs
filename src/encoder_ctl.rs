@@ -2,6 +2,8 @@
 //! its public fields, with libopus's checks and errors.
 
 use crate::error::BAD_ARG;
+#[cfg(feature = "std")]
+use crate::OpusMode;
 use crate::{Application, OpusEncoder, PcmInput, bits_to_bitrate, frame_rate_from_params};
 
 /// The frame duration the encoder codes, as libopus
@@ -223,6 +225,27 @@ impl OpusEncoder {
     /// `frame_size` codes, `None` when that is no valid frame.
     pub(crate) fn select_frame_size(&self, frame_size: usize) -> Option<usize> {
         frame_size_select(self.sampling_rate, frame_size, self.variable_duration)
+    }
+
+    /// libopus `OPUS_SET_FORCE_MODE`: codes every frame in `mode`, or
+    /// chooses (`None`).
+    #[cfg(feature = "std")]
+    pub(crate) fn set_force_mode(&mut self, mode: Option<OpusMode>) {
+        self.user_forced_mode = mode;
+    }
+
+    /// libopus `OPUS_SET_LFE`: the stream is a surround LFE channel,
+    /// coded in narrowband CELT.
+    #[cfg(feature = "std")]
+    pub(crate) fn set_lfe(&mut self, lfe: bool) {
+        self.lfe = lfe;
+    }
+
+    /// libopus `OPUS_SET_ENERGY_MASK`: the surround masking of the next
+    /// frame, 21 bands per channel.
+    #[cfg(feature = "std")]
+    pub(crate) fn set_energy_mask(&mut self, mask: [f32; 42]) {
+        self.energy_mask = Some(mask);
     }
 
     /// The depth the encoder assumes for the call's input: the set depth,

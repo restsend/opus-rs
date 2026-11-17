@@ -5,11 +5,14 @@
 //! multistream packet.
 
 use crate::encoder_ctl::frame_size_select;
-use crate::error::{BAD_ARG, BUFFER_TOO_SMALL, INTERNAL_ERROR};
+use crate::error::{BAD_ARG, BUFFER_TOO_SMALL, INTERNAL_ERROR, UNIMPLEMENTED};
 use crate::analysis::AnalysisPcm;
 use crate::mapping_matrix::MappingMatrix;
 use crate::repacketizer::Repacketizer;
-use crate::{Application, Bandwidth, FrameDuration, OpusEncoder, PcmInput, Signal, bits_to_bitrate, bitrate_to_bits};
+use crate::{
+    Application, Bandwidth, FrameDuration, OpusEncoder, OpusMode, PcmInput, Signal, bits_to_bitrate,
+    bitrate_to_bits,
+};
 
 /// libopus `MS_FRAME_TMP`: the most one stream codes into (six frames).
 const MS_FRAME_TMP: usize = 6 * 1275 + 12;
@@ -22,7 +25,31 @@ enum MsPcm<'a> {
     I24(&'a [i32]),
 }
 
-/// libopus `OpusMSEncoder` created by `opus_multistream_encoder_create`.
+/// libopus `MappingType`: how the streams share the bitrate and code.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MappingType {
+    None,
+    /// Family 1 with more than two channels: surround masking and an LFE
+    /// stream.
+    Surround,
+    /// Family 2: CELT-only streams of equal rate.
+    Ambisonics,
+}
+
+/// libopus `vorbis_mappings`: streams, coupled streams and mapping of 1 to
+/// 8 channels in channel mapping family 1.
+const VORBIS_MAPPINGS: [(usize, usize, &[u8]); 8] = [
+    (1, 0, &[0]),
+    (1, 1, &[0, 1]),
+    (2, 1, &[0, 2, 1]),
+    (2, 2, &[0, 1, 2, 3]),
+    (3, 2, &[0, 4, 1, 2, 3]),
+    (4, 2, &[0, 4, 1, 2, 3, 5]),
+    (4, 3, &[0, 4, 1, 2, 3, 5, 6]),
+    (5, 3, &[0, 6, 1, 2, 3, 4, 5, 7]),
+];
+
+/// libopus `OpusMSEncoder`.
 pub struct MultistreamEncoder {
     encoders: Vec<OpusEncoder>,
     channels: usize,
@@ -37,6 +64,12 @@ pub struct MultistreamEncoder {
     /// channels from all input channels (libopus
     /// `opus_projection_copy_channel_in_*`).
     pub(crate) mixing: Option<MappingMatrix<'static>>,
+    mapping_type: MappingType,
+    lfe_stream: Option<usize>,
+    /// The surround analysis's pre-emphasis and MDCT overlap per channel
+    /// (libopus `ms_get_preemph_mem`, `ms_get_window_mem`).
+    preemph_mem: Vec<f32>,
+    window_mem: Vec<f32>,
 }
 
 impl MultistreamEncoder {
@@ -52,6 +85,97 @@ impl MultistreamEncoder {
         coupled: usize,
         mapping: &[u8],
         application: Application,
+    ) -> Result<Self, &'static str> {
+        Self::new_impl(sampling_rate, channels, streams, coupled, mapping, application, MappingType::None, None)
+    }
+
+    /// libopus `opus_multistream_surround_encoder_create`: the layout of
+    /// `channels` channels in channel mapping family `mapping_family` (0
+    /// mono or stereo, 1 Vorbis order up to 8 channels with an LFE stream
+    /// from 6, 2 ambisonics, 255 one mono stream per channel), with
+    /// libopus's surround masking and rate allocation. The layout is
+    /// [`Self::streams`], [`Self::coupled_streams`] and [`Self::mapping`].
+    /// Other families and counts are `error::UNIMPLEMENTED` or
+    /// `error::BAD_ARG`, as in libopus.
+    pub fn new_surround(
+        sampling_rate: i32,
+        channels: usize,
+        mapping_family: i32,
+        application: Application,
+    ) -> Result<Self, &'static str> {
+        if !(1..=255).contains(&channels) {
+            return Err(BAD_ARG);
+        }
+        let mut lfe_stream = None;
+        let (streams, coupled, mapping): (usize, usize, Vec<u8>) = match mapping_family {
+            0 if channels == 1 => (1, 0, vec![0]),
+            0 if channels == 2 => (1, 1, vec![0, 1]),
+            1 if channels <= 8 => {
+                let (s, c, m) = VORBIS_MAPPINGS[channels - 1];
+                if channels >= 6 {
+                    lfe_stream = Some(s - 1);
+                }
+                (s, c, m.to_vec())
+            }
+            255 => (channels, 0, (0..channels as u8).collect()),
+            2 => {
+                // libopus validate_ambisonics.
+                let order_plus_one = (1..=15).take_while(|n| n * n <= channels).last().unwrap_or(0);
+                let nondiegetic = channels - order_plus_one * order_plus_one;
+                if channels > 227 || (nondiegetic != 0 && nondiegetic != 2) {
+                    return Err(BAD_ARG);
+                }
+                let s = order_plus_one * order_plus_one + usize::from(nondiegetic != 0);
+                let c = usize::from(nondiegetic != 0);
+                let mut m = vec![0u8; channels];
+                for i in 0..s - c {
+                    m[i] = (i + c * 2) as u8;
+                }
+                for i in 0..c * 2 {
+                    m[i + s - c] = i as u8;
+                }
+                (s, c, m)
+            }
+            _ => return Err(UNIMPLEMENTED),
+        };
+        let mapping_type = match mapping_family {
+            1 if channels > 2 => MappingType::Surround,
+            2 => MappingType::Ambisonics,
+            _ => MappingType::None,
+        };
+        if mapping_type != MappingType::Surround {
+            lfe_stream = None;
+        }
+        Self::new_impl(sampling_rate, channels, streams, coupled, &mapping, application, mapping_type, lfe_stream)
+    }
+
+    /// The streams of the packets.
+    pub fn streams(&self) -> usize {
+        self.encoders.len()
+    }
+
+    /// The coupled streams of the packets.
+    pub fn coupled_streams(&self) -> usize {
+        self.coupled
+    }
+
+    /// The decoded channel of each input channel, for the decoder and the
+    /// Ogg Opus header.
+    pub fn mapping(&self) -> &[u8] {
+        &self.mapping
+    }
+
+    /// libopus `opus_multistream_encoder_init_impl`.
+    #[allow(clippy::too_many_arguments)]
+    fn new_impl(
+        sampling_rate: i32,
+        channels: usize,
+        streams: usize,
+        coupled: usize,
+        mapping: &[u8],
+        application: Application,
+        mapping_type: MappingType,
+        lfe_stream: Option<usize>,
     ) -> Result<Self, &'static str> {
         if !(1..=255).contains(&channels)
             || coupled > streams
@@ -70,7 +194,9 @@ impl MultistreamEncoder {
         let mut encoders = Vec::with_capacity(streams);
         for s in 0..streams {
             let ch = if s < coupled { 2 } else { 1 };
-            encoders.push(OpusEncoder::new(sampling_rate, ch, application).map_err(|_| BAD_ARG)?);
+            let mut enc = OpusEncoder::new(sampling_rate, ch, application).map_err(|_| BAD_ARG)?;
+            enc.set_lfe(Some(s) == lfe_stream);
+            encoders.push(enc);
         }
         let enc = MultistreamEncoder {
             encoders,
@@ -82,6 +208,10 @@ impl MultistreamEncoder {
             sampling_rate,
             variable_duration: FrameDuration::Argument,
             mixing: None,
+            mapping_type,
+            lfe_stream,
+            preemph_mem: vec![0.0; channels],
+            window_mem: vec![0.0; channels * 120],
         };
         if (0..streams).any(|s| enc.stream_channels(s).is_none()) {
             return Err(BAD_ARG);
@@ -118,36 +248,52 @@ impl MultistreamEncoder {
         self.encode_native(MsPcm::I24(pcm), frame_size, out)
     }
 
-    /// libopus `surround_rate_allocation` without an LFE stream, at least
-    /// 500 b/s each.
+    /// libopus `rate_allocation`: `surround_rate_allocation`, or
+    /// `ambisonics_rate_allocation`, at least 500 b/s per stream.
     fn rate_allocation(&self, frame_size: usize) -> Vec<i32> {
         let fs = self.sampling_rate;
         let streams = self.encoders.len() as i32;
         let nb_coupled = self.coupled as i32;
-        let nb_uncoupled = streams - nb_coupled;
-        let nb_normal = 2 * nb_coupled + nb_uncoupled;
-        let channel_offset = 40 * 50.max(fs / frame_size as i32);
-        let bitrate = match self.bitrate_bps {
-            OpusEncoder::BITRATE_AUTO => nb_normal * (channel_offset + fs + 10000),
-            OpusEncoder::BITRATE_MAX => nb_normal * 750_000,
-            b => b,
+        let rates: Vec<i32> = if self.mapping_type == MappingType::Ambisonics {
+            let total = match self.bitrate_bps {
+                OpusEncoder::BITRATE_AUTO => {
+                    (nb_coupled + streams) * (fs + 60 * fs / frame_size as i32) + streams * 15000
+                }
+                OpusEncoder::BITRATE_MAX => (streams + nb_coupled) * 750_000,
+                b => b,
+            };
+            vec![total / streams; streams as usize]
+        } else {
+            let nb_lfe = i32::from(self.lfe_stream.is_some());
+            let nb_uncoupled = streams - nb_coupled - nb_lfe;
+            let nb_normal = 2 * nb_coupled + nb_uncoupled;
+            let channel_offset = 40 * 50.max(fs / frame_size as i32);
+            let bitrate = match self.bitrate_bps {
+                OpusEncoder::BITRATE_AUTO => nb_normal * (channel_offset + fs + 10000) + 8000 * nb_lfe,
+                OpusEncoder::BITRATE_MAX => nb_normal * 750_000 + nb_lfe * 128_000,
+                b => b,
+            };
+            let lfe_offset = (bitrate / 20).min(3000) + 15 * 50.max(fs / frame_size as i32);
+            let stream_offset = ((bitrate - channel_offset * nb_normal - lfe_offset * nb_lfe) / nb_normal / 2).clamp(0, 20000);
+            let (coupled_ratio, lfe_ratio) = (512, 32);
+            let total = (nb_uncoupled << 8) + coupled_ratio * nb_coupled + nb_lfe * lfe_ratio;
+            let channel_rate = (256
+                * (bitrate - lfe_offset * nb_lfe - stream_offset * (nb_coupled + nb_uncoupled) - channel_offset * nb_normal)
+                    as i64
+                / total as i64) as i32;
+            (0..streams)
+                .map(|s| {
+                    if s < nb_coupled {
+                        2 * channel_offset + 0.max(stream_offset + (channel_rate.wrapping_mul(coupled_ratio) >> 8))
+                    } else if Some(s as usize) != self.lfe_stream {
+                        channel_offset + 0.max(stream_offset + channel_rate)
+                    } else {
+                        0.max(lfe_offset + (channel_rate.wrapping_mul(lfe_ratio) >> 8))
+                    }
+                })
+                .collect()
         };
-        let stream_offset = ((bitrate - channel_offset * nb_normal) / nb_normal / 2).clamp(0, 20000);
-        let coupled_ratio = 512;
-        let total = (nb_uncoupled << 8) + coupled_ratio * nb_coupled;
-        let channel_rate = (256
-            * (bitrate as i64 - (stream_offset * (nb_coupled + nb_uncoupled)) as i64 - (channel_offset * nb_normal) as i64)
-            / total as i64) as i32;
-        (0..streams)
-            .map(|s| {
-                let rate = if s < nb_coupled {
-                    2 * channel_offset + 0.max(stream_offset + (channel_rate.wrapping_mul(coupled_ratio) >> 8))
-                } else {
-                    channel_offset + 0.max(stream_offset + channel_rate)
-                };
-                rate.max(500)
-            })
-            .collect()
+        rates.into_iter().map(|r| r.max(500)).collect()
     }
 
     /// libopus `opus_multistream_encode_native`.
@@ -169,6 +315,12 @@ impl MultistreamEncoder {
         if out.len() < smallest {
             return Err(BUFFER_TOO_SMALL);
         }
+        // The masking between surround channels (libopus surround_analysis).
+        let band_smr = if self.mapping_type == MappingType::Surround {
+            self.surround_analysis(pcm, frame_size)
+        } else {
+            Vec::new()
+        };
         let rates = self.rate_allocation(frame_size);
         let rate_sum: i32 = rates.iter().sum();
         let mut max_data_bytes = out.len() as i32;
@@ -180,9 +332,36 @@ impl MultistreamEncoder {
                 max_data_bytes = max_data_bytes.min((smallest as i32).max(bytes));
             }
         }
-        for (enc, &rate) in self.encoders.iter_mut().zip(&rates) {
+        let ch = self.channels as i32;
+        for (s, (enc, &rate)) in self.encoders.iter_mut().zip(&rates).enumerate() {
             let _ = enc.set_bitrate(rate);
+            match self.mapping_type {
+                MappingType::Surround => {
+                    let mut equiv_rate = self.bitrate_bps;
+                    if frame_size * 50 < fs as usize {
+                        equiv_rate -= 60 * (fs / frame_size as i32 - 50) * ch;
+                    }
+                    enc.set_bandwidth(if equiv_rate > 10000 * ch {
+                        Bandwidth::Fullband
+                    } else if equiv_rate > 7000 * ch {
+                        Bandwidth::Superwideband
+                    } else if equiv_rate > 5000 * ch {
+                        Bandwidth::Wideband
+                    } else {
+                        Bandwidth::Narrowband
+                    });
+                    if s < self.coupled {
+                        // Stereo CELT keeps the spatial image.
+                        enc.set_force_mode(Some(OpusMode::CeltOnly));
+                        let _ = enc.set_force_channels(Some(2));
+                    }
+                }
+                MappingType::Ambisonics => enc.set_force_mode(Some(OpusMode::CeltOnly)),
+                MappingType::None => {}
+            }
         }
+        // libopus's bandLogE, which a mono stream fills in half.
+        let mut band_log_e = [0.0f32; 42];
         let n = analysis_frame_size;
         let mut f32_buf = vec![0.0f32; 2 * n];
         // The stream's input channels for the signal analysis when the
@@ -241,7 +420,16 @@ impl MultistreamEncoder {
             if !last {
                 curr_max -= if curr_max > 253 { 2 } else { 1 };
             }
+            if self.mapping_type == MappingType::Surround {
+                band_log_e[..21].copy_from_slice(&band_smr[21 * left..21 * left + 21]);
+                if let Some(r) = right {
+                    band_log_e[21..].copy_from_slice(&band_smr[21 * r..21 * r + 21]);
+                }
+            }
             let enc = &mut self.encoders[s];
+            if self.mapping_type == MappingType::Surround {
+                enc.set_energy_mask(band_log_e);
+            }
             if !vbr && last {
                 let _ = enc.set_bitrate(bits_to_bitrate(curr_max * 8, fs, frame_size));
             }
@@ -312,9 +500,112 @@ impl MultistreamEncoder {
         self.variable_duration
     }
 
-    /// Restarts every stream (libopus `OPUS_RESET_STATE`).
+    /// Restarts every stream and the surround analysis (libopus
+    /// `OPUS_RESET_STATE`).
     pub fn reset(&mut self) {
+        self.preemph_mem.fill(0.0);
+        self.window_mem.fill(0.0);
         self.encoders.iter_mut().for_each(OpusEncoder::reset);
+    }
+
+    /// libopus `surround_analysis`: per input channel and band, how far
+    /// the band's energy is above the masking of the other channels on its
+    /// side, 21 values per channel.
+    fn surround_analysis(&mut self, pcm: MsPcm<'_>, len: usize) -> Vec<f32> {
+        let mode = crate::modes::default_mode();
+        let channels = self.channels;
+        let overlap = mode.overlap;
+        let upsample = 48000 / self.sampling_rate as usize;
+        let frame_size = len * upsample;
+        let lm = (0..mode.max_lm)
+            .find(|&lm| mode.short_mdct_size << lm == frame_size)
+            .unwrap_or(mode.max_lm);
+        let freq_size = mode.short_mdct_size << lm;
+        let pos = channel_pos(channels);
+        let mut mask_log_e = [[-28.0f32; 21]; 3];
+        let mut band_log_e = vec![0.0f32; 21 * channels];
+        let mut input = vec![0.0f32; frame_size + overlap];
+        let mut freq = vec![0.0f32; freq_size];
+        let coef = mode.preemph[0];
+        for c in 0..channels {
+            input[..overlap].copy_from_slice(&self.window_mem[c * overlap..(c + 1) * overlap]);
+            // copy_channel_in, then celt_preemphasis without clipping.
+            let mut m = self.preemph_mem[c];
+            for i in 0..frame_size {
+                let x = if i % upsample == 0 {
+                    let at = (i / upsample) * channels + c;
+                    32768.0
+                        * match pcm {
+                            MsPcm::F32(p) => p[at],
+                            MsPcm::I16(p) => p[at] as f32 * (1.0 / 32768.0),
+                            MsPcm::I24(p) => (1.0 / 32768.0 / 256.0) * p[at] as f32,
+                        }
+                } else {
+                    0.0
+                };
+                input[overlap + i] = x - m;
+                m = coef * x;
+            }
+            self.preemph_mem[c] = m;
+            let sum = input.iter().fold(0.0f32, |s, &x| s + x * x);
+            if !(sum < 1e18) || sum.is_nan() {
+                input.fill(0.0);
+                self.preemph_mem[c] = 0.0;
+            }
+            let mut band_e = [0.0f32; 21];
+            for frame in 0..frame_size / freq_size {
+                let mut tmp_e = [0.0f32; 21];
+                mode.mdct.forward(&input[freq_size * frame..], &mut freq, mode.window, overlap, mode.max_lm - lm, 1);
+                if upsample != 1 {
+                    let bound = freq_size / upsample;
+                    for v in &mut freq[..bound] {
+                        *v *= upsample as f32;
+                    }
+                    freq[bound..].fill(0.0);
+                }
+                crate::bands::compute_band_energies(mode, &freq, &mut tmp_e, 21, 1, lm);
+                for i in 0..21 {
+                    band_e[i] = band_e[i].max(tmp_e[i]);
+                }
+            }
+            let b = &mut band_log_e[21 * c..21 * c + 21];
+            crate::bands::amp2log2(mode, 21, 21, &band_e, b, 1);
+            // A spreading function of -6 dB per band up and -12 dB down.
+            for i in 1..21 {
+                b[i] = b[i].max(b[i - 1] - 1.0);
+            }
+            for i in (0..20).rev() {
+                b[i] = b[i].max(b[i + 1] - 2.0);
+            }
+            match pos[c] {
+                1 => (0..21).for_each(|i| mask_log_e[0][i] = log_sum(mask_log_e[0][i], b[i])),
+                3 => (0..21).for_each(|i| mask_log_e[2][i] = log_sum(mask_log_e[2][i], b[i])),
+                2 => (0..21).for_each(|i| {
+                    mask_log_e[0][i] = log_sum(mask_log_e[0][i], b[i] - 0.5);
+                    mask_log_e[2][i] = log_sum(mask_log_e[2][i], b[i] - 0.5);
+                }),
+                _ => {}
+            }
+            self.window_mem[c * overlap..(c + 1) * overlap].copy_from_slice(&input[frame_size..frame_size + overlap]);
+        }
+        for i in 0..21 {
+            mask_log_e[1][i] = mask_log_e[0][i].min(mask_log_e[2][i]);
+        }
+        let channel_offset = 0.5 * crate::mathops::celt_log2(2.0 / (channels - 1) as f32);
+        for row in &mut mask_log_e {
+            for v in row.iter_mut() {
+                *v += channel_offset;
+            }
+        }
+        for c in 0..channels {
+            for i in 0..21 {
+                band_log_e[21 * c + i] = match pos[c] {
+                    0 => 0.0,
+                    p => band_log_e[21 * c + i] - mask_log_e[p - 1][i],
+                };
+            }
+        }
+        band_log_e
     }
 
     /// The XOR of the streams' final ranges (libopus
@@ -418,4 +709,31 @@ impl MultistreamEncoder {
     pub fn application(&self) -> Application {
         self.application
     }
+}
+
+/// libopus `channel_pos`: each channel's place in the mix, 0 not mixed, 1
+/// left, 2 centre, 3 right.
+fn channel_pos(channels: usize) -> [usize; 8] {
+    match channels {
+        4 => [1, 3, 1, 3, 0, 0, 0, 0],
+        3 | 5 | 6 => [1, 2, 3, 1, 3, 0, 0, 0],
+        7 => [1, 2, 3, 1, 3, 2, 0, 0],
+        8 => [1, 2, 3, 1, 3, 1, 3, 0],
+        _ => [0; 8],
+    }
+}
+
+/// libopus `logSum`: about log2(2^a + 2^b).
+fn log_sum(a: f32, b: f32) -> f32 {
+    const DIFF_TABLE: [f32; 17] = [
+        0.5, 0.2924813, 0.1609640, 0.0849625, 0.0437314, 0.0221971, 0.0111839, 0.0056136, 0.0028123, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    ];
+    let (max, diff) = if a > b { (a, a - b) } else { (b, b - a) };
+    if !(diff < 8.0) {
+        return max;
+    }
+    let low = (2.0 * diff).floor() as usize;
+    let frac = 2.0 * diff - low as f32;
+    max + DIFF_TABLE[low] + frac * (DIFF_TABLE[low + 1] - DIFF_TABLE[low])
 }

@@ -1332,6 +1332,12 @@ pub struct CeltEncoder {
     /// No phase inversion in intensity stereo (libopus `disable_inv`,
     /// `OPUS_SET_PHASE_INVERSION_DISABLED`).
     pub(crate) disable_inv: bool,
+    /// The stream is a surround LFE channel (libopus `lfe`,
+    /// `OPUS_SET_LFE`).
+    pub(crate) lfe: bool,
+    /// The surround masking of the multistream encoder per band and
+    /// channel (libopus `energy_mask`, `OPUS_SET_ENERGY_MASK`).
+    pub(crate) energy_mask: Option<[f32; 2 * CELT_NB_EBANDS]>,
     /// The last frame's allocation decisions, which unit tests inspect.
     #[cfg(test)]
     decisions: FrameDecisions,
@@ -1580,6 +1586,7 @@ fn dynalloc_analysis_simple(
     vbr: bool,
     constrained_vbr: bool,
     analysis: &AnalysisInfo,
+    lfe: bool,
     surround_dynalloc: &[f32],
     tone_freq: f32,
     toneishness: f32,
@@ -1622,7 +1629,7 @@ fn dynalloc_analysis_simple(
         spread_weight[i] = 32 >> shift;
     }
 
-    if effective_bytes < (30 + 5 * lm) {
+    if effective_bytes < (30 + 5 * lm) || lfe {
         for v in importance.iter_mut() {
             *v = 13;
         }
@@ -1904,6 +1911,8 @@ impl CeltEncoder {
             disable_pf: false,
             force_intra: false,
             disable_inv: false,
+            lfe: false,
+            energy_mask: None,
             #[cfg(test)]
             decisions: FrameDecisions::default(),
         };
@@ -1945,6 +1954,7 @@ impl CeltEncoder {
         self.spec_avg = 0.0;
         self.silk_signal_type = 0;
         self.silk_offset = 0;
+        self.energy_mask = None;
     }
 
     /// libopus `CELT_SET_PREDICTION` (0, 1 or 2; other values are ignored,
@@ -2243,7 +2253,7 @@ impl CeltEncoder {
         let mut tf_chan = 0;
         let mut weak_transient = false;
 
-        let mut is_transient = if self.complexity >= 1 {
+        let mut is_transient = if self.complexity >= 1 && !self.lfe {
             transient_analysis(
                 in_buf,
                 buf_stride,
@@ -2337,7 +2347,7 @@ impl CeltEncoder {
         }
         // The pre-filter runs every frame; `enabled` as celt_encoder.c:2038.
         let tell = if silence { total_bits } else { rc.tell() };
-        let enabled = (nb_available > 12 * channels)
+        let enabled = ((self.lfe && nb_available > 3) || nb_available > 12 * channels)
             && start_band == 0
             && !silence
             && tell + 16 <= total_bits
@@ -2456,11 +2466,81 @@ impl CeltEncoder {
             upsample,
         );
         compute_band_energies(mode, freq, band_e, end, channels, lm);
+        // An LFE stream keeps the energy of its lowest two bands
+        // (celt_encoder.c:2099-2106).
+        if self.lfe {
+            for i in 2..end {
+                band_e[i] = band_e[i].min(1e-4 * band_e[0]).max(1e-15);
+            }
+        }
         crate::bands::amp2log2(mode, eff_end, end, band_e, band_log_e, channels);
 
+        // The masking between surround channels (celt_encoder.c:2108-2186).
+        let mut surround_dynalloc = [0.0f32; CELT_NB_EBANDS];
+        let (mut surround_trim, mut surround_masking) = (0.0f32, 0.0f32);
+        if let (Some(mask), false, false) = (&self.energy_mask, hybrid, self.lfe) {
+            let e_bands = mode.e_bands;
+            let mask_end = 2.max(self.last_coded_bands as usize);
+            let (mut mask_avg, mut diff, mut count) = (0.0f32, 0.0f32, 0i32);
+            for c in 0..channels {
+                for i in 0..mask_end {
+                    let mut m = mask[nb_ebands * c + i].min(0.25).max(-2.0);
+                    if m > 0.0 {
+                        m *= 0.5;
+                    }
+                    let width = (e_bands[i + 1] - e_bands[i]) as i32;
+                    mask_avg += m * width as f32;
+                    count += width;
+                    diff += m * (1 + 2 * i as i32 - mask_end as i32) as f32;
+                }
+            }
+            mask_avg /= count as f32;
+            mask_avg += 0.2;
+            diff = diff * 6.0
+                / (channels as i32 * (mask_end as i32 - 1) * (mask_end as i32 + 1) * mask_end as i32) as f32;
+            diff *= 0.5;
+            diff = diff.min(0.031).max(-0.031);
+            let mut midband = 0;
+            while (e_bands[midband + 1] as i32) < e_bands[mask_end] as i32 / 2 {
+                midband += 1;
+            }
+            let mut count_dynalloc = 0;
+            for i in 0..mask_end {
+                let lin = mask_avg + diff * (i as i32 - midband as i32) as f32;
+                let mut unmask = if channels == 2 {
+                    mask[i].max(mask[nb_ebands + i])
+                } else {
+                    mask[i]
+                };
+                unmask = unmask.min(0.0);
+                unmask -= lin;
+                if unmask > 0.25 {
+                    surround_dynalloc[i] = unmask - 0.25;
+                    count_dynalloc += 1;
+                }
+            }
+            if count_dynalloc >= 3 {
+                mask_avg += 0.25;
+                if mask_avg > 0.0 {
+                    mask_avg = 0.0;
+                    diff = 0.0;
+                    surround_dynalloc[..mask_end].fill(0.0);
+                } else {
+                    for v in &mut surround_dynalloc[..mask_end] {
+                        *v = (*v - 0.25).max(0.0);
+                    }
+                }
+            }
+            mask_avg += 0.2;
+            surround_trim = 64.0 * diff;
+            surround_masking = mask_avg;
+        }
+
         // Temporal VBR (celt_encoder.c:2187-2203): how far this frame's
-        // spectral level is above its running average.
-        let temporal_vbr = {
+        // spectral level is above its running average; not for LFE.
+        let temporal_vbr = if self.lfe {
+            0.0
+        } else {
             let mut follow = -10.0f32;
             let mut frame_avg = 0.0f32;
             let offset = if short_blocks { 0.5 * lm as f32 } else { 0.0 };
@@ -2482,6 +2562,7 @@ impl CeltEncoder {
         if transient_flag_fits
             && !is_transient
             && self.complexity >= 5
+            && !self.lfe
             && !hybrid
             && patch_transient_decision(
                 band_log_e,
@@ -2545,7 +2626,6 @@ impl CeltEncoder {
         } else {
             None
         };
-        let surround_dynalloc = [0.0f32; 21];
         let mut importance = [13i32; MAX_NB_EBANDS];
         let mut spread_weight = [32i32; MAX_NB_EBANDS];
         // The deepest band above the noise floor and the boosts' total, for
@@ -2566,6 +2646,7 @@ impl CeltEncoder {
             self.vbr,
             self.constrained_vbr,
             &self.analysis,
+            self.lfe,
             &surround_dynalloc,
             tone_freq,
             toneishness,
@@ -2585,6 +2666,7 @@ impl CeltEncoder {
         let enable_tf_analysis = effective_bytes >= 15 * channels
             && !hybrid
             && self.complexity >= 2
+            && !self.lfe
             && toneishness < 0.98;
         let tf_select = if enable_tf_analysis {
             tf_analysis(
@@ -2650,7 +2732,7 @@ impl CeltEncoder {
             &mut self.delayed_intra,
             self.complexity >= 4,
             self.loss_rate,
-            false,
+            self.lfe,
         );
         dumpf!("error", error);
         dumpf!("oldBandE", &self.old_band_e[..nb_ebands * channels]);
@@ -2692,7 +2774,12 @@ impl CeltEncoder {
 
         // Without room for the spread symbol the decoder spreads normally,
         // and so does the encoder (celt_encoder.c:2346-2348).
-        if self.complexity == 0 && rc.tell() + 4 <= total_bits {
+        if self.lfe && rc.tell() + 4 <= total_bits {
+            // celt_encoder.c:2304-2307.
+            self.tapset_decision = 0;
+            self.spread_decision = SPREAD_NORMAL;
+            rc.encode_icdf(self.spread_decision, &SPREAD_ICDF, 5);
+        } else if self.complexity == 0 && rc.tell() + 4 <= total_bits {
             self.spread_decision = SPREAD_NONE;
             rc.encode_icdf(self.spread_decision, &SPREAD_ICDF, 5);
         } else if rc.tell() + 4 <= total_bits {
@@ -2729,6 +2816,11 @@ impl CeltEncoder {
         }
 
         dumpi!("spread", &[self.spread_decision]);
+        // For LFE everything interesting is in the first band
+        // (celt_encoder.c:2351-2353).
+        if self.lfe {
+            offsets[0] = 8.min(effective_bytes as i32 / 3);
+        }
         let mut dynalloc_logp = 6i32;
         let total_bits_bitres = total_bits << BITRES;
         let mut total_boost = 0i32;
@@ -2768,8 +2860,9 @@ impl CeltEncoder {
         // (celt_encoder.c:2397-2410).
         let mut alloc_trim = 5;
         if rc.tell_frac() + (6 << BITRES) <= total_bits_bitres - total_boost {
-            // celt_encoder.c:2410-2413: no trim analysis without the low bands.
-            if hybrid {
+            // celt_encoder.c:2410-2413: no trim analysis without the low
+            // bands or for LFE.
+            if hybrid || self.lfe {
                 self.stereo_saving = 0.0;
             } else {
                 alloc_trim = alloc_trim_analysis(
@@ -2784,7 +2877,7 @@ impl CeltEncoder {
                     &mut self.stereo_saving,
                     tf_estimate,
                     self.intensity,
-                    0.0,
+                    surround_trim,
                     equiv_rate,
                 );
             }
@@ -2867,9 +2960,9 @@ impl CeltEncoder {
                     tf_estimate,
                     i32::from(pitch_change),
                     max_depth,
-                    false,
-                    false,
-                    0.0,
+                    self.lfe,
+                    self.energy_mask.is_some(),
+                    surround_masking,
                     temporal_vbr,
                 )
             } else {
@@ -2979,6 +3072,9 @@ impl CeltEncoder {
                 20
             };
             signal_bandwidth = self.analysis.bandwidth.max(min_bandwidth);
+        }
+        if self.lfe {
+            signal_bandwidth = 1;
         }
 
         let coded_bands = clt_compute_allocation(
@@ -4193,6 +4289,7 @@ mod tests {
                 true,
                 false,
                 &AnalysisInfo::default(),
+                false,
                 &[0.0; 21],
                 tone_freq,
                 0.99,

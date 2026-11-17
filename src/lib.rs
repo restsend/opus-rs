@@ -248,6 +248,14 @@ pub struct OpusEncoder {
     /// libopus `prev_framesize`: the samples of the last coded frame, 0
     /// before the first.
     prev_framesize: usize,
+    /// libopus `user_forced_mode` (`OPUS_SET_FORCE_MODE`), set by the
+    /// multistream encoder.
+    user_forced_mode: Option<OpusMode>,
+    /// libopus `lfe` (`OPUS_SET_LFE`): a surround LFE stream.
+    lfe: bool,
+    /// libopus `energy_masking` (`OPUS_SET_ENERGY_MASK`): the surround
+    /// masking of the frame, 21 bands per channel.
+    energy_mask: Option<[f32; 42]>,
     /// libopus `silk_mode.reducedDependency`
     /// (`OPUS_SET_PREDICTION_DISABLED`).
     prediction_disabled: bool,
@@ -1369,6 +1377,9 @@ impl OpusEncoder {
             variable_duration: FrameDuration::Argument,
             fec_keeps_mode: false,
             prev_framesize: 0,
+            user_forced_mode: None,
+            lfe: false,
+            energy_mask: None,
             prediction_disabled: false,
             use_cbr: false,
             use_inband_fec: false,
@@ -1490,6 +1501,7 @@ impl OpusEncoder {
         self.silk_bw_switch = false;
         self.first = true;
         self.prev_framesize = 0;
+        self.energy_mask = None;
         self.width_mem = StereoWidthState::default();
         self.detected_bandwidth = None;
         self.nb_no_activity_ms_q1 = 0;
@@ -2063,6 +2075,8 @@ impl OpusEncoder {
         // produced afterwards by bandwidth overrides (SILK-only + FB/SWB → Hybrid).
         let mut mode = if self.application == Application::RestrictedLowDelay {
             OpusMode::CeltOnly
+        } else if let Some(forced) = self.user_forced_mode {
+            forced
         } else {
             let equiv = compute_equiv_rate(
                 self.rate,
@@ -2114,6 +2128,9 @@ impl OpusEncoder {
         // coded in CELT, as libopus overrides the mode to meet the requested
         // frame size (opus_encode_native).
         if mode != OpusMode::CeltOnly && frame_size < self.sampling_rate as usize / 100 {
+            mode = OpusMode::CeltOnly;
+        }
+        if self.lfe {
             mode = OpusMode::CeltOnly;
         }
 
@@ -2189,9 +2206,15 @@ impl OpusEncoder {
         // CELT sees the input's depth: 16 bits for `encode_i16`, 24 for
         // float (OPUS_SET_LSB_DEPTH, opus_encoder.c:1676-1677).
         self.celt_enc.set_lsb_depth(self.input_depth(input));
+        // OPUS_SET_LFE and OPUS_SET_ENERGY_MASK reach CELT too.
+        self.celt_enc.lfe = self.lfe;
+        self.celt_enc.energy_mask = self.energy_mask;
         // CELT has no mediumband: libopus codes it as wideband.
         if mode == OpusMode::CeltOnly && bandwidth == Bandwidth::Mediumband {
             bandwidth = Bandwidth::Wideband;
+        }
+        if self.lfe {
+            bandwidth = Bandwidth::Narrowband;
         }
         self.bandwidth = bandwidth;
 
@@ -2810,8 +2833,33 @@ impl OpusEncoder {
                 // C: SILK gets all bits, at the requested rate (issue #43).
                 total_bitrate
             };
-            if mode == OpusMode::Hybrid {
+            if mode == OpusMode::Hybrid && self.energy_mask.is_none() {
                 hb_gain = hybrid_hb_gain(total_bitrate - silk_bitrate);
+            }
+            // Surround masking for SILK (opus_encoder.c:2089-2126).
+            if let (Some(mask), false, false) = (&self.energy_mask, self.use_cbr, self.lfe) {
+                let (end, srate) = match frame_bandwidth {
+                    Bandwidth::Narrowband => (13, 8000.0),
+                    Bandwidth::Mediumband => (15, 12000.0),
+                    _ => (17, 16000.0),
+                };
+                let mut mask_sum = 0.0f32;
+                for c in 0..self.channels {
+                    for i in 0..end {
+                        let mut m = mask[21 * c + i].min(0.5).max(-2.0);
+                        if m > 0.0 {
+                            m *= 0.5;
+                        }
+                        mask_sum += m;
+                    }
+                }
+                let masking_depth = mask_sum / end as f32 * self.channels as f32 + 0.2;
+                let rate_offset = ((srate * masking_depth) as i32).max(-2 * silk_bitrate / 3);
+                if matches!(frame_bandwidth, Bandwidth::Superwideband | Bandwidth::Fullband) {
+                    silk_bitrate += 3 * rate_offset / 5;
+                } else {
+                    silk_bitrate += rate_offset;
+                }
             }
 
             // SILK collapses the stereo image while the switch to mono waits
@@ -3289,7 +3337,10 @@ impl OpusEncoder {
         } else {
             self.stereo_width_q14 = i32::from(self.silk_enc.stereo.smth_width_q14);
         }
-        if ch == 2 && (self.hybrid_stereo_width_q14 < 1 << 14 || self.stereo_width_q14 < 1 << 14) {
+        if ch == 2
+            && self.energy_mask.is_none()
+            && (self.hybrid_stereo_width_q14 < 1 << 14 || self.stereo_width_q14 < 1 << 14)
+        {
             stereo_fade(
                 &mut self.buf_celt_pcm[..frame_size * 2],
                 self.hybrid_stereo_width_q14 as f32 * (1.0 / 16384.0),

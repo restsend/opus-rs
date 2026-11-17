@@ -77,6 +77,7 @@ a libopus function return libopus's errors as the constants of
 | `opus_encode`, `opus_encode_float`, `opus_encode24` | `OpusEncoder::encode_i16`, `encode`, `encode24` |
 | `opus_decode`, `opus_decode24` | `OpusDecoder::decode_i16`, `decode_fec_i16`, `decode24`, `decode_fec24` |
 | `opus_multistream_encoder_create`, `opus_multistream_encode_float`, `opus_multistream_encode`, `opus_multistream_encode24` | `multistream_encoder::MultistreamEncoder::new`, `encode`, `encode_i16`, `encode24` |
+| `opus_multistream_surround_encoder_create` | `MultistreamEncoder::new_surround` (families 0, 1 with surround masking and the LFE stream, 2 ambisonics, 255; `streams`, `coupled_streams`, `mapping` give the layout) |
 | `opus_multistream_encoder_ctl` | `MultistreamEncoder::set_bitrate`, `bitrate`, `set_expert_frame_duration`, `reset`, `final_range`, the controls libopus forwards to every stream (`set_complexity`, `set_vbr`, ...), `first_stream` for the queries libopus answers from the first stream, and `encoder_state` (`OPUS_MULTISTREAM_GET_ENCODER_STATE`) |
 | `opus_projection_ambisonics_encoder_create`, `opus_projection_encode_float`, `opus_projection_encode`, `opus_projection_encode24` | `projection::ProjectionEncoder::new`, `encode`, `encode_i16`, `encode24` (`streams`, `coupled_streams` return the layout) |
 | `OPUS_PROJECTION_GET_DEMIXING_MATRIX_GAIN`, `_SIZE`, `OPUS_PROJECTION_GET_DEMIXING_MATRIX` | `ProjectionEncoder::demixing_matrix_gain`, `demixing_matrix_size`, `demixing_matrix`; the other controls through `ProjectionEncoder::multistream` |

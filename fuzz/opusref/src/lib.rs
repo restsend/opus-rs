@@ -54,6 +54,16 @@ unsafe extern "C" {
         application: c_int,
         err: *mut c_int,
     ) -> *mut c_void;
+    pub fn opus_multistream_surround_encoder_create(
+        fs: i32,
+        channels: c_int,
+        mapping_family: c_int,
+        streams: *mut c_int,
+        coupled: *mut c_int,
+        mapping: *mut c_uchar,
+        application: c_int,
+        err: *mut c_int,
+    ) -> *mut c_void;
     pub fn opus_multistream_encoder_destroy(st: *mut c_void);
     pub fn opus_multistream_encoder_ctl(st: *mut c_void, req: c_int, ...) -> c_int;
     pub fn opus_multistream_encode(
