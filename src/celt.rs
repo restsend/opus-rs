@@ -1023,12 +1023,29 @@ fn comb_filter_inplace(
     // comb_filter_const_c: x[i - t1 + k - 2] is buf[start + i + k] here.
     let start = y_idx + overlap - t1 - 2;
     let x = &mut buf[start..y_idx + n];
-    let (mut x4, mut x3, mut x2, mut x1) = (x[0], x[1], x[2], x[3]);
+    // The SSE groups of four read taps at least T >= 15 samples back, all
+    // written before the group, so a group is four independent samples.
     let sse = sse_groups(n - overlap, arch);
-    for i in 0..n - overlap {
+    for i in (0..sse).step_by(4) {
+        let tap = |k: usize| -> [f32; 4] { x[i + 4 - k..i + 8 - k].try_into().unwrap() };
+        let [x0, x1, x2, x3, x4] = [tap(0), tap(1), tap(2), tap(3), tap(4)];
+        let y: &mut [f32; 4] = (&mut x[i + t1 + 2..i + t1 + 6]).try_into().unwrap();
+        for l in 0..4 {
+            y[l] = comb_tap(
+                true,
+                y[l],
+                [x0[l], x1[l], x2[l], x3[l], x4[l]],
+                g10,
+                g11,
+                g12,
+            );
+        }
+    }
+    let (mut x4, mut x3, mut x2, mut x1) = (x[sse], x[sse + 1], x[sse + 2], x[sse + 3]);
+    for i in sse..n - overlap {
         let x0 = x[i + 4];
         let y = &mut x[i + t1 + 2];
-        *y = comb_tap(i < sse, *y, [x0, x1, x2, x3, x4], g10, g11, g12);
+        *y = comb_tap(false, *y, [x0, x1, x2, x3, x4], g10, g11, g12);
         x4 = x3;
         x3 = x2;
         x2 = x1;
