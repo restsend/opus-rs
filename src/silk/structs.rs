@@ -334,6 +334,9 @@ pub struct SilkEncoderState {
     pub pulses: [i8; MAX_FRAME_LENGTH],
     pub s_nsq: SilkNSQState,
     pub ltp_corr_q15: i32,
+    /// The float encoder's normalized pitch correlation (libopus
+    /// `silk_encoder_state_FLP.LTPCorr`).
+    pub ltp_corr: f32,
     pub res_nrg_smth: i32,
     pub pitch_estimation_lpc_order: i32,
     pub ps_nlsf_cb: Option<&'static NLSFCodebook>,
@@ -371,6 +374,7 @@ impl Default for SilkEncoderState {
             pulses: [0; MAX_FRAME_LENGTH],
             s_nsq: SilkNSQState::default(),
             ltp_corr_q15: 0,
+            ltp_corr: 0.0,
             res_nrg_smth: 0,
             pitch_estimation_lpc_order: 0,
             ps_nlsf_cb: None,
