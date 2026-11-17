@@ -9,3 +9,4 @@ a8	test:encoder_packet	-	starved_multiframe_packets_are_toc_only ... FAILED	star
 a9	test:encoder_packet	-	multiframe_stereo_to_mono_switch_stays_mono ... FAILED	stereo-to-mono delay skipped for multiframe packets
 a10	test:encoder_packet	-	low_rate_stereo_codes_one_silk_channel ... FAILED	stereo input coded as two SILK channels below the stereo threshold
 a12	test:encoder_packet	-	max_bandwidth_ignores_auto ... FAILED	set_max_bandwidth(Auto) lifted the maximum to fullband
+a13	test:encoder_packet	-	celt_codes_16_bit_input_at_16_bits ... FAILED	CELT coded 16-bit input at 24 bits depth

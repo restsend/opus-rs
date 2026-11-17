@@ -1564,11 +1564,11 @@ impl OpusEncoder {
     }
 
     /// Encode a frame of interleaved PCM16 (`opus_int16` C `opus_encode()`
-    /// convention). Produces byte-for-byte identical packets to
-    /// `encode()` called with the same audio converted via
-    /// `sample as f32 / 32768.0`, while skipping the f32 round-trip in the
-    /// SILK/VoIP path: the integer high-pass biquad and SILK pipeline are fed
-    /// natively, with no temporary conversion buffer (issue #28).
+    /// convention). As in libopus, the signal analysis and CELT treat the
+    /// input as 16-bit (`encode()` as 24-bit), so packets can differ from
+    /// `encode()`'s for the same audio; the integer high-pass biquad and
+    /// SILK pipeline are fed natively, with no temporary conversion buffer
+    /// (issue #28).
     pub fn encode_i16(
         &mut self,
         input: &[i16],
@@ -2050,6 +2050,12 @@ impl OpusEncoder {
             &mut bandwidth,
             equiv_rate,
         );
+        // CELT sees the input's depth: 16 bits for `encode_i16`, 24 for
+        // float (OPUS_SET_LSB_DEPTH, opus_encoder.c:1676-1677).
+        self.celt_enc.set_lsb_depth(match input {
+            PcmInput::F32(_) => 24,
+            PcmInput::I16(_) => 16,
+        });
         // CELT has no mediumband: libopus codes it as wideband.
         if mode == OpusMode::CeltOnly && bandwidth == Bandwidth::Mediumband {
             bandwidth = Bandwidth::Wideband;

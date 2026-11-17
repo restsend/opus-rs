@@ -253,3 +253,23 @@ fn max_bandwidth_ignores_auto() {
     p.bitrate(64000);
     p.check(4, 960, 1500, toc);
 }
+
+/// opus_encode tells CELT the input has 16 bits (OPUS_SET_LSB_DEPTH),
+/// which sets the floor of its band energies: a quiet signal coded from
+/// 16-bit input gives libopus's bytes.
+#[test]
+fn celt_codes_16_bit_input_at_16_bits() {
+    for app in [Application::RestrictedLowDelay, Application::Audio] {
+        let mut p = Pair::new(48000, 1, app);
+        p.bitrate(64000);
+        for f in 0..20 {
+            let pcm: Vec<i16> =
+                (0..960).map(|i| (((f * 960 + i) as f32 * 0.031).sin() * 3.0) as i16).collect();
+            let mut a = vec![0u8; 1500];
+            let mut b = vec![0u8; 1500];
+            let n = p.rs.encode_i16(&pcm, 960, &mut a).unwrap();
+            let m = unsafe { c::opus_encode(p.re, pcm.as_ptr(), 960, b.as_mut_ptr(), 1500) };
+            assert_eq!(&a[..n], &b[..m as usize], "{app:?} frame {f}");
+        }
+    }
+}
