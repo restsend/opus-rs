@@ -279,28 +279,26 @@ pub fn silk_autocorr(
 
 pub fn silk_sum_sqr_shift(energy: &mut i32, shift: &mut i32, x: &[i16], len: usize) {
     // sum_sqr_shift.c: a first pass finds the shift, a second sums with it.
+    let x = &x[..len];
     let mut shft = 31 - silk_clz32(len as i32);
-    let nrg = sum_sqr_pairs_shifted(x, len, len as i32, shft);
+    let nrg = sum_sqr_pairs_shifted(x, len as i32, shft);
     shft = (shft + 3 - silk_clz32(nrg)).max(0);
-    *energy = sum_sqr_pairs_shifted(x, len, 0, shft);
+    *energy = sum_sqr_pairs_shifted(x, 0, shft);
     *shift = shft;
 }
 
 /// One pass of libopus's `silk_sum_sqr_shift`: squares summed in pairs, each
 /// pair's sum shifted right by `shft` (as unsigned) and added to `init`.
 #[inline(always)]
-fn sum_sqr_pairs_shifted(x: &[i16], len: usize, init: i32, shft: i32) -> i32 {
+fn sum_sqr_pairs_shifted(x: &[i16], init: i32, shft: i32) -> i32 {
+    let sqr = |v: i16| silk_smulbb(v as i32, v as i32) as u32;
+    let mut pairs = x.chunks_exact(2);
     let mut nrg = init;
-    let mut i = 0;
-    while i + 1 < len {
-        let mut nrg_tmp = silk_smulbb(x[i] as i32, x[i] as i32) as u32;
-        nrg_tmp = nrg_tmp.wrapping_add(silk_smulbb(x[i + 1] as i32, x[i + 1] as i32) as u32);
-        nrg = nrg.wrapping_add((nrg_tmp >> shft) as i32);
-        i += 2;
+    for p in &mut pairs {
+        nrg = nrg.wrapping_add((sqr(p[0]).wrapping_add(sqr(p[1])) >> shft) as i32);
     }
-    if i < len {
-        let nrg_tmp = silk_smulbb(x[i] as i32, x[i] as i32) as u32;
-        nrg = nrg.wrapping_add((nrg_tmp >> shft) as i32);
+    if let [v] = pairs.remainder() {
+        nrg = nrg.wrapping_add((sqr(*v) >> shft) as i32);
     }
     nrg
 }
