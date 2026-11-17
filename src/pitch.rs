@@ -133,20 +133,17 @@ pub fn pitch_downsample(x: &[&[f32]], x_lp: &mut [f32], len: usize, c: usize, fa
         return;
     }
 
-    for i in 1..len {
-        let mut val = 0.0f32;
-        for k in 0..c {
-            let x_k = x[k];
-
-            let idx_m = factor * i - offset;
-            let idx_p = factor * i + offset;
-            let idx_c = factor * i;
-
-            if idx_p < x_k.len() {
-                val += 0.25 * x_k[idx_m] + 0.25 * x_k[idx_p] + 0.5 * x_k[idx_c];
-            }
+    // x_lp[i] sums, channel by channel, the x_k[factor * i - offset..=
+    // factor * i + offset] that lie inside x_k.
+    let lp = &mut x_lp[1..len];
+    lp.fill(0.0);
+    for x_k in &x[..c] {
+        let windows = x_k[factor - offset..]
+            .windows(2 * offset + 1)
+            .step_by(factor);
+        for (o, w) in lp.iter_mut().zip(windows) {
+            *o += 0.25 * w[0] + 0.25 * w[2 * offset] + 0.5 * w[offset];
         }
-        x_lp[i] = val;
     }
 
     pitch_downsample_boundary(x, x_lp, c, offset);
