@@ -455,6 +455,43 @@ fn dred_parse_edge_cases_match_libopus() {
     }
 }
 
+/// DRED decoding needs processed DRED data: libopus returns OPUS_BAD_ARG
+/// and opus-rs an error for a parse without DRED or a deferred one.
+#[test]
+fn dred_decode_rejects_unprocessed_dred() {
+    let s = SILK_WB_16K;
+    let frame = s.fs as usize * s.frame_ms / 1000;
+    let packets = ref_encode(s, &signal(s, 1, 9));
+    let cdec = RefDredDecoder::new();
+    let rdec = opus_rs::dred::OpusDredDecoder::new().unwrap();
+    let mut rs = opus_rs::OpusDecoder::new(s.fs, s.channels).unwrap();
+    let mut deferred = 0;
+    unsafe {
+        let mut err = 0;
+        let dec = opus_decoder_create(s.fs, s.channels as i32, &mut err);
+        for (k, p) in packets.iter().enumerate() {
+            let mut c = OpusDRED::zeroed();
+            let mut r = Box::<opus_rs::dred::OpusDred>::default();
+            cdec.parse(&mut c, p, s.fs, s.fs, true);
+            rdec.parse(&mut r, p, s.fs, s.fs, true).unwrap();
+            deferred += usize::from(c.process_stage == 1);
+            let mut a = vec![0f32; frame * s.channels];
+            let mut b = vec![0f32; frame * s.channels];
+            let na = opus_decoder_dred_decode_float(
+                dec,
+                &*c,
+                frame as i32,
+                a.as_mut_ptr(),
+                frame as i32,
+            );
+            let nb = rs.dred_decode_float(&r, frame as i32, &mut b, frame);
+            assert_eq!((na, nb.is_err()), (-1, true), "packet {k}");
+        }
+        opus_decoder_destroy(dec);
+    }
+    assert!(deferred > 10, "{deferred}");
+}
+
 /// How a lost frame is concealed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Lost {
@@ -598,13 +635,12 @@ fn plc_output(s: Setup, packets: &[Option<Vec<u8>>], complexity: i32, dred: bool
                         .parse(&mut r, packets[m].as_ref().unwrap(), s.fs, s.fs, false)
                         .unwrap();
                 }
-                rs.dred_decode_float(
-                    &r,
-                    ((next.unwrap_or(k + 1) - k) * frame) as i32,
-                    &mut b,
-                    frame,
-                )
-                .unwrap();
+                if r.process_stage == 2 {
+                    let offset = ((next.unwrap() - k) * frame) as i32;
+                    rs.dred_decode_float(&r, offset, &mut b, frame).unwrap();
+                } else {
+                    rs.decode(&[], frame, &mut b).unwrap();
+                }
             }
         }
         out.extend(b);
@@ -694,12 +730,11 @@ fn dred_decode_i16_matches_libopus() {
                     let mut b = vec![0i16; n];
                     let na =
                         opus_decoder_dred_decode(dec, &*c, left as i32, a.as_mut_ptr(), n as i32);
-                    let nb = rs.dred_decode(&r, left as i32, &mut b, n).unwrap();
-                    assert_eq!(
-                        (na as usize, &a),
-                        (nb, &b),
-                        "packet {k}, {left} samples left"
-                    );
+                    // OPUS_BAD_ARG (-1) without DRED data.
+                    let nb = rs
+                        .dred_decode(&r, left as i32, &mut b, n)
+                        .map_or(-1, |n| n as i32);
+                    assert_eq!((na, &a), (nb, &b), "packet {k}, {left} samples left");
                     left -= n;
                     n_dred += usize::from(cret > 0);
                 }

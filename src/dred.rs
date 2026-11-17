@@ -117,8 +117,8 @@ impl OpusDecoder {
     /// `opus_decoder_dred_decode_float`: conceals `frame_size` samples (a
     /// multiple of 2.5 ms) of a loss with the DRED data of `dred`, which a
     /// later packet carried; `dred_offset` is the position of the
-    /// concealed audio's end in samples before that packet's start. With
-    /// unprocessed `dred` this is ordinary concealment. Returns the samples
+    /// concealed audio's end in samples before that packet's start. An
+    /// error unless `dred` holds processed DRED data. Returns the samples
     /// per channel written.
     pub fn dred_decode_float(
         &mut self,
@@ -130,6 +130,9 @@ impl OpusDecoder {
         let f2_5 = self.sampling_rate as usize / 400;
         if frame_size == 0 || !frame_size.is_multiple_of(f2_5) {
             return Err("Lost frame: frame_size must be a multiple of 2.5 ms");
+        }
+        if dred.process_stage != 2 {
+            return Err("no processed DRED data");
         }
         self.queue_dred_features(dred, dred_offset, frame_size);
         self.decode(&[], frame_size, output)
@@ -147,6 +150,9 @@ impl OpusDecoder {
         let f2_5 = self.sampling_rate as usize / 400;
         if frame_size == 0 || !frame_size.is_multiple_of(f2_5) {
             return Err("Lost frame: frame_size must be a multiple of 2.5 ms");
+        }
+        if dred.process_stage != 2 {
+            return Err("no processed DRED data");
         }
         let channels = self.channels;
         if frame_size
@@ -183,9 +189,6 @@ impl OpusDecoder {
     /// The DRED block of libopus `opus_decode_native`: queues the DRED
     /// features that cover the next `frame_size` samples in the deep PLC.
     fn queue_dred_features(&mut self, dred: &OpusDred, dred_offset: i32, frame_size: usize) {
-        if dred.process_stage != 2 {
-            return;
-        }
         let Some(lpcnet) = self.silk_dec.lpcnet.as_mut() else {
             return;
         };
