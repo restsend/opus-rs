@@ -94,6 +94,9 @@ pub fn split_self_delimited<'a>(
             if m == 0 {
                 return Err("code-3 packet declares zero frames");
             }
+            if frame_samples_from_toc(toc, 48000).is_none_or(|n| n * m > 5760) {
+                return Err("code-3 packet longer than 120 ms");
+            }
 
             let mut padding_bytes = 0usize;
             if has_padding {
@@ -438,6 +441,15 @@ mod tests {
         let bytes = [toc_byte(0, false, 3), 0, 1, 0xAA];
         let mut scratch = Vec::new();
         assert!(split_self_delimited(&bytes, &mut scratch).is_err());
+    }
+
+    #[test]
+    fn split_code3_over_120_ms_is_error() {
+        // 48 CBR frames of 5 ms with 0 bytes each.
+        let bytes = [toc_byte(29, false, 3), 48, 0];
+        let mut scratch = Vec::new();
+        assert!(split_self_delimited(&bytes, &mut scratch).is_err());
+        assert!(split_self_delimited(&[toc_byte(29, false, 3), 24, 0], &mut scratch).is_ok());
     }
 
     #[test]
