@@ -458,8 +458,10 @@ pub(super) fn prefilter_and_fold(
         -pf.gain,
         pf.tapset_old,
         pf.tapset,
-        window,
-        overlap,
+        // libopus passes no window and no overlap: every sample is
+        // filtered with the current parameters (celt_decoder.c:606-609).
+        &[],
+        0,
     );
     for i in 0..overlap / 2 {
         mem[x0 + i] = window[i] * etmp[overlap - 1 - i] + window[overlap - i - 1] * etmp[i];
