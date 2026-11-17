@@ -383,7 +383,10 @@ pub fn silk_noise_shape_quantizer_del_dec<const N: usize>(
                     let (left, right) = ps_del_dec.split_at_mut(rd_min_ind);
                     (&right[0], &mut left[rd_max_ind])
                 };
-                max_state.s_lpc_q14[idx..].copy_from_slice(&min_state.s_lpc_q14[idx..]);
+                // The prediction reads the NSQ_LPC_BUF_LENGTH samples from
+                // idx on; each later one is written before it is read.
+                let lpc = idx..idx + NSQ_LPC_BUF_LENGTH;
+                max_state.s_lpc_q14[lpc.clone()].copy_from_slice(&min_state.s_lpc_q14[lpc]);
                 max_state.rand_state = min_state.rand_state;
                 max_state.q_q10 = min_state.q_q10;
                 max_state.xq_q14 = min_state.xq_q14;
