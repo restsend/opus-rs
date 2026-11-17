@@ -147,6 +147,28 @@ impl OpusDecoder {
         output: &mut [i16],
         frame_size: usize,
     ) -> Result<usize, &'static str> {
+        self.dred_decode_int(dred, dred_offset, output, frame_size)
+    }
+
+    /// `opus_decoder_dred_decode24`: [`Self::dred_decode_float`] with the
+    /// output in 24-bit integers.
+    pub fn dred_decode24(
+        &mut self,
+        dred: &OpusDred,
+        dred_offset: i32,
+        output: &mut [i32],
+        frame_size: usize,
+    ) -> Result<usize, &'static str> {
+        self.dred_decode_int(dred, dred_offset, output, frame_size)
+    }
+
+    fn dred_decode_int<T: crate::decode_int::IntSample>(
+        &mut self,
+        dred: &OpusDred,
+        dred_offset: i32,
+        output: &mut [T],
+        frame_size: usize,
+    ) -> Result<usize, &'static str> {
         let f2_5 = self.sampling_rate as usize / 400;
         if frame_size == 0 || !frame_size.is_multiple_of(f2_5) {
             return Err("Lost frame: frame_size must be a multiple of 2.5 ms");
@@ -179,7 +201,7 @@ impl OpusDecoder {
                 .iter_mut()
                 .zip(out.iter())
             {
-                *o = crate::float2int16(x);
+                *o = T::from_float(x);
             }
             pos += n;
         }

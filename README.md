@@ -93,6 +93,7 @@ a libopus function return libopus's errors as the constants of
 | `opus_repacketizer_create`, `_init`, `_cat`, `_get_nb_frames`, `_out_range`, `_out` | `repacketizer::Repacketizer::new`, `init`, `cat`, `nb_frames`, `out_range`, `out` (the repacketizer borrows the packets it holds and writes into another buffer) |
 | `opus_packet_pad`, `opus_multistream_packet_pad` | `repacketizer::pad`, `multistream_pad` (from the packet into a buffer of the padded length) |
 | `opus_packet_unpad`, `opus_multistream_packet_unpad` | `repacketizer::unpad`, `multistream_unpad` (in place) |
+| `opus_decoder_dred_decode`, `_decode24`, `_decode_float` (feature `dred`) | `OpusDecoder::dred_decode`, `dred_decode24`, `dred_decode_float` |
 | `opus_strerror` | `error::strerror` |
 | `opus_get_version_string` | `error::version_string` |
 

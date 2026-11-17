@@ -692,8 +692,9 @@ fn max_diff(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).fold(0f32, |m, (x, y)| m.max((x - y).abs()))
 }
 
-/// opus_decoder_dred_decode (16-bit output) against
-/// OpusDecoder::dred_decode, also for losses concealed in one call of
+/// opus_decoder_dred_decode and _decode24 (16-bit and 24-bit output)
+/// against OpusDecoder::dred_decode and dred_decode24, also for losses
+/// concealed in one call of
 /// 45 ms and 22.5 ms, which opus-rs conceals in pieces.
 #[test]
 fn dred_decode_i16_matches_libopus() {
@@ -726,14 +727,21 @@ fn dred_decode_i16_matches_libopus() {
                 let mut left = 2 * frame;
                 while left > 0 {
                     let n = conceal.next().unwrap().min(left);
-                    let mut a = vec![0i16; n];
-                    let mut b = vec![0i16; n];
-                    let na =
-                        opus_decoder_dred_decode(dec, &*c, left as i32, a.as_mut_ptr(), n as i32);
-                    // OPUS_BAD_ARG (-1) without DRED data.
-                    let nb = rs
-                        .dred_decode(&r, left as i32, &mut b, n)
-                        .map_or(-1, |n| n as i32);
+                    // 16-bit and, every other loss, 24-bit output.
+                    let (mut a, mut b) = (vec![0i32; n], vec![0i32; n]);
+                    let (na, nb) = if k % 2 == 0 {
+                        let (mut x, mut y) = (vec![0i16; n], vec![0i16; n]);
+                        let na = opus_decoder_dred_decode(dec, &*c, left as i32, x.as_mut_ptr(), n as i32);
+                        // OPUS_BAD_ARG (-1) without DRED data.
+                        let nb = rs.dred_decode(&r, left as i32, &mut y, n).map_or(-1, |n| n as i32);
+                        a = x.iter().map(|&v| v as i32).collect();
+                        b = y.iter().map(|&v| v as i32).collect();
+                        (na, nb)
+                    } else {
+                        let na = opus_decoder_dred_decode24(dec, &*c, left as i32, a.as_mut_ptr(), n as i32);
+                        let nb = rs.dred_decode24(&r, left as i32, &mut b, n).map_or(-1, |n| n as i32);
+                        (na, nb)
+                    };
                     assert_eq!((na, &a), (nb, &b), "packet {k}, {left} samples left");
                     let mut d = 0i32;
                     opus_decoder_ctl(dec, GET_LAST_PACKET_DURATION, &mut d as *mut i32);

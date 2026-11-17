@@ -69,6 +69,13 @@ unsafe extern "C" {
         pcm: *mut i16,
         frame_size: i32,
     ) -> c_int;
+    pub fn opus_decoder_dred_decode24(
+        st: *mut OpusDecoder,
+        dred: *const OpusDRED,
+        dred_offset: i32,
+        pcm: *mut i32,
+        frame_size: i32,
+    ) -> c_int;
     pub fn opus_decoder_dred_decode_float(
         st: *mut OpusDecoder,
         dred: *const OpusDRED,
