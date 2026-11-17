@@ -387,7 +387,7 @@ impl<'a> DredEnc<'a> {
             return 0;
         }
         let mut ec_bak = ec.clone();
-        let n = (2 * max_chunks).min(self.latents_buffer_fill - latent_offset - 1);
+        let n = (2 * max_chunks).min(self.latents_buffer_fill - latent_offset);
         let mut i = 0;
         while i < n {
             let q_level = compute_quantizer(q0, dq, qmax, i / 2);
