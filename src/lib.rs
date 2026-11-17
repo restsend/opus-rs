@@ -4133,6 +4133,11 @@ impl OpusDecoder {
             _ => 16000,
         };
 
+        // After CELT, SILK starts over (opus_decode_frame 410-411).
+        let from_celt = self.prev_mode == Some(OpusMode::CeltOnly);
+        if from_celt {
+            self.silk_dec.reset();
+        }
         // The first frame's LBRR, frame by frame; a SILK frame without LBRR
         // is concealed (silk_decode_frame).
         let mut rc = RangeCoder::new_decoder(payloads[0]);
@@ -4143,6 +4148,16 @@ impl OpusDecoder {
             internal_rate,
             packet_frame,
         )?;
+        // Out of CELT, FEC bridges like normal decoding: the old CELT state
+        // concealed forward, then a fade (opus_decode_frame 372-375, 501-505,
+        // 659-678).
+        let f2_5 = self.sampling_rate as usize / 400;
+        let f5 = 2 * f2_5;
+        let transition_size = f5.min(packet_frame);
+        let mut pcm_transition = [0.0f32; REDUNDANT_MAX];
+        if from_celt {
+            self.decode_lost(None, transition_size, &mut pcm_transition[..transition_size * channels])?;
+        }
         self.range_final = rc.rng;
         let len = packet_frame * channels;
         if mode == OpusMode::Hybrid {
@@ -4176,6 +4191,19 @@ impl OpusDecoder {
         let tail = &mut output[head * channels..frame_size * channels];
         for (i, d) in tail.iter_mut().enumerate() {
             *d = self.w_silk_out[i] + self.w_celt_out[i];
+        }
+        if from_celt {
+            let window = modes::default_mode().window;
+            let inc = (48000 / self.sampling_rate) as usize;
+            let n = f2_5 * channels;
+            if packet_frame >= f5 {
+                tail[..n].copy_from_slice(&pcm_transition[..n]);
+                let new: FixedVec<f32, OPUS_PCM_TAIL> = FixedVec::from_slice(&tail[n..2 * n]);
+                smooth_fade(&pcm_transition[n..2 * n], &new, &mut tail[n..2 * n], f2_5, channels, window, inc);
+            } else {
+                let new: FixedVec<f32, OPUS_PCM_TAIL> = FixedVec::from_slice(&tail[..n]);
+                smooth_fade(&pcm_transition[..n], &new, &mut tail[..n], f2_5, channels, window, inc);
+            }
         }
         output[frame_size * channels..].fill(0.0);
 
