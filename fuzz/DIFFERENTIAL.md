@@ -138,6 +138,24 @@ find the next one:
 
 Tolerances: `OFZ_DEC_TOL`, `OFZ_PLC_TOL`, `OFZ_SIMD_TOL`, `OFZ_KTOL`.
 
+## SIMD reference
+
+On x86-64, `--features simd` builds the reference as libopus's configure
+builds it (intrinsics, run-time CPU detection, GCC's contraction in the
+`-mfma` files). opus-rs reproduces its arithmetic at its x86 levels
+(`opus_rs::Arch`). The pair runs at the levels the environment names:
+`OPUS_RS_ARCH` (`scalar`, `sse2`, `sse4_1`, `avx2`, `native`; unset:
+`scalar`) for opus-rs and `OPUSREF_ARCH` (libopus's 0-4; unset: the
+CPU's) for the reference:
+
+```sh
+cargo +nightly fuzz build diff_encoder --features simd
+OPUS_RS_ARCH=native <target-dir>/release/diff_encoder ...
+OPUS_RS_ARCH=sse2 OPUSREF_ARCH=2 <target-dir>/release/diff_encoder ...
+```
+
+The `simd` encoder and decoder of the targets run at the CPU's level.
+
 ## Fixed-point reference
 
 `--features fixed` builds the reference as fixed-point libopus

@@ -19,6 +19,9 @@ opusref = { path = "opusref" }
 [features]
 # The fixed-point reference, whose SILK encoder opus-rs ports.
 fixed = ["opusref/fixed"]
+# The reference built as libopus's x86-64 configure builds it; run with
+# OPUS_RS_ARCH (and OPUSREF_ARCH) naming the pair's level.
+simd = ["opusref/simd"]
 # The neural network features against the DNN-enabled reference: the
 # decoder targets pick a decoder complexity and the bandwidth extension.
 dnn = ["opusref/dnn", "opus-rs/deep-plc", "opus-rs/dred", "opus-rs/osce"]

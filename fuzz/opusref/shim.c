@@ -4,6 +4,11 @@
 #include "modes.h"
 #include "entenc.h"
 #include "entdec.h"
+#include "cpu_support.h"
+
+/* The level codec states take (OPUSREF_ARCH or the CPU's in the simd
+   build, 0 in the scalar build), for kernel calls that take arch. */
+int ref_arch(void) { return opus_select_arch(); }
 
 #define W2(name, expr) opus_int32 ref_##name(opus_int32 a, opus_int32 b) { return (expr); }
 #define W3(name, expr) opus_int32 ref_##name(opus_int32 a, opus_int32 b, opus_int32 c) { return (expr); }

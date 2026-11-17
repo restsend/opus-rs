@@ -156,7 +156,15 @@ fn run(which: u8, u: &mut Unstructured) -> R {
             }
             let mut cx = x.clone();
             let mut cy = vec![0i32; n];
-            unsafe { c::op_pvq_search_c(cx.as_mut_ptr(), cy.as_mut_ptr(), k, n as i32, 0) };
+            // The fixed-point reference has no float search wrapper.
+            #[cfg(not(feature = "fixed"))]
+            unsafe {
+                c::ref_op_pvq_search(cx.as_mut_ptr(), cy.as_mut_ptr(), k, n as i32, c::ref_arch())
+            };
+            #[cfg(feature = "fixed")]
+            unsafe {
+                c::op_pvq_search_c(cx.as_mut_ptr(), cy.as_mut_ptr(), k, n as i32, 0)
+            };
             let oc = objective(&x, &cy);
             let (sc, si) = both(|| {
                 let mut y = vec![0i32; n + 8];
@@ -270,7 +278,7 @@ fn run(which: u8, u: &mut Unstructured) -> R {
                     tap1,
                     mode.window.as_ptr(),
                     overlap as i32,
-                    0,
+                    c::ref_arch(),
                 )
             };
             ijon_set(0x500 | (tap0 * 3 + tap1) as u64);
@@ -445,7 +453,7 @@ fn run(which: u8, u: &mut Unstructured) -> R {
                     0,
                     p as i32,
                     256,
-                    0,
+                    c::ref_arch(),
                 )
             };
             ac[0] *= 1.0001;
@@ -482,7 +490,7 @@ fn run(which: u8, u: &mut Unstructured) -> R {
                     overlap as i32,
                     lag as i32,
                     n as i32,
-                    0,
+                    c::ref_arch(),
                 )
             };
             check2!(

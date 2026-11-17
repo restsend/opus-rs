@@ -74,7 +74,7 @@ fn mismatches(long: bool) -> (usize, usize) {
             x,
             N,
             MAX_PERIOD - 3 * MIN_PERIOD,
-            opus_rs::Arch::Scalar,
+            opus_rs::Arch::select(),
         );
         let mut b = 0;
         let mut y = x.clone();
@@ -85,7 +85,7 @@ fn mismatches(long: bool) -> (usize, usize) {
                 N as i32,
                 (MAX_PERIOD - 3 * MIN_PERIOD) as i32,
                 &mut b,
-                0,
+                ref_arch(),
             )
         };
         search += (a != b as usize) as usize;
@@ -106,7 +106,7 @@ fn mismatches(long: bool) -> (usize, usize) {
                 &mut ta,
                 prev_period,
                 prev_gain,
-                opus_rs::Arch::Scalar,
+                opus_rs::Arch::select(),
             );
             let mut tb = t0 as i32;
             let mut y = x.clone();
@@ -119,7 +119,7 @@ fn mismatches(long: bool) -> (usize, usize) {
                     &mut tb,
                     prev_period as i32,
                     prev_gain,
-                    0,
+                    ref_arch(),
                 )
             };
             // A zero gain may differ in sign; the pre-filter treats both as off.
@@ -153,9 +153,18 @@ fn concealment_pitch_search_matches_libopus() {
         .chunks(4)
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect();
-    let a = opus_rs::pitch::pitch_search(&lp[360..], &lp, 1328, 620, opus_rs::Arch::Scalar);
+    let a = opus_rs::pitch::pitch_search(&lp[360..], &lp, 1328, 620, opus_rs::Arch::select());
     let mut b = 0;
     let mut y = lp.clone();
-    unsafe { pitch_search(lp[360..].as_ptr(), y.as_mut_ptr(), 1328, 620, &mut b, 0) };
+    unsafe {
+        pitch_search(
+            lp[360..].as_ptr(),
+            y.as_mut_ptr(),
+            1328,
+            620,
+            &mut b,
+            ref_arch(),
+        )
+    };
     assert_eq!(a, b as usize);
 }
