@@ -410,3 +410,36 @@ fn osce_bwe_matches_libopus() {
         assert!(d > 0.01, "{name}: the bandwidth extension did not run");
     }
 }
+
+/// A stream that turns from SILK wideband mono to stereo while the
+/// bandwidth extension runs: the second channel starts from the state that
+/// silk_init_decoder leaves (osce_bwe_reset), bit-exact with libopus.
+#[test]
+fn osce_bwe_mono_to_stereo() {
+    let stereo = Setup {
+        channels: 2,
+        bitrate: 32000,
+        ..SILK_WB_48K
+    };
+    // SILK wideband 20 ms frames (TOC config 9), mono then stereo.
+    let silk = |p: &Vec<u8>| p[0] >> 3 == 9;
+    let mono: Vec<_> = encode(SILK_WB_48K, 2, 9).into_iter().filter(silk).collect();
+    let both: Vec<_> = encode(stereo, 2, 9)
+        .into_iter()
+        .filter(|p| silk(p) && p[0] & 4 != 0)
+        .collect();
+    assert!(
+        mono.len() > 50 && both.len() > 20,
+        "{} {}",
+        mono.len(),
+        both.len()
+    );
+    let packets: Vec<_> = mono.into_iter().chain(both).map(Some).collect();
+    for c in [4, 7] {
+        assert_eq!(
+            compare_bwe(stereo, &packets, c, true),
+            (0.0, None),
+            "complexity {c}"
+        );
+    }
+}

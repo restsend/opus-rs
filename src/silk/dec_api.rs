@@ -77,7 +77,7 @@ pub struct SilkDecoder {
     #[cfg(feature = "osce")]
     pub osce: Option<[crate::dnn::osce::Osce; 2]>,
     /// The bandwidth extension state of each channel (libopus
-    /// `channel_state[n].osce_bwe`), which silk_reset_decoder leaves alone.
+    /// `channel_state[n].osce_bwe`).
     #[cfg(feature = "osce")]
     pub osce_bwe: Option<[crate::dnn::osce::OsceBwe; 2]>,
 }
@@ -264,11 +264,10 @@ impl SilkDecoder {
             if let Some(states) = self.osce.as_mut() {
                 crate::dnn::osce::osce_reset(&mut states[1], crate::dnn::osce::OSCE_DEFAULT_METHOD);
             }
-            // silk_init_decoder clears the whole channel state, the
-            // bandwidth extension's included.
+            // silk_init_decoder resets the bandwidth extension too.
             #[cfg(feature = "osce")]
             if let Some(bwe) = self.osce_bwe.as_mut() {
-                bwe[1] = crate::dnn::osce::OsceBwe::new();
+                crate::dnn::osce::osce_bwe_reset(&mut bwe[1]);
             }
         }
 
@@ -645,12 +644,17 @@ impl SilkDecoder {
         for state in &mut self.channel_state {
             silk_reset_decoder(state);
         }
-        // silk_reset_decoder's osce_reset(OSCE_DEFAULT_METHOD).
+        // silk_reset_decoder's osce_reset(OSCE_DEFAULT_METHOD) and
+        // osce_bwe_reset.
         #[cfg(feature = "osce")]
         if let Some(states) = self.osce.as_mut() {
             for st in states {
                 crate::dnn::osce::osce_reset(st, crate::dnn::osce::OSCE_DEFAULT_METHOD);
             }
+        }
+        #[cfg(feature = "osce")]
+        if let Some(bwe) = self.osce_bwe.as_mut() {
+            bwe.iter_mut().for_each(crate::dnn::osce::osce_bwe_reset);
         }
         self.s_stereo = StereoDecState::DEFAULT;
         self.prev_decode_only_middle = 0;

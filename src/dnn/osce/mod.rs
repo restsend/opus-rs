@@ -179,8 +179,9 @@ pub struct OsceBwe {
 }
 
 impl OsceBwe {
-    /// The state after `silk_init_decoder`: all zero. libopus calls
-    /// [`osce_bwe_reset`] before the first extended frame.
+    /// An all-zero state. libopus applies [`osce_bwe_reset`] in
+    /// `silk_init_decoder` and before the first extended frame, so the
+    /// zeros are never read.
     pub fn new() -> Self {
         OsceBwe {
             features: OsceBweFeatureState::new(),
