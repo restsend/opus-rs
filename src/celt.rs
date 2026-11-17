@@ -1541,6 +1541,8 @@ fn dynalloc_analysis_simple(
     }
 
     let mut follower: FixedVec<f32, CELT_NB_X_CH> = FixedVec::from_value(0.0f32, nb * channels);
+    // One `last` for both channels (celt_encoder.c:1123).
+    let mut last = 0usize;
     for c in 0..channels {
         let base = c * nb;
         let src = if let Some(b2) = band_log_e2 {
@@ -1557,7 +1559,6 @@ fn dynalloc_analysis_simple(
             band_log_e3[i] = e;
         }
 
-        let mut last = 0usize;
         follower[base] = band_log_e3[0];
         for i in 1..end {
             if band_log_e3[i] > band_log_e3[i - 1] + 0.5 {
