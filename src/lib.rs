@@ -2820,19 +2820,14 @@ impl OpusEncoder {
                 }
             } else if self.channels == 2 {
                 // Stereo input coded mono: SILK codes the downmix, rounded
-                // half the 16-bit sum (enc_API.c:315-321); the float build
-                // sums the floats and saturates to 16 bits first, the
-                // fixed-point build that VoIP follows sums the integers.
+                // half the sum of the 16-bit channels (enc_API.c:315-321).
                 self.buf_silk_api_channel.resize(frame_size, 0);
-                let prefix = self.delay_compensation * 2;
-                let pcm = &self.buf_celt_pcm[prefix..prefix + 2 * frame_size];
-                for (i, s) in self.buf_silk_api_channel.iter_mut().enumerate() {
-                    let sum = if self.application == Application::Voip {
-                        i32::from(input_i16[2 * i]) + i32::from(input_i16[2 * i + 1])
-                    } else {
-                        i32::from(float2int16(pcm[2 * i] + pcm[2 * i + 1]))
-                    };
-                    *s = ((sum + 1) >> 1) as i16;
+                for (s, lr) in self
+                    .buf_silk_api_channel
+                    .iter_mut()
+                    .zip(input_i16.chunks_exact(2))
+                {
+                    *s = ((i32::from(lr[0]) + i32::from(lr[1]) + 1) >> 1) as i16;
                 }
                 let mid = state_mut(&mut self.buf_silk_input).as_mut_slice();
                 if self.silk_resampler_enc.process(
