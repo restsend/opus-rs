@@ -416,7 +416,7 @@ pub fn silk_encode_frame(
                 rc,
                 ps_enc.s_cmn.indices.signal_type as i32,
                 ps_enc.s_cmn.indices.quant_offset_type as i32,
-                &ps_enc.pulses,
+                &mut ps_enc.pulses,
                 ps_enc.s_cmn.frame_length as usize,
             );
 
@@ -450,7 +450,7 @@ pub fn silk_encode_frame(
                     rc,
                     ps_enc.s_cmn.indices.signal_type as i32,
                     ps_enc.s_cmn.indices.quant_offset_type as i32,
-                    &ps_enc.pulses,
+                    &mut ps_enc.pulses,
                     ps_enc.s_cmn.frame_length as usize,
                 );
 
@@ -729,7 +729,7 @@ fn encode_lbrr_section(
                 rc,
                 ps_enc.s_cmn.indices_lbrr[i].signal_type as i32,
                 ps_enc.s_cmn.indices_lbrr[i].quant_offset_type as i32,
-                &ps_enc.s_cmn.pulses_lbrr[i],
+                &mut ps_enc.s_cmn.pulses_lbrr[i],
                 ps_enc.s_cmn.frame_length as usize,
             );
         }
@@ -1224,7 +1224,7 @@ fn encode_lbrr_frame(rc: &mut RangeCoder, ch: &mut SilkEncoderState, i: usize) {
         rc,
         ch.s_cmn.indices_lbrr[i].signal_type as i32,
         ch.s_cmn.indices_lbrr[i].quant_offset_type as i32,
-        &ch.s_cmn.pulses_lbrr[i],
+        &mut ch.s_cmn.pulses_lbrr[i],
         ch.s_cmn.frame_length as usize,
     );
 }

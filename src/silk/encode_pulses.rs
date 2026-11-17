@@ -23,7 +23,7 @@ pub fn silk_encode_pulses(
     ps_range_enc: &mut RangeCoder,
     signal_type: i32,
     quant_offset_type: i32,
-    pulses: &[i8],
+    pulses: &mut [i8],
     frame_length: usize,
 ) {
     let mut pulses_comb = [0i32; 8];
@@ -31,6 +31,11 @@ pub fn silk_encode_pulses(
     let mut abs_pulses = [0i32; MAX_FRAME_LENGTH + SHELL_CODEC_FRAME_LENGTH];
 
     let iter = frame_length.div_ceil(SHELL_CODEC_FRAME_LENGTH);
+    if iter * SHELL_CODEC_FRAME_LENGTH > frame_length {
+        // 10 ms at 12 kHz: the last shell block runs past the frame, and its
+        // LSBs and signs must see zeros there (encode_pulses.c:88-92).
+        pulses[frame_length..frame_length + SHELL_CODEC_FRAME_LENGTH].fill(0);
+    }
 
     for i in 0..frame_length {
         abs_pulses[i] = pulses[i].abs() as i32;
