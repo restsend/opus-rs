@@ -281,6 +281,10 @@ impl CeltDecoder {
         let sig = &mut sig[..exc_length + LPC_ORDER];
         let mut exc = [0.0f32; 2 * PLC_PITCH_LAG_MAX];
         let exc = &mut exc[..exc_length];
+        // After a decoded frame, the extrapolation completes its folded
+        // right overlap.
+        let unfold = self.last_frame_type == FRAME_NORMAL;
+        let pf = self.postfilter();
 
         for c in 0..cc {
             let mut pitch_index = pitch_index;
@@ -350,7 +354,12 @@ impl CeltDecoder {
                 .unwrap_or(k_max + 1);
             pitch_index *= k - 1;
 
-            // Make room for the new frame; the old overlap is not used.
+            // Make room for the new frame, keeping the folded overlap.
+            let mut old_overlap = [0.0f32; 64];
+            if unfold {
+                old_overlap[..overlap / 2]
+                    .copy_from_slice(&buf[DECODE_BUFFER_SIZE..DECODE_BUFFER_SIZE + overlap / 2]);
+            }
             buf.copy_within(n..DECODE_BUFFER_SIZE, 0);
 
             // Extrapolate one period at a time, each one decayed further.
@@ -395,6 +404,48 @@ impl CeltDecoder {
                     };
                     *v *= g;
                 }
+            }
+
+            if unfold {
+                // Unfold the old overlap with the TDAC complement of the
+                // extrapolation, both before the postfilter.
+                let x0 = DECODE_BUFFER_SIZE - n;
+                let mut etmp = [0.0f32; 128];
+                comb_filter(
+                    &mut etmp,
+                    buf,
+                    0,
+                    x0,
+                    pf.period_old,
+                    pf.period_old,
+                    overlap,
+                    -pf.gain_old,
+                    -pf.gain_old,
+                    pf.tapset_old,
+                    pf.tapset_old,
+                    &[],
+                    0,
+                );
+                for i in 0..overlap / 2 {
+                    let (w1, w2) = (window[i], window[overlap - 1 - i]);
+                    let x2 = old_overlap[i];
+                    let x1 = w2 * etmp[overlap - 1 - i] - w1 * etmp[i];
+                    buf[x0 + i] = w2 * x2 - w1 * x1;
+                    buf[x0 + overlap - 1 - i] = w1 * x2 + w2 * x1;
+                }
+                comb_filter_inplace(
+                    buf,
+                    x0,
+                    pf.period_old,
+                    pf.period_old,
+                    overlap,
+                    pf.gain_old,
+                    pf.gain_old,
+                    pf.tapset_old,
+                    pf.tapset_old,
+                    &[],
+                    0,
+                );
             }
         }
         #[cfg(feature = "deep-plc")]
