@@ -8,17 +8,26 @@ use crate::silk::tables::*;
 /// One value per delayed-decision state.
 pub(crate) type Lanes = [i32; NSQ_MAX_STATES_OPERATING];
 
-/// The AVX2 token, when the CPU has AVX2 (fearless_simd's runtime
-/// detection, which needs `std`).
+/// The token of the platform's filter kernel when the CPU has it: AVX2
+/// (runtime detected, which needs `std`) or NEON.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-type Avx2 = Option<fearless_simd::Avx2>;
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-type Avx2 = Option<core::convert::Infallible>;
+type Simd = Option<fearless_simd::Avx2>;
+#[cfg(target_arch = "aarch64")]
+type Simd = Option<fearless_simd::Neon>;
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+type Simd = Option<core::convert::Infallible>;
 
-fn detect_avx2() -> Avx2 {
+#[cfg(target_arch = "aarch64")]
+use crate::silk::nsq_del_dec_neon::short_prediction_and_shaping_neon as short_prediction_and_shaping_simd;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use crate::silk::nsq_del_dec_x86::short_prediction_and_shaping_avx2 as short_prediction_and_shaping_simd;
+
+fn detect_simd() -> Simd {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    return fearless_simd::Level::try_detect().and_then(|level| level.as_avx2());
-    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    return crate::compat::avx2();
+    #[cfg(target_arch = "aarch64")]
+    return crate::compat::neon();
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
     None
 }
 
@@ -222,7 +231,7 @@ pub fn silk_noise_shape_quantizer_del_dec<const N: usize>(
     nsq: &mut SilkNSQState,
     ps_del_dec: &mut [NSQDelDecStruct; N],
     filters: &mut NSQDelDecFilters,
-    avx2: Avx2,
+    simd: Simd,
     signal_type: i32,
     x_q10: &[i32],
     pulses: &mut [i8],
@@ -317,12 +326,12 @@ pub fn silk_noise_shape_quantizer_del_dec<const N: usize>(
             .unwrap();
         let s_ar2 = &mut filters.s_ar2_q14[..shaping_order];
         let args = (a_q12, predict_order, ar_shp_q13, warping_q16, tilt_q14);
-        let [lpc_pred_q14, n_ar_q14] = match avx2 {
-            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-            Some(avx2) => crate::silk::nsq_del_dec_x86::short_prediction_and_shaping_avx2(
-                avx2, lpc, args.0, args.1, s_ar2, args.2, &diff_q14, &lf_ar_q14, args.3, args.4,
+        let [lpc_pred_q14, n_ar_q14] = match simd {
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
+            Some(simd) => short_prediction_and_shaping_simd(
+                simd, lpc, args.0, args.1, s_ar2, args.2, &diff_q14, &lf_ar_q14, args.3, args.4,
             ),
-            #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+            #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
             Some(never) => match never {},
             None => short_prediction_and_shaping::<N>(
                 lpc, args.0, args.1, s_ar2, args.2, &diff_q14, &lf_ar_q14, args.3, args.4,
@@ -531,7 +540,7 @@ pub fn silk_nsq_del_dec(
         s_lpc_q14: [[0; NSQ_MAX_STATES_OPERATING]; MAX_SUB_FRAME_LENGTH + NSQ_LPC_BUF_LENGTH],
         s_ar2_q14: [[0; NSQ_MAX_STATES_OPERATING]; MAX_SHAPE_LPC_ORDER],
     };
-    let avx2 = detect_avx2();
+    let simd = detect_simd();
 
     let mut lag = ps_nsq.lag_prev;
 
@@ -694,7 +703,7 @@ pub fn silk_nsq_del_dec(
                     ps_nsq,
                     (&mut ps_del_dec[..$n]).try_into().unwrap(),
                     &mut filters,
-                    avx2,
+                    simd,
                     ps_indices.signal_type as i32,
                     &x_sc_q10,
                     pulses,
@@ -793,12 +802,12 @@ pub fn silk_nsq_del_dec(
 mod tests {
     use super::*;
 
-    /// The AVX2 kernel and the scalar filters agree bit for bit, also on
+    /// The SIMD kernel and the scalar filters agree bit for bit, also on
     /// states and coefficients at the edges of their ranges.
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
     #[test]
-    fn avx2_filters_match_scalar() {
-        let Some(avx2) = detect_avx2() else {
+    fn simd_filters_match_scalar() {
+        let Some(token) = detect_simd() else {
             return;
         };
         let mut seed = 1u32;
@@ -821,8 +830,8 @@ mod tests {
             let shaping_order = [12, 14, 16, 20, 24][round % 5];
             let (warping_q16, tilt_q14) = (rand(), rand());
             let mut s_ar2_simd = s_ar2;
-            let simd = crate::silk::nsq_del_dec_x86::short_prediction_and_shaping_avx2(
-                avx2,
+            let simd = short_prediction_and_shaping_simd(
+                token,
                 &lpc,
                 &a_q12,
                 predict_order,

@@ -45,10 +45,21 @@ pub fn with_scratch<T: Copy + Default, R>(n: usize, f: impl FnOnce(&mut [T]) -> 
 // Fuzzing switch
 // ---------------------------------------------------------------------------
 
-/// Switch the `fuzzing` harnesses flip to compare the AVX2 kernels with the
+/// Switch the `fuzzing` harnesses flip to compare the SIMD kernels with the
 /// scalar code.
 #[cfg(feature = "fuzzing")]
 pub static SIMD_ENABLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+
+/// The NEON token; NEON is part of the aarch64 targets' baseline.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn neon() -> Option<fearless_simd::Neon> {
+    #[cfg(feature = "fuzzing")]
+    if !SIMD_ENABLED.load(core::sync::atomic::Ordering::Relaxed) {
+        return None;
+    }
+    fearless_simd::Level::baseline().as_neon()
+}
 
 /// The AVX2 token when the CPU has AVX2 (runtime detection needs `std`).
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]

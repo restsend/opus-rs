@@ -167,3 +167,42 @@ fn kernels() {
         }
     }
 }
+
+/// The SIMD kernels (AVX2, NEON) and the scalar code give the same packets:
+/// SILK's delayed-decision quantizer at complexity 10, Hybrid and CELT.
+#[test]
+fn simd_and_scalar_packets_match() {
+    let encode = |simd: bool, fs: i32, ch: usize, app: Application, kbps: i32| {
+        opus_rs::fuzzing::SIMD_ENABLED.store(simd, Ordering::Relaxed);
+        let mut r = Rng(5);
+        let mut e = OpusEncoder::new(fs, ch, app).unwrap();
+        e.bitrate_bps = kbps * 1000;
+        e.complexity = 10;
+        let frame = fs as usize / 50;
+        let mut phase = 0f32;
+        let mut packets = Vec::new();
+        for _ in 0..scale() {
+            let pcm: Vec<f32> = (0..frame * ch)
+                .map(|_| {
+                    phase += 0.031;
+                    0.4 * phase.sin() + 0.05 * r.f()
+                })
+                .collect();
+            let mut pkt = [0u8; 1500];
+            let n = e.encode(&pcm, frame, &mut pkt).unwrap();
+            packets.push(pkt[..n].to_vec());
+        }
+        packets
+    };
+    for (fs, ch, app, kbps) in [
+        (16000, 1, Application::Voip, 20),
+        (16000, 2, Application::Voip, 32),
+        (48000, 1, Application::Voip, 24),
+        (48000, 2, Application::Audio, 128),
+    ] {
+        assert_eq!(
+            encode(true, fs, ch, app, kbps),
+            encode(false, fs, ch, app, kbps)
+        );
+    }
+}
