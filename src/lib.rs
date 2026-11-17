@@ -2224,10 +2224,7 @@ impl OpusEncoder {
             // Boosting peak energy a bit because we didn't just average the
             // active frames (C's HALF32).
             let noise_energy = compute_frame_energy(input, frame_size * self.channels);
-            activity = i32::from(
-                f64::from(self.peak_signal_energy)
-                    < f64::from(PSEUDO_SNR_THRESHOLD) * f64::from(0.5f32 * noise_energy),
-            );
+            activity = i32::from(self.peak_signal_energy < PSEUDO_SNR_THRESHOLD * (0.5 * noise_energy));
         }
 
         if mode == OpusMode::CeltOnly {
