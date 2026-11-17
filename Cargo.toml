@@ -55,8 +55,10 @@ deep-plc = ["dnn"]
 # decoder conceals a loss from the DRED features through the deep PLC state.
 dred = ["deep-plc"]
 # `osce`: `--enable-osce` (ENABLE_OSCE and ENABLE_OSCE_BWE), the LACE and
-# NoLACE SILK enhancers and the BBWENet bandwidth extension.
-osce = ["dnn"]
+# NoLACE SILK enhancers and the BBWENet bandwidth extension. It turns on
+# `deep-plc`, as libopus's configure defines ENABLE_DEEP_PLC with
+# `--enable-osce` too.
+osce = ["deep-plc"]
 
 [dependencies]
 libm = { version = "0.2", optional = true, default-features = false }
