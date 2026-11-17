@@ -61,3 +61,20 @@ for line, code, where in POINTS:
     else:
         text = text[:i] + code + '\n' + text[i:]
 open(path, 'w').write(text)
+
+# bands.c: the stereo angle's rate-distortion choice.
+path = os.path.join(out, 'celt', 'bands.c')
+text = open(path).read()
+for line, code, where in [
+    ('#include "quant_bands.h"', '#include "ofz_dump.h"', 'after'),
+    ('               if (dist0 >= dist1) {',
+     'ofz_dump1i("rdo_band", i); ofz_dumpf("rdo_dist", (float[]){dist0, dist1}, 2); ofz_dumpf("rdo_x", X, N); ofz_dumpf("rdo_xsave", X_save, N); ofz_dumpf("rdo_xdown", X_save2, N); ofz_dumpf("rdo_ydown", Y_save2, N); ofz_dumpf("rdo_ysave", Y_save, N);', 'before'),
+]:
+    assert text.count(line) == 1, line
+    i = text.index(line)
+    if where == 'after':
+        j = text.index('\n', i)
+        text = text[:j + 1] + code + '\n' + text[j + 1:]
+    else:
+        text = text[:i] + code + '\n' + text[i:]
+open(path, 'w').write(text)

@@ -226,3 +226,10 @@ fn vbr_drift_uses_the_float_alpha() {
 fn stereo_frames_use_the_pre_filter() {
     assert_eq!(identical(2, 10.0, 32, 0, "voice", 10), [true; 10]);
 }
+
+/// Stereo bands below the intensity band code the angle rounded down or
+/// up, whichever correlates better with the input (bands.c:1808-1895).
+#[test]
+fn stereo_angle_uses_rate_distortion_choice() {
+    assert_eq!(identical(2, 10.0, 32, 2, "voice", 12), [true; 12]);
+}

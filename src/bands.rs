@@ -1741,6 +1741,9 @@ pub fn quant_all_bands(
     let mut balance_val = *balance;
     let b_blocks = if short_blocks { 1 << lm } else { 1 };
     let c_channels = if y.is_some() { 2 } else { 1 };
+    // The encoder resynthesises exactly for the stereo angle's
+    // rate-distortion choice (bands.c:1618-1622).
+    let theta_rdo = encode && resynth && y.is_some() && !*dual_stereo;
     let m_val = 1usize << lm as usize;
 
     let norm_offset = m_val * (m.e_bands[start] as usize);
@@ -1921,28 +1924,113 @@ pub fn quant_all_bands(
             );
         } else if let Some(y_all) = y.as_mut() {
             let y_slice = &mut y_all[offset..offset + n];
-            let (lb, lb_out) = prepare_lowband_views(
-                norm,
-                &mut lowband_scratch,
-                allow_lowband_scratch,
-                effective_lowband,
-                norm_pos,
-                n,
-                !last,
-            );
-            x_cm = quant_band_stereo(
-                &mut ctx,
-                x_slice,
-                y_slice,
-                n,
-                b,
-                b_blocks,
-                lb,
-                lm,
-                lb_out,
-                1.0,
-                x_cm | y_cm,
-            );
+            if theta_rdo && i < intensity {
+                // Code the angle rounded down and rounded up, and keep the
+                // one with the larger weighted correlation to the input
+                // (bands.c:1808-1895).
+                let (ex, ey) = (band_e[i], band_e[i + m.nb_ebands]);
+                let min_e = ex.min(ey);
+                let w = [ex + min_e / 3.0, ey + min_e / 3.0];
+                let cm = x_cm | y_cm;
+                let rc_save = ctx.rc.clone();
+                let (seed_save, bits_save) = (ctx.seed, ctx.remaining_bits);
+                let mut x_save = [0.0f32; MAX_PVQ_N];
+                let mut y_save = [0.0f32; MAX_PVQ_N];
+                x_save[..n].copy_from_slice(x_slice);
+                y_save[..n].copy_from_slice(y_slice);
+
+                ctx.theta_round = -1;
+                let (lb, lb_out) = prepare_lowband_views(
+                    norm,
+                    &mut lowband_scratch,
+                    allow_lowband_scratch,
+                    effective_lowband,
+                    norm_pos,
+                    n,
+                    !last,
+                );
+                let cm_down = quant_band_stereo(
+                    &mut ctx, x_slice, y_slice, n, b, b_blocks, lb, lm, lb_out, 1.0, cm,
+                );
+                let dist_down = w[0] * crate::pitch::inner_prod(&x_save, x_slice, n)
+                    + w[1] * crate::pitch::inner_prod(&y_save, y_slice, n);
+
+                let rc_down = ctx.rc.clone();
+                let (seed_down, bits_down) = (ctx.seed, ctx.remaining_bits);
+                let mut x_down = [0.0f32; MAX_PVQ_N];
+                let mut y_down = [0.0f32; MAX_PVQ_N];
+                let mut norm_down = [0.0f32; MAX_PVQ_N];
+                x_down[..n].copy_from_slice(x_slice);
+                y_down[..n].copy_from_slice(y_slice);
+                if !last {
+                    norm_down[..n].copy_from_slice(&norm[norm_pos..norm_pos + n]);
+                }
+
+                *ctx.rc = rc_save;
+                ctx.seed = seed_save;
+                ctx.remaining_bits = bits_save;
+                x_slice.copy_from_slice(&x_save[..n]);
+                y_slice.copy_from_slice(&y_save[..n]);
+                if i == start + 1 {
+                    special_hybrid_folding(m, norm, start, m_val);
+                }
+                ctx.theta_round = 1;
+                let (lb, lb_out) = prepare_lowband_views(
+                    norm,
+                    &mut lowband_scratch,
+                    allow_lowband_scratch,
+                    effective_lowband,
+                    norm_pos,
+                    n,
+                    !last,
+                );
+                x_cm = quant_band_stereo(
+                    &mut ctx, x_slice, y_slice, n, b, b_blocks, lb, lm, lb_out, 1.0, cm,
+                );
+                let dist_up = w[0] * crate::pitch::inner_prod(&x_save, x_slice, n)
+                    + w[1] * crate::pitch::inner_prod(&y_save, y_slice, n);
+                dumpi!("rdo_band", &[i as i32]);
+                dumpf!("rdo_dist", &[dist_down, dist_up]);
+                dumpf!("rdo_x", x_slice);
+                dumpf!("rdo_xsave", &x_save[..n]);
+                dumpf!("rdo_xdown", &x_down[..n]);
+                dumpf!("rdo_ydown", &y_down[..n]);
+                dumpf!("rdo_ysave", &y_save[..n]);
+                if dist_down >= dist_up {
+                    x_cm = cm_down;
+                    *ctx.rc = rc_down;
+                    ctx.seed = seed_down;
+                    ctx.remaining_bits = bits_down;
+                    x_slice.copy_from_slice(&x_down[..n]);
+                    y_slice.copy_from_slice(&y_down[..n]);
+                    if !last {
+                        norm[norm_pos..norm_pos + n].copy_from_slice(&norm_down[..n]);
+                    }
+                }
+            } else {
+                let (lb, lb_out) = prepare_lowband_views(
+                    norm,
+                    &mut lowband_scratch,
+                    allow_lowband_scratch,
+                    effective_lowband,
+                    norm_pos,
+                    n,
+                    !last,
+                );
+                x_cm = quant_band_stereo(
+                    &mut ctx,
+                    x_slice,
+                    y_slice,
+                    n,
+                    b,
+                    b_blocks,
+                    lb,
+                    lm,
+                    lb_out,
+                    1.0,
+                    x_cm | y_cm,
+                );
+            }
             y_cm = x_cm;
         } else {
             let (lb, lb_out) = prepare_lowband_views(
