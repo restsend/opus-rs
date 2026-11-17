@@ -154,12 +154,12 @@ impl<'a> DredEnc<'a> {
         assert!(up * in_len <= MAX_DOWNMIX_BUFFER);
         if self.channels == 1 {
             for i in 0..in_len {
-                downmix[up * i] = float2int16(up as f32 * pcm[i]) as f32 + 1e-30;
+                downmix[up * i] = up as f32 * float2int16(pcm[i]) as f32 + 1e-30;
             }
         } else {
             for i in 0..in_len {
-                let x = (0.5 * up as f64 * (pcm[2 * i] + pcm[2 * i + 1]) as f64) as f32;
-                downmix[up * i] = float2int16(x) as f32 + 1e-30;
+                let x = (0.5 * (pcm[2 * i] + pcm[2 * i + 1]) as f64) as f32;
+                downmix[up * i] = up as f32 * float2int16(x) as f32 + 1e-30;
             }
         }
         let n = up * in_len;
