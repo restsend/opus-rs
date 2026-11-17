@@ -266,23 +266,28 @@ impl CeltDecoder {
         }
         #[cfg(not(feature = "deep-plc"))]
         let _ = lpcnet;
-        // Excitation of two pitch periods, to see whether the signal decays.
-        let exc_length = 2 * pitch_index;
-        let buf_len = MAX_PERIOD.max(exc_length);
+        // Excitation of two pitch periods, to see whether the signal
+        // decays, and at least MAX_PERIOD to look for pitch multiples.
+        let exc_length = MAX_PERIOD.max(2 * pitch_index);
+        // sig[i] here is libopus's sig[i - CELT_LPC_ORDER].
+        let mut sig = [0.0f32; 2 * PLC_PITCH_LAG_MAX + LPC_ORDER];
+        let sig = &mut sig[..exc_length + LPC_ORDER];
+        let mut exc = [0.0f32; 2 * PLC_PITCH_LAG_MAX];
+        let exc = &mut exc[..exc_length];
 
         for c in 0..cc {
+            let mut pitch_index = pitch_index;
             let buf = &mut self.decode_mem[c * mem_len..(c + 1) * mem_len];
             let lpc = &mut self.plc_lpc[c * LPC_ORDER..(c + 1) * LPC_ORDER];
-            // exc[i] here is libopus's exc[i - CELT_LPC_ORDER].
-            let mut exc = [0.0f32; 2 * PLC_PITCH_LAG_MAX + LPC_ORDER];
-            let exc = &mut exc[..buf_len + LPC_ORDER];
-            exc.copy_from_slice(&buf[DECODE_BUFFER_SIZE - buf_len - LPC_ORDER..DECODE_BUFFER_SIZE]);
+            sig.copy_from_slice(
+                &buf[DECODE_BUFFER_SIZE - exc_length - LPC_ORDER..DECODE_BUFFER_SIZE],
+            );
 
             if first {
                 // LPC of the last MAX_PERIOD samples, to work in the excitation domain.
                 let mut ac = [0.0f32; LPC_ORDER + 1];
                 autocorr(
-                    &exc[LPC_ORDER + buf_len - MAX_PERIOD..],
+                    &sig[LPC_ORDER + exc_length - MAX_PERIOD..],
                     &mut ac,
                     Some(window),
                     overlap,
@@ -298,37 +303,45 @@ impl CeltDecoder {
                 celt_lpc(lpc, &ac, LPC_ORDER);
             }
 
-            // Whiten the last exc_length samples (celt_fir with history).
-            let start = LPC_ORDER + buf_len - exc_length;
-            let mut fir = [0.0f32; 2 * PLC_PITCH_LAG_MAX];
-            for (i, out) in fir.iter_mut().enumerate().take(exc_length) {
-                let mut sum = exc[start + i];
+            // The excitation: sig whitened (celt_fir with history).
+            for (i, out) in exc.iter_mut().enumerate() {
+                let mut sum = sig[LPC_ORDER + i];
                 for k in (0..LPC_ORDER).rev() {
-                    sum += lpc[k] * exc[start + i - k - 1];
+                    sum += lpc[k] * sig[LPC_ORDER + i - k - 1];
                 }
                 *out = sum;
             }
-            exc[start..start + exc_length].copy_from_slice(&fir[..exc_length]);
+            // 1 plus the energy of the pitch period of exc at `from`.
+            let energy = |from: usize| {
+                exc[from..from + pitch_index]
+                    .iter()
+                    .fold(1.0f32, |e, &x| e + x * x)
+            };
 
             // How fast the waveform decays, so concealment adds no energy.
             // (The float build's SHR32 is a no-op: no halving of E1.)
-            let decay = {
-                let (mut e1, mut e2) = (1.0f32, 1.0f32);
-                let decay_length = exc_length >> 1;
-                for i in 0..decay_length {
-                    let a = exc[LPC_ORDER + buf_len - decay_length + i];
-                    e1 += a * a;
-                    let b = exc[LPC_ORDER + buf_len - 2 * decay_length + i];
-                    e2 += b * b;
-                }
-                (e1.min(e2) / e2).sqrt()
-            };
+            let e1 = energy(exc_length - pitch_index);
+            let e2 = energy(exc_length - 2 * pitch_index);
+            let decay = (e1.min(e2) / e2).sqrt();
+
+            // Repeat the largest multiple of the pitch period whose periods
+            // all stay within 6 dB of the last one, so a short period does
+            // not repeat many times.
+            let e0 = energy(exc_length - pitch_index);
+            let k_max = exc_length / pitch_index;
+            let k = (2..=k_max)
+                .find(|&k| {
+                    let ek = energy(exc_length - k * pitch_index);
+                    ek < 0.25 * e0 || e0 < 0.25 * ek
+                })
+                .unwrap_or(k_max + 1);
+            pitch_index *= k - 1;
 
             // Make room for the new frame; the old overlap is not used.
             buf.copy_within(n..DECODE_BUFFER_SIZE, 0);
 
             // Extrapolate one period at a time, each one decayed further.
-            let extrapolation_offset = buf_len - pitch_index;
+            let extrapolation_offset = exc_length - pitch_index;
             let extrapolation_len = n + overlap;
             let mut attenuation = fade * decay;
             let mut s1 = 0.0f32;
@@ -338,10 +351,9 @@ impl CeltDecoder {
                     j -= pitch_index;
                     attenuation *= decay;
                 }
-                buf[DECODE_BUFFER_SIZE - n + i] =
-                    attenuation * exc[LPC_ORDER + extrapolation_offset + j];
+                buf[DECODE_BUFFER_SIZE - n + i] = attenuation * exc[extrapolation_offset + j];
                 // Energy of the decoded signal whose excitation is copied.
-                let tmp = buf[DECODE_BUFFER_SIZE - buf_len - n + extrapolation_offset + j];
+                let tmp = sig[LPC_ORDER + extrapolation_offset + j];
                 s1 += tmp * tmp;
                 j += 1;
             }
