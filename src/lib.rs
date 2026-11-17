@@ -2132,7 +2132,8 @@ impl OpusEncoder {
         // it later behind the delayed history; SILK codes it rounded to 16
         // bits (enc_API.c, RES2INT16), except for VoIP (below). libopus
         // filters every frame, so the filter state stays current through
-        // CELT-only frames.
+        // CELT-only frames, and RestrictedLowDelay's CELT input is
+        // DC-rejected too (without the delay prefix).
         //
         // For the i16 entry point the frame is converted once into a scratch
         // buffer with the exact per-sample scaling a caller of `encode()`
@@ -2146,7 +2147,7 @@ impl OpusEncoder {
                 *dst = src as f32 / 32768.0;
             }
         }
-        if self.delay_compensation > 0 {
+        {
             let input_f32: &[f32] = match input {
                 PcmInput::F32(samples) => samples,
                 PcmInput::I16(_) => state_ref(&self.buf_f32_frame),
@@ -2780,13 +2781,6 @@ impl OpusEncoder {
             }
         }
 
-        // Float view of the current frame for the CELT pipeline (converted
-        // above for the i16 entry point).
-        let input_f32: &[f32] = match input {
-            PcmInput::F32(samples) => samples,
-            PcmInput::I16(_) => state_ref(&self.buf_f32_frame),
-        };
-
         // Build the CELT input exactly like C `opus_encode_frame_native`:
         //   pcm_buf = [delay-compensation prefix from ring]
         //             [dc_reject / hp_cutoff'd current frame]
@@ -2796,7 +2790,7 @@ impl OpusEncoder {
         // delay line moves on in every mode, so the CELT input after a
         // SILK-only stretch starts from recent history, and the redundancy
         // frames of a SILK-only packet code it.
-        if has_delay {
+        {
             // The filtered frame is in place since before SILK ran; the
             // history and the delay line move on here, after the prefills
             // read the delay buffer.
@@ -2901,23 +2895,12 @@ impl OpusEncoder {
 
             // 5. deinterleave pcm_buf[0..frame_size*ch] (interleaved) to
             //    channel-major for the Rust CELT encoder.
-            let celt_input: &[f32] = if has_delay {
+            let celt_input: &[f32] = {
                 let n = frame_size * ch;
                 self.buf_celt_input.resize(n, 0.0);
                 for i in 0..frame_size {
                     for c in 0..ch {
                         self.buf_celt_input[c * frame_size + i] = self.buf_celt_pcm[i * ch + c];
-                    }
-                }
-                state_ref(&self.buf_celt_input)
-            } else if ch == 1 {
-                input_f32
-            } else {
-                let n = frame_size * ch;
-                self.buf_celt_input.resize(n, 0.0);
-                for i in 0..frame_size {
-                    for c in 0..ch {
-                        self.buf_celt_input[c * frame_size + i] = input_f32[i * ch + c];
                     }
                 }
                 state_ref(&self.buf_celt_input)

@@ -56,3 +56,10 @@ fn identical(ch: usize, ms: usize, kbps: i32, rc: i32, sig: &str, frames: usize)
     unsafe { opus_encoder_destroy(r) };
     out
 }
+
+/// RestrictedLowDelay DC-rejects its input like the other applications
+/// (opus_encoder.c:2008).
+#[test]
+fn rld_input_is_dc_rejected() {
+    assert_eq!(identical(1, 20, 24, 2, "sine", 2), [true, true]);
+}
