@@ -1207,6 +1207,9 @@ pub struct CeltEncoder {
     old_band_e3: FixedVec<f32, CELT_NB_X_CH>,
     last_band_log_e: FixedVec<f32, CELT_NB_X_CH>,
     delayed_intra: f32,
+    /// libopus `energyError`: the last frame's fine-quantisation error,
+    /// clamped to +-0.5, which biases stable bands' coarse energy.
+    energy_error: [f32; CELT_NB_X_CH],
     lsb_depth: i32,
     overlap_max: f32,
     bitrate: i32,
@@ -1770,6 +1773,7 @@ impl CeltEncoder {
             old_band_e3: FixedVec::from_value(0.0, nb_x_ch),
             last_band_log_e: FixedVec::from_value(0.0, nb_x_ch),
             delayed_intra: 0.0,
+            energy_error: [0.0; CELT_NB_X_CH],
             lsb_depth: 24,
             overlap_max: 0.0,
             bitrate: OPUS_BITRATE_MAX,
@@ -1847,6 +1851,7 @@ impl CeltEncoder {
         self.old_band_e3.fill(-28.0);
         self.last_band_log_e.fill(0.0);
         self.delayed_intra = 1.0;
+        self.energy_error = [0.0; CELT_NB_X_CH];
         self.overlap_max = 0.0;
         self.vbr_reservoir = 0;
         self.vbr_drift = 0;
@@ -2482,6 +2487,16 @@ impl CeltEncoder {
             raw[..end].copy_from_slice(&tf_res[..end]);
             raw
         };
+        // When the energy is stable, bias the coarse energy towards the
+        // previous error (celt_encoder.c:2283-2294).
+        for c in 0..channels {
+            for i in start_band..end {
+                let k = i + c * nb_ebands;
+                if (band_log_e[k] - self.old_band_e[k]).abs() < 2.0 {
+                    band_log_e[k] -= 0.25 * self.energy_error[k];
+                }
+            }
+        }
         dumpf!("bandLogE_q", band_log_e);
         // Coarse energy after the dynalloc and tf analyses, which see the
         // previous frame's energies (celt_encoder.c:2248-2297).
@@ -2871,6 +2886,7 @@ impl CeltEncoder {
             rc,
             channels,
         );
+        self.energy_error = [0.0; CELT_NB_X_CH];
 
         self.w_collapse_masks[..nb_ebands * channels].fill(0);
         let collapse_masks = &mut self.w_collapse_masks[..nb_ebands * channels];
@@ -2931,6 +2947,12 @@ impl CeltEncoder {
             rc,
             channels,
         );
+        for c in 0..channels {
+            for i in start_band..end {
+                let k = i + c * nb_ebands;
+                self.energy_error[k] = error[k].clamp(-0.5, 0.5);
+            }
+        }
 
         if silence {
             for v in self.old_band_e[..channels * nb_ebands].iter_mut() {

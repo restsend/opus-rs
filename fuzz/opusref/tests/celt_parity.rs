@@ -141,3 +141,10 @@ fn band_log_energy_matches_libopus() {
 fn dynalloc_reads_the_previous_frame_energy() {
     assert_eq!(identical(1, 2.5, 192, 1, "noise", 2), [true, true]);
 }
+
+/// Stable bands bias the coarse energy by a quarter of the last frame's
+/// fine-energy error (celt_encoder.c:2283-2294).
+#[test]
+fn coarse_energy_follows_the_previous_error() {
+    assert_eq!(identical(1, 20.0, 32, 1, "noise", 5), [true; 5]);
+}
