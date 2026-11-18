@@ -160,12 +160,12 @@ fn forced() -> Arch {
     }
 }
 
-#[cfg(test)]
+/// Tests of the x86 levels.
+#[cfg(all(test, any(target_arch = "x86", target_arch = "x86_64")))]
 mod tests {
     use super::*;
 
     /// Every level above `Scalar` has the token its SSE2 kernels take.
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     #[test]
     fn levels_above_scalar_have_sse2() {
         if Arch::native() > Arch::Scalar {
