@@ -57,6 +57,8 @@ fn discriminant(op: &Op) -> u8 {
         Op::DredProcess => 8,
         #[cfg(feature = "dnn")]
         Op::DredDecode { .. } => 9,
+        #[cfg(feature = "dnn")]
+        Op::DredBurst { .. } => 10,
     }
 }
 
@@ -150,10 +152,30 @@ enum Op {
     /// with the DRED data.
     #[cfg(feature = "dnn")]
     DredDecode {
-        offset: i32,
+        offset: DredOffset,
         size: Size,
         int16: bool,
     },
+    /// A packet of a libopus VoIP encoder with DRED (24 kbit/s per channel,
+    /// 20 % expected loss, DRED duration `dur % 104 + 1` from its first
+    /// use), after `warm % 52` more 20 ms frames encoded and dropped, so
+    /// the packet carries DRED with up to 26 latents; decoded as a packet.
+    #[cfg(feature = "dnn")]
+    DredBurst {
+        signal: Gen,
+        dur: u8,
+        warm: u8,
+    },
+}
+
+/// The offset of `Op::DredDecode`.
+#[cfg(feature = "dnn")]
+#[derive(Arbitrary, Debug)]
+enum DredOffset {
+    /// Any offset in samples.
+    Raw(i32),
+    /// A fraction (of 65535) of the samples the last parse covered.
+    Parsed(u16),
 }
 
 /// A decoder control and its libopus counterpart.
@@ -194,7 +216,7 @@ impl Format {
 /// `NewDecoder` and, in its upper half, `Set`.
 impl<'a> Arbitrary<'a> for Op {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        const DERIVED: u64 = if cfg!(feature = "dnn") { 8 } else { 5 };
+        const DERIVED: u64 = if cfg!(feature = "dnn") { 9 } else { 5 };
         let x = u32::arbitrary(u)?;
         if x >= 0xf800_0000 {
             return Ok(Op::Set(Arbitrary::arbitrary(u)?));
@@ -234,6 +256,12 @@ impl<'a> Arbitrary<'a> for Op {
                 offset: Arbitrary::arbitrary(u)?,
                 size: Arbitrary::arbitrary(u)?,
                 int16: Arbitrary::arbitrary(u)?,
+            },
+            #[cfg(feature = "dnn")]
+            8 => Op::DredBurst {
+                signal: Arbitrary::arbitrary(u)?,
+                dur: Arbitrary::arbitrary(u)?,
+                warm: Arbitrary::arbitrary(u)?,
             },
             _ => Op::Reset,
         })
@@ -406,6 +434,29 @@ fn run(inp: Input) -> Result<(), Finding> {
                 });
                 generated = Op::Decode {
                     pkt: encode(e, &mut synth, fs, ch, signal, *kbps, *ms, *force),
+                    size: Size::Max,
+                };
+                &generated
+            }
+            #[cfg(feature = "dnn")]
+            Op::DredBurst { signal, dur, warm } => {
+                let e = dred.enc.get_or_insert_with(|| {
+                    let mut e = RefEnc::new(fs, ch, 2048);
+                    e.ctl(opusref::SET_BITRATE, 24000 * ch as i32);
+                    e.ctl(opusref::SET_PACKET_LOSS_PERC, 20);
+                    e.ctl(4050, (dur % 104) as i32 + 1);
+                    e
+                });
+                let frame = fs as usize / 50;
+                let mut pcm = vec![0f32; frame * ch];
+                let mut pkt = [0u8; 1500];
+                let mut n = 0;
+                for _ in 0..=warm % 52 {
+                    synth.fill(signal, &mut pcm, ch, 0, 1);
+                    n = e.encode(&pcm, frame, &mut pkt);
+                }
+                generated = Op::Decode {
+                    pkt: pkt[..n.max(0) as usize].to_vec(),
                     size: Size::Max,
                 };
                 &generated
@@ -715,6 +766,10 @@ struct Dred {
     si: opus_rs::dred::OpusDred,
     c: *mut opusref::dnn_dred_api::OpusDREDDecoder,
     cd: Box<opusref::dnn_dred_api::OpusDRED>,
+    /// The samples libopus's last parse covered.
+    samples: i32,
+    /// The encoder of `Op::DredBurst`.
+    enc: Option<RefEnc>,
 }
 
 #[cfg(feature = "dnn")]
@@ -733,6 +788,8 @@ impl Dred {
             si,
             c,
             cd: opusref::dnn_dred_api::OpusDRED::zeroed(),
+            samples: 0,
+            enc: None,
         }
     }
 }
@@ -854,6 +911,7 @@ fn dred_op(
                     d.cd.nb_latents
                 );
             }
+            d.samples = r_c.max(0);
             ijon_set(hash(&(
                 "dred-parse",
                 bucket(d.cd.nb_latents as i64),
@@ -906,6 +964,10 @@ fn dred_op(
             size,
             int16,
         } => {
+            let offset = &match *offset {
+                DredOffset::Raw(o) => o,
+                DredOffset::Parsed(f) => (d.samples as i64 * f as i64 / 65535) as i32,
+            };
             let frame = match *size {
                 Size::Max => fs as usize * 120 / 1000,
                 Size::Ms(m) => (m as usize % 48 + 1) * fs as usize / 400,
@@ -976,6 +1038,10 @@ fn dred_op(
                     "dred decode result",
                     "op {k}: SIMD {r_si:?}, scalar {r_sc:?}"
                 );
+            }
+            // Concealments that used processed DRED, by latent count.
+            if d.cd.process_stage == 2 {
+                ijon_set(hash(&("dred-decoded", d.cd.nb_latents)));
             }
             let (rr, rs) = (refd.final_range(), scalar.final_range());
             if rr != rs {

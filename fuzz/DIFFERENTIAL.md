@@ -221,3 +221,9 @@ decoded signal they start from is; any difference before a loss grows
 through the networks, so the decoder tolerances then do not hold for
 concealed frames. The directed tests are `opusref/tests/dnn_*.rs`
 (`cargo test -p opusref --features dnn`).
+
+With `--features dnn`, `diff_decoder` also receives DRED: parses of the
+last packet, of raw bytes and of garbled packets, the processing, and
+concealment with DRED at offsets inside the parsed range (`DredBurst`
+makes packets with DRED from a libopus encoder; `OFZ_DEBUG` prints each
+DRED call's results).
