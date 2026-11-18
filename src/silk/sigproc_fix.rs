@@ -184,6 +184,7 @@ pub fn silk_autocorr(
     }
 
     let n = input_data_size;
+    let correlation_count = correlation_count.min(n);
     let mut shift: i32;
 
     let input_data = &input_data[..n];

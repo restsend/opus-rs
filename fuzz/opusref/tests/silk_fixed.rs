@@ -23,8 +23,18 @@ fn prediction_disabled_matches_fixed_point_libopus() {
 }
 
 mod sigproc {
+    use std::os::raw::c_int;
+
     unsafe extern "C" {
         fn silk_schur(rc_q15: *mut i16, c: *const i32, order: i32) -> i32;
+        fn silk_autocorr(
+            results: *mut i32,
+            scale: *mut c_int,
+            input: *const i16,
+            input_size: c_int,
+            correlation_count: c_int,
+            arch: c_int,
+        );
     }
 
     struct Rng(u32);
@@ -62,6 +72,38 @@ mod sigproc {
                 "c {:?} order {order}",
                 &c[..=order]
             );
+        }
+    }
+
+    /// silk_autocorr against libopus's (silk/fixed/autocorr_FIX.c), also
+    /// with more correlations than input samples.
+    #[test]
+    fn autocorr_matches_libopus() {
+        let mut r = Rng(2);
+        for size in 1..=40usize {
+            for count in 1..=40usize {
+                let x: Vec<i16> = (0..size)
+                    .map(|_| (r.next() >> 16) as i16 >> (r.next() % 8))
+                    .collect();
+                let (mut res_r, mut res_c) = ([0i32; 40], [0i32; 40]);
+                let (mut scale_r, mut scale_c) = (0i32, 0 as c_int);
+                opus_rs::silk::silk_autocorr(&mut res_r, &mut scale_r, &x, size, count);
+                unsafe {
+                    silk_autocorr(
+                        res_c.as_mut_ptr(),
+                        &mut scale_c,
+                        x.as_ptr(),
+                        size as c_int,
+                        count as c_int,
+                        0,
+                    )
+                };
+                assert_eq!(
+                    (scale_r, res_r),
+                    (scale_c, res_c),
+                    "size {size} count {count}"
+                );
+            }
         }
     }
 }
