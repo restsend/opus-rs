@@ -52,25 +52,16 @@ macro_rules! free_fns {
 type P = *mut c_void;
 
 zero_size! {
-    fn opus_multistream_encoder_get_size(streams: c_int, coupled_streams: c_int);
-    fn opus_multistream_surround_encoder_get_size(channels: c_int, mapping_family: c_int);
     fn opus_projection_ambisonics_encoder_get_size(channels: c_int, mapping_family: c_int);
     fn opus_projection_decoder_get_size(channels: c_int, streams: c_int, coupled_streams: c_int);
 }
 
 unimplemented_create! {
-    fn opus_multistream_encoder_create(fs: i32, channels: c_int, streams: c_int, coupled_streams: c_int, mapping: P, application: c_int);
-    fn opus_multistream_surround_encoder_create(fs: i32, channels: c_int, mapping_family: c_int, streams: P, coupled_streams: P, mapping: P, application: c_int);
     fn opus_projection_ambisonics_encoder_create(fs: i32, channels: c_int, mapping_family: c_int, streams: P, coupled_streams: P, application: c_int);
     fn opus_projection_decoder_create(fs: i32, channels: c_int, streams: c_int, coupled_streams: c_int, demixing_matrix: P, demixing_matrix_size: i32);
 }
 
 unimplemented_fns! {
-    fn opus_multistream_encoder_init(st: P, fs: i32, channels: c_int, streams: c_int, coupled_streams: c_int, mapping: P, application: c_int) -> c_int;
-    fn opus_multistream_surround_encoder_init(st: P, fs: i32, channels: c_int, mapping_family: c_int, streams: P, coupled_streams: P, mapping: P, application: c_int) -> c_int;
-    fn opus_multistream_encode(st: P, pcm: P, frame_size: c_int, data: P, max_data_bytes: i32) -> c_int;
-    fn opus_multistream_encode24(st: P, pcm: P, frame_size: c_int, data: P, max_data_bytes: i32) -> c_int;
-    fn opus_multistream_encode_float(st: P, pcm: P, frame_size: c_int, data: P, max_data_bytes: i32) -> c_int;
     fn opus_projection_ambisonics_encoder_init(st: P, fs: i32, channels: c_int, mapping_family: c_int, streams: P, coupled_streams: P, application: c_int) -> c_int;
     fn opus_projection_encode(st: P, pcm: P, frame_size: c_int, data: P, max_data_bytes: i32) -> c_int;
     fn opus_projection_encode24(st: P, pcm: P, frame_size: c_int, data: P, max_data_bytes: i32) -> c_int;
@@ -82,7 +73,6 @@ unimplemented_fns! {
 }
 
 free_fns! {
-    fn opus_multistream_encoder_destroy;
     fn opus_projection_encoder_destroy;
     fn opus_projection_decoder_destroy;
 }
@@ -113,11 +103,6 @@ unimplemented_fns! {
 free_fns! {
     fn opus_dred_decoder_destroy;
     fn opus_dred_free;
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn opus_multistream_encoder_ctl(_st: P, _request: c_int, _args: ...) -> c_int {
-    OPUS_UNIMPLEMENTED
 }
 
 #[unsafe(no_mangle)]

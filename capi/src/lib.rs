@@ -95,6 +95,7 @@ pub(crate) mod req {
     pub const SET_IGNORE_EXTENSIONS: i32 = 4058;
     pub const GET_IGNORE_EXTENSIONS: i32 = 4059;
     pub const SET_FORCE_MODE: i32 = 11002;
+    pub const MULTISTREAM_GET_ENCODER_STATE: i32 = 5120;
     pub const MULTISTREAM_GET_DECODER_STATE: i32 = 5122;
 }
 
@@ -265,6 +266,26 @@ pub(crate) unsafe fn create<T>(size: c_int, error: *mut c_int, init: impl FnOnce
 /// libopus's `align()` of state sizes.
 pub(crate) const fn align_size(size: usize) -> usize {
     size.div_ceil(16) * 16
+}
+
+/// The size of a flat C state: a header `H`, then `n` values `T` from
+/// `align_size(size_of::<H>())`, as libopus lays out its multistream
+/// states.
+pub(crate) const fn block_size<H, T>(n: usize) -> usize {
+    align_size(size_of::<H>()) + n * size_of::<T>()
+}
+
+/// The `n` values `T` after the header of the flat state `st`.
+///
+/// # Safety
+///
+/// `st` points to `block_size::<H, T>(n)` bytes with malloc's alignment,
+/// which `T`'s alignment does not exceed, and nothing else refers to the
+/// values while the slice lives.
+pub(crate) unsafe fn tail<'a, H, T>(st: *mut H, n: usize) -> &'a mut [T] {
+    const { assert!(align_of::<T>() <= 16) };
+    // SAFETY: the values start inside the block, at a multiple of 16.
+    unsafe { core::slice::from_raw_parts_mut(st.cast::<u8>().add(align_size(size_of::<H>())).cast::<T>(), n) }
 }
 
 #[unsafe(no_mangle)]
