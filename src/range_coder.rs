@@ -733,20 +733,18 @@ impl RangeCoder {
     #[cfg(feature = "std")]
     pub fn finish(&mut self) -> Vec<u8> {
         self.done();
-
-        let extra_end = if self.nend_bits > 0 && self.end_offs == 0 {
-            1
+        let (offs, storage) = (self.offs as usize, self.storage as usize);
+        let end = storage - self.end_offs as usize;
+        // done() ORs the raw bits short of a byte into buf[end - 1]
+        // (ec_enc_done); keep it when it lies past the range-coded bytes.
+        let tail = if self.nend_bits & 7 != 0 && offs < end {
+            end - 1
         } else {
-            0
+            end
         };
-        let mut result = Vec::with_capacity((self.offs + self.end_offs + extra_end) as usize);
-        result.extend_from_slice(&self.buf[0..self.offs as usize]);
-        if extra_end > 0 {
-            result.push(self.buf[(self.storage - 1) as usize]);
-        }
-        result.extend_from_slice(
-            &self.buf[(self.storage - self.end_offs) as usize..self.storage as usize],
-        );
+        let mut result = Vec::with_capacity(offs + storage - tail);
+        result.extend_from_slice(&self.buf[..offs]);
+        result.extend_from_slice(&self.buf[tail..storage]);
         result
     }
 }
@@ -850,6 +848,23 @@ mod tests {
         assert_eq!(b2, 5);
         assert_eq!(b3, 7);
         assert_eq!(b4, 0);
+    }
+
+    /// ec_enc_done ORs the bits short of a byte into
+    /// buf[storage-end_offs-1] (entenc.c:287-304); finish() keeps that
+    /// byte also when whole raw-bit bytes follow it.
+    #[test]
+    fn finish_keeps_the_partial_raw_bit_byte() {
+        for bits in [9u32, 13, 17, 20, 25] {
+            let v = (1u32 << bits) - 1;
+            let mut enc = RangeCoder::new_encoder(1024);
+            enc.encode_bit_logp(true, 1);
+            enc.enc_bits(v, bits);
+            let data = enc.finish();
+            let mut dec = RangeCoder::new_decoder(&data);
+            assert!(dec.decode_bit_logp(1));
+            assert_eq!(dec.dec_bits(bits), v, "{bits} bits");
+        }
     }
 
     #[test]
