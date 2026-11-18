@@ -440,13 +440,10 @@ impl SilkResampler {
                 }
             }
             ResamplerMode::IirFir => {
-                self.iir_fir_resample(
-                    out,
-                    &self.delay_buf.clone(),
-                    self.fs_in_khz,
-                    &input[n_samples as usize..],
-                    in_len - self.fs_in_khz,
-                );
+                let delay_buf = self.delay_buf;
+                let n = self.iir_fir_resample(out, &delay_buf[..self.fs_in_khz as usize]);
+                let rest = (in_len - self.fs_in_khz) as usize;
+                self.iir_fir_resample(&mut out[n..], &input[n_samples as usize..][..rest]);
             }
             ResamplerMode::DownFir => {
                 self.down_fir_resample(
@@ -572,180 +569,48 @@ impl SilkResampler {
         }
     }
 
-    fn iir_fir_resample(
-        &mut self,
-        out: &mut [i16],
-        first_block: &[i16],
-        first_len: i32,
-        rest: &[i16],
-        rest_len: i32,
-    ) {
-        const MAX_BATCH_IN: usize = 480;
-        const MAX_BUF: usize = 2 * MAX_BATCH_IN + RESAMPLER_ORDER_FIR_12;
-
-        let mut out_idx = 0usize;
-
-        let mut in_idx = 0usize;
-        let mut remaining = first_len;
-
-        while remaining > 0 {
-            let n_samples_in = remaining.min(self.batch_size) as usize;
-
-            let buf_len = 2 * n_samples_in + RESAMPLER_ORDER_FIR_12;
-            let mut buf_arr = [0i16; MAX_BUF];
-            let buf = &mut buf_arr[..buf_len];
-
-            buf[..RESAMPLER_ORDER_FIR_12].copy_from_slice(&self.s_fir);
-
+    /// libopus `silk_resampler_private_IIR_FIR`: 2x upsampling, then the
+    /// 8-tap fractional interpolation (`silk_resampler_private_IIR_FIR_INTERPOL`)
+    /// of `input`, in batches. Returns the number of output samples written
+    /// (at most `out.len()`).
+    fn iir_fir_resample(&mut self, out: &mut [i16], input: &[i16]) -> usize {
+        const MAX_BUF: usize = 2 * 480 + RESAMPLER_ORDER_FIR_12;
+        let mut buf = [0i16; MAX_BUF];
+        buf[..RESAMPLER_ORDER_FIR_12].copy_from_slice(&self.s_fir);
+        let mut n_out = 0;
+        for block in input.chunks(self.batch_size as usize) {
+            let n = block.len();
             silk_resampler_private_up2_hq(
                 &mut self.s_iir,
                 &mut buf[RESAMPLER_ORDER_FIR_12..],
-                &first_block[in_idx..in_idx + n_samples_in],
-                n_samples_in as i32,
+                block,
+                n as i32,
             );
-
-            let max_index_q16 = (n_samples_in as i32) << 17;
-            let index_increment_q16 = self.inv_ratio_q16;
-
+            let max_index_q16 = (n as i32) << 17;
             let mut index_q16 = 0i32;
             while index_q16 < max_index_q16 {
-                let table_index = silk_smulwb(index_q16 & 0xFFFF, 12) as usize;
-                let buf_idx = (index_q16 >> 16) as usize;
-
-                let mut res_q15 = silk_smulbb(
-                    buf[buf_idx] as i32,
-                    SILK_RESAMPLER_FRAC_FIR_12[table_index][0] as i32,
+                let t = silk_smulwb(index_q16 & 0xFFFF, 12) as usize;
+                let (c0, c1) = (
+                    &SILK_RESAMPLER_FRAC_FIR_12[t],
+                    &SILK_RESAMPLER_FRAC_FIR_12[11 - t],
                 );
-                res_q15 = silk_smlabb(
-                    res_q15,
-                    buf[buf_idx + 1] as i32,
-                    SILK_RESAMPLER_FRAC_FIR_12[table_index][1] as i32,
-                );
-                res_q15 = silk_smlabb(
-                    res_q15,
-                    buf[buf_idx + 2] as i32,
-                    SILK_RESAMPLER_FRAC_FIR_12[table_index][2] as i32,
-                );
-                res_q15 = silk_smlabb(
-                    res_q15,
-                    buf[buf_idx + 3] as i32,
-                    SILK_RESAMPLER_FRAC_FIR_12[table_index][3] as i32,
-                );
-                res_q15 = silk_smlabb(
-                    res_q15,
-                    buf[buf_idx + 4] as i32,
-                    SILK_RESAMPLER_FRAC_FIR_12[11 - table_index][3] as i32,
-                );
-                res_q15 = silk_smlabb(
-                    res_q15,
-                    buf[buf_idx + 5] as i32,
-                    SILK_RESAMPLER_FRAC_FIR_12[11 - table_index][2] as i32,
-                );
-                res_q15 = silk_smlabb(
-                    res_q15,
-                    buf[buf_idx + 6] as i32,
-                    SILK_RESAMPLER_FRAC_FIR_12[11 - table_index][1] as i32,
-                );
-                res_q15 = silk_smlabb(
-                    res_q15,
-                    buf[buf_idx + 7] as i32,
-                    SILK_RESAMPLER_FRAC_FIR_12[11 - table_index][0] as i32,
-                );
-
-                if out_idx < out.len() {
-                    out[out_idx] = silk_sat16(silk_rshift_round(res_q15, 15)) as i16;
-                    out_idx += 1;
+                let taps = [c0[0], c0[1], c0[2], c0[3], c1[3], c1[2], c1[1], c1[0]];
+                let x: &[i16; 8] = buf[(index_q16 >> 16) as usize..][..8].try_into().unwrap();
+                let mut res_q15 = silk_smulbb(x[0] as i32, taps[0] as i32);
+                for k in 1..8 {
+                    res_q15 = silk_smlabb(res_q15, x[k] as i32, taps[k] as i32);
                 }
-                index_q16 += index_increment_q16;
-            }
-
-            in_idx += n_samples_in;
-            remaining -= n_samples_in as i32;
-
-            self.s_fir
-                .copy_from_slice(&buf[2 * n_samples_in..2 * n_samples_in + RESAMPLER_ORDER_FIR_12]);
-        }
-
-        let mut in_idx = 0usize;
-        let mut remaining = rest_len;
-
-        while remaining > 0 {
-            let n_samples_in = remaining.min(self.batch_size) as usize;
-
-            let buf_len = 2 * n_samples_in + RESAMPLER_ORDER_FIR_12;
-            let mut buf_arr = [0i16; MAX_BUF];
-            let buf = &mut buf_arr[..buf_len];
-
-            buf[..RESAMPLER_ORDER_FIR_12].copy_from_slice(&self.s_fir);
-
-            silk_resampler_private_up2_hq(
-                &mut self.s_iir,
-                &mut buf[RESAMPLER_ORDER_FIR_12..],
-                &rest[in_idx..in_idx + n_samples_in],
-                n_samples_in as i32,
-            );
-
-            let max_index_q16 = (n_samples_in as i32) << 17;
-            let index_increment_q16 = self.inv_ratio_q16;
-
-            let mut index_q16 = 0i32;
-            while index_q16 < max_index_q16 {
-                let table_index = silk_smulwb(index_q16 & 0xFFFF, 12) as usize;
-                let buf_idx = (index_q16 >> 16) as usize;
-
-                let mut res_q15 = silk_smulbb(
-                    buf[buf_idx] as i32,
-                    SILK_RESAMPLER_FRAC_FIR_12[table_index][0] as i32,
-                );
-                res_q15 = silk_smlabb(
-                    res_q15,
-                    buf[buf_idx + 1] as i32,
-                    SILK_RESAMPLER_FRAC_FIR_12[table_index][1] as i32,
-                );
-                res_q15 = silk_smlabb(
-                    res_q15,
-                    buf[buf_idx + 2] as i32,
-                    SILK_RESAMPLER_FRAC_FIR_12[table_index][2] as i32,
-                );
-                res_q15 = silk_smlabb(
-                    res_q15,
-                    buf[buf_idx + 3] as i32,
-                    SILK_RESAMPLER_FRAC_FIR_12[table_index][3] as i32,
-                );
-                res_q15 = silk_smlabb(
-                    res_q15,
-                    buf[buf_idx + 4] as i32,
-                    SILK_RESAMPLER_FRAC_FIR_12[11 - table_index][3] as i32,
-                );
-                res_q15 = silk_smlabb(
-                    res_q15,
-                    buf[buf_idx + 5] as i32,
-                    SILK_RESAMPLER_FRAC_FIR_12[11 - table_index][2] as i32,
-                );
-                res_q15 = silk_smlabb(
-                    res_q15,
-                    buf[buf_idx + 6] as i32,
-                    SILK_RESAMPLER_FRAC_FIR_12[11 - table_index][1] as i32,
-                );
-                res_q15 = silk_smlabb(
-                    res_q15,
-                    buf[buf_idx + 7] as i32,
-                    SILK_RESAMPLER_FRAC_FIR_12[11 - table_index][0] as i32,
-                );
-
-                if out_idx < out.len() {
-                    out[out_idx] = silk_sat16(silk_rshift_round(res_q15, 15)) as i16;
-                    out_idx += 1;
+                if let Some(o) = out.get_mut(n_out) {
+                    *o = silk_sat16(silk_rshift_round(res_q15, 15)) as i16;
+                    n_out += 1;
                 }
-                index_q16 += index_increment_q16;
+                index_q16 += self.inv_ratio_q16;
             }
-
-            in_idx += n_samples_in;
-            remaining -= n_samples_in as i32;
-
-            self.s_fir
-                .copy_from_slice(&buf[2 * n_samples_in..2 * n_samples_in + RESAMPLER_ORDER_FIR_12]);
+            // The filter history for the next batch.
+            buf.copy_within(2 * n..2 * n + RESAMPLER_ORDER_FIR_12, 0);
         }
+        self.s_fir.copy_from_slice(&buf[..RESAMPLER_ORDER_FIR_12]);
+        n_out
     }
 }
 
