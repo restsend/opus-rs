@@ -1681,6 +1681,13 @@ fn tone_lpc(x: &[f32], len: usize, delay: usize, r: [f32; 3], lpc: &mut [f32; 2]
     false
 }
 
+/// Whether 1 - lpc[0] z^-1 - lpc[1] z^-2 has complex roots: the float
+/// square plus the double product QCONST32(3.999999,29)*lpc[1] below 0,
+/// summed in double (celt_encoder.c:1383).
+fn tone_has_complex_roots(lpc: [f32; 2]) -> bool {
+    f64::from(lpc[0] * lpc[0]) + 3.999999 * f64::from(lpc[1]) < 0.0
+}
+
 /// The tone's frequency, acos(.5f*lpc[0])/delay (celt_encoder.c:1394):
 /// a double acos and division, rounded once to float.
 fn tone_freq(lpc0: f32, delay: usize) -> f32 {
@@ -1721,7 +1728,7 @@ fn tone_detect(in_buf: &[f32], cc: usize, n: usize, fs: i32) -> (f32, f32) {
         delay *= 2;
         fail = tone_lpc(x, n, delay, r[delay.trailing_zeros() as usize], &mut lpc);
     }
-    if !fail && lpc[0] * lpc[0] + 3.999999 * lpc[1] < 0.0 {
+    if !fail && tone_has_complex_roots(lpc) {
         (tone_freq(lpc[0], delay), -lpc[1])
     } else {
         (-1.0, 0.0)
@@ -4437,6 +4444,19 @@ mod tests {
             let lpc0 = 2.0 * f32::from_bits(x);
             assert_eq!(tone_freq(lpc0, delay).to_bits(), want, "{x} {delay}");
         }
+    }
+
+    /// The complex-root test sums in double (celt_encoder.c:1383); in
+    /// float these pairs sum to exactly 0.
+    #[test]
+    fn tone_roots_test_sums_in_double() {
+        for (l0, l1) in [(1066480345u32, 3198465355u32), (1070819174, 3207500703)] {
+            assert!(tone_has_complex_roots([
+                f32::from_bits(l0),
+                f32::from_bits(l1)
+            ]));
+        }
+        assert!(!tone_has_complex_roots([1.0, -0.25]));
     }
 
     /// tone_lpc limits lpc[0] to +-1.999999 only where num0/den reaches
