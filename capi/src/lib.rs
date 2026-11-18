@@ -21,6 +21,8 @@
 use core::ffi::{c_char, c_int};
 
 mod decoder;
+#[cfg(feature = "dred")]
+mod dred;
 mod encoder;
 mod multistream;
 mod packet;
@@ -81,6 +83,14 @@ pub(crate) mod req {
     pub const SET_PHASE_INVERSION_DISABLED: i32 = 4046;
     pub const GET_PHASE_INVERSION_DISABLED: i32 = 4047;
     pub const GET_IN_DTX: i32 = 4049;
+    #[cfg(feature = "dred")]
+    pub const SET_DRED_DURATION: i32 = 4050;
+    #[cfg(feature = "dred")]
+    pub const GET_DRED_DURATION: i32 = 4051;
+    #[cfg(feature = "osce")]
+    pub const SET_OSCE_BWE: i32 = 4054;
+    #[cfg(feature = "osce")]
+    pub const GET_OSCE_BWE: i32 = 4055;
     pub const SET_IGNORE_EXTENSIONS: i32 = 4058;
     pub const GET_IGNORE_EXTENSIONS: i32 = 4059;
     pub const SET_FORCE_MODE: i32 = 11002;

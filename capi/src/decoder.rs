@@ -40,6 +40,10 @@ pub(crate) unsafe fn ctl(st: &mut OpusDecoder, request: c_int, mut ap: impl CtlA
             req::GET_PHASE_INVERSION_DISABLED => get(ap, st.phase_inversion_disabled() as i32),
             req::SET_IGNORE_EXTENSIONS => set_bool(ap, |v| st.set_ignore_extensions(v)),
             req::GET_IGNORE_EXTENSIONS => get(ap, st.ignore_extensions() as i32),
+            #[cfg(feature = "osce")]
+            req::SET_OSCE_BWE => set_bool(ap, |v| st.set_osce_bwe(v)),
+            #[cfg(feature = "osce")]
+            req::GET_OSCE_BWE => get(ap, st.osce_bwe() as i32),
             _ => OPUS_UNIMPLEMENTED,
         }
     }

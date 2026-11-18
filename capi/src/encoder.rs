@@ -132,6 +132,10 @@ pub(crate) unsafe fn ctl(st: &mut OpusEncoder, request: c_int, mut ap: impl CtlA
                 set(mode, |m| st.set_force_mode(m))
             }
             req::GET_IN_DTX => get(ap, st.in_dtx() as i32),
+            #[cfg(feature = "dred")]
+            req::SET_DRED_DURATION => ok(st.set_dred_duration(ap.int())),
+            #[cfg(feature = "dred")]
+            req::GET_DRED_DURATION => get(ap, st.dred_duration()),
             _ => OPUS_UNIMPLEMENTED,
         }
     }

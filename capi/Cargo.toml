@@ -17,5 +17,12 @@ crate-type = ["cdylib", "staticlib"]
 # memcpy it.
 opus-rs = { path = "..", default-features = false, features = ["std"] }
 
+# libopus's configure options of the same names (all off by default, as in
+# libopus).
+[features]
+deep-plc = ["opus-rs/deep-plc"]
+dred = ["opus-rs/dred"]
+osce = ["opus-rs/osce"]
+
 [profile.release]
 debug = 1
