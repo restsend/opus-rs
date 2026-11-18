@@ -108,17 +108,3 @@ pub fn celt_fir(x: &[f32], num: &[f32], y: &mut [f32], n: usize, ord: usize, arc
         y[i] = sum;
     }
 }
-
-pub fn celt_iir(x: &[f32], den: &[f32], y: &mut [f32], n: usize, ord: usize, mem: &mut [f32]) {
-    for i in 0..n {
-        let mut sum = x[i];
-        for j in 0..ord {
-            sum -= den[j] * mem[j];
-        }
-        for j in (1..ord).rev() {
-            mem[j] = mem[j - 1];
-        }
-        mem[0] = sum;
-        y[i] = sum;
-    }
-}
