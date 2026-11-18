@@ -101,15 +101,14 @@
         default = libopus;
       });
 
-      # capi/test.sh against packages.libopus.
+      # capi/test.sh against packages.libopus and libopus-dnn.
       checks = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ] (
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-        in
-        {
-          libopus =
-            pkgs.runCommandCC "libopus-opus-rs-tests"
+          test =
+            name: args:
+            pkgs.runCommandCC "${name}-opus-rs-tests"
               {
                 nativeBuildInputs = with pkgs; [
                   pkg-config
@@ -129,9 +128,13 @@
                 };
               }
               ''
-                bash $tests/capi/test.sh ${self.packages.${system}.libopus}/lib $TMPDIR/work
+                bash $tests/capi/test.sh ${self.packages.${system}.${name}}/lib $TMPDIR/work ${args}
                 touch $out
               '';
+        in
+        {
+          libopus = test "libopus" "";
+          libopus-dnn = test "libopus-dnn" "--dred";
         }
       );
 

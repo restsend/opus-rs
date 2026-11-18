@@ -70,9 +70,8 @@ The headers are libopus's own, from the revision opus-rs follows
   internal functions it also tests) and, with `--dred`, `test_opus_dred`.
   `test_opus_extensions` tests libopus's internal extension functions and
   is left out.
-- `small_stack.c` (default build): an encoder, a decoder and a 5.1
-  surround encoder and decoder created and run on a thread with a
-  128 KiB stack.
+- `small_stack.c`: an encoder, a decoder and a 5.1 surround encoder and
+  decoder created and run on a thread with a 128 KiB stack.
 - every RFC 8251 test vector case (12 vectors, mono and stereo, 5 rates),
   decoded and compared as libopus's `tests/run_vectors.sh` does.
 - a cross-check with the reference libopus (pkg-config `opus`): each
@@ -118,8 +117,6 @@ of the test with the bound raised to 512 KiB, which passes.
   decoder state is 63760 bytes. The states are built in place
   (`OpusEncoder::init`, `OpusDecoder::init`), and creating and running
   encoders and decoders fits a 128 KiB thread stack (`small_stack.c`).
-  In `libopus-dnn`, creating a decoder sets up the deep PLC and OSCE
-  states through the stack and needs between 256 and 512 KiB.
 - `libopus.a` holds the Rust standard library: a program that links
   another Rust static library besides it can get duplicate symbols.
 - `opus_get_version_string()` returns `libopus 1.6.1-opus-rs`.

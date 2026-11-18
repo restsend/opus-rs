@@ -8,8 +8,7 @@
 #                 test_opus_extensions is left out: it tests libopus's
 #                 internal extension and repacketizer functions.
 #   small_stack   capi/small_stack.c: encoders and decoders created and
-#                 run on a thread with a 128 KiB stack (without --dred:
-#                 the neural decoder's setup needs more).
+#                 run on a thread with a 128 KiB stack.
 #   vectors       the RFC 8251 test vectors as tests/run_vectors.sh decodes
 #                 and compares them, every case (12 vectors, mono and
 #                 stereo, 5 rates).
@@ -59,12 +58,11 @@ link "$src/tests/test_opus_decode.c" -o test_opus_decode
 link "$src/tests/test_opus_encode.c" "$src/tests/opus_encode_regressions.c" -o test_opus_encode
 link "$src/tests/test_opus_padding.c" -o test_opus_padding
 link "$src/tests/test_opus_projection.c" "$src/src/mapping_matrix.c" -o test_opus_projection
+link "$here/small_stack.c" -o small_stack -lpthread
+programs+=(small_stack)
 if [ $dred = 1 ]; then
   link "$src/tests/test_opus_dred.c" -o test_opus_dred
   programs+=(test_opus_dred)
-else
-  link "$here/small_stack.c" -o small_stack -lpthread
-  programs+=(small_stack)
 fi
 link "$src/src/opus_demo.c" -o opus_demo
 cc -O2 "$src/src/opus_compare.c" -o opus_compare -lm
