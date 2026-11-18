@@ -218,6 +218,18 @@ impl MultistreamEncoderHeader {
         Ok(enc)
     }
 
+    /// [`Self::stream_encoder`] built in `slot` (`OpusEncoder::init`).
+    pub fn init_stream_encoder<'a>(
+        &self,
+        s: usize,
+        slot: &'a mut core::mem::MaybeUninit<OpusEncoder>,
+    ) -> Result<&'a mut OpusEncoder, &'static str> {
+        let enc = OpusEncoder::init(slot, self.sampling_rate, self.layout.stream_channels(s), self.application)
+            .map_err(|_| BAD_ARG)?;
+        enc.set_lfe(Some(s) == self.lfe_stream);
+        Ok(enc)
+    }
+
     /// The input channels.
     pub fn channels(&self) -> usize {
         self.layout.channels()
