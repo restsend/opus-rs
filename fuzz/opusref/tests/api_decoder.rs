@@ -111,7 +111,7 @@ impl Pair {
         let m = unsafe {
             opus_decode_float(self.c, ptr, p.len() as i32, b.as_mut_ptr(), frame as i32, fec as i32)
         };
-        assert_eq!(n.map_or(-1, |n| n as i32).signum(), m.signum(), "{what}: {n:?} vs {m}");
+        assert_eq!(n.map_or_else(|e| opus_rs::error::code(e).unwrap_or(0), |n| n as i32), m, "{what}: {n:?}");
         let Ok(n) = n else { return };
         assert_eq!(n as i32, m, "{what}");
         let mut r = 0u32;
@@ -323,10 +323,7 @@ impl Pair {
         match r {
             Ok(k) => assert_eq!(k as i32, m, "{what}"),
             Err(e) => {
-                assert!(m < 0, "{what}: opus-rs {e}, libopus {m}");
-                if let Some(c) = opus_rs::error::code(e) {
-                    assert_eq!(c, m, "{what}");
-                }
+                assert_eq!(opus_rs::error::code(e), Some(m), "{what}: opus-rs {e}");
                 return;
             }
         }
@@ -372,5 +369,30 @@ fn integer_decoding_matches_libopus() {
         }
         p.decode_as(I16, None, 0, false, "frame size 0");
         p.decode_as(I24, Some(&[0xfb]), 960, false, "code 3 without count");
+    }
+}
+
+/// The errors of every entry point: OPUS_BAD_ARG for a concealment or FEC
+/// call that is no multiple of 2.5 ms,
+/// OPUS_INVALID_PACKET for malformed packets, OPUS_BUFFER_TOO_SMALL for a
+/// frame size below the packet's.
+#[test]
+fn decode_errors_match_libopus() {
+    use Format::*;
+    let mut src = Source::new(48000, 1, 960, 24, SILK);
+    let pkt = src.next();
+    for format in [F32, I16, I24] {
+        let mut p = Pair::new(48000, 1);
+        let ok: &[u8] = &pkt;
+        for (data, frame, fec) in [
+            (None, 100, false),
+            (Some(ok), 100, true),
+            (Some(&[0x01, 0, 0][..]), 960, false),
+            (Some(&[0x03, 0x00][..]), 960, false),
+            (Some(&[0x03, 0x00][..]), 960, true),
+            (Some(ok), 480, false),
+        ] {
+            p.decode_as(format, data, frame, fec, &format!("{data:?} frame {frame} fec {fec}"));
+        }
     }
 }

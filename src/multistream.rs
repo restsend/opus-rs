@@ -417,16 +417,17 @@ impl MultistreamDecoder {
         if !packet.is_empty() {
             let nb_streams = self.decoders.len();
             if packet.len() < 2 * nb_streams - 1 {
-                return Err("multistream packet too short");
+                return Err(crate::error::INVALID_PACKET);
             }
             let samples = packet_validate(
                 packet,
                 nb_streams,
                 self.decoders[0].sampling_rate,
                 &mut self.packet_scratch,
-            )?;
+            )
+            .map_err(|_| crate::error::INVALID_PACKET)?;
             if samples > frame_size {
-                return Err("frame_size too small for packet");
+                return Err(crate::error::BUFFER_TOO_SMALL);
             }
         }
 

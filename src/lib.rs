@@ -4407,7 +4407,7 @@ impl OpusDecoder {
         let ch = self.channels;
         // For FEC/PLC, frame_size has to be a multiple of 2.5 ms.
         if (decode_fec || data.is_empty()) && !frame_size.is_multiple_of(fs / 400) {
-            return Err("frame_size must be a multiple of 2.5 ms");
+            return Err(crate::error::BAD_ARG);
         }
         if data.is_empty() {
             // checked_mul: frame_size is caller-chosen and may be absurd.
@@ -4475,7 +4475,7 @@ impl OpusDecoder {
 
         let count = frames.len();
         if count * packet_frame_size > frame_size {
-            return Err("frame_size too small for packet");
+            return Err(crate::error::BUFFER_TOO_SMALL);
         }
         if pcm.len() < count * packet_frame_size * ch {
             return Err("Output buffer too small for packet");
@@ -4523,7 +4523,7 @@ impl OpusDecoder {
         let f5 = f10 >> 1;
         let f2_5 = f5 >> 1;
         if frame_size < f2_5 {
-            return Err("frame_size too small");
+            return Err(crate::error::BUFFER_TOO_SMALL);
         }
         // Limit frame_size to avoid excessive stack allocations.
         let mut frame_size = frame_size.min(fs / 25 * 3);
@@ -4607,7 +4607,7 @@ impl OpusDecoder {
             );
         }
         if audiosize > frame_size {
-            return Err("frame_size too small for packet");
+            return Err(crate::error::BAD_ARG);
         }
         frame_size = audiosize;
 
@@ -4965,7 +4965,7 @@ const F10_MAX: usize = 480 * OPUS_MAX_CHANNELS;
 /// The frames of a packet (libopus `opus_packet_parse_impl`, not
 /// self-delimited).
 fn opus_packet_parse(data: &[u8]) -> Result<FixedVec<&[u8], OPUS_MAX_PACKET_FRAMES>, &'static str> {
-    const INVALID: &str = "Invalid packet";
+    const INVALID: &str = crate::error::INVALID_PACKET;
     let size = |d: &[u8]| -> Result<(usize, usize), &'static str> {
         parse_frame_size(d).map_err(|_| INVALID)
     };

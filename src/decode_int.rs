@@ -114,7 +114,7 @@ impl OpusDecoder {
         // pieces and the FEC frame.
         let fs = self.sampling_rate as usize;
         if !frame_size.is_multiple_of(fs / 400) {
-            return Err("frame_size must be a multiple of 2.5 ms");
+            return Err(BAD_ARG);
         }
         if frame_size.checked_mul(ch).is_none_or(|n| output.len() < n) {
             return Err("Output buffer too small for packet");

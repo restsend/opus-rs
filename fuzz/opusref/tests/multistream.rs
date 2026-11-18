@@ -329,3 +329,23 @@ fn controls_queries_and_integer_output_match_libopus() {
     assert!(d.rs.decoder_state(3).is_ok());
     assert_eq!(d.rs.decoder_state(4).err(), Some(opus_rs::error::BAD_ARG));
 }
+
+/// The errors of opus_multistream_decode_native: OPUS_INVALID_PACKET for
+/// a packet too short for its streams or with a malformed stream,
+/// OPUS_BUFFER_TOO_SMALL for a frame size below the packet's.
+#[test]
+fn errors_match_libopus() {
+    const FB20: u8 = 31 << 3;
+    let good = two_streams(&celt(FB20, 60, 1), &celt(FB20, 60, 2));
+    for (p, frame) in [
+        (vec![FB20], 960),
+        (two_streams(&celt(FB20, 60, 1), &[FB20 | 1, 0, 0]), 960),
+        (two_streams(&celt(FB20, 60, 1), &celt(FB20 - 8, 60, 2)), 960),
+        (good.clone(), 480),
+    ] {
+        let mut d = Pair::new(2, 0, &[0, 1]);
+        let (r, n, ..) = d.decode(&p, frame);
+        assert!(n < 0, "libopus {n}");
+        assert_eq!(r.map_err(opus_rs::error::code), Err(Some(n)), "{p:02x?} frame {frame}");
+    }
+}
