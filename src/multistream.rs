@@ -265,7 +265,7 @@ pub struct MultistreamDecoder {
 /// elsewhere, such as in one block of memory: what [`MultistreamDecoder`]
 /// decodes with.
 pub struct MultistreamDecoderView<'a> {
-    layout: &'a MultistreamLayout,
+    pub(crate) layout: &'a MultistreamLayout,
     decoders: &'a mut [OpusDecoder],
 }
 

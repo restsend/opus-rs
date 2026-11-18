@@ -69,6 +69,8 @@ pub struct MultistreamEncoderHeader {
     /// channels from all input channels (libopus
     /// `opus_projection_copy_channel_in_*`).
     pub(crate) mixing: Option<MappingMatrix<'static>>,
+    /// The projection encoder's demixing matrix, for the decoder.
+    pub(crate) demixing: Option<MappingMatrix<'static>>,
     mapping_type: MappingType,
     lfe_stream: Option<usize>,
     /// The surround analysis's pre-emphasis and MDCT overlap per channel
@@ -193,6 +195,7 @@ impl MultistreamEncoderHeader {
             sampling_rate,
             variable_duration: FrameDuration::Argument,
             mixing: None,
+            demixing: None,
             mapping_type,
             lfe_stream,
             preemph_mem: [0.0; 8],
@@ -213,6 +216,11 @@ impl MultistreamEncoderHeader {
             .map_err(|_| BAD_ARG)?;
         enc.set_lfe(Some(s) == self.lfe_stream);
         Ok(enc)
+    }
+
+    /// The input channels.
+    pub fn channels(&self) -> usize {
+        self.layout.channels()
     }
 
     /// The streams of the packets.
@@ -310,7 +318,7 @@ impl MultistreamEncoder {
     }
 
     /// The encoder of `head` with new stream encoders.
-    fn with_header(head: MultistreamEncoderHeader) -> Result<Self, &'static str> {
+    pub(crate) fn with_header(head: MultistreamEncoderHeader) -> Result<Self, &'static str> {
         let encoders = (0..head.streams()).map(|s| head.stream_encoder(s)).collect::<Result<_, _>>()?;
         Ok(MultistreamEncoder { head, encoders })
     }

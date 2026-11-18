@@ -7,8 +7,8 @@
 use crate::decode_int::IntSample;
 use crate::error::{ALLOC_FAIL, BAD_ARG};
 use crate::mapping_matrix::{self as mm, MappingMatrix};
-use crate::multistream::{ChannelMappingTable, MultistreamDecoder};
-use crate::multistream_encoder::MultistreamEncoder;
+use crate::multistream::{ChannelMappingTable, MultistreamDecoder, MultistreamDecoderView};
+use crate::multistream_encoder::{MultistreamEncoder, MultistreamEncoderHeader};
 use crate::Application;
 
 /// libopus `get_streams_from_channels` for mapping family 3: the streams,
@@ -26,22 +26,13 @@ fn streams_from_channels(channels: usize, mapping_family: i32) -> Option<(usize,
     Some((channels.div_ceil(2), channels / 2, order_plus_one))
 }
 
-/// libopus `OpusProjectionEncoder`: a [`MultistreamEncoder`] of the mixed
-/// channels and the matching demixing matrix.
-pub struct ProjectionEncoder {
-    ms: MultistreamEncoder,
-    demixing: MappingMatrix<'static>,
-    streams: usize,
-    coupled: usize,
-    channels: usize,
-}
-
-impl ProjectionEncoder {
-    /// libopus `opus_projection_ambisonics_encoder_create`: `channels`
-    /// ambisonic channels (4, 9, 16, 25 or 36, each plus 2 non-diegetic
-    /// ones) in mapping family 3. As in libopus, a channel count or family
-    /// without a matrix is `error::ALLOC_FAIL`.
-    pub fn new(
+impl MultistreamEncoderHeader {
+    /// The header of libopus `opus_projection_ambisonics_encoder_create`:
+    /// a multistream encoder of `channels` ambisonic channels (4, 9, 16, 25
+    /// or 36, each plus 2 non-diegetic ones) mixed by the matrix of mapping
+    /// family 3, with the matching demixing matrix. As in libopus, a
+    /// channel count or family without a matrix is `error::ALLOC_FAIL`.
+    pub fn new_projection(
         sampling_rate: i32,
         channels: usize,
         mapping_family: i32,
@@ -65,19 +56,72 @@ impl ProjectionEncoder {
             return Err(BAD_ARG);
         }
         let mapping: Vec<u8> = (0..channels as u8).collect();
-        let mut ms = MultistreamEncoder::new(sampling_rate, channels, streams, coupled, &mapping, application)?;
-        ms.head.mixing = Some(mixing);
-        Ok(ProjectionEncoder { ms, demixing, streams, coupled, channels })
+        let mut head = MultistreamEncoderHeader::new(sampling_rate, channels, streams, coupled, &mapping, application)?;
+        head.mixing = Some(mixing);
+        head.demixing = Some(demixing);
+        Ok(head)
+    }
+
+    /// The demixing matrix's gain in Q8 dB (libopus
+    /// `OPUS_PROJECTION_GET_DEMIXING_MATRIX_GAIN`), 0 without a projection.
+    pub fn demixing_matrix_gain(&self) -> i32 {
+        self.demixing.map_or(0, |d| d.gain)
+    }
+
+    /// The bytes of the demixing matrix (libopus
+    /// `OPUS_PROJECTION_GET_DEMIXING_MATRIX_SIZE`), 0 without a projection.
+    pub fn demixing_matrix_size(&self) -> usize {
+        self.demixing.map_or(0, |_| self.channels() * (self.streams() + self.coupled_streams()) * 2)
+    }
+
+    /// Writes the demixing matrix, 16-bit little-endian cells column by
+    /// column, as [`ProjectionDecoder::new`] and the Ogg Opus header take
+    /// it (libopus `OPUS_PROJECTION_GET_DEMIXING_MATRIX`);
+    /// `error::BAD_ARG` unless `out` has [`Self::demixing_matrix_size`]
+    /// bytes.
+    pub fn demixing_matrix(&self, out: &mut [u8]) -> Result<(), &'static str> {
+        let Some(demixing) = self.demixing.filter(|_| out.len() == self.demixing_matrix_size()) else {
+            return Err(BAD_ARG);
+        };
+        let mut l = 0;
+        for i in 0..self.streams() + self.coupled_streams() {
+            for j in 0..self.channels() {
+                let v = demixing.data[demixing.rows * i + j];
+                out[2 * l..2 * l + 2].copy_from_slice(&v.to_le_bytes());
+                l += 1;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// libopus `OpusProjectionEncoder`: a [`MultistreamEncoder`] of the mixed
+/// channels and the matching demixing matrix.
+pub struct ProjectionEncoder {
+    ms: MultistreamEncoder,
+}
+
+impl ProjectionEncoder {
+    /// libopus `opus_projection_ambisonics_encoder_create`, as
+    /// [`MultistreamEncoderHeader::new_projection`].
+    pub fn new(
+        sampling_rate: i32,
+        channels: usize,
+        mapping_family: i32,
+        application: Application,
+    ) -> Result<Self, &'static str> {
+        let head = MultistreamEncoderHeader::new_projection(sampling_rate, channels, mapping_family, application)?;
+        Ok(ProjectionEncoder { ms: MultistreamEncoder::with_header(head)? })
     }
 
     /// The streams of the coded packets.
     pub fn streams(&self) -> usize {
-        self.streams
+        self.ms.streams()
     }
 
     /// The coupled streams of the coded packets.
     pub fn coupled_streams(&self) -> usize {
-        self.coupled
+        self.ms.coupled_streams()
     }
 
     /// Encodes interleaved float ambisonic input (libopus
@@ -100,33 +144,19 @@ impl ProjectionEncoder {
     /// The demixing matrix's gain in Q8 dB (libopus
     /// `OPUS_PROJECTION_GET_DEMIXING_MATRIX_GAIN`).
     pub fn demixing_matrix_gain(&self) -> i32 {
-        self.demixing.gain
+        self.ms.head.demixing_matrix_gain()
     }
 
     /// The bytes of the demixing matrix (libopus
     /// `OPUS_PROJECTION_GET_DEMIXING_MATRIX_SIZE`).
     pub fn demixing_matrix_size(&self) -> usize {
-        self.channels * (self.streams + self.coupled) * 2
+        self.ms.head.demixing_matrix_size()
     }
 
-    /// Writes the demixing matrix, 16-bit little-endian cells column by
-    /// column, as [`ProjectionDecoder::new`] and the Ogg Opus header take
-    /// it (libopus `OPUS_PROJECTION_GET_DEMIXING_MATRIX`);
-    /// `error::BAD_ARG` unless `out` has [`Self::demixing_matrix_size`]
-    /// bytes.
+    /// Writes the demixing matrix, as
+    /// [`MultistreamEncoderHeader::demixing_matrix`].
     pub fn demixing_matrix(&self, out: &mut [u8]) -> Result<(), &'static str> {
-        if out.len() != self.demixing_matrix_size() {
-            return Err(BAD_ARG);
-        }
-        let mut l = 0;
-        for i in 0..self.streams + self.coupled {
-            for j in 0..self.channels {
-                let v = self.demixing.data[self.demixing.rows * i + j];
-                out[2 * l..2 * l + 2].copy_from_slice(&v.to_le_bytes());
-                l += 1;
-            }
-        }
-        Ok(())
+        self.ms.head.demixing_matrix(out)
     }
 
     /// The multistream encoder, for the controls libopus's projection
@@ -142,7 +172,14 @@ pub struct ProjectionDecoder {
     ms: MultistreamDecoder,
     /// `channels` rows by `streams + coupled` columns, column by column.
     demixing: Vec<i16>,
-    channels: usize,
+}
+
+/// A projection decoder over a multistream decoder view and a demixing
+/// matrix held elsewhere, such as in one block of memory: what
+/// [`ProjectionDecoder`] decodes with.
+pub struct ProjectionDecoderView<'a> {
+    ms: MultistreamDecoderView<'a>,
+    demixing: &'a [i16],
 }
 
 impl ProjectionDecoder {
@@ -177,32 +214,83 @@ impl ProjectionDecoder {
             mapping: (0..channels as u8).collect(),
         };
         let ms = MultistreamDecoder::new(sampling_rate, table).map_err(|_| BAD_ARG)?;
-        Ok(ProjectionDecoder { ms, demixing, channels })
+        Ok(ProjectionDecoder { ms, demixing })
     }
 
-    fn matrix(&self) -> MappingMatrix<'_> {
-        MappingMatrix {
-            rows: self.channels,
-            cols: self.demixing.len() / self.channels.max(1),
-            gain: 0,
-            data: &self.demixing,
-        }
+    /// The decoder as a [`ProjectionDecoderView`].
+    pub fn view(&mut self) -> ProjectionDecoderView<'_> {
+        ProjectionDecoderView { ms: self.ms.view(), demixing: &self.demixing }
     }
 
     /// Decodes into interleaved float output (libopus
     /// `opus_projection_decode_float`).
     pub fn decode(&mut self, packet: &[u8], frame_size: usize, out: &mut [f32]) -> Result<usize, &'static str> {
-        self.decode_float(packet, frame_size, out, false)
+        self.view().decode(packet, frame_size, out)
     }
 
     /// [`Self::decode`] with in-band FEC.
+    pub fn decode_fec(&mut self, packet: &[u8], frame_size: usize, out: &mut [f32]) -> Result<usize, &'static str> {
+        self.view().decode_fec(packet, frame_size, out)
+    }
+
+    /// Decodes into interleaved 16-bit output, soft clipped per stream
+    /// (libopus `opus_projection_decode`).
+    pub fn decode_i16(&mut self, packet: &[u8], frame_size: usize, out: &mut [i16]) -> Result<usize, &'static str> {
+        self.view().decode_i16(packet, frame_size, out)
+    }
+
+    /// [`Self::decode_i16`] with in-band FEC.
+    pub fn decode_fec_i16(&mut self, packet: &[u8], frame_size: usize, out: &mut [i16]) -> Result<usize, &'static str> {
+        self.view().decode_fec_i16(packet, frame_size, out)
+    }
+
+    /// Decodes into interleaved 24-bit output in 32-bit integers (libopus
+    /// `opus_projection_decode24`).
+    pub fn decode24(&mut self, packet: &[u8], frame_size: usize, out: &mut [i32]) -> Result<usize, &'static str> {
+        self.view().decode24(packet, frame_size, out)
+    }
+
+    /// [`Self::decode24`] with in-band FEC.
+    pub fn decode_fec24(&mut self, packet: &[u8], frame_size: usize, out: &mut [i32]) -> Result<usize, &'static str> {
+        self.view().decode_fec24(packet, frame_size, out)
+    }
+
+    /// The multistream decoder, for the controls libopus's projection
+    /// decoder forwards to it.
+    pub fn multistream(&mut self) -> &mut MultistreamDecoder {
+        &mut self.ms
+    }
+}
+
+impl<'a> ProjectionDecoderView<'a> {
+    /// The decoder of `ms` with `demixing`, the cells of a matrix of the
+    /// layout's channels by its decoded channels, column by column;
+    /// `error::BAD_ARG` for another length.
+    pub fn new(ms: MultistreamDecoderView<'a>, demixing: &'a [i16]) -> Result<Self, &'static str> {
+        if demixing.len() != ms.layout.channels() * ms.decoded_channels() {
+            return Err(BAD_ARG);
+        }
+        Ok(ProjectionDecoderView { ms, demixing })
+    }
+
+    fn matrix(&self) -> MappingMatrix<'_> {
+        let rows = self.ms.layout.channels();
+        MappingMatrix { rows, cols: self.demixing.len() / rows.max(1), gain: 0, data: self.demixing }
+    }
+
+    /// [`ProjectionDecoder::decode`].
+    pub fn decode(&mut self, packet: &[u8], frame_size: usize, out: &mut [f32]) -> Result<usize, &'static str> {
+        self.decode_float(packet, frame_size, out, false)
+    }
+
+    /// [`ProjectionDecoder::decode_fec`].
     pub fn decode_fec(&mut self, packet: &[u8], frame_size: usize, out: &mut [f32]) -> Result<usize, &'static str> {
         self.decode_float(packet, frame_size, out, true)
     }
 
     fn decode_float(&mut self, packet: &[u8], frame_size: usize, out: &mut [f32], fec: bool) -> Result<usize, &'static str> {
-        let (n, decoded) = self.ms.view().decode_checked(packet, frame_size, out.len(), fec, false)?;
-        let (ch, d) = (self.channels, self.ms.view().decoded_channels());
+        let (n, decoded) = self.ms.decode_checked(packet, frame_size, out.len(), fec, false)?;
+        let (ch, d) = (self.ms.layout.channels(), self.ms.decoded_channels());
         out[..n * ch].fill(0.0);
         let m = self.matrix();
         for i in 0..d.min(ch) {
@@ -211,24 +299,22 @@ impl ProjectionDecoder {
         Ok(n)
     }
 
-    /// Decodes into interleaved 16-bit output, soft clipped per stream
-    /// (libopus `opus_projection_decode`).
+    /// [`ProjectionDecoder::decode_i16`].
     pub fn decode_i16(&mut self, packet: &[u8], frame_size: usize, out: &mut [i16]) -> Result<usize, &'static str> {
         self.decode_int(packet, frame_size, out, false, true, |m, x, r, rs, o, oc, n| m.out_short(x, r, rs, o, oc, n))
     }
 
-    /// [`Self::decode_i16`] with in-band FEC.
+    /// [`ProjectionDecoder::decode_fec_i16`].
     pub fn decode_fec_i16(&mut self, packet: &[u8], frame_size: usize, out: &mut [i16]) -> Result<usize, &'static str> {
         self.decode_int(packet, frame_size, out, true, true, |m, x, r, rs, o, oc, n| m.out_short(x, r, rs, o, oc, n))
     }
 
-    /// Decodes into interleaved 24-bit output in 32-bit integers (libopus
-    /// `opus_projection_decode24`).
+    /// [`ProjectionDecoder::decode24`].
     pub fn decode24(&mut self, packet: &[u8], frame_size: usize, out: &mut [i32]) -> Result<usize, &'static str> {
         self.decode_int(packet, frame_size, out, false, false, |m, x, r, rs, o, oc, n| m.out_int24(x, r, rs, o, oc, n))
     }
 
-    /// [`Self::decode24`] with in-band FEC.
+    /// [`ProjectionDecoder::decode_fec24`].
     pub fn decode_fec24(&mut self, packet: &[u8], frame_size: usize, out: &mut [i32]) -> Result<usize, &'static str> {
         self.decode_int(packet, frame_size, out, true, false, |m, x, r, rs, o, oc, n| m.out_int24(x, r, rs, o, oc, n))
     }
@@ -242,20 +328,14 @@ impl ProjectionDecoder {
         soft_clip: bool,
         demix: impl Fn(&MappingMatrix<'_>, &[f32], usize, usize, &mut [T], usize, usize),
     ) -> Result<usize, &'static str> {
-        let (n, decoded) = self.ms.view().decode_checked(packet, frame_size, out.len(), fec, soft_clip)?;
-        let (ch, d) = (self.channels, self.ms.view().decoded_channels());
+        let (n, decoded) = self.ms.decode_checked(packet, frame_size, out.len(), fec, soft_clip)?;
+        let (ch, d) = (self.ms.layout.channels(), self.ms.decoded_channels());
         out[..n * ch].fill(T::default());
         let m = self.matrix();
         for i in 0..d.min(ch) {
             demix(&m, &decoded[i..], i, d, out, ch, n);
         }
         Ok(n)
-    }
-
-    /// The multistream decoder, for the controls libopus's projection
-    /// decoder forwards to it.
-    pub fn multistream(&mut self) -> &mut MultistreamDecoder {
-        &mut self.ms
     }
 }
 
@@ -267,8 +347,9 @@ mod tests {
     /// (libopus mapping_matrix_init with nb_input_streams).
     #[test]
     fn demixing_matrix_has_a_column_per_stream_channel() {
-        let d = ProjectionDecoder::new(48000, 4, 2, 2, &[0u8; 32]).unwrap();
-        let m = d.matrix();
+        let mut d = ProjectionDecoder::new(48000, 4, 2, 2, &[0u8; 32]).unwrap();
+        let v = d.view();
+        let m = v.matrix();
         assert_eq!((m.rows, m.cols), (4, 4));
         assert_eq!(m.rows * m.cols, m.data.len());
     }
