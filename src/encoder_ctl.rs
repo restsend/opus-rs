@@ -185,9 +185,12 @@ impl OpusEncoder {
     /// Disables the phase inversion of CELT's intensity stereo (libopus
     /// `OPUS_SET_PHASE_INVERSION_DISABLED`, off by default), which lets a
     /// stereo stream downmix to mono without the inverted bands cancelling,
-    /// at a small cost in stereo quality.
+    /// at a small cost in stereo quality. RestrictedSilk streams have no
+    /// CELT and keep it off.
     pub fn set_phase_inversion_disabled(&mut self, disabled: bool) {
-        self.celt_enc.disable_inv = disabled;
+        if self.application != Application::RestrictedSilk {
+            self.celt_enc.disable_inv = disabled;
+        }
     }
 
     /// Whether phase inversion is disabled (libopus

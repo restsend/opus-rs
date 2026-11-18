@@ -601,3 +601,13 @@ fn restricted_silk_rate_switch_matches_libopus() {
         }
     }
 }
+
+/// OPUS_SET_PHASE_INVERSION_DISABLED under OPUS_APPLICATION_RESTRICTED_SILK
+/// stores nothing, and the query reads 0.
+#[test]
+fn restricted_silk_phase_inversion_matches_libopus() {
+    let mut p = Pair::new(48000, 2, Application::RestrictedSilk);
+    p.rs.set_phase_inversion_disabled(true);
+    assert_eq!(p.ctl(SET_PHASE_INVERSION_DISABLED, 1), 0);
+    assert_eq!(p.rs.phase_inversion_disabled() as i32, p.get(GET_PHASE_INVERSION_DISABLED));
+}
