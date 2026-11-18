@@ -1681,6 +1681,17 @@ fn tone_lpc(x: &[f32], len: usize, delay: usize, r: [f32; 3], lpc: &mut [f32; 2]
     false
 }
 
+/// The tone's frequency, acos(.5f*lpc[0])/delay (celt_encoder.c:1394):
+/// a double acos and division, rounded once to float.
+fn tone_freq(lpc0: f32, delay: usize) -> f32 {
+    let x = f64::from(0.5 * lpc0);
+    #[cfg(feature = "std")]
+    let a = x.acos();
+    #[cfg(not(feature = "std"))]
+    let a = crate::compat::Math::acos(x);
+    (a / delay as f64) as f32
+}
+
 fn tone_detect(in_buf: &[f32], cc: usize, n: usize, fs: i32) -> (f32, f32) {
     // in_buf holds n = frame + overlap samples per channel. Stereo sums
     // the channels (celt_encoder.c:1374; SHR32 is an identity in float).
@@ -1711,13 +1722,7 @@ fn tone_detect(in_buf: &[f32], cc: usize, n: usize, fs: i32) -> (f32, f32) {
         fail = tone_lpc(x, n, delay, r[delay.trailing_zeros() as usize], &mut lpc);
     }
     if !fail && lpc[0] * lpc[0] + 3.999999 * lpc[1] < 0.0 {
-        let toneishness = -lpc[1];
-        // acos needs libm in no_std
-        #[cfg(feature = "std")]
-        let freq = (0.5 * lpc[0]).acos() / delay as f32;
-        #[cfg(not(feature = "std"))]
-        let freq = crate::compat::Math::acos(0.5 * lpc[0]) / delay as f32;
-        (freq, toneishness)
+        (tone_freq(lpc[0], delay), -lpc[1])
     } else {
         (-1.0, 0.0)
     }
@@ -4416,6 +4421,22 @@ mod tests {
             tone_correlations(&x, 1)[0],
             &mut [0.0; 2]
         ));
+    }
+
+    /// tone_detect's frequency is the double acos rounded once to float
+    /// (celt_encoder.c:1394); the expected values are glibc's acos. glibc's
+    /// acosf differs at the first two inputs, libm's acosf at -1.
+    #[test]
+    fn tone_freq_rounds_the_double_acos() {
+        for (x, delay, want) in [
+            (847807907u32, 1, 1070141402u32),
+            (964846114, 2, 1061750708),
+            (0xbf80_0000, 1, 1078530011),
+            (0xbf80_0000, 2, 1070141403),
+        ] {
+            let lpc0 = 2.0 * f32::from_bits(x);
+            assert_eq!(tone_freq(lpc0, delay).to_bits(), want, "{x} {delay}");
+        }
     }
 
     /// tone_lpc limits lpc[0] to +-1.999999 only where num0/den reaches
