@@ -75,22 +75,13 @@ fn celt_sudiv(n: i32, d: i32) -> i32 {
     n / d
 }
 
-/// libopus `isqrt32`: floor(sqrt(val)) for val > 0, one bit per step. Each
-/// step's digit is a data-dependent select, compiled without a branch.
+/// libopus `isqrt32`: floor(sqrt(val)) for val > 0. The double-precision
+/// square root is exact here: below 2^32 the root of k*k - 1 lies more than
+/// 1/(2k) >= 2^-17 under k, far above the rounding error, so the
+/// truncation gives libopus's bit-by-bit result.
 #[inline]
-fn isqrt32(mut val: u32) -> u32 {
-    let mut g = 0u32;
-    let mut bshift = ((32 - val.leading_zeros()) as i32 - 1) >> 1;
-    let mut b = 1u32 << bshift;
-    while bshift >= 0 {
-        let t = ((g << 1) + b) << bshift;
-        let (db, dv) = core::hint::select_unpredictable(t <= val, (b, t), (0, 0));
-        g += db;
-        val -= dv;
-        b >>= 1;
-        bshift -= 1;
-    }
-    g
+fn isqrt32(val: u32) -> u32 {
+    (val as f64).sqrt() as u32
 }
 
 pub const SPREAD_NONE: i32 = 0;
@@ -2335,26 +2326,47 @@ pub fn anti_collapse(
     seed
 }
 
-#[cfg(all(test, feature = "std"))]
-mod tests {
-    use super::*;
+#[cfg(test)]
+mod isqrt32_tests {
+    use super::isqrt32;
 
-    /// isqrt32 is floor(sqrt(v)) at every square, its neighbours, and a
-    /// spread of other values up to u32::MAX.
+    /// libopus's `isqrt32`, one bit per step.
+    fn isqrt32_bitwise(mut val: u32) -> u32 {
+        let mut g = 0u32;
+        let mut bshift = ((32 - val.leading_zeros()) as i32 - 1) >> 1;
+        let mut b = 1u32 << bshift;
+        while bshift >= 0 {
+            let t = ((g << 1) + b) << bshift;
+            if t <= val {
+                g += b;
+                val -= t;
+            }
+            b >>= 1;
+            bshift -= 1;
+        }
+        g
+    }
+
+    /// isqrt32 gives libopus's result at every square, its neighbours, and
+    /// a spread of other values up to u32::MAX (also in the libm build).
     #[test]
-    fn isqrt32_is_the_integer_square_root() {
-        let floor_sqrt = |v: u32| (v as f64).sqrt() as u32;
+    fn isqrt32_matches_libopus() {
         for r in 1..=65535u32 {
             for v in [r * r - 1, r * r, r * r + r] {
                 if v > 0 {
-                    assert_eq!(isqrt32(v), floor_sqrt(v), "isqrt32({v})");
+                    assert_eq!(isqrt32(v), isqrt32_bitwise(v), "isqrt32({v})");
                 }
             }
         }
         for v in (1..=u32::MAX).step_by(65521).chain([u32::MAX]) {
-            assert_eq!(isqrt32(v), floor_sqrt(v), "isqrt32({v})");
+            assert_eq!(isqrt32(v), isqrt32_bitwise(v), "isqrt32({v})");
         }
     }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use super::*;
 
     #[test]
     fn test_bitexact_primitives_reference_values() {
