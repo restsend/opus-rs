@@ -588,12 +588,13 @@ fn write_extension(
     }
     debug_assert!((3..=127).contains(&ext.id));
     if let Some(d) = data {
-        d[pos] = (ext.id << 1)
-            + if ext.id < 32 {
-                ext.data.len() as u8
-            } else {
-                u8::from(!last)
-            };
+        // libopus's int sum stored as a byte; write_extension_payload
+        // rejects a short extension longer than 1 byte after it.
+        d[pos] = (ext.id << 1).wrapping_add(if ext.id < 32 {
+            ext.data.len() as u8
+        } else {
+            u8::from(!last)
+        });
     }
     write_extension_payload(data, len, pos + 1, ext, last)
 }
@@ -928,6 +929,16 @@ mod tests {
             out.push((e.id, e.frame, e.data.to_vec()));
         }
         Ok(out)
+    }
+
+    /// A short extension with a payload of more than 1 byte is an invalid
+    /// argument, also where 2 * id + length passes 255.
+    #[test]
+    fn long_short_extension_is_bad_arg() {
+        let payload = [0u8; 200];
+        let ext = ExtensionData { id: 31, frame: 0, data: &payload };
+        let mut buf = [0u8; 1000];
+        assert_eq!(generate_extensions(Some(&mut buf), 1000, &[ext], 1, false), Err(BAD_ARG));
     }
 
     #[test]
