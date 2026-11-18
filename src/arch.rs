@@ -52,7 +52,13 @@ impl Arch {
 ///   `Scalar`: libopus takes arch 0 without SSE, arch 1 with SSE (the SSE
 ///   float kernels with the C PVQ search and C neural kernels, a level
 ///   opus-rs does not have) and detects arch 2 to 4 in an i586 build.
-/// - `Sse4_1` needs fearless_simd's SSE4.2 level, `Avx2` its AVX2 level.
+/// - `Sse4_1` needs SSE4.1, as in libopus. Without `std` it needs the
+///   `sse4.1` target feature.
+/// - `Avx2` needs fearless_simd's AVX2 token, the x86-64-v3 set: AVX2 and
+///   FMA, which libopus checks, and BMI1, BMI2, CMPXCHG16B, F16C, FXSR,
+///   LZCNT, MOVBE, POPCNT and XSAVE, which it does not. A CPU with AVX, AVX2
+///   and FMA that lacks one of these (a masked virtual CPU) is `Sse4_1`
+///   where libopus takes arch 4.
 /// - Without `std` the level is the target's baseline: on a CPU above it,
 ///   libopus detects a higher level.
 fn detect() -> Arch {
@@ -63,7 +69,7 @@ fn detect() -> Arch {
             Arch::Avx2
         } else if level.as_sse2().is_none() {
             Arch::Scalar
-        } else if level.as_sse4_2().is_some() {
+        } else if has_sse4_1() {
             Arch::Sse4_1
         } else {
             Arch::Sse2
@@ -88,6 +94,15 @@ fn cpu_level() -> fearless_simd::Level {
     } else {
         fearless_simd::Level::baseline()
     }
+}
+
+/// Whether the CPU has SSE4.1 (CPUID.1:ECX bit 19, libopus's arch 3 test).
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn has_sse4_1() -> bool {
+    #[cfg(feature = "std")]
+    return std::arch::is_x86_feature_detected!("sse4.1");
+    #[cfg(not(feature = "std"))]
+    cfg!(target_feature = "sse4.1")
 }
 
 /// The AVX2 token when the CPU has fearless_simd's AVX2 level, for kernels
@@ -159,5 +174,20 @@ mod tests {
         if Arch::native() == Arch::Avx2 {
             assert!(cpu_avx2().is_some());
         }
+    }
+
+    /// The level follows libopus's CPUID tests up to `Sse4_1`: SSE2 for
+    /// arch 2, SSE4.1 for arch 3.
+    #[cfg(all(feature = "std", target_feature = "sse2"))]
+    #[test]
+    fn sse_levels_follow_cpuid() {
+        let libopus = if !std::arch::is_x86_feature_detected!("sse2") {
+            Arch::Scalar
+        } else if std::arch::is_x86_feature_detected!("sse4.1") {
+            Arch::Sse4_1
+        } else {
+            Arch::Sse2
+        };
+        assert_eq!(Arch::native().min(Arch::Sse4_1), libopus);
     }
 }
