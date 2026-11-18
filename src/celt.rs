@@ -2258,7 +2258,7 @@ impl CeltEncoder {
         // Internal (48 kHz) frame size; `pcm` is at the API rate.
         let frame_size = api_frame_size * upsample;
         let nb_ebands = mode.nb_ebands;
-        let end = self.end_band.clamp(1, nb_ebands).max(start_band);
+        let end = self.end_band.clamp(1, nb_ebands);
         let eff_end = end.min(mode.eff_ebands);
         let overlap = mode.overlap;
 
@@ -2271,6 +2271,10 @@ impl CeltEncoder {
         else {
             return Err(crate::error::BAD_ARG);
         };
+        // The bands start_band..end are coded; an empty range is refused.
+        if start_band >= end {
+            return Err(crate::error::BAD_ARG);
+        }
 
         dumpf!(
             "analysis",
@@ -4625,6 +4629,28 @@ mod tests {
             }
         }
         assert!(patch_transient_decision(&new_e, &old_e, 21, 0, 4, 2));
+    }
+
+    /// A start band at or above the end band codes no band; those frames
+    /// are refused (they panicked in the allocation before), and every
+    /// start below the end band codes.
+    #[test]
+    fn start_bands_below_the_end_band_code() {
+        let pcm: Vec<f32> = (0..1920)
+            .map(|i| ((i * 7919) % 101) as f32 / 101.0 - 0.5)
+            .collect();
+        for end in [1, 2, 3, 13, 17, 21] {
+            for start in [0, 1, 2, 5, 16, 17, 20, 21, 30] {
+                let mut enc = CeltEncoder::new(modes::default_mode(), 2);
+                enc.complexity = 10;
+                enc.set_end_band(end);
+                for _ in 0..3 {
+                    let mut rc = RangeCoder::new_encoder(200);
+                    let r = enc.encode_with_start_band(&pcm, 960, &mut rc, start);
+                    assert_eq!(r.is_ok(), start < end, "start {start} end {end}");
+                }
+            }
+        }
     }
 
     /// libopus's CELT ctls reject out-of-range values and keep the setting
