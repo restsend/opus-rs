@@ -183,7 +183,7 @@ impl ProjectionDecoder {
     fn matrix(&self) -> MappingMatrix<'_> {
         MappingMatrix {
             rows: self.channels,
-            cols: self.demixing.len() / 2 / self.channels.max(1),
+            cols: self.demixing.len() / self.channels.max(1),
             gain: 0,
             data: &self.demixing,
         }
@@ -256,5 +256,20 @@ impl ProjectionDecoder {
     /// decoder forwards to it.
     pub fn multistream(&mut self) -> &mut MultistreamDecoder {
         &mut self.ms
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The demixing matrix has a column per decoded stream channel
+    /// (libopus mapping_matrix_init with nb_input_streams).
+    #[test]
+    fn demixing_matrix_has_a_column_per_stream_channel() {
+        let d = ProjectionDecoder::new(48000, 4, 2, 2, &[0u8; 32]).unwrap();
+        let m = d.matrix();
+        assert_eq!((m.rows, m.cols), (4, 4));
+        assert_eq!(m.rows * m.cols, m.data.len());
     }
 }
