@@ -554,7 +554,8 @@ impl MultistreamEncoder {
                 m = coef * x;
             }
             self.preemph_mem[c] = m;
-            let sum = input.iter().fold(0.0f32, |s, &x| s + x * x);
+            // celt_inner_prod, which x86-64 libopus runs as its SSE kernel.
+            let sum = crate::pitch::inner_prod(&input, &input, input.len(), self.arch);
             if !(sum < 1e18) || sum.is_nan() {
                 input.fill(0.0);
                 self.preemph_mem[c] = 0.0;

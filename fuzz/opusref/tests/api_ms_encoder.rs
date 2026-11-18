@@ -280,3 +280,61 @@ fn restricted_silk_surround_matches_libopus() {
         }
     }
 }
+
+/// surround_analysis drops a channel whose preemphasized energy reaches
+/// 1e18, summed with celt_inner_prod as libopus does (SSE lane order on
+/// x86-64): a frame whose energy the two summation orders put on either
+/// side of 1e18 codes as in libopus. Only a reference with a summation
+/// order other than the sequential one has such a frame.
+#[test]
+fn surround_energy_limit_sums_like_libopus() {
+    let (ch, frame) = (3, 960);
+    let mode = opus_rs::modes::default_mode();
+    let (overlap, coef) = (mode.overlap, mode.preemph[0]);
+    let mut seed = 7u32;
+    let noise: Vec<f32> = (0..frame)
+        .map(|_| {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 9) as f32 / (1u32 << 23) as f32 - 0.5
+        })
+        .collect();
+    // Channel 0's analysis input at scale `s` (the first frame: zero
+    // window memory and preemphasis state), and its sums in order and as
+    // libopus's surround_analysis computes them.
+    let sums = |s: f32| {
+        let mut input = vec![0f32; frame + overlap];
+        let mut m = 0f32;
+        for i in 0..frame {
+            let x = 32768.0 * (noise[i] * s);
+            input[overlap + i] = x - m;
+            m = coef * x;
+        }
+        let seq = input.iter().fold(0f32, |a, &x| a + x * x);
+        let lib = unsafe { ref_celt_inner_prod(input.as_ptr(), input.as_ptr(), input.len() as i32, 0) };
+        (seq, lib)
+    };
+    let s0 = (1e18 / sums(1.0).1).sqrt();
+    let Some(s) = (0..20000)
+        .map(|k| s0 * (1.0 + (k as f32 - 10000.0) * 1e-7))
+        .find(|&s| {
+            let (seq, lib) = sums(s);
+            (seq < 1e18) != (lib < 1e18)
+        })
+    else {
+        return;
+    };
+    let mut p = Pair::surround(ch, 1, Application::RestrictedLowDelay).unwrap();
+    for f in 0..4 {
+        let pcm: Vec<f32> = (0..frame * ch)
+            .map(|i| {
+                let (t, c) = (i / ch, i % ch);
+                let tone = ((f * frame + t) as f32 * 0.05 * (c + 1) as f32).sin() * 0.2;
+                if f == 0 && c == 0 { noise[t] * s } else { tone }
+            })
+            .collect();
+        let (mut a, mut b) = (vec![0u8; 4000], vec![0u8; 4000]);
+        let n = p.rs.encode(&pcm, frame, &mut a).unwrap();
+        let m = unsafe { opus_multistream_encode_float(p.c, pcm.as_ptr(), frame as i32, b.as_mut_ptr(), 4000) };
+        assert_eq!(a[..n], b[..m as usize], "frame {f} at scale {s}");
+    }
+}
