@@ -2,7 +2,6 @@
 //! its public fields, with libopus's checks and errors.
 
 use crate::error::BAD_ARG;
-#[cfg(feature = "std")]
 use crate::OpusMode;
 use crate::{Application, OpusEncoder, PcmInput, bits_to_bitrate, frame_rate_from_params};
 
@@ -239,8 +238,7 @@ impl OpusEncoder {
 
     /// libopus `OPUS_SET_FORCE_MODE`: codes every frame in `mode`, or
     /// chooses (`None`).
-    #[cfg(feature = "std")]
-    pub(crate) fn set_force_mode(&mut self, mode: Option<OpusMode>) {
+    pub fn set_force_mode(&mut self, mode: Option<OpusMode>) {
         self.user_forced_mode = mode;
     }
 

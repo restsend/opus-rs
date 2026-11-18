@@ -225,8 +225,10 @@ pub enum Signal {
     Music = 3002,
 }
 
+/// The coding mode of a frame (libopus `MODE_SILK_ONLY`, `MODE_HYBRID`,
+/// `MODE_CELT_ONLY`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OpusMode {
+pub enum OpusMode {
     SilkOnly,
     Hybrid,
     CeltOnly,
