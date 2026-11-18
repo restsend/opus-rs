@@ -1809,15 +1809,35 @@ pub fn quant_all_bands(
 
     let mut norm_buf = [0.0f32; MAX_NORM_SIZE];
     let norm = &mut norm_buf[..norm_size];
-    let mut norm2_buf = [0.0f32; MAX_NORM_SIZE];
-    let norm2 = &mut norm2_buf[..norm_size];
+    // The second channel's folding source, used while dual stereo lasts.
+    let mut norm2_store = None;
+    let norm2: &mut [f32] = match *dual_stereo {
+        true => &mut norm2_store.insert([0.0f32; MAX_NORM_SIZE])[..norm_size],
+        false => &mut [],
+    };
 
     let mut lowband_scratch = [0.0f32; MAX_PVQ_N];
     // The theta RDO copies (bands.c X_save, Y_save, X_save2, Y_save2,
-    // norm_save2 and bytes_save).
-    let [mut x_save, mut y_save] = [[0.0f32; MAX_PVQ_N]; 2];
-    let [mut x_down, mut y_down, mut norm_down] = [[0.0f32; MAX_PVQ_N]; 3];
-    let mut bytes_down = [0u8; crate::range_coder::RANGE_BUF_MAX];
+    // norm_save2 and bytes_save), set up only where the RDO runs.
+    struct ThetaRdo {
+        x_save: [f32; MAX_PVQ_N],
+        y_save: [f32; MAX_PVQ_N],
+        x_down: [f32; MAX_PVQ_N],
+        y_down: [f32; MAX_PVQ_N],
+        norm_down: [f32; MAX_PVQ_N],
+        bytes_down: [u8; crate::range_coder::RANGE_BUF_MAX],
+    }
+    let mut rdo_store = None;
+    let mut rdo = theta_rdo.then(|| {
+        rdo_store.insert(ThetaRdo {
+            x_save: [0.0; MAX_PVQ_N],
+            y_save: [0.0; MAX_PVQ_N],
+            x_down: [0.0; MAX_PVQ_N],
+            y_down: [0.0; MAX_PVQ_N],
+            norm_down: [0.0; MAX_PVQ_N],
+            bytes_down: [0; crate::range_coder::RANGE_BUF_MAX],
+        })
+    });
 
     let mut lowband_offset: usize = 0;
     let mut update_lowband = true;
@@ -1984,7 +2004,15 @@ pub fn quant_all_bands(
             );
         } else if let Some(y_all) = y.as_mut() {
             let y_slice = &mut y_all[offset..offset + n];
-            if theta_rdo && i < intensity {
+            if let Some(ThetaRdo {
+                x_save,
+                y_save,
+                x_down,
+                y_down,
+                norm_down,
+                bytes_down,
+            }) = rdo.as_deref_mut().filter(|_| i < intensity)
+            {
                 // Code the angle rounded down and rounded up, and keep the
                 // one with the larger weighted correlation to the input
                 // (bands.c:1808-1895).
@@ -2010,8 +2038,8 @@ pub fn quant_all_bands(
                 let cm_down = quant_band_stereo(
                     &mut ctx, x_slice, y_slice, n, b, b_blocks, lb, lm, lb_out, 1.0, cm,
                 );
-                let dist_down = w[0] * crate::pitch::inner_prod(&x_save, x_slice, n, arch)
-                    + w[1] * crate::pitch::inner_prod(&y_save, y_slice, n, arch);
+                let dist_down = w[0] * crate::pitch::inner_prod(&x_save[..], x_slice, n, arch)
+                    + w[1] * crate::pitch::inner_prod(&y_save[..], y_slice, n, arch);
 
                 let rc_down = ctx.rc.state();
                 let (seed_down, bits_down) = (ctx.seed, ctx.remaining_bits);
@@ -2044,8 +2072,8 @@ pub fn quant_all_bands(
                 x_cm = quant_band_stereo(
                     &mut ctx, x_slice, y_slice, n, b, b_blocks, lb, lm, lb_out, 1.0, cm,
                 );
-                let dist_up = w[0] * crate::pitch::inner_prod(&x_save, x_slice, n, arch)
-                    + w[1] * crate::pitch::inner_prod(&y_save, y_slice, n, arch);
+                let dist_up = w[0] * crate::pitch::inner_prod(&x_save[..], x_slice, n, arch)
+                    + w[1] * crate::pitch::inner_prod(&y_save[..], y_slice, n, arch);
                 dumpi!("rdo_band", &[i as i32]);
                 dumpf!("rdo_dist", &[dist_down, dist_up]);
                 dumpf!("rdo_x", x_slice);
