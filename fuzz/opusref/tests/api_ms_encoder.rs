@@ -27,6 +27,8 @@ struct Pair {
     ch: usize,
     streams: usize,
     app: Application,
+    /// Compare the packet bytes (RestrictedLowDelay always does).
+    bytes: bool,
 }
 
 impl Pair {
@@ -45,7 +47,7 @@ impl Pair {
             opus_multistream_decoder_create(48000, ch as i32, streams as i32, coupled as i32, mapping.as_ptr(), &mut err)
         };
         assert!(!dec.is_null());
-        Some(Pair { rs, c, dec, ch, streams, app })
+        Some(Pair { rs, c, dec, ch, streams, app, bytes: false })
     }
 
     /// The surround encoders of `opus_multistream_surround_encoder_create`.
@@ -71,7 +73,7 @@ impl Pair {
                     opus_multistream_decoder_create(48000, ch as i32, s, c, mapping.as_ptr(), &mut err)
                 };
                 assert!(!dec.is_null());
-                Some(Pair { rs, c: p, dec, ch, streams: s as usize, app })
+                Some(Pair { rs, c: p, dec, ch, streams: s as usize, app, bytes: false })
             }
         }
     }
@@ -133,7 +135,7 @@ impl Pair {
             assert_eq!(ta, tb, "{what}: ToCs");
         }
         assert_eq!(ta[0], tb[0], "{what}: first ToC");
-        if self.app == Application::RestrictedLowDelay {
+        if self.bytes || self.app == Application::RestrictedLowDelay {
             assert_eq!(pa, pb, "{what}: bytes");
         }
         let mut out = vec![0f32; 5760 * ch];
@@ -254,6 +256,26 @@ fn surround_matches_libopus() {
                     let what = format!("{app:?} family {family} {ch} channels rate {rate} call {f}");
                     p.encode(120 * units, f, entry, 6000, &what);
                 }
+            }
+        }
+    }
+}
+
+/// Surround streams under OPUS_APPLICATION_RESTRICTED_SILK code without
+/// surround masking.
+#[test]
+fn restricted_silk_surround_matches_libopus() {
+    for ch in [3] {
+        for (vbr, rate) in [(true, -1000), (true, 256000), (true, 48000), (false, 96000)] {
+            let mut p = Pair::surround(ch, 1, Application::RestrictedSilk).unwrap();
+            p.bytes = true;
+            p.rs.set_vbr(vbr);
+            p.ctl(SET_VBR, vbr as i32);
+            p.rs.set_bitrate(rate).unwrap();
+            p.ctl(SET_BITRATE, rate);
+            for (f, (units, entry)) in [(8, 0), (4, 1), (16, 2), (8, 0), (24, 0), (8, 1), (8, 2), (8, 0)].into_iter().enumerate() {
+                let what = format!("{ch} channels vbr {vbr} rate {rate} call {f}");
+                p.encode(120 * units, f, entry, 6000, &what);
             }
         }
     }

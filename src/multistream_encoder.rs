@@ -320,8 +320,10 @@ impl MultistreamEncoder {
         if out.len() < smallest {
             return Err(BUFFER_TOO_SMALL);
         }
-        // The masking between surround channels (libopus surround_analysis).
-        let band_smr = if self.mapping_type == MappingType::Surround {
+        // The masking between surround channels (libopus surround_analysis),
+        // which SILK-only streams go without.
+        let masking = self.mapping_type == MappingType::Surround && self.application != Application::RestrictedSilk;
+        let band_smr = if masking {
             self.surround_analysis(pcm, frame_size)
         } else {
             Vec::new()
@@ -425,14 +427,14 @@ impl MultistreamEncoder {
             if !last {
                 curr_max -= if curr_max > 253 { 2 } else { 1 };
             }
-            if self.mapping_type == MappingType::Surround {
+            if masking {
                 band_log_e[..21].copy_from_slice(&band_smr[21 * left..21 * left + 21]);
                 if let Some(r) = right {
                     band_log_e[21..].copy_from_slice(&band_smr[21 * r..21 * r + 21]);
                 }
             }
             let enc = &mut self.encoders[s];
-            if self.mapping_type == MappingType::Surround {
+            if masking {
                 enc.set_energy_mask(band_log_e);
             }
             if !vbr && last {
