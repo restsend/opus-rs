@@ -2014,12 +2014,16 @@ impl OpusEncoder {
             PcmInput::F32(_) => 24,
         };
         let analysis_pcm = analysis24.map(analysis::AnalysisPcm::I24);
-        self.range_final = 0;
         // The frame coded from the call's `frame_size` samples (libopus
-        // `frame_size_select`), which the analysis reads all of.
-        let coded = self
-            .select_frame_size(frame_size)
-            .ok_or(crate::error::BAD_ARG)?;
+        // `frame_size_select`), which the analysis reads all of. An invalid
+        // one reaches opus_encode_native only from opus_encode_float, which
+        // clears the final range; the 16 and 24-bit calls keep it.
+        let Some(coded) = self.select_frame_size(frame_size) else {
+            if matches!(input, PcmInput::F32(_)) && analysis24.is_none() {
+                self.range_final = 0;
+            }
+            return Err(crate::error::BAD_ARG);
+        };
         self.encode_selected(input, frame_size, coded, output, depth, analysis_pcm)
     }
 
