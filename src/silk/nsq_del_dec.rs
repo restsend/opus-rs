@@ -597,19 +597,16 @@ pub fn silk_nsq_del_dec(
     let mut smpl_buf_idx = 0i32;
     let mut decision_delay = (DECISION_DELAY as i32).min(ps_common.subfr_length);
 
+    // Below the pitch lag. Lags of 1 and 2 give libopus a negative delay,
+    // which indexes outside its buffers; here the delay is 0.
     if ps_indices.signal_type as i32 == TYPE_VOICED {
         for k in 0..ps_common.nb_subfr as usize {
-            let pitch_constraint = pitch_l[k] - LTP_ORDER as i32 / 2 - 1;
-            if pitch_constraint > 0 {
-                decision_delay = decision_delay.min(pitch_constraint);
-            }
+            decision_delay = decision_delay.min(pitch_l[k] - LTP_ORDER as i32 / 2 - 1);
         }
     } else if lag > 0 {
-        let lag_constraint = lag - LTP_ORDER as i32 / 2 - 1;
-        if lag_constraint > 0 {
-            decision_delay = decision_delay.min(lag_constraint);
-        }
+        decision_delay = decision_delay.min(lag - LTP_ORDER as i32 / 2 - 1);
     }
+    decision_delay = decision_delay.max(0);
 
     let lsf_interpolation_flag = if ps_indices.nlsf_interp_coef_q2 == 4 {
         0

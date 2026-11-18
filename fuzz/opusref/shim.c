@@ -129,3 +129,41 @@ float ref_op_pvq_search(float *x, int *iy, int k, int n, int arch) {
   return op_pvq_search(x, iy, k, n, arch);
 }
 #endif
+
+/* silk_NSQ_del_dec at `arch` (the kernel libopus's dispatch picks there),
+   on an encoder state and side information made of these fields, for
+   tests/silk_nsq_del_dec.rs. Returns the winner's seed. */
+#include "main.h"
+
+size_t ref_silk_nsq_state_size(void) { return sizeof(silk_nsq_state); }
+
+int ref_silk_nsq_del_dec(int arch, const int *dims, const signed char *ind,
+                         silk_nsq_state *nsq, const opus_int16 *x16, opus_int8 *pulses,
+                         const opus_int16 *PredCoef_Q12, const opus_int16 *LTPCoef_Q14,
+                         const opus_int16 *AR_Q13, const int *HarmShapeGain_Q14,
+                         const int *Tilt_Q14, const opus_int32 *LF_shp_Q14,
+                         const opus_int32 *Gains_Q16, const int *pitchL, int Lambda_Q10,
+                         int LTP_scale_Q14) {
+    silk_encoder_state *enc = calloc(1, sizeof *enc);
+    SideInfoIndices idx;
+    memset(&idx, 0, sizeof idx);
+    enc->fs_kHz = dims[0];
+    enc->nb_subfr = dims[1];
+    enc->frame_length = dims[2];
+    enc->subfr_length = dims[3];
+    enc->ltp_mem_length = dims[4];
+    enc->predictLPCOrder = dims[5];
+    enc->shapingLPCOrder = dims[6];
+    enc->warping_Q16 = dims[7];
+    enc->nStatesDelayedDecision = dims[8];
+    enc->arch = arch;
+    idx.signalType = ind[0];
+    idx.quantOffsetType = ind[1];
+    idx.NLSFInterpCoef_Q2 = ind[2];
+    idx.Seed = ind[3];
+    silk_NSQ_del_dec(enc, nsq, &idx, x16, pulses, PredCoef_Q12, LTPCoef_Q14, AR_Q13,
+                     HarmShapeGain_Q14, Tilt_Q14, LF_shp_Q14, Gains_Q16, pitchL, Lambda_Q10,
+                     LTP_scale_Q14, arch);
+    free(enc);
+    return idx.Seed;
+}
