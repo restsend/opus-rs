@@ -22,19 +22,11 @@ fn hex_to_bytes(s: &str) -> Vec<u8> {
         .collect()
 }
 
-// Byte-exact fixtures are SIMD-path dependent: the encoder mirrors libopus'
-// per-architecture kernels (x86 SSE2/AVX2 vs aarch64 NEON), which produce
-// different, equally valid bitstreams. One fixture per supported arch; other
-// arches fall back to size/determinism/decode checks only.
-#[cfg(target_arch = "x86_64")]
-fn sine_fixture_hex() -> Option<&'static str> {
-    // The packet of libopus main (f1afc4222a) built with intrinsics, at its
-    // SSE2 and AVX2 levels alike, which opus-rs's x86 levels reproduce.
-    Some(
-        "f87b5e0950b78c08d0bbae9ae1d725a823beaa25c2740398a4615b113822973b042c80fdb66da4a3a2cb9c192af55d6bf6dd65c5c7653367144ecc6b0565efad221c5de2215ab8fc6f9f4f48cad42d1c1999da21cfa221cfa037aa44b81ad91d4a8d1d581540cf6c39176eeab2770f00b461d43fa328ae650837e79c9e8f6c417951dc2e4d32634de493b88e0d167016e2646593ed86571dcf2104af43ab137d",
-    )
-}
-
+// Byte-exact fixtures per arch. The x86 sine packet depends on the CPU: the
+// SSE2 PVQ search uses rcpps/rsqrtps, whose results differ between vendors,
+// as in libopus, so x86 has no sine fixture; the opusref tests compare x86
+// packets with libopus on the same CPU. Arches without a fixture check size,
+// determinism and decoding.
 #[cfg(target_arch = "aarch64")]
 fn sine_fixture_hex() -> Option<&'static str> {
     Some(
@@ -42,7 +34,7 @@ fn sine_fixture_hex() -> Option<&'static str> {
     )
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(target_arch = "aarch64"))]
 fn sine_fixture_hex() -> Option<&'static str> {
     None
 }
