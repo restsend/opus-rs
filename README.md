@@ -2,13 +2,14 @@
 
 # opus-rs
 
-A pure-Rust implementation of the [Opus audio codec](https://opus-codec.org/) (RFC 6716), ported from the reference C implementation, libopus. It tracks libopus main at f1afc4222a (after 1.6.1) and is tested bit for bit against it: CELT and SILK against the scalar float build, and the fixed-point SILK encoder of the `silk-fixed` feature against the fixed-point build ([fuzz/DIFFERENTIAL.md](fuzz/DIFFERENTIAL.md)).
+A pure-Rust implementation of the [Opus audio codec](https://opus-codec.org/) (RFC 6716), ported from the reference C implementation, libopus. It tracks libopus main at f1afc4222a (after 1.6.1) and is tested bit for bit against it: CELT and SILK against the scalar float build, and the fixed-point SILK encoder of the `silk-fixed` feature against the fixed-point build. With SIMD, its output follows libopus's SIMD build at the same CPU level ([fuzz/DIFFERENTIAL.md](fuzz/DIFFERENTIAL.md)).
 
 ## Features
 
 - **Pure Rust** — no C dependencies
-- **No `unsafe`:** the crate is `#![forbid(unsafe_code)]`. On x86 and x86-64, SILK's delayed-decision quantizer uses an AVX2 kernel through [fearless_simd](https://crates.io/crates/fearless_simd)'s safe API, chosen at run time and bit-identical to the scalar path; the rest is safe scalar code, the same on every target
-- **High Performance:** Competitive with C libopus on x64/aarch64
+- **No `unsafe`:** the crate is `#![forbid(unsafe_code)]`; its SIMD kernels use [fearless_simd](https://crates.io/crates/fearless_simd)'s safe API. The C library in `capi/` uses `unsafe` for the C ABI only.
+- **SIMD like libopus:** on x86 the codec state holds a CPU level (scalar, SSE2, SSE4.1, AVX2) chosen at run time like libopus's, and the kernels at each level reproduce libopus's x86 kernels, so the output equals libopus's SIMD build on the same CPU. NEON and wasm simd128 kernels give the scalar results.
+- **Fast:** as fast as libopus with its SIMD kernels or faster in almost every case measured ([Performance](#performance)).
 - **`#![no_std]` + no `alloc`:** fully heap-free — runs on bare metal, RTOS, and WebAssembly with **no global allocator**
 
 ## Quick Start
@@ -165,9 +166,10 @@ The public API (`OpusEncoder`/`OpusDecoder` with `encode`/`decode` writing into 
 | `std`    | yes     | Links `std` for float math. Without it the crate is `#![no_std]`. |
 | `heap`   | yes     | Allocates the large codec state on the heap (`Box`), shrinking `OpusEncoder`/`OpusDecoder` to about 3 KB and 0.1 KB so they can live on ordinary stacks. Requires `std`. |
 | `libm`   | no      | Required for `#![no_std]` builds — provides float math via a pure-Rust port of musl `libm`. Not needed when `std` is on. |
+| `silk-fixed` | no | Encodes SILK with libopus's fixed-point encoder ([SILK encoder](#silk-encoder)). |
 | `portable-atomic` | no | No effect; kept for compatibility. The mode table is a compile-time `static`, so the crate uses no atomics and builds on targets without compare-and-swap like `thumbv6m-none-eabi` (Cortex-M0/M0+) or `riscv32imc-unknown-none-elf` (ESP32-C3). |
 
-> Runtime dependencies: `libm` (pure Rust) in `no_std` builds, and `fearless_simd` (no dependencies of its own) on x86 and x86-64.
+> Runtime dependencies: `libm` (pure Rust) in `no_std` builds, and `fearless_simd` (no dependencies of its own) on x86, x86-64, aarch64 and wasm32.
 
 ### SILK encoder
 
@@ -228,32 +230,28 @@ with a libopus without these options are ignored under the features.
 
 ## Performance
 
-Criterion benchmark (`cargo bench --bench opus_vs_c_bench`) with 20 samples, 100 ms warm-up, 500 ms measurement, real speech input (`fixtures/answer_16k.wav`), mono encode-only. All numbers below are wall-clock time for the full frame set.
+opus-rs is as fast as libopus with its SIMD kernels, or faster, in almost
+every case measured. The numbers are opus-rs's time divided by libopus's
+time for the same work, so below 1.0 means opus-rs is faster (0.5 would be
+twice as fast). Measured on an idle AMD Zen 5 against libopus 1.6.1 from
+nixpkgs (run-time CPU detection), both at their AVX2 level; wall time, the
+minimum of 20 interleaved runs on one core, over 58 encode and decode cases
+(mono and stereo, 8–48 kHz, 2.5–60 ms frames, VoIP and audio, complexity
+0–10, CBR/VBR, DTX, FEC, losses):
 
-### vs C Opus (libopus 1.6.1) on x86-64 (AVX2/FMA)
+| | opus-rs time / libopus time |
+|---|---|
+| Encoding, all cases | 0.70–0.99 |
+| Encoding, CELT/Hybrid at complexity 9/10 | about 0.71 |
+| Decoding, all but three cases | 0.81–0.98 |
+| Decoding, high-bitrate CELT (256–510 kbit/s) | 1.00 ± 0.5 % |
+| Deep PLC, per concealed frame | 0.86–0.91 |
 
-Measured on AMD Ryzen 7 5700X, compiled with `--release` (opt-level=3 + ThinLTO).
-
-| Config | Pure Rust | C Opus | Ratio |
-|--------|-----------|--------|-------|
-| 8 kHz / 20 ms VoIP | **39.9 ms** | 40.6 ms | 0.98× (**Rust 2% faster**) |
-| 16 kHz / 20 ms VoIP | **66.8 ms** | 67.1 ms | 1.00× (**Rust 0.5% faster**) |
-| 16 kHz / 10 ms VoIP | 73.2 ms | **72.5 ms** | 1.01× (within noise) |
-| 48 kHz / 20 ms Audio | **25.1 ms** | 28.4 ms | 0.88× (**Rust 12% faster**) |
-| 48 kHz / 10 ms Audio | **29.7 ms** | 31.2 ms | 0.95× (**Rust 5% faster**) |
-
-### vs C Opus (libopus 1.6.1) on Apple Silicon
-
-Measured on Apple Silicon M-series (aarch64), compiled with `--release` (opt-level=3 + ThinLTO), latest run on 2026-04-23.
-
-| Config | Pure Rust | C Opus | Ratio |
-|--------|-----------|--------|-------|
-| 8 kHz / 20 ms VoIP | 31.47 ms | **31.20 ms** | 1.01× (C 0.9% faster) |
-| 16 kHz / 20 ms VoIP | **51.19 ms** | 52.81 ms | 0.97× (**Rust 3.1% faster**) |
-| 16 kHz / 10 ms VoIP | 55.69 ms | **55.49 ms** | 1.00× (within noise) |
-| 48 kHz / 20 ms Audio | **13.97 ms** | 19.39 ms | 0.72× (**Rust 28% faster**) |
-| 48 kHz / 10 ms Audio | **16.19 ms** | 20.28 ms | 0.80× (**Rust 20% faster**) |
-
+On aarch64 and wasm32, opus-rs runs its scalar code plus NEON or simd128
+kernels for the SILK quantizer; these targets were not measured in this
+round. `cargo bench --bench
+opus_vs_c_bench` compares opus-rs with the libopus that the `opus` crate
+links.
 
 ## Release Notes
 
