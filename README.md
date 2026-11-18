@@ -184,9 +184,9 @@ The weights (`dnn-weights/`, about 4.3 MB, SHA-256 in
 `dnn-weights/SHA256SUMS`) are embedded and read in place, so the features
 need no allocator and build without `std` (with `libm`). Their states make
 the codec larger: without `heap`, `OpusDecoder` grows from about 64 KB to
-about 256 KB and `OpusEncoder` from about 307 KB to about 387 KB with
+about 256 KB and `OpusEncoder` from about 305 KB to about 384 KB with
 `deep-plc`, `osce` and `dred`, and setting the decoder up builds the deep
-PLC state (about 65 KB) on the stack. As in libopus, compiling `deep-plc` or `osce` changes
+PLC state (about 70 KB) on the stack. As in libopus, compiling `deep-plc` or `osce` changes
 SILK output at every complexity in small ways (no fade-in after a 16 kHz
 loss; a clamp to ±32767 for 20 ms 16 kHz frames); the affected comparisons
 with a libopus without these options are ignored under the features.
@@ -194,7 +194,7 @@ with a libopus without these options are ignored under the features.
 ### Notes for `no_std` users
 
 - **Large structs:** without `heap`, every working buffer is inline, so
-  `OpusEncoder`/`OpusDecoder` are large (about 307 KB and 64 KB). Place them in a
+  `OpusEncoder`/`OpusDecoder` are large (about 305 KB and 64 KB). Place them in a
   `static` (wrap init in your own `Once`-like guard) or a dedicated buffer rather
   than on the stack. `OpusDecoder::new` still returns the decoder through the stack,
   so use `OpusDecoder::init` to build it directly in that memory:
