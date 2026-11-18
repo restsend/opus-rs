@@ -22,3 +22,4 @@ fuzz/bin
 fuzz/survey
 .direnv/
 capi/target
+!capi/Cargo.lock
