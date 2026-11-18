@@ -2065,10 +2065,17 @@ impl OpusEncoder {
         self.complexity = self.complexity.clamp(0, 10);
         self.packet_loss_perc = self.packet_loss_perc.clamp(0, 100);
 
-        // The encoder consumes exactly frame_size * channels samples per call;
-        // reject short input up front instead of panicking inside the HP filter
-        // or the float→int conversion loops (issue #27 deep-scan).
-        if input.len() < analysis_frame_size * self.channels {
+        // The encoder consumes exactly frame_size * channels samples per call
+        // and the analysis analysis_frame_size * channels of its input;
+        // reject short input up front instead of panicking inside the HP
+        // filter or the float→int conversion loops (issue #27 deep-scan).
+        let analysed = match analysis_pcm {
+            Some(analysis::AnalysisPcm::F32(s)) => s.len(),
+            Some(analysis::AnalysisPcm::I16(s)) => s.len(),
+            Some(analysis::AnalysisPcm::I24(s)) => s.len(),
+            None => input.len(),
+        };
+        if input.len() < frame_size * self.channels || analysed < analysis_frame_size * self.channels {
             return Err("Input buffer too small for frame");
         }
 

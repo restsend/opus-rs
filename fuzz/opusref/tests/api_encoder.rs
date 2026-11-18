@@ -547,3 +547,26 @@ fn encode_errors_match_libopus() {
         }
     }
 }
+
+/// `opus_encode24` with a fixed frame duration reads the whole call for
+/// the analysis, also beyond 120 ms of stereo.
+#[test]
+fn encode24_long_calls_match_libopus() {
+    for (ch, frame_size) in [(2, 6000), (1, 12000)] {
+        let fs = 48000;
+        let mut p = Pair::new(fs, ch, Application::Audio);
+        p.rs.complexity = 10;
+        p.ctl(SET_COMPLEXITY, 10);
+        p.rs.set_expert_frame_duration(opus_rs::FrameDuration::Ms2_5);
+        p.ctl(SET_EXPERT_FRAME_DURATION, opus_rs::FrameDuration::Ms2_5 as i32);
+        for f in 0..4 {
+            let pcm: Vec<i32> = signal(fs, ch, frame_size, f).iter().map(|&x| (x * 8_388_608.0) as i32).collect();
+            let (mut a, mut b) = ([0u8; 1500], [0u8; 1500]);
+            let n = p.rs.encode24(&pcm, frame_size, &mut a);
+            let m = unsafe { opus_encode24(p.c, pcm.as_ptr(), frame_size as i32, b.as_mut_ptr(), 1500) };
+            let what = format!("{ch} channels call {f}");
+            assert_eq!(n.map_or_else(|e| opus_rs::error::code(e).unwrap_or(0), |n| n as i32), m, "{what}");
+            assert_eq!(a[..m as usize], b[..m as usize], "{what}: bytes");
+        }
+    }
+}
