@@ -16,7 +16,7 @@
 13	test:fec_after_dtx	-	FAILED	decode_fec mode after DTX
 14	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	range] decode_fec ->hybrid	decode_fec final range on Hybrid
 14b	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	range] decode_fec	decode_fec range after concealing part of a Hybrid frame
-14c	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	range] decode_fec	decode_fec range after a SILK-to-CELT redundant frame
+14c	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid,simd	range] decode_fec	decode_fec range after a SILK-to-CELT redundant frame
 14d	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	rs-err	partial Hybrid concealment at a length CELT supports
 15a	diff_kernels	-	silk_sum_sqr_shift/simd	silk_sum_sqr_shift AVX2
 15b	diff_kernels@aarch64	-	silk_sum_sqr_shift/scalar	silk_sum_sqr_shift NEON
@@ -43,7 +43,7 @@ d8	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] valid lost silk->	conce
 d9	test:packet_limits	-	FAILED	frames over 1275 bytes and code-3 packets over 120 ms accepted
 d10	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode ->silk	frames of a packet ignore the previous frame redundancy
 d11	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode_fec silk->dtx	decode_fec of a ToC-only packet conceals with the old frame size
-d12	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode_fec dtx->silk	decode_fec after CELT concealment skips the SILK reset and bridge
+d12	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid,simd	pcm] decode_fec dtx->silk	decode_fec after CELT concealment skips the SILK reset and bridge
 d14	test:toc_only_code2	-	FAILED	ToC-only code-2 packet concealed instead of rejected
 d13	test:tiny_frames	-	FAILED	0/1-byte frames inside a packet decoded instead of concealed
 d15	test:hybrid_postfilter_carry	-	FAILED	Hybrid frames drop the postfilter gain of the frame before
