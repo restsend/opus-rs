@@ -194,9 +194,8 @@ pub(crate) unsafe fn init_encoders(st: *mut OpusMSEncoder, head: Result<OpusMSEn
         // SAFETY: see the function.
         let slots: &mut [MaybeUninit<OpusEncoder>] = unsafe { tail(st, head.streams()) };
         for (s, slot) in slots.iter_mut().enumerate() {
-            match head.stream_encoder(s) {
-                Ok(enc) => _ = slot.write(enc),
-                Err(e) => return code(e),
+            if let Err(e) = head.init_stream_encoder(s, slot) {
+                return code(e);
             }
         }
         // SAFETY: see the function.

@@ -1,7 +1,7 @@
 //! `opus_encoder_*` / `opus_encode*` over [`opus_rs::OpusEncoder`].
 
 use core::ffi::c_int;
-use core::mem::size_of;
+use core::mem::{MaybeUninit, size_of};
 use core::slice;
 
 use opus_rs::{Application, Bandwidth, FrameDuration, OpusMode, Signal};
@@ -153,13 +153,11 @@ pub unsafe extern "C" fn opus_encoder_init(st: *mut OpusEncoder, fs: i32, channe
     let Some(app) = application(app).filter(|_| !st.is_null()) else {
         return OPUS_BAD_ARG;
     };
-    guard(OPUS_INTERNAL_ERROR, || match OpusEncoder::new(fs, channels as usize, app) {
-        Ok(enc) => {
-            // SAFETY: `st` points to opus_encoder_get_size() writable bytes
-            // with malloc's alignment (opus.h).
-            unsafe { st.write(enc) };
-            OPUS_OK
-        }
+    // SAFETY: `st` points to opus_encoder_get_size() writable bytes with
+    // malloc's alignment (opus.h).
+    let slot = unsafe { &mut *st.cast::<MaybeUninit<OpusEncoder>>() };
+    guard(OPUS_INTERNAL_ERROR, || match OpusEncoder::init(slot, fs, channels as usize, app) {
+        Ok(_) => OPUS_OK,
         Err(_) => OPUS_BAD_ARG,
     })
 }
