@@ -28,7 +28,7 @@ fn test_celt_loopback() {
         all_in.extend_from_slice(&pcm_in);
         let rc_size: u32 = 2048;
         let mut rc = RangeCoder::new_encoder(rc_size);
-        encoder.encode(&pcm_in, frame_size, &mut rc);
+        encoder.encode(&pcm_in, frame_size, &mut rc).unwrap();
         rc.done();
 
         // The frame is at most 1275 bytes; the encoder shrinks the coder.

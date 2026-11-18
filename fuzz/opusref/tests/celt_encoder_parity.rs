@@ -90,7 +90,8 @@ fn identical_ends(
                 rc.encode_bit_logp(i & 1 == 1, 1);
             }
             let vbr = cfg.vbr && cfg.bitrate != MAX;
-            e.encode_with_budget_vbr(&planar, n, &mut rc, cfg.start, (bytes * 8) as i32, vbr);
+            e.encode_with_budget_vbr(&planar, n, &mut rc, cfg.start, (bytes * 8) as i32, vbr)
+                .unwrap();
             rc.done();
             let a = rc.buf[..rc.storage as usize].to_vec();
             let mut b = vec![0u8; bytes];
@@ -274,4 +275,32 @@ fn tone_detect_sums_the_channels() {
     let tone =
         |f: usize, i: usize, _| ((f * 120 + i) as f32 * 0.8 * std::f32::consts::PI).sin() * 2850.0;
     assert_eq!(identical(cfg, 20, tone), [true; 20]);
+}
+
+/// celt_encode_with_ec returns OPUS_BAD_ARG for fewer than 2 bytes or a
+/// frame size other than 120 << LM (celt_encoder.c:1832-1845) and leaves
+/// the state as is.
+#[test]
+fn bad_budgets_and_frame_sizes_return_bad_arg() {
+    let mut e = CeltEncoder::new(opus_rs::modes::default_mode(), 1);
+    let r = unsafe { ref_celt_encoder_create(48000, 1) };
+    let pcm: Vec<f32> = (0..960).map(|i| noise(5, 0.3)(0, i, 0)).collect();
+    for (bytes, n) in [(1, 960), (0, 960), (100, 48), (100, 100), (100, 1920)] {
+        let mut rc = RangeCoder::new_encoder(bytes as u32);
+        let a = e.encode(&pcm[..n.min(960)], n, &mut rc);
+        let mut out = vec![0u8; 100];
+        let b = unsafe { ref_celt_encode(r, pcm.as_ptr(), n as i32, out.as_mut_ptr(), bytes) };
+        assert_eq!(
+            (a, b),
+            (Err(opus_rs::error::BAD_ARG), -1),
+            "{bytes} bytes, {n} samples"
+        );
+    }
+    let mut rc = RangeCoder::new_encoder(100);
+    e.encode(&pcm, 960, &mut rc).unwrap();
+    rc.done();
+    let mut out = vec![0u8; 100];
+    let m = unsafe { ref_celt_encode(r, pcm.as_ptr(), 960, out.as_mut_ptr(), 100) };
+    assert_eq!(&rc.buf[..rc.storage as usize], &out[..m as usize]);
+    unsafe { ref_celt_encoder_destroy(r) };
 }

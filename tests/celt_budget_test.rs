@@ -46,7 +46,7 @@ fn celt_loopback_160bytes() {
         let pcm_in = &all_in[f * frame_size..(f + 1) * frame_size];
 
         let mut rc = RangeCoder::new_encoder(n_bytes as u32);
-        encoder.encode(pcm_in, frame_size, &mut rc);
+        encoder.encode(pcm_in, frame_size, &mut rc).unwrap();
         rc.done();
 
         // Copy the full buffer (maintaining front/end layout for the decoder)

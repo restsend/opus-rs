@@ -2138,7 +2138,15 @@ impl CeltEncoder {
         }
     }
 
-    pub fn encode(&mut self, pcm: &[f32], frame_size: usize, rc: &mut RangeCoder) {
+    /// libopus `celt_encode_with_ec` with the coder's size as the byte
+    /// budget. Errors with `BAD_ARG` for a budget below 2 bytes or a
+    /// frame size other than 2.5, 5, 10 or 20 ms, leaving the state as is.
+    pub fn encode(
+        &mut self,
+        pcm: &[f32],
+        frame_size: usize,
+        rc: &mut RangeCoder,
+    ) -> Result<(), &'static str> {
         self.encode_impl(pcm, frame_size, rc, 0, None)
     }
 
@@ -2148,7 +2156,7 @@ impl CeltEncoder {
         frame_size: usize,
         rc: &mut RangeCoder,
         start_band: usize,
-    ) {
+    ) -> Result<(), &'static str> {
         self.encode_impl(pcm, frame_size, rc, start_band, None)
     }
 
@@ -2159,7 +2167,7 @@ impl CeltEncoder {
         rc: &mut RangeCoder,
         start_band: usize,
         total_bits: i32,
-    ) {
+    ) -> Result<(), &'static str> {
         self.encode_impl(pcm, frame_size, rc, start_band, Some(total_bits))
     }
 
@@ -2173,7 +2181,7 @@ impl CeltEncoder {
         start_band: usize,
         total_bits: i32,
         _is_vbr: bool,
-    ) {
+    ) -> Result<(), &'static str> {
         self.encode_impl(pcm, frame_size, rc, start_band, Some(total_bits))
     }
 
@@ -2228,7 +2236,7 @@ impl CeltEncoder {
         rc: &mut RangeCoder,
         start_band: usize,
         explicit_total_bits: Option<i32>,
-    ) {
+    ) -> Result<(), &'static str> {
         let mode = self.mode;
         // libopus CC (input channels) and C (coded channels): a mono stream
         // of stereo input codes the two channels' average.
@@ -2242,30 +2250,15 @@ impl CeltEncoder {
         let eff_end = end.min(mode.eff_ebands);
         let overlap = mode.overlap;
 
-        // The encoder geometry requires frame_size == short_mdct_size << lm
-        // (120/240/480/960). Any other size makes the lm search fall back to
-        // lm=0, which mis-sizes the MDCT buffers and panics mid-transform
-        // (or worse, silently mis-encodes). Fail fast with a clear message;
-        // OpusEncoder::encode() validates this before reaching CELT.
-        assert!(
-            (0..=mode.max_lm).any(|lm| mode.short_mdct_size << lm == frame_size),
-            "CeltEncoder: invalid frame_size {} (valid: {}..={} kHz multiples of {})",
-            frame_size,
-            mode.short_mdct_size,
-            mode.short_mdct_size << mode.max_lm,
-            mode.short_mdct_size
-        );
-
-        let mut lm = 0;
-        while (mode.short_mdct_size << lm) != frame_size {
-            lm += 1;
-            if lm > mode.max_lm {
-                break;
-            }
+        // libopus's nbCompressedBytes is the coder's size or the budget;
+        // the frame is 120 << lm samples at 48 kHz (celt_encoder.c:1832-1845).
+        if explicit_total_bits.map_or(rc.storage as i32, |b| b / 8) < 2 {
+            return Err(crate::error::BAD_ARG);
         }
-        if (mode.short_mdct_size << lm) != frame_size {
-            lm = 0;
-        }
+        let Some(lm) = (0..=mode.max_lm).find(|&lm| mode.short_mdct_size << lm == frame_size)
+        else {
+            return Err(crate::error::BAD_ARG);
+        };
 
         dumpf!(
             "analysis",
@@ -3396,6 +3389,7 @@ impl CeltEncoder {
         } else {
             self.consec_transient = 0;
         }
+        Ok(())
     }
 }
 
@@ -4568,7 +4562,8 @@ mod tests {
             enc.set_vbr(vbr);
             enc.set_bitrate(bitrate);
             let mut rc = RangeCoder::new_encoder(100);
-            enc.encode_with_budget_vbr(&silence, 960, &mut rc, 0, 800, is_vbr);
+            enc.encode_with_budget_vbr(&silence, 960, &mut rc, 0, 800, is_vbr)
+                .unwrap();
             assert_eq!(
                 rc.storage, bytes,
                 "vbr {vbr} bitrate {bitrate} is_vbr {is_vbr}"
@@ -4634,7 +4629,8 @@ mod tests {
         enc.complexity = 10;
         let code = |enc: &mut CeltEncoder, pcm: &[f32]| {
             let mut rc = RangeCoder::new_encoder(20);
-            enc.encode_with_budget_vbr(pcm, pcm.len(), &mut rc, 0, 160, false);
+            enc.encode_with_budget_vbr(pcm, pcm.len(), &mut rc, 0, 160, false)
+                .unwrap();
             rc.done();
         };
         let tone: Vec<f32> = (0..120 * 8).map(|i| 0.1 * (i as f32 * 0.3).sin()).collect();
@@ -4649,34 +4645,43 @@ mod tests {
         assert_eq!(enc.consec_transient, 8);
     }
 
-    // Regression test: directly drive CeltEncoder with an invalid frame_size=48,
-    // bypassing the OpusEncoder::encode() validation layer.
-    //
-    // This reproduces the crash that was reported against opus-rs 0.1.19 when
-    // G.729-decoded PCM (8 kHz) reached the 48 kHz Opus encoder without correct
-    // resampling, producing a 48-sample frame instead of 480.
-    //
-    // Root cause: the lm-search in encode_impl finds no valid match for frame_size=48
-    // (valid sizes are 120, 240, 480, 960) and silently falls back to lm=0.
-    // With lm=0 and shift=max_lm=3: n=1920>>3=240, n2=120, overlap2=60.
-    // The in_buf slice has only frame_size+overlap=168 elements, but forward()
-    // requires input.len() >= n2+overlap2 = 180, so it panics immediately.
-    // In opus-rs 0.1.19 this assertion was absent and the crash reached the MDCT
-    // output write: "index out of bounds: the len is 48 but the index is 119".
-    //
-    // Either way: the call panics, confirming the crash path is real.
-    // The fix in OpusEncoder::encode() returns Err before reaching CeltEncoder.
+    /// celt_encode_with_ec returns OPUS_BAD_ARG for a budget below 2 bytes
+    /// or a frame size other than 120 << LM (celt_encoder.c:1832-1845),
+    /// before it changes the state: the next frame codes like a new
+    /// encoder's first. 48-sample frames (8 kHz PCM fed at 48 kHz) panicked
+    /// in the MDCT before.
     #[test]
-    #[should_panic]
-    fn test_celt_frame_size_48_panics_confirms_crash_path() {
-        let mode = modes::default_mode();
-        let mut enc = CeltEncoder::new(mode, 1);
-        // frame_size=48: lm-search fails, falls back to lm=0.
-        // forward() will panic — either on the input-size assertion (0.1.21+) or
-        // on the output write (0.1.19): "len is 48 but the index is 119".
-        let pcm = vec![0.0f32; 48 + mode.overlap]; // supply ≥ frame_size samples
-        let mut rc = RangeCoder::new_encoder(100);
-        enc.encode_with_budget(&pcm, 48, &mut rc, 0, 800);
+    fn bad_budgets_and_frame_sizes_are_refused() {
+        let pcm: Vec<f32> = (0..960).map(|i| (i as f32 * 0.1).sin() * 0.5).collect();
+        let first = |enc: &mut CeltEncoder| {
+            let mut rc = RangeCoder::new_encoder(100);
+            enc.encode(&pcm, 960, &mut rc).unwrap();
+            rc.done();
+            (rc.buf[..100].to_vec(), rc.rng)
+        };
+        let mut enc = CeltEncoder::new(modes::default_mode(), 1);
+        let want = first(&mut enc);
+        let mut enc = CeltEncoder::new(modes::default_mode(), 1);
+        for (size, frame, bits) in [
+            (1, 960, None),
+            (100, 960, Some(15)),
+            (100, 960, Some(-8)),
+            (100, 48, None),
+            (100, 100, Some(800)),
+        ] {
+            let mut rc = RangeCoder::new_encoder(size);
+            let r = match bits {
+                None => enc.encode(&pcm[..frame], frame, &mut rc),
+                Some(b) => enc.encode_with_budget(&pcm[..frame], frame, &mut rc, 0, b),
+            };
+            assert_eq!(
+                r,
+                Err(crate::error::BAD_ARG),
+                "{size} bytes, {frame} samples, {bits:?} bits"
+            );
+            assert_eq!(rc.tell(), 1);
+        }
+        assert_eq!(first(&mut enc), want);
     }
 
     // Issue #54: a frame whose comb filter is cancelled must still fade the
@@ -4762,7 +4767,8 @@ mod mode_switch_tests {
     /// A CBR frame of `bytes` bytes.
     fn encode(enc: &mut CeltEncoder, pcm: &[f32], bytes: usize) -> Vec<u8> {
         let mut rc = RangeCoder::new_encoder(bytes as u32);
-        enc.encode_with_budget_vbr(pcm, pcm.len(), &mut rc, 0, (bytes * 8) as i32, false);
+        enc.encode_with_budget_vbr(pcm, pcm.len(), &mut rc, 0, (bytes * 8) as i32, false)
+            .unwrap();
         rc.done();
         rc.buf[..bytes].to_vec()
     }
@@ -4845,7 +4851,8 @@ mod hybrid_decision_tests {
     fn encode(enc: &mut CeltEncoder, pcm: &[f32], start_band: usize, bytes: usize) -> i32 {
         let mut rc = RangeCoder::new_encoder(bytes as u32);
         let vbr = enc.vbr;
-        enc.encode_with_budget_vbr(pcm, 960, &mut rc, start_band, (bytes * 8) as i32, vbr);
+        enc.encode_with_budget_vbr(pcm, 960, &mut rc, start_band, (bytes * 8) as i32, vbr)
+            .unwrap();
         rc.tell()
     }
 

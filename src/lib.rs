@@ -892,7 +892,7 @@ fn compute_redundancy_bytes(
 /// prefills of a mode switch, which libopus codes with a range coder of
 /// their own (`celt_encode_with_ec` without one). `vbr` says whether the
 /// encoder's rate settings make the frame VBR. Returns the frame's final
-/// range.
+/// range, or the CELT encoder's error.
 fn encode_celt_side_frame(
     celt: &mut CeltEncoder,
     pcm: &[f32],
@@ -901,7 +901,7 @@ fn encode_celt_side_frame(
     start_band: usize,
     vbr: bool,
     out: &mut [u8],
-) -> u32 {
+) -> Result<u32, &'static str> {
     // At most 5 ms of stereo at 48 kHz.
     let mut planar = [0.0f32; 480];
     for i in 0..n {
@@ -918,10 +918,10 @@ fn encode_celt_side_frame(
         start_band,
         bytes as i32 * 8,
         vbr,
-    );
+    )?;
     rc.done();
     out.copy_from_slice(&rc.buf[..bytes]);
-    rc.rng
+    Ok(rc.rng)
 }
 
 /// libopus's Hybrid high-band gain, Q15ONE - SHR32(celt_exp2(-rate/1024), 1)
@@ -3479,7 +3479,8 @@ impl OpusEncoder {
                 0,
                 false,
                 redundant,
-            );
+            )
+            .map_err(|_| error::INTERNAL_ERROR)?;
             self.celt_enc.reset_state();
         }
 
@@ -3510,7 +3511,7 @@ impl OpusEncoder {
             if celt_prefill {
                 self.celt_enc.reset_state();
                 let mut dummy = [0u8; 2];
-                encode_celt_side_frame(
+                let _ = encode_celt_side_frame(
                     &mut self.celt_enc,
                     tmp_prefill,
                     n4,
@@ -3537,14 +3538,16 @@ impl OpusEncoder {
 
             let total_packet_bits = (nb_compr_bytes * 8) as i32;
             if self.rc.tell() <= total_packet_bits {
-                self.celt_enc.encode_with_budget_vbr(
-                    celt_input,
-                    frame_size,
-                    &mut self.rc,
-                    start_band,
-                    total_packet_bits,
-                    celt_vbr,
-                );
+                self.celt_enc
+                    .encode_with_budget_vbr(
+                        celt_input,
+                        frame_size,
+                        &mut self.rc,
+                        start_band,
+                        total_packet_bits,
+                        celt_vbr,
+                    )
+                    .map_err(|_| error::INTERNAL_ERROR)?;
             }
         }
 
@@ -3558,7 +3561,7 @@ impl OpusEncoder {
             self.celt_enc.set_bitrate(celt::OPUS_BITRATE_MAX);
             let tail = &self.buf_celt_pcm[(frame_size - n2 - n4) * ch..frame_size * ch];
             let mut dummy = [0u8; 2];
-            encode_celt_side_frame(
+            let _ = encode_celt_side_frame(
                 &mut self.celt_enc,
                 &tail[..n4 * ch],
                 n4,
@@ -3575,7 +3578,8 @@ impl OpusEncoder {
                 0,
                 false,
                 redundant,
-            );
+            )
+            .map_err(|_| error::INTERNAL_ERROR)?;
         }
         let next_prev_mode = if to_celt { OpusMode::CeltOnly } else { mode };
 

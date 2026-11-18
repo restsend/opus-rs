@@ -200,13 +200,15 @@ fn test_celt_encode_with_start_band() {
 
     // Encode full spectrum (start_band = 0)
     let mut rc_full = RangeCoder::new_encoder(1500);
-    enc_full.encode(&input, frame_size, &mut rc_full);
+    enc_full.encode(&input, frame_size, &mut rc_full).unwrap();
     rc_full.done();
     let full_bits = rc_full.tell();
 
     // Encode with start_band = 17 (high-frequency only)
     let mut rc_partial = RangeCoder::new_encoder(1500);
-    enc_partial.encode_with_start_band(&input, frame_size, &mut rc_partial, 17);
+    enc_partial
+        .encode_with_start_band(&input, frame_size, &mut rc_partial, 17)
+        .unwrap();
     rc_partial.done();
     let partial_bits = rc_partial.tell();
 
@@ -239,7 +241,9 @@ fn test_celt_decode_with_start_band() {
 
     // Encode with start_band = 17
     let mut rc = RangeCoder::new_encoder(1500);
-    encoder.encode_with_start_band(&input, frame_size, &mut rc, 17);
+    encoder
+        .encode_with_start_band(&input, frame_size, &mut rc, 17)
+        .unwrap();
     rc.done();
 
     // Build the encoded bytes
