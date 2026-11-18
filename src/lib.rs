@@ -639,14 +639,14 @@ fn decide_fec(
 fn is_digital_silence(input: PcmInput<'_>, len: usize, depth: i32) -> bool {
     let limit = 1.0 / (1 << depth) as f32;
     match input {
-        PcmInput::F32(s) => {
-            let (mut max, mut min) = (0.0f32, 0.0f32);
-            for &x in &s[..len] {
-                max = if max > x { max } else { x };
-                min = if min < x { min } else { x };
-            }
-            (if max > -min { max } else { -min }) <= limit
-        }
+        // A NaN makes both NaN and the next sample restarts them, so the
+        // result depends on the samples after the last NaN only: quiet when
+        // none of them is above `limit` and the last sample is not the NaN.
+        // Scanning back from the end stops at the first loud sample or NaN.
+        PcmInput::F32(s) => match s[..len].iter().rposition(|x| x.is_nan() || x.abs() > limit) {
+            None => true,
+            Some(i) => s[i].is_nan() && i + 1 < len,
+        },
         PcmInput::I16(s) => s[..len]
             .iter()
             .all(|&x| (x as f32 * (1.0 / 32768.0)).abs() <= limit),
