@@ -3900,7 +3900,7 @@ impl OpusEncoder {
                     (offs[i], lens[i]) = (starts[i] + 2, 0);
                     continue;
                 }
-                let frames = frame_payloads(sub)?;
+                let frames = opus_packet_parse(sub)?;
                 if frames.len() != 1 {
                     return Err("Unexpected sub-frame packet");
                 }
@@ -5290,128 +5290,6 @@ fn channels_from_toc(toc: u8) -> usize {
     if toc & 0x04 != 0 { 2 } else { 1 }
 }
 
-/// The frames of a packet of at least 2 bytes, split as its ToC's code says
-/// (RFC 6716 §3.2; libopus `opus_packet_parse_impl`).
-fn frame_payloads(input: &[u8]) -> Result<FixedVec<&[u8], OPUS_MAX_PACKET_FRAMES>, &'static str> {
-    Ok(match input[0] & 0x03 {
-        0 => FixedVec::from_slice(&[&input[1..]]),
-        1 => {
-            let data_len = input.len() - 1;
-            // RFC 6716 §3.2.1: code 1 carries two equal-size (CBR) frames,
-            // so the payload length must be even. libopus rejects odd lengths.
-            if !data_len.is_multiple_of(2) {
-                return Err("Code 1: payload length must be even");
-            }
-            let half = data_len / 2;
-            if half == 0 {
-                return Err("Code 1: empty frame");
-            }
-            FixedVec::from_slice(&[&input[1..1 + half], &input[1 + half..]])
-        }
-        2 => {
-            let data = &input[1..];
-            if data.is_empty() {
-                return Err("Code 2 packet has no data");
-            }
-            let (first_len, header_size) = parse_frame_size(data)?;
-            if header_size + first_len > data.len() {
-                return Err("Code 2: first frame size exceeds packet");
-            }
-            FixedVec::from_slice(&[
-                &data[header_size..header_size + first_len],
-                &data[header_size + first_len..],
-            ])
-        }
-        3 => {
-            if input.len() < 2 {
-                return Err("Code 3 packet too short");
-            }
-            let count_byte = input[1];
-            let n_frames = (count_byte & 0x3F) as usize;
-            if !(1..=48).contains(&n_frames) {
-                return Err("Code 3: invalid frame count");
-            }
-            let frame_count = n_frames;
-            // Bit 6 = padding flag, bit 7 = VBR flag (RFC 6716 §3.2.1).
-            let padding_flag = (count_byte & 0x40) != 0;
-            let vbr = (count_byte & 0x80) != 0;
-
-            // Parse the optional padding length bytes that follow the count
-            // byte. The padding *content* (pad_len bytes) lives at the end of
-            // the packet and is not part of any frame.
-            let mut ptr = 2usize;
-            let mut pad_len = 0usize;
-            if padding_flag {
-                loop {
-                    if ptr >= input.len() {
-                        return Err("Code 3: padding overflow");
-                    }
-                    let p = input[ptr] as usize;
-                    ptr += 1;
-                    if p == 255 {
-                        pad_len += 254;
-                    } else {
-                        pad_len += p;
-                        break;
-                    }
-                }
-            }
-            if ptr + pad_len > input.len() {
-                return Err("Code 3: padding exceeds packet");
-            }
-            let payload_end = input.len() - pad_len;
-            let payload = &input[ptr..payload_end];
-
-            let mut payloads: FixedVec<&[u8], OPUS_MAX_PACKET_FRAMES> = FixedVec::new();
-            if frame_count == 1 {
-                // Single frame: the entire payload region is the frame, both
-                // for VBR and CBR (no length prefix is present).
-                payloads.push(payload);
-            } else if vbr {
-                // VBR (V=1): the per-frame length fields for all frames
-                // except the last come first, then all frame payloads
-                // (RFC 6716 §3.2.1; libopus `opus_packet_parse_impl`).
-                // Interleaving length and data — as this used to — parsed
-                // any libopus code-3 VBR packet wrong.
-                let mut cursor = 0usize;
-                let mut frame_bytes = 0usize;
-                let mut sizes = [0usize; OPUS_MAX_PACKET_FRAMES];
-                for i in 0..frame_count - 1 {
-                    if cursor >= payload.len() {
-                        return Err("Code 3: unexpected end in VBR header");
-                    }
-                    let (frame_len, header_bytes) = parse_frame_size(&payload[cursor..])?;
-                    cursor += header_bytes;
-                    sizes[i] = frame_len;
-                    frame_bytes += frame_len;
-                }
-                if frame_bytes > payload.len() - cursor {
-                    return Err("Code 3: frame length exceeds packet");
-                }
-                sizes[frame_count - 1] = payload.len() - cursor - frame_bytes;
-                let mut data_pos = cursor;
-                for i in 0..frame_count {
-                    payloads.push(&payload[data_pos..data_pos + sizes[i]]);
-                    data_pos += sizes[i];
-                }
-            } else {
-                // CBR (V=0): remaining bytes are split equally into M frames
-                // (RFC 6716 §3.2.1: "the remaining bytes are split into M
-                // equal chunks").
-                if !payload.len().is_multiple_of(frame_count) {
-                    return Err("Code 3 CBR: payload not divisible by frame count");
-                }
-                let frame_len = payload.len() / frame_count;
-                for i in 0..frame_count {
-                    payloads.push(&payload[i * frame_len..(i + 1) * frame_len]);
-                }
-            }
-            payloads
-        }
-        _ => unreachable!(),
-    })
-}
-
 /// Parse an Opus frame length per RFC 6716 §3.2.1, identical to libopus
 /// `parse_size()`:
 ///   - `0`: no frame (DTX / lost packet)
@@ -5432,6 +5310,14 @@ pub(crate) fn parse_frame_size(data: &[u8]) -> Result<(usize, usize), &'static s
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
+
+    /// A ToC-only code 1 packet holds two empty frames, as
+    /// opus_packet_parse returns.
+    #[test]
+    fn code_1_packet_without_payload_has_two_empty_frames() {
+        let frames = opus_packet_parse(&[0x01]).unwrap();
+        assert_eq!(frames.as_slice(), &[&[][..], &[][..]]);
+    }
 
     #[test]
     fn decoder_complexity_is_0_to_10() {
