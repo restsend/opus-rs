@@ -1147,7 +1147,7 @@ pub fn quant_partition(
                 } else {
                     for xv in x[..n].iter_mut() {
                         ctx.seed = celt_lcg_rand(ctx.seed);
-                        *xv = ((ctx.seed as i32 >> 20) as f32) / 16384.0;
+                        *xv = (ctx.seed as i32 >> 20) as f32;
                     }
                     renormalise_vector(x, n, gain, ctx.arch);
                     cm = cm_mask;
@@ -2378,5 +2378,39 @@ mod tests {
         assert_eq!(bitexact_log2tan(30274, 12540), 2611);
         assert_eq!(bitexact_log2tan(23171, 23171), 0);
         assert_eq!(bitexact_log2tan(200, 32767), -15059);
+    }
+
+    /// A band without pulses or fold source fills with the integer noise
+    /// (int)seed>>20 and renormalises it (bands.c:1154, SHL32 is an
+    /// identity in float); EPSILON weighs the same as in libopus on tiny
+    /// sums. The seeds give (-1, -1) and (1, 0).
+    #[test]
+    fn noise_fill_renormalises_the_integer_noise() {
+        let m = crate::modes::default_mode();
+        for (seed, noise) in [(727034u32, [-1.0f32, -1.0]), (2600330, [1.0, 0.0])] {
+            let mut rc = RangeCoder::new_decoder(&[0; 8]);
+            let mut ctx = BandCtx {
+                encode: false,
+                m,
+                i: 0,
+                band_e: &[0.0; 21],
+                rc: &mut rc,
+                spread: 2,
+                remaining_bits: 0,
+                resynth: true,
+                tf_change: 0,
+                intensity: 0,
+                theta_round: 0,
+                avoid_split_noise: false,
+                arch: crate::Arch::Scalar,
+                disable_inv: false,
+                seed,
+            };
+            let mut x = [0.0f32; 2];
+            quant_partition(&mut ctx, &mut x, 2, 0, 1, None, 0, 0.7, 1);
+            let mut want = noise;
+            crate::pvq::renormalise_vector(&mut want, 2, 0.7, crate::Arch::Scalar);
+            assert_eq!(x.map(f32::to_bits), want.map(f32::to_bits), "seed {seed}");
+        }
     }
 }
