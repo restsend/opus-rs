@@ -105,7 +105,7 @@ const MODE_48000_960_120_FIELDS: CeltMode = CeltMode {
     overlap: 120,
     nb_ebands: 21,
     eff_ebands: 21,
-    preemph: [0.850_006_1, 0.100_006_1, 1.512_834_7, 0.661_010_7],
+    preemph: [0.850_006_1, 0.0, 1.0, 1.0],
     e_bands: &EBAND_5MS,
     max_lm: 3,
     nb_short_mdcts: 8,

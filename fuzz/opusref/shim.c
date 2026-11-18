@@ -76,6 +76,7 @@ void ref_fft_impl(float *x, int shift) {
 }
 const float *ref_mdct_trig(void) { return ref_celt_mode48()->mdct.trig; }
 const float *ref_window(void) { return ref_celt_mode48()->window; }
+const float *ref_preemph(void) { return ref_celt_mode48()->preemph; }
 
 /* A bare CELT encoder (celt_encoder_init as opus_encoder.c sets it up,
    without signalling), for comparisons with opus-rs's CeltEncoder. */

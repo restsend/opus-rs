@@ -71,7 +71,7 @@ fn rld_input_is_dc_rejected() {
     assert_eq!(identical(1, 20.0, 24, 2, "sine", 2), [true, true]);
 }
 
-/// The static mode's MDCT twiddles and window are libopus's
+/// The static mode's MDCT twiddles, window and pre-emphasis are libopus's
 /// static_modes_float.h literals. libopus interleaves each size's
 /// twiddles as (-sin, cos) pairs; opus-rs keeps the N/4 cosines followed
 /// by the N/4 negated sines.
@@ -93,6 +93,7 @@ fn static_mode_tables_are_libopus_literals() {
     assert_eq!(mode.window, unsafe {
         std::slice::from_raw_parts(ref_window(), 120)
     });
+    assert_eq!(mode.preemph, unsafe { *ref_preemph().cast::<[f32; 4]>() });
 }
 
 /// The static mode's FFTs round like libopus's kiss_fft butterflies.

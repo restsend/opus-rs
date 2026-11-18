@@ -479,6 +479,7 @@ unsafe extern "C" {
     /// 120-sample window.
     pub fn ref_mdct_trig() -> *const f32;
     pub fn ref_window() -> *const f32;
+    pub fn ref_preemph() -> *const f32;
 }
 
 /// The repacketizer and packet extensions of the reference.
