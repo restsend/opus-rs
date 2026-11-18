@@ -66,7 +66,7 @@ impl ProjectionEncoder {
         }
         let mapping: Vec<u8> = (0..channels as u8).collect();
         let mut ms = MultistreamEncoder::new(sampling_rate, channels, streams, coupled, &mapping, application)?;
-        ms.mixing = Some(mixing);
+        ms.head.mixing = Some(mixing);
         Ok(ProjectionEncoder { ms, demixing, streams, coupled, channels })
     }
 
