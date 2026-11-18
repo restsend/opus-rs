@@ -69,6 +69,36 @@ pub struct RdovaeEnc<'a> {
     pub enc_conv5: LinearLayer<'a>,
 }
 
+impl RdovaeEnc<'_> {
+    /// A model without weights, for an encoder built in place.
+    pub(crate) const EMPTY: Self = Self {
+        enc_dense1: LinearLayer::EMPTY,
+        enc_zdense: LinearLayer::EMPTY,
+        gdense2: LinearLayer::EMPTY,
+        gdense1: LinearLayer::EMPTY,
+        enc_conv_dense1: LinearLayer::EMPTY,
+        enc_conv_dense2: LinearLayer::EMPTY,
+        enc_conv_dense3: LinearLayer::EMPTY,
+        enc_conv_dense4: LinearLayer::EMPTY,
+        enc_conv_dense5: LinearLayer::EMPTY,
+        enc_gru1_input: LinearLayer::EMPTY,
+        enc_gru1_recurrent: LinearLayer::EMPTY,
+        enc_gru2_input: LinearLayer::EMPTY,
+        enc_gru2_recurrent: LinearLayer::EMPTY,
+        enc_gru3_input: LinearLayer::EMPTY,
+        enc_gru3_recurrent: LinearLayer::EMPTY,
+        enc_gru4_input: LinearLayer::EMPTY,
+        enc_gru4_recurrent: LinearLayer::EMPTY,
+        enc_gru5_input: LinearLayer::EMPTY,
+        enc_gru5_recurrent: LinearLayer::EMPTY,
+        enc_conv1: LinearLayer::EMPTY,
+        enc_conv2: LinearLayer::EMPTY,
+        enc_conv3: LinearLayer::EMPTY,
+        enc_conv4: LinearLayer::EMPTY,
+        enc_conv5: LinearLayer::EMPTY,
+    };
+}
+
 impl<'a> RdovaeEnc<'a> {
     /// libopus `init_rdovaeenc`.
     pub fn init(list: &WeightList<'a>) -> Result<Self, WeightError> {

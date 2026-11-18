@@ -102,6 +102,22 @@ impl RangeCoder {
         self.error = s.error;
     }
 
+    /// A coder with an empty buffer, for `reset_for_encode` to set up.
+    pub(crate) const EMPTY: Self = RangeCoder {
+        buf: FixedVec::new(),
+        storage: 0,
+        end_offs: 0,
+        end_window: 0,
+        nend_bits: 0,
+        nbits_total: 0,
+        offs: 0,
+        rng: 0,
+        val: 0,
+        ext: 0,
+        rem: 0,
+        error: 0,
+    };
+
     pub fn new_encoder(size: u32) -> Self {
         let size = (size as usize).min(RANGE_BUF_MAX);
         let buf = FixedVec::from_value(0u8, size);

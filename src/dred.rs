@@ -297,19 +297,25 @@ pub(crate) struct EncoderDred {
 }
 
 impl EncoderDred {
-    /// `dred_encoder_init` with the built-in models, and no DRED.
-    pub fn new(fs: i32, channels: usize) -> Self {
-        EncoderDred {
-            enc: DredEnc::builtin(fs, channels as i32).expect("built-in DRED encoder models"),
-            duration: 0,
-            q0: 0,
-            dq: 0,
-            qmax: 0,
-            target_chunks: 0,
-            activity_mem: [0; 4 * DRED_MAX_FRAMES],
-            bitrate_bps: 0,
-            reached: false,
-        }
+    /// An encoder without models, for [`Self::init`].
+    pub const EMPTY: Self = EncoderDred {
+        enc: DredEnc::EMPTY,
+        duration: 0,
+        q0: 0,
+        dq: 0,
+        qmax: 0,
+        target_chunks: 0,
+        activity_mem: [0; 4 * DRED_MAX_FRAMES],
+        bitrate_bps: 0,
+        reached: false,
+    };
+
+    /// `dred_encoder_init` with the built-in models, and no DRED, on an
+    /// [`Self::EMPTY`] encoder.
+    pub fn init(&mut self, fs: i32, channels: usize) {
+        let model = crate::dnn::builtin::dred_rdovae_enc().expect("built-in DRED encoder models");
+        let pitchdnn = crate::dnn::builtin::pitchdnn().expect("built-in DRED encoder models");
+        self.enc.init(model, pitchdnn, fs, channels as i32);
     }
 
     /// `dred_encoder_reset` and the DRED fields an encoder reset clears,

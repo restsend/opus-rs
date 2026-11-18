@@ -48,12 +48,12 @@ pub struct LpcnetEncState<'a> {
 
 impl<'a> LpcnetEncState<'a> {
     /// `lpcnet_encoder_init`: zero state with the PitchDNN model.
-    pub fn new(pitchdnn: PitchDnn<'a>) -> Self {
+    pub const fn new(pitchdnn: PitchDnn<'a>) -> Self {
         LpcnetEncState {
             pitchdnn: PitchDnnState::new(pitchdnn),
             analysis_mem: [0.0; OVERLAP_SIZE],
             mem_preemph: 0.0,
-            prev_if: [Cpx::default(); PITCH_IF_MAX_FREQ],
+            prev_if: [Cpx { r: 0.0, i: 0.0 }; PITCH_IF_MAX_FREQ],
             if_features: [0.0; PITCH_IF_FEATURES],
             xcorr_features: [0.0; PITCH_MAX_PERIOD - PITCH_MIN_PERIOD],
             dnn_pitch: 0.0,

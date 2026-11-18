@@ -27,7 +27,7 @@ pub struct PitchDnnState<'a> {
 
 impl<'a> PitchDnnState<'a> {
     /// `pitchdnn_init` with the given model: zero state.
-    pub fn new(model: PitchDnn<'a>) -> Self {
+    pub const fn new(model: PitchDnn<'a>) -> Self {
         PitchDnnState {
             model,
             gru_state: [0.0; GRU_1_STATE_SIZE],

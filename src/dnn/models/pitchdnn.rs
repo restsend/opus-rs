@@ -26,6 +26,20 @@ pub struct PitchDnn<'a> {
     pub gru_1_recurrent: LinearLayer<'a>,
 }
 
+impl PitchDnn<'_> {
+    /// A model without weights, for an encoder built in place.
+    pub(crate) const EMPTY: Self = Self {
+        dense_if_upsampler_1: LinearLayer::EMPTY,
+        dense_if_upsampler_2: LinearLayer::EMPTY,
+        dense_downsampler: LinearLayer::EMPTY,
+        dense_final_upsampler: LinearLayer::EMPTY,
+        conv2d_1: Conv2dLayer::EMPTY,
+        conv2d_2: Conv2dLayer::EMPTY,
+        gru_1_input: LinearLayer::EMPTY,
+        gru_1_recurrent: LinearLayer::EMPTY,
+    };
+}
+
 impl<'a> PitchDnn<'a> {
     /// libopus `init_pitchdnn`.
     pub fn init(list: &WeightList<'a>) -> Result<Self, WeightError> {

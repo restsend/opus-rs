@@ -61,30 +61,43 @@ impl<'a> DredEnc<'a> {
     /// `dred_encoder_init` with the given models: an encoder for `fs` Hz
     /// (8000, 12000, 16000, 24000 or 48000) and 1 or 2 channels.
     pub fn new(model: RdovaeEnc<'a>, pitchdnn: PitchDnn<'a>, fs: i32, channels: i32) -> Self {
+        let mut enc = Self::EMPTY;
+        enc.init(model, pitchdnn, fs, channels);
+        enc
+    }
+
+    /// An encoder without models, for [`Self::init`] to set up in place.
+    pub(crate) const EMPTY: Self = DredEnc {
+        model: RdovaeEnc::EMPTY,
+        lpcnet_enc_state: LpcnetEncState::new(PitchDnn::EMPTY),
+        rdovae_enc: RdovaeEncState::DEFAULT,
+        fs: 0,
+        channels: 0,
+        input_buffer: [0.0; 2 * DRED_DFRAME_SIZE],
+        input_buffer_fill: 0,
+        dred_offset: 0,
+        latent_offset: 0,
+        last_extra_dred_offset: 0,
+        latents_buffer: [0.0; DRED_MAX_FRAMES * DRED_LATENT_DIM],
+        latents_buffer_fill: 0,
+        state_buffer: [0.0; DRED_MAX_FRAMES * DRED_STATE_DIM],
+        resample_mem: [0.0; RESAMPLING_ORDER + 1],
+        arch: Arch::Scalar,
+    };
+
+    /// [`Self::new`] on an encoder in place.
+    pub(crate) fn init(&mut self, model: RdovaeEnc<'a>, pitchdnn: PitchDnn<'a>, fs: i32, channels: i32) {
         assert!(
             matches!(fs, 8000 | 12000 | 16000 | 24000 | 48000),
             "unsupported rate {fs}"
         );
         assert!(channels == 1 || channels == 2);
-        let mut enc = DredEnc {
-            model,
-            lpcnet_enc_state: LpcnetEncState::new(pitchdnn),
-            rdovae_enc: RdovaeEncState::default(),
-            fs,
-            channels,
-            input_buffer: [0.0; 2 * DRED_DFRAME_SIZE],
-            input_buffer_fill: 0,
-            dred_offset: 0,
-            latent_offset: 0,
-            last_extra_dred_offset: 0,
-            latents_buffer: [0.0; DRED_MAX_FRAMES * DRED_LATENT_DIM],
-            latents_buffer_fill: 0,
-            state_buffer: [0.0; DRED_MAX_FRAMES * DRED_STATE_DIM],
-            resample_mem: [0.0; RESAMPLING_ORDER + 1],
-            arch: Arch::select(),
-        };
-        enc.reset();
-        enc
+        self.model = model;
+        self.lpcnet_enc_state.pitchdnn.model = pitchdnn;
+        self.fs = fs;
+        self.channels = channels;
+        self.arch = Arch::select();
+        self.reset();
     }
 
     /// `dred_encoder_reset`.

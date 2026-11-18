@@ -235,7 +235,7 @@ fn resampler_down2_hp(s: &mut [f32; 3], out: &mut [f32], input: &[f32]) -> f32 {
 
 /// The analysis state (libopus `TonalityAnalysisState`).
 pub struct TonalityAnalysisState {
-    fs: i32,
+    pub(crate) fs: i32,
     angle: [f32; 240],
     d_angle: [f32; 240],
     d2_angle: [f32; 240],
@@ -270,7 +270,7 @@ pub struct TonalityAnalysisState {
 
 impl TonalityAnalysisState {
     /// libopus `tonality_analysis_init`.
-    pub fn new(fs: i32) -> Self {
+    pub const fn new(fs: i32) -> Self {
         Self {
             fs,
             angle: [0.0; 240],

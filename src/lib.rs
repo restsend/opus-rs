@@ -710,6 +710,10 @@ struct StereoWidthState {
     max_follower: f32,
 }
 
+impl StereoWidthState {
+    const DEFAULT: Self = Self { xx: 0.0, xy: 0.0, yy: 0.0, smoothed_width: 0.0, max_follower: 0.0 };
+}
+
 /// libopus `compute_stereo_width` (float build): how far the two channels
 /// of the input are from mono, 0 to 1, smoothed over about a second.
 fn compute_stereo_width(
@@ -1362,6 +1366,92 @@ fn state_ref<T: ?Sized>(b: &T) -> &T {
     b
 }
 
+/// An [`OpusEncoder`] with empty buffers, the fields the `heap` feature
+/// boxes wrapped in `$boxed`.
+macro_rules! empty_encoder {
+    ($boxed:path) => {
+        OpusEncoder {
+            arch: Arch::Scalar,
+            celt_enc: $boxed(CeltEncoder::EMPTY),
+            silk_enc: $boxed(SilkEncoderState::DEFAULT),
+            silk_enc_side: $boxed(SilkEncoderState::DEFAULT),
+            application: Application::Audio,
+            sampling_rate: 0,
+            channels: 0,
+            // libopus starts in Hybrid at fullband (opus_encoder.c:319-320),
+            // which a ToC-only first packet signals.
+            bandwidth: Bandwidth::Fullband,
+            bitrate_bps: OpusEncoder::BITRATE_AUTO,
+            complexity: 9,
+            vbr_constraint: true,
+            lsb_depth: 24,
+            call_depth: 24,
+            variable_duration: FrameDuration::Argument,
+            fec_keeps_mode: false,
+            prev_framesize: 0,
+            user_forced_mode: None,
+            lfe: false,
+            energy_mask: None,
+            prediction_disabled: false,
+            use_cbr: false,
+            use_inband_fec: false,
+            packet_loss_perc: 0,
+            use_dtx: false,
+            silk_use_dtx: false,
+            lbrr_coded: 0,
+            nb_no_activity_ms_q1: 0,
+            silk_initialized: false,
+            prev_enc_mode: None,
+            nonfinal_frame: false,
+            mode: OpusMode::Hybrid,
+            variable_hp_smth2_q15: 0,
+            width_mem: StereoWidthState::DEFAULT,
+            signal: Signal::Auto,
+            analysis: $boxed(analysis::TonalityAnalysisState::new(0)),
+            analysis_read_bak: None,
+            peak_signal_energy: 0.0,
+            voice_ratio: -1,
+            detected_bandwidth: None,
+            user_bandwidth: Bandwidth::Auto,
+            max_bandwidth: Bandwidth::Fullband,
+            auto_bandwidth: Bandwidth::Fullband,
+            first: true,
+            rate: 0,
+            silk_allow_bandwidth_switch: false,
+            silk_in_wb_without_variable_lp: false,
+            buf_filtered: $boxed(FixedVec::new()),
+            buf_silk_input: $boxed(FixedVec::new()),
+            buf_silk_input_right: $boxed(FixedVec::new()),
+            buf_silk_api_channel: $boxed(FixedVec::new()),
+            buf_celt_input: $boxed(FixedVec::new()),
+            delay_buffer: $boxed(FixedVec::new()),
+            buf_celt_pcm: $boxed(FixedVec::new()),
+            buf_f32_frame: $boxed(FixedVec::new()),
+            encoder_buffer: 0,
+            delay_compensation: 0,
+            hp_mem: FixedVec::new(),
+            hp_mem_float: [0.0; 4],
+            prev_hb_gain: 1.0,
+            hybrid_stereo_width_q14: 1 << 14,
+            stereo_width_q14: 0,
+            stream_channels: 0,
+            prev_channels: 0,
+            silk_to_mono: false,
+            force_channels: None,
+            silk_channels: 1,
+            silk_opus_can_switch: false,
+            silk_bw_switch: false,
+            silk_delay_buffer: $boxed(FixedVec::new()),
+            silk_resampler_enc: silk::resampler::SilkResampler::DEFAULT,
+            silk_resampler_enc_right: silk::resampler::SilkResampler::DEFAULT,
+            rc: RangeCoder::EMPTY,
+            range_final: 0,
+            #[cfg(feature = "dred")]
+            dred: $boxed(dred::EncoderDred::EMPTY),
+        }
+    };
+}
+
 #[cfg(feature = "heap")]
 #[inline(always)]
 fn state_mut<T: core::ops::DerefMut>(b: &mut T) -> &mut T::Target {
@@ -1386,163 +1476,83 @@ impl OpusEncoder {
         channels: usize,
         application: Application,
     ) -> Result<Self, &'static str> {
+        Self::check_settings(sampling_rate, channels)?;
+        let mut encoder = Self::empty();
+        encoder.setup(sampling_rate, channels, application)?;
+        Ok(encoder)
+    }
+
+    /// Builds an encoder in `slot` instead of returning it.
+    ///
+    /// Without the `heap` feature the encoder is about 300 KB, and `new`
+    /// returns it through the stack. `init` writes it straight into memory
+    /// you provide, so it never has to fit on the stack.
+    pub fn init(
+        slot: &mut MaybeUninit<Self>,
+        sampling_rate: i32,
+        channels: usize,
+        application: Application,
+    ) -> Result<&mut Self, &'static str> {
+        Self::check_settings(sampling_rate, channels)?;
+        let encoder = slot.write(Self::empty());
+        encoder.setup(sampling_rate, channels, application)?;
+        Ok(encoder)
+    }
+
+    fn check_settings(sampling_rate: i32, channels: usize) -> Result<(), &'static str> {
         if ![8000, 12000, 16000, 24000, 48000].contains(&sampling_rate) {
             return Err("Invalid sampling rate");
         }
         if ![1, 2].contains(&channels) {
             return Err("Invalid number of channels");
         }
+        Ok(())
+    }
 
-        let mode = modes::default_mode();
-        #[cfg(feature = "heap")]
-        let celt_enc = Box::new(CeltEncoder::with_sampling_rate(
-            mode,
-            channels,
-            sampling_rate,
-        ));
-        #[cfg(not(feature = "heap"))]
-        let celt_enc = CeltEncoder::with_sampling_rate(mode, channels, sampling_rate);
+    /// An encoder with empty buffers for [`Self::setup`]. Without the `heap`
+    /// feature it is a constant, which the compiler copies straight into the
+    /// destination, so `init` needs no stack for it.
+    #[cfg(not(feature = "heap"))]
+    #[inline(always)]
+    fn empty() -> Self {
+        Self::EMPTY
+    }
 
+    #[cfg(not(feature = "heap"))]
+    const EMPTY: Self = empty_encoder!(core::convert::identity);
+
+    #[cfg(feature = "heap")]
+    fn empty() -> Self {
+        empty_encoder!(Box::new)
+    }
+
+    /// Sets up an empty encoder in place, as libopus `opus_encoder_init`.
+    fn setup(&mut self, sampling_rate: i32, channels: usize, application: Application) -> Result<(), &'static str> {
+        self.celt_enc.init(modes::default_mode(), channels, sampling_rate);
         // libopus passes its arch to silk_InitEncoder (opus_encoder.c).
-        let arch = Arch::select();
-        #[cfg(feature = "heap")]
-        let mut silk_enc = Box::new(SilkEncoderState::default());
-        #[cfg(not(feature = "heap"))]
-        let mut silk_enc = SilkEncoderState::default();
-        if silk_init_encoder(state_mut(&mut silk_enc), arch) != 0 {
+        self.arch = Arch::select();
+        if silk_init_encoder(state_mut(&mut self.silk_enc), self.arch) != 0
+            || silk_init_encoder(state_mut(&mut self.silk_enc_side), self.arch) != 0
+        {
             return Err("SILK encoder initialization failed");
         }
-        #[cfg(feature = "heap")]
-        let mut silk_enc_side = Box::new(SilkEncoderState::default());
-        #[cfg(not(feature = "heap"))]
-        let mut silk_enc_side = SilkEncoderState::default();
-        if silk_init_encoder(state_mut(&mut silk_enc_side), arch) != 0 {
-            return Err("SILK encoder initialization failed");
+        self.application = application;
+        self.sampling_rate = sampling_rate;
+        self.channels = channels;
+        self.stream_channels = channels;
+        self.variable_hp_smth2_q15 = silk::lin2log::silk_lin2log(60) << 8;
+        self.analysis.fs = sampling_rate;
+        self.delay_buffer.resize(OPUS_DELAY_BUF, 0.0);
+        self.silk_delay_buffer.resize(OPUS_DELAY_BUF, 0);
+        self.encoder_buffer = if application.restricted() { 0 } else { (sampling_rate / 100) as usize };
+        self.delay_compensation = if application.restricted() { 0 } else { (sampling_rate / 250) as usize };
+        self.hp_mem.resize(channels * 2, 0);
+        self.rc.reset_for_encode(1);
+        #[cfg(feature = "dred")]
+        {
+            self.dred.init(sampling_rate, channels);
         }
-
-        use silk::lin2log::silk_lin2log;
-        let variable_hp_smth2_q15 = silk_lin2log(60) << 8;
-
-        Ok(Self {
-            arch,
-            celt_enc,
-            silk_enc,
-            silk_enc_side,
-            application,
-            sampling_rate,
-            channels,
-            // libopus starts in Hybrid at fullband (opus_encoder.c:319-320),
-            // which a ToC-only first packet signals.
-            bandwidth: Bandwidth::Fullband,
-            bitrate_bps: Self::BITRATE_AUTO,
-            complexity: 9,
-            vbr_constraint: true,
-            lsb_depth: 24,
-            call_depth: 24,
-            variable_duration: FrameDuration::Argument,
-            fec_keeps_mode: false,
-            prev_framesize: 0,
-            user_forced_mode: None,
-            lfe: false,
-            energy_mask: None,
-            prediction_disabled: false,
-            use_cbr: false,
-            use_inband_fec: false,
-            packet_loss_perc: 0,
-            use_dtx: false,
-            silk_use_dtx: false,
-            lbrr_coded: 0,
-            nb_no_activity_ms_q1: 0,
-            silk_initialized: false,
-            prev_enc_mode: None,
-            nonfinal_frame: false,
-            mode: OpusMode::Hybrid,
-            variable_hp_smth2_q15,
-            width_mem: StereoWidthState::default(),
-            signal: Signal::Auto,
-            #[cfg(not(feature = "heap"))]
-            analysis: analysis::TonalityAnalysisState::new(sampling_rate),
-            #[cfg(feature = "heap")]
-            analysis: Box::new(analysis::TonalityAnalysisState::new(sampling_rate)),
-            analysis_read_bak: None,
-            peak_signal_energy: 0.0,
-            voice_ratio: -1,
-            detected_bandwidth: None,
-            user_bandwidth: Bandwidth::Auto,
-            max_bandwidth: Bandwidth::Fullband,
-            auto_bandwidth: Bandwidth::Fullband,
-            first: true,
-            rate: 0,
-            silk_allow_bandwidth_switch: false,
-            silk_in_wb_without_variable_lp: false,
-
-            #[cfg(not(feature = "heap"))]
-            buf_filtered: FixedVec::new(),
-            #[cfg(feature = "heap")]
-            buf_filtered: Box::new(FixedVec::new()),
-            #[cfg(not(feature = "heap"))]
-            buf_silk_input: FixedVec::new(),
-            #[cfg(feature = "heap")]
-            buf_silk_input: Box::new(FixedVec::new()),
-            #[cfg(not(feature = "heap"))]
-            buf_silk_input_right: FixedVec::new(),
-            #[cfg(feature = "heap")]
-            buf_silk_input_right: Box::new(FixedVec::new()),
-            #[cfg(not(feature = "heap"))]
-            buf_silk_api_channel: FixedVec::new(),
-            #[cfg(feature = "heap")]
-            buf_silk_api_channel: Box::new(FixedVec::new()),
-            #[cfg(not(feature = "heap"))]
-            buf_celt_input: FixedVec::new(),
-            #[cfg(feature = "heap")]
-            buf_celt_input: Box::new(FixedVec::new()),
-            #[cfg(not(feature = "heap"))]
-            delay_buffer: FixedVec::from_value(0.0, OPUS_DELAY_BUF),
-            #[cfg(feature = "heap")]
-            delay_buffer: Box::new(FixedVec::from_value(0.0, OPUS_DELAY_BUF)),
-            #[cfg(not(feature = "heap"))]
-            buf_celt_pcm: FixedVec::new(),
-            #[cfg(feature = "heap")]
-            buf_celt_pcm: Box::new(FixedVec::new()),
-            #[cfg(not(feature = "heap"))]
-            buf_f32_frame: FixedVec::new(),
-            #[cfg(feature = "heap")]
-            buf_f32_frame: Box::new(FixedVec::new()),
-            encoder_buffer: if application.restricted() {
-                0
-            } else {
-                (sampling_rate / 100) as usize
-            },
-            delay_compensation: if application.restricted() {
-                0
-            } else {
-                (sampling_rate / 250) as usize
-            },
-            hp_mem: FixedVec::from_value(0, channels * 2),
-            hp_mem_float: [0.0; 4],
-            prev_hb_gain: 1.0,
-            hybrid_stereo_width_q14: 1 << 14,
-            stereo_width_q14: 0,
-            stream_channels: channels,
-            prev_channels: 0,
-            silk_to_mono: false,
-            force_channels: None,
-            silk_channels: 1,
-            silk_opus_can_switch: false,
-            silk_bw_switch: false,
-            #[cfg(not(feature = "heap"))]
-            silk_delay_buffer: FixedVec::from_value(0, OPUS_DELAY_BUF),
-            #[cfg(feature = "heap")]
-            silk_delay_buffer: Box::new(FixedVec::from_value(0, OPUS_DELAY_BUF)),
-            silk_resampler_enc: silk::resampler::SilkResampler::default(),
-            silk_resampler_enc_right: silk::resampler::SilkResampler::default(),
-            rc: RangeCoder::new_encoder(1),
-            range_final: 0,
-            #[cfg(all(feature = "dred", not(feature = "heap")))]
-            dred: dred::EncoderDred::new(sampling_rate, channels),
-            #[cfg(all(feature = "dred", feature = "heap"))]
-            dred: Box::new(dred::EncoderDred::new(sampling_rate, channels)),
-        })
+        Ok(())
     }
 
     /// Restarts the stream, keeping the settings (libopus
@@ -5493,5 +5503,30 @@ mod tests {
             result.is_err(),
             "Audio/48kHz encoder with frame_size=48 should return Err"
         );
+    }
+}
+
+/// `OpusEncoder::init` builds the encoder without a stack temporary of it:
+/// in a release build without `heap`, creating and running an encoder fits
+/// a 128 KiB thread (`cargo test --release --no-default-features
+/// --features std --lib small_stack`).
+#[cfg(all(test, feature = "std", not(feature = "heap")))]
+mod small_stack {
+    use super::*;
+
+    #[test]
+    #[cfg_attr(debug_assertions, ignore = "release builds only")]
+    fn encoder_init_and_encode_on_a_128_kib_thread() {
+        let mut slot = Box::new(MaybeUninit::<OpusEncoder>::uninit());
+        std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn(move || {
+                let enc = OpusEncoder::init(&mut slot, 48000, 2, Application::Audio).unwrap();
+                let mut out = [0u8; 1500];
+                assert!(enc.encode(&[0.0; 960 * 2], 960, &mut out).unwrap() > 0);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

@@ -70,6 +70,33 @@ pub struct Conv2dLayer<'a> {
     pub kheight: usize,
 }
 
+impl LinearLayer<'_> {
+    /// A layer without weights, for the models' `EMPTY`.
+    pub(crate) const EMPTY: Self = Self {
+        bias: None,
+        subias: None,
+        weights: None,
+        float_weights: None,
+        weights_idx: None,
+        diag: None,
+        scale: None,
+        nb_inputs: 0,
+        nb_outputs: 0,
+    };
+}
+
+impl Conv2dLayer<'_> {
+    /// A layer without weights, for the models' `EMPTY`.
+    pub(crate) const EMPTY: Self = Self {
+        bias: None,
+        float_weights: None,
+        in_channels: 0,
+        out_channels: 0,
+        ktime: 0,
+        kheight: 0,
+    };
+}
+
 /// Runs `f` on `n` zeroed values on the stack, zeroing only the smallest
 /// of 64, 256, 1024, 2048 and 8192 values that holds them: the scratch
 /// buffers of the layers, which libopus sizes for the largest layer.

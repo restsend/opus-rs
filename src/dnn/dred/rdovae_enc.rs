@@ -27,22 +27,26 @@ pub struct RdovaeEncState {
     pub conv5_state: [f32; 2 * ENC_CONV5_STATE_SIZE],
 }
 
-impl Default for RdovaeEncState {
+impl RdovaeEncState {
     /// The zeroed state of `DRED_rdovae_init_encoder`.
+    pub(crate) const DEFAULT: Self = RdovaeEncState {
+        initialized: false,
+        gru1_state: [0.0; ENC_GRU1_STATE_SIZE],
+        gru2_state: [0.0; ENC_GRU2_STATE_SIZE],
+        gru3_state: [0.0; ENC_GRU3_STATE_SIZE],
+        gru4_state: [0.0; ENC_GRU4_STATE_SIZE],
+        gru5_state: [0.0; ENC_GRU5_STATE_SIZE],
+        conv1_state: [0.0; ENC_CONV1_STATE_SIZE],
+        conv2_state: [0.0; 2 * ENC_CONV2_STATE_SIZE],
+        conv3_state: [0.0; 2 * ENC_CONV3_STATE_SIZE],
+        conv4_state: [0.0; 2 * ENC_CONV4_STATE_SIZE],
+        conv5_state: [0.0; 2 * ENC_CONV5_STATE_SIZE],
+    };
+}
+
+impl Default for RdovaeEncState {
     fn default() -> Self {
-        RdovaeEncState {
-            initialized: false,
-            gru1_state: [0.0; ENC_GRU1_STATE_SIZE],
-            gru2_state: [0.0; ENC_GRU2_STATE_SIZE],
-            gru3_state: [0.0; ENC_GRU3_STATE_SIZE],
-            gru4_state: [0.0; ENC_GRU4_STATE_SIZE],
-            gru5_state: [0.0; ENC_GRU5_STATE_SIZE],
-            conv1_state: [0.0; ENC_CONV1_STATE_SIZE],
-            conv2_state: [0.0; 2 * ENC_CONV2_STATE_SIZE],
-            conv3_state: [0.0; 2 * ENC_CONV3_STATE_SIZE],
-            conv4_state: [0.0; 2 * ENC_CONV4_STATE_SIZE],
-            conv5_state: [0.0; 2 * ENC_CONV5_STATE_SIZE],
-        }
+        Self::DEFAULT
     }
 }
 
