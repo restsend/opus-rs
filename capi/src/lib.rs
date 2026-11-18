@@ -33,31 +33,14 @@ pub const OPUS_BUFFER_TOO_SMALL: c_int = -2;
 pub const OPUS_INTERNAL_ERROR: c_int = -3;
 pub const OPUS_INVALID_PACKET: c_int = -4;
 pub const OPUS_UNIMPLEMENTED: c_int = -5;
-pub const OPUS_INVALID_STATE: c_int = -6;
 pub const OPUS_ALLOC_FAIL: c_int = -7;
 
 pub const OPUS_AUTO: i32 = -1000;
-pub const OPUS_BITRATE_MAX: i32 = -1;
-
-pub const OPUS_APPLICATION_VOIP: c_int = 2048;
-pub const OPUS_APPLICATION_AUDIO: c_int = 2049;
-pub const OPUS_APPLICATION_RESTRICTED_LOWDELAY: c_int = 2051;
-pub const OPUS_APPLICATION_RESTRICTED_SILK: c_int = 2052;
-pub const OPUS_APPLICATION_RESTRICTED_CELT: c_int = 2053;
-
-pub const OPUS_SIGNAL_VOICE: i32 = 3001;
-pub const OPUS_SIGNAL_MUSIC: i32 = 3002;
 
 pub const OPUS_BANDWIDTH_NARROWBAND: i32 = 1101;
 pub const OPUS_BANDWIDTH_MEDIUMBAND: i32 = 1102;
-pub const OPUS_BANDWIDTH_WIDEBAND: i32 = 1103;
 pub const OPUS_BANDWIDTH_SUPERWIDEBAND: i32 = 1104;
 pub const OPUS_BANDWIDTH_FULLBAND: i32 = 1105;
-
-pub const OPUS_FRAMESIZE_ARG: i32 = 5000;
-pub const OPUS_FRAMESIZE_2_5_MS: i32 = 5001;
-pub const OPUS_FRAMESIZE_40_MS: i32 = 5005;
-pub const OPUS_FRAMESIZE_120_MS: i32 = 5009;
 
 /// The ctl requests of `opus_defines.h`, and the private ones of
 /// `opus_private.h` that libopus's tests use.
@@ -105,11 +88,7 @@ pub(crate) mod req {
     pub const GET_IN_DTX: i32 = 4049;
     pub const SET_IGNORE_EXTENSIONS: i32 = 4058;
     pub const GET_IGNORE_EXTENSIONS: i32 = 4059;
-    pub const SET_VOICE_RATIO: i32 = 11018;
-    pub const GET_VOICE_RATIO: i32 = 11019;
     pub const SET_FORCE_MODE: i32 = 11002;
-    pub const SET_LFE: i32 = 10024;
-    pub const SET_ENERGY_MASK: i32 = 10026;
     pub const MULTISTREAM_GET_DECODER_STATE: i32 = 5122;
 }
 
