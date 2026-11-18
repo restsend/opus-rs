@@ -1450,3 +1450,47 @@ fn dred_in_large_multiframe_packets_matches_libopus() {
         assert!(dred > 10, "vbr {vbr}: {dred} packets with DRED");
     }
 }
+
+/// The DRED calls return libopus's codes: OPUS_BAD_ARG for a frame size
+/// of 0 or one that is no multiple of 2.5 ms, for DRED data that is not
+/// processed (decode) or not parsed (process), and for a DRED duration
+/// outside 0 to 104 frames.
+#[test]
+fn dred_errors_match_libopus() {
+    let code = |e: &str| opus_rs::error::code(e).unwrap_or(0);
+    let s = SILK_WB_16K;
+    let frame = s.fs as usize * s.frame_ms / 1000;
+    let packets = ref_encode(s, &signal(s, 1, 9));
+    let p = &packets[packets.len() - 1];
+    let cdec = RefDredDecoder::new();
+    let rdec = opus_rs::dred::OpusDredDecoder::new().unwrap();
+    let mut rs = opus_rs::OpusDecoder::new(s.fs, s.channels).unwrap();
+    unsafe {
+        let mut err = 0;
+        let dec = opus_decoder_create(s.fs, s.channels as i32, &mut err);
+        let enc = opus_encoder_create(s.fs, 1, 2048, &mut err);
+        let mut renc = opus_rs::OpusEncoder::new(s.fs, 1, opus_rs::Application::Voip).unwrap();
+        for d in [-1, 105] {
+            assert_eq!(renc.set_dred_duration(d).map_or_else(code, |()| 0), set_dred_duration(enc, d), "duration {d}");
+        }
+        let mut c = OpusDRED::zeroed();
+        let mut r = Box::<opus_rs::dred::OpusDred>::default();
+        // Not parsed: processing fails.
+        assert_eq!(rdec.process(&mut r).map_or_else(code, |()| 0), cdec.process(&mut c), "process");
+        for (defer, frame_size) in [(true, frame), (false, 0), (false, 100), (false, frame)] {
+            cdec.parse(&mut c, p, s.fs, s.fs, defer);
+            rdec.parse(&mut r, p, s.fs, s.fs, defer).unwrap();
+            let mut a = vec![0f32; frame * s.channels];
+            let mut b = vec![0f32; frame * s.channels];
+            let na = opus_decoder_dred_decode_float(dec, &*c, frame as i32, a.as_mut_ptr(), frame_size as i32);
+            let nb = rs.dred_decode_float(&r, frame as i32, &mut b, frame_size);
+            assert_eq!(nb.map_or_else(code, |n| n as i32), na, "defer {defer} frame {frame_size}");
+            let (mut x, mut y) = (vec![0i16; frame * s.channels], vec![0i16; frame * s.channels]);
+            let na = opus_decoder_dred_decode(dec, &*c, frame as i32, x.as_mut_ptr(), frame_size as i32);
+            let nb = rs.dred_decode(&r, frame as i32, &mut y, frame_size);
+            assert_eq!(nb.map_or_else(code, |n| n as i32), na, "i16 defer {defer} frame {frame_size}");
+        }
+        opus_encoder_destroy(enc);
+        opus_decoder_destroy(dec);
+    }
+}

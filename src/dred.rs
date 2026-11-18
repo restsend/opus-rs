@@ -109,7 +109,7 @@ impl OpusDredDecoder {
         if dred.process(&self.model) {
             Ok(())
         } else {
-            Err("no parsed DRED data")
+            Err(crate::error::BAD_ARG)
         }
     }
 }
@@ -130,10 +130,10 @@ impl OpusDecoder {
     ) -> Result<usize, &'static str> {
         let f2_5 = self.sampling_rate as usize / 400;
         if frame_size == 0 || !frame_size.is_multiple_of(f2_5) {
-            return Err("Lost frame: frame_size must be a multiple of 2.5 ms");
+            return Err(crate::error::BAD_ARG);
         }
         if dred.process_stage != 2 {
-            return Err("no processed DRED data");
+            return Err(crate::error::BAD_ARG);
         }
         self.queue_dred_features(dred, dred_offset, frame_size);
         self.decode(&[], frame_size, output)
@@ -172,10 +172,10 @@ impl OpusDecoder {
     ) -> Result<usize, &'static str> {
         let f2_5 = self.sampling_rate as usize / 400;
         if frame_size == 0 || !frame_size.is_multiple_of(f2_5) {
-            return Err("Lost frame: frame_size must be a multiple of 2.5 ms");
+            return Err(crate::error::BAD_ARG);
         }
         if dred.process_stage != 2 {
-            return Err("no processed DRED data");
+            return Err(crate::error::BAD_ARG);
         }
         let channels = self.channels;
         if frame_size
@@ -483,7 +483,7 @@ impl OpusEncoder {
     /// [`OpusDredDecoder`]) rebuilds lost audio from it.
     pub fn set_dred_duration(&mut self, frames: i32) -> Result<(), &'static str> {
         if !(0..=DRED_MAX_FRAMES as i32).contains(&frames) {
-            return Err("DRED duration must be 0 to 104 frames");
+            return Err(crate::error::BAD_ARG);
         }
         self.dred.duration = frames;
         Ok(())
