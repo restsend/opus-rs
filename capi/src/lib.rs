@@ -29,7 +29,6 @@ mod unimplemented;
 
 pub const OPUS_OK: c_int = 0;
 pub const OPUS_BAD_ARG: c_int = -1;
-pub const OPUS_BUFFER_TOO_SMALL: c_int = -2;
 pub const OPUS_INTERNAL_ERROR: c_int = -3;
 pub const OPUS_INVALID_PACKET: c_int = -4;
 pub const OPUS_UNIMPLEMENTED: c_int = -5;
@@ -37,10 +36,6 @@ pub const OPUS_ALLOC_FAIL: c_int = -7;
 
 pub const OPUS_AUTO: i32 = -1000;
 
-pub const OPUS_BANDWIDTH_NARROWBAND: i32 = 1101;
-pub const OPUS_BANDWIDTH_MEDIUMBAND: i32 = 1102;
-pub const OPUS_BANDWIDTH_SUPERWIDEBAND: i32 = 1104;
-pub const OPUS_BANDWIDTH_FULLBAND: i32 = 1105;
 
 /// The ctl requests of `opus_defines.h`, and the private ones of
 /// `opus_private.h` that libopus's tests use.
