@@ -595,13 +595,17 @@ impl SilkResampler {
                     &SILK_RESAMPLER_FRAC_FIR_12[11 - t],
                 );
                 let taps = [c0[0], c0[1], c0[2], c0[3], c1[3], c1[2], c1[1], c1[0]];
-                let x: &[i16; 8] = buf[(index_q16 >> 16) as usize..][..8].try_into().unwrap();
+                // index_q16 >> 16 stays below 2 * n, so the window is in the
+                // buffer; the min lets the compiler see that.
+                let at = ((index_q16 >> 16) as usize).min(MAX_BUF - 8);
+                let x: &[i16; 8] = buf[at..][..8].try_into().unwrap();
                 let mut res_q15 = silk_smulbb(x[0] as i32, taps[0] as i32);
                 for k in 1..8 {
                     res_q15 = silk_smlabb(res_q15, x[k] as i32, taps[k] as i32);
                 }
                 if let Some(o) = out.get_mut(n_out) {
-                    *o = silk_sat16(silk_rshift_round(res_q15, 15)) as i16;
+                    *o = silk_rshift_round(res_q15, 15).clamp(i16::MIN as i32, i16::MAX as i32)
+                        as i16;
                     n_out += 1;
                 }
                 index_q16 += self.inv_ratio_q16;
