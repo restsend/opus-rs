@@ -285,12 +285,12 @@ fn encode_i16_validation_parity() {
     let mut enc = OpusEncoder::new(16000, 1, Application::Voip).unwrap();
     let mut out = vec![0u8; 4000];
 
-    // Output buffer too small mirrors encode() (a 1-byte buffer takes a
-    // ToC-only packet, as in libopus; an empty one is too small).
+    // An empty output buffer is an invalid argument, as in libopus (a
+    // 1-byte buffer takes a ToC-only packet).
     let tiny = &mut [0u8; 0][..];
     assert_eq!(
         enc.encode_i16(&[0i16; 320], 320, tiny),
-        Err("Output buffer too small")
+        Err(opus_rs::error::BAD_ARG)
     );
 
     // Input shorter than frame_size * channels must be rejected, not panic.

@@ -506,3 +506,38 @@ fn reset_keeps_the_fec_decision() {
         }
     }
 }
+
+/// The errors of `opus_encode`, `opus_encode24` and `opus_encode_float`:
+/// OPUS_BAD_ARG for an invalid frame size and an empty buffer,
+/// OPUS_BUFFER_TOO_SMALL for 100 ms in one byte.
+#[test]
+fn encode_errors_match_libopus() {
+    for (fs, ch, app, frame, _) in CONFIGS {
+        let mut p = Pair::new(fs, ch, app);
+        for (frame_size, max) in [(frame, 1500), (100, 1500), (frame, 0), (fs as usize / 10, 1), (frame, 1500), (961, 1500)] {
+            let mut out = [0u8; 1500];
+            for entry in 0..3 {
+                let pcm = signal(fs, ch, frame_size, 0);
+                let (r, m) = match entry {
+                    0 => (p.rs.encode(&pcm, frame_size, &mut out[..max]), unsafe {
+                        opus_encode_float(p.c, pcm.as_ptr(), frame_size as i32, out.as_mut_ptr(), max as i32)
+                    }),
+                    1 => {
+                        let x: Vec<i16> = pcm.iter().map(|&v| (v * 32768.0) as i16).collect();
+                        (p.rs.encode_i16(&x, frame_size, &mut out[..max]), unsafe {
+                            opus_encode(p.c, x.as_ptr(), frame_size as i32, out.as_mut_ptr(), max as i32)
+                        })
+                    }
+                    _ => {
+                        let x: Vec<i32> = pcm.iter().map(|&v| (v * 8_388_608.0) as i32).collect();
+                        (p.rs.encode24(&x, frame_size, &mut out[..max]), unsafe {
+                            opus_encode24(p.c, x.as_ptr(), frame_size as i32, out.as_mut_ptr(), max as i32)
+                        })
+                    }
+                };
+                let what = format!("{fs} {ch} {app:?} frame {frame_size} max {max} entry {entry}");
+                assert_eq!(r.map_or_else(|e| opus_rs::error::code(e).unwrap_or(0), |n| n as i32), m, "{what}");
+            }
+        }
+    }
+}

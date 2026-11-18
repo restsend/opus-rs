@@ -2019,7 +2019,7 @@ impl OpusEncoder {
         // `frame_size_select`), which the analysis reads all of.
         let coded = self
             .select_frame_size(frame_size)
-            .ok_or("Invalid frame size for sampling rate")?;
+            .ok_or(crate::error::BAD_ARG)?;
         self.encode_selected(input, frame_size, coded, output, depth, analysis_pcm)
     }
 
@@ -2039,11 +2039,14 @@ impl OpusEncoder {
         self.range_final = 0;
         self.call_depth = depth;
         let frame_rate = frame_rate_from_params(self.sampling_rate, frame_size)
-            .ok_or("Invalid frame size for sampling rate")?;
+            .ok_or(crate::error::BAD_ARG)?;
         // A 1-byte buffer takes a ToC-only packet, except at 100 ms
-        // (opus_encoder.c:1224-1236).
-        if output.is_empty() || (output.len() == 1 && frame_rate == 10) {
-            return Err("Output buffer too small");
+        // (opus_encoder.c:1231-1242).
+        if output.is_empty() {
+            return Err(crate::error::BAD_ARG);
+        }
+        if output.len() == 1 && frame_rate == 10 {
+            return Err(crate::error::BUFFER_TOO_SMALL);
         }
 
         // Clamp caller-provided control fields the way libopus's ctl
@@ -2451,7 +2454,7 @@ impl OpusEncoder {
         let mode = self.mode;
         let mut frame_bandwidth = self.bandwidth;
         let frame_rate = frame_rate_from_params(self.sampling_rate, frame_size)
-            .ok_or("Invalid frame size for sampling rate")?;
+            .ok_or(crate::error::BAD_ARG)?;
         let max_data_bytes = output.len();
         let n_bytes = max_data_bytes.min(OPUS_MAX_PACKET_BYTES);
         let silk_use_dtx = self.silk_use_dtx;
