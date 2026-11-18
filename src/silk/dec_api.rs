@@ -546,6 +546,9 @@ impl SilkDecoder {
     ) -> (i32, usize) {
         let (mut ret, n_dec, stereo_to_mono) =
             self.decode_core(ctrl, lost_flag, new_packet, range_dec);
+        if n_dec <= 0 {
+            return (if ret < 0 { ret } else { -1 }, 0);
+        }
         // The pitch lag measured at 48 kHz (dec_API.c:470-476).
         let st = &self.channel_state[0];
         let mult = [6, 4, 3].get(((st.fs_khz - 8) >> 2) as usize);
@@ -553,9 +556,6 @@ impl SilkDecoder {
             Some(m) if st.prev_signal_type == TYPE_VOICED => st.lag_prev * m,
             _ => 0,
         };
-        if n_dec <= 0 {
-            return (if ret < 0 { ret } else { -1 }, 0);
-        }
         let n_dec = n_dec as usize;
         let api_channels = ctrl.n_channels_api as usize;
         // Number of output samples.
@@ -749,5 +749,50 @@ mod tests {
         assert_eq!(dec.prev_decode_only_middle, 0);
         assert_eq!(dec.channel_state[0].loss_cnt, 1);
         assert_eq!(dec.channel_state[1].loss_cnt, 1);
+    }
+
+    /// A failed call leaves the exported pitch lag as it was: libopus's
+    /// silk_Decode returns before it writes prevPitchLag.
+    #[test]
+    fn failed_decode_keeps_prev_pitch_lag() {
+        let mut enc = crate::OpusEncoder::new(16000, 1, crate::Application::Voip).unwrap();
+        enc.bitrate_bps = 16000;
+        let mut dec = SilkDecoder::new();
+        let ctrl = SilkDecControl {
+            n_channels_api: 1,
+            n_channels_internal: 1,
+            api_sample_rate: 16000,
+            internal_sample_rate: 16000,
+            payload_size_ms: 20,
+            ..SilkDecControl::default()
+        };
+        let mut pcm = [0f32; 320];
+        let mut out = [0f32; 960];
+        for f in 0..50 {
+            // A 125 Hz pulse train: voiced frames.
+            for (i, s) in pcm.iter_mut().enumerate() {
+                *s = if (f * 320 + i) % 128 < 4 { 0.5 } else { 0.0 };
+            }
+            let mut pkt = [0u8; 400];
+            let n = enc.encode(&pcm, 320, &mut pkt).unwrap();
+            assert!(pkt[0] >> 3 < 12, "SILK-only packet");
+            let mut rc = RangeCoder::new_decoder(&pkt[1..n]);
+            let (ret, _) = dec.silk_decode(&ctrl, 0, true, &mut rc, &mut out);
+            assert_eq!(ret, 0);
+            if dec.prev_pitch_lag != 0 {
+                break;
+            }
+        }
+        let lag = dec.prev_pitch_lag;
+        assert_ne!(lag, 0);
+        let bad = SilkDecControl {
+            api_sample_rate: 96000,
+            internal_sample_rate: 8000,
+            ..ctrl
+        };
+        let mut rc = RangeCoder::new_decoder(&[0u8; 40]);
+        let (ret, _) = dec.silk_decode(&bad, 0, true, &mut rc, &mut out);
+        assert!(ret < 0);
+        assert_eq!(dec.prev_pitch_lag, lag);
     }
 }
