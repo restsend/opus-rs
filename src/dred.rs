@@ -80,13 +80,14 @@ impl OpusDredDecoder {
         sampling_rate: i32,
         defer_processing: bool,
     ) -> Result<(i32, i32), &'static str> {
-        if sampling_rate <= 0 {
-            return Err("invalid sampling rate");
-        }
         dred.process_stage = -1;
         let Some((payload, dred_frame_offset)) = dred_find_payload(data)? else {
             return Ok((0, 0));
         };
+        // libopus divides by the rate only here.
+        if sampling_rate <= 0 {
+            return Err("invalid sampling rate");
+        }
         // Rounded up.
         let fs = sampling_rate as i64;
         let max_dred_features = ((100 * max_dred_samples as i64 + fs - 1) / fs)

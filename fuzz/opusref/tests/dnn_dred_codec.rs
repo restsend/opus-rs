@@ -1388,3 +1388,25 @@ fn dred_round_trip_matches_libopus() {
         }
     }
 }
+
+/// opus_dred_parse marks the DRED state unprocessed first and checks the
+/// sampling rate only for a packet with DRED: a packet without DRED
+/// parses to 0 at any rate, and later DRED decodes fail.
+#[test]
+fn dred_parse_without_payload_ignores_the_rate() {
+    let s = SILK_WB_16K;
+    let packets = ref_encode(s, &signal(s, 1, 4));
+    let cdec = RefDredDecoder::new();
+    let rdec = opus_rs::dred::OpusDredDecoder::new().unwrap();
+    let mut c = OpusDRED::zeroed();
+    let mut r = Box::<opus_rs::dred::OpusDred>::default();
+    let p = packets.iter().rev().find(|p| cdec.parse(&mut c, p, s.fs, s.fs, false).0 > 0).unwrap();
+    assert_eq!(rdec.parse(&mut r, p, s.fs, s.fs, false).map(|(n, _)| n > 0), Ok(true));
+    assert_eq!((c.process_stage, r.process_stage), (2, 2));
+    let plain = [31 << 3, 1, 2, 3];
+    for rate in [0, -1] {
+        let (cret, cend) = cdec.parse(&mut c, &plain, s.fs, rate, false);
+        assert_eq!(rdec.parse(&mut r, &plain, s.fs, rate, false), Ok((cret, cend)), "rate {rate}");
+        assert_eq!((c.process_stage, r.process_stage), (-1, -1), "rate {rate}");
+    }
+}
