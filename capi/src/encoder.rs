@@ -198,27 +198,28 @@ pub unsafe extern "C" fn opus_encoder_destroy(st: *mut OpusEncoder) {
 
 /// The checks every encode call shares, then `encode(pcm, frame_size, out)`
 /// with the C input of `frame_size` samples of `channels` and the output
-/// of `max_data_bytes`.
+/// of `max_data_bytes`. `select` is the encoder's `select_frame_size` of
+/// `frame_size`: `None` rejects it before the input is read, as libopus's
+/// `frame_size_select` does.
 pub(crate) unsafe fn encode_with<T>(
     pcm: *const T,
     frame_size: c_int,
     data: *mut u8,
     max_data_bytes: i32,
     channels: usize,
+    select: Option<usize>,
     encode: impl FnOnce(&[T], usize, &mut [u8]) -> Result<usize, &'static str>,
 ) -> c_int {
-    if pcm.is_null() || data.is_null() || frame_size <= 0 || max_data_bytes <= 0 {
+    let frame_size = usize::try_from(frame_size).unwrap_or(0);
+    let len = frame_size.checked_mul(channels).filter(|_| select.is_some());
+    let (Some(len), false, false, 1..) = (len, pcm.is_null(), data.is_null(), max_data_bytes) else {
         return OPUS_BAD_ARG;
-    }
+    };
     // SAFETY: `pcm` holds `frame_size` samples per channel and `data`
     // `max_data_bytes` bytes (opus.h).
-    let (pcm, out) = unsafe {
-        (
-            slice::from_raw_parts(pcm, frame_size as usize * channels),
-            slice::from_raw_parts_mut(data, max_data_bytes as usize),
-        )
-    };
-    guard(OPUS_INTERNAL_ERROR, || encode(pcm, frame_size as usize, out).map_or_else(code, |n| n as c_int))
+    let (pcm, out) =
+        unsafe { (slice::from_raw_parts(pcm, len), slice::from_raw_parts_mut(data, max_data_bytes as usize)) };
+    guard(OPUS_INTERNAL_ERROR, || encode(pcm, frame_size, out).map_or_else(code, |n| n as c_int))
 }
 
 /// The encode calls: `st` is an encoder from opus_encoder_init or
@@ -235,7 +236,12 @@ macro_rules! encode_fn {
         ) -> i32 {
             // SAFETY: see the macro.
             let st = unsafe { &mut *st };
-            unsafe { encode_with(pcm, analysis_frame_size, data, max_data_bytes, st.channels(), |p, n, out| st.$encode(p, n, out)) }
+            let select = usize::try_from(analysis_frame_size).ok().and_then(|n| st.select_frame_size(n));
+            unsafe {
+                encode_with(pcm, analysis_frame_size, data, max_data_bytes, st.channels(), select, |p, n, out| {
+                    st.$encode(p, n, out)
+                })
+            }
         }
     };
 }

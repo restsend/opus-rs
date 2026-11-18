@@ -196,16 +196,17 @@ pub(crate) unsafe fn decode_with<T>(
     channels: usize,
     decode: impl FnOnce(&[u8], usize, &mut [T], bool) -> Result<usize, &'static str>,
 ) -> c_int {
-    if frame_size <= 0 || pcm.is_null() || !(0..=1).contains(&decode_fec) {
+    let frame_size = usize::try_from(frame_size).unwrap_or(0);
+    let (Some(n @ 1..), false, 0..=1) = (frame_size.checked_mul(channels), pcm.is_null(), decode_fec) else {
         return OPUS_BAD_ARG;
-    }
+    };
     let packet = match unsafe { packet(data, len) } {
         Ok(p) => p,
         Err(e) => return e,
     };
     // SAFETY: `pcm` holds `frame_size` samples per channel (opus.h).
-    let pcm = unsafe { core::slice::from_raw_parts_mut(pcm, frame_size as usize * channels) };
-    match decode(packet, frame_size as usize, pcm, decode_fec == 1) {
+    let pcm = unsafe { core::slice::from_raw_parts_mut(pcm, n) };
+    match decode(packet, frame_size, pcm, decode_fec == 1) {
         Ok(n) => n as c_int,
         Err(e) => code(e),
     }
