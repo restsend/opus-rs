@@ -297,6 +297,9 @@ pub struct OpusEncoder {
     /// Whether SILK ran its own DTX on the last frame (libopus
     /// `silk_mode.useDTX`).
     silk_use_dtx: bool,
+    /// The last packet's in-band FEC decision (libopus
+    /// `silk_mode.LBRR_coded`), which a reset keeps.
+    lbrr_coded: i32,
     /// Milliseconds (Q1) of digital silence in a row, for DTX (libopus
     /// `nb_no_activity_ms_Q1`).
     nb_no_activity_ms_q1: i32,
@@ -1446,6 +1449,7 @@ impl OpusEncoder {
             packet_loss_perc: 0,
             use_dtx: false,
             silk_use_dtx: false,
+            lbrr_coded: 0,
             nb_no_activity_ms_q1: 0,
             silk_initialized: false,
             prev_enc_mode: None,
@@ -2269,11 +2273,12 @@ impl OpusEncoder {
         let lbrr_coded = decide_fec(
             if self.use_inband_fec { 1 } else { 0 },
             self.packet_loss_perc,
-            self.silk_enc.s_cmn.lbrr_enabled,
+            self.lbrr_coded,
             mode,
             &mut bandwidth,
             equiv_rate,
         );
+        self.lbrr_coded = lbrr_coded;
         // CELT sees the input's depth: 16 bits for `encode_i16`, 24 for
         // float (OPUS_SET_LSB_DEPTH, opus_encoder.c:1676-1677).
         self.celt_enc.set_lsb_depth(self.input_depth(input));
@@ -2475,13 +2480,6 @@ impl OpusEncoder {
             let noise_energy = compute_frame_energy(input, frame_size * self.channels, self.arch);
             activity =
                 i32::from(self.peak_signal_energy < PSEUDO_SNR_THRESHOLD * (0.5 * noise_energy));
-        }
-
-        if mode == OpusMode::CeltOnly {
-            // silk_mode.LBRR_coded persists across frames even while SILK is
-            // idle; it feeds decide_fec's hysteresis on the next SILK frame.
-            self.silk_enc.s_cmn.lbrr_enabled = 0;
-            self.silk_enc_side.s_cmn.lbrr_enabled = 0;
         }
 
         if mode == OpusMode::CeltOnly {

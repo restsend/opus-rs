@@ -477,3 +477,32 @@ fn nan_input_silence_matches_libopus() {
         }
     }
 }
+
+/// A reset keeps the last FEC decision (silk_mode.LBRR_coded), which the
+/// next packet's FEC hysteresis starts from.
+#[test]
+fn reset_keeps_the_fec_decision() {
+    for loss in [1, 5, 10] {
+        for rate in (16000..=24000).step_by(500) {
+            let (fs, frame) = (48000, 960);
+            let mut p = Pair::new(fs, 1, Application::Voip);
+            p.rs.set_inband_fec(1).unwrap();
+            p.ctl(SET_INBAND_FEC, 1);
+            p.rs.set_packet_loss_perc(loss).unwrap();
+            p.ctl(SET_PACKET_LOSS_PERC, loss);
+            p.rs.set_max_bandwidth(opus_rs::Bandwidth::Wideband);
+            p.ctl(SET_MAX_BANDWIDTH, 1103);
+            for f in 0..12 {
+                let r = if f < 5 { 32000 } else { rate };
+                p.rs.set_bitrate(r).unwrap();
+                p.ctl(SET_BITRATE, r);
+                if f == 7 {
+                    p.rs.reset();
+                    p.ctl(RESET_STATE, 0);
+                }
+                let pcm = signal(fs, 1, frame, f);
+                p.encode_exact(&pcm, frame, &format!("loss {loss} rate {rate} frame {f}"));
+            }
+        }
+    }
+}
