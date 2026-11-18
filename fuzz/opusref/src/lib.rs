@@ -471,6 +471,16 @@ unsafe extern "C" {
     /// `clt_mdct_forward_c`/`clt_mdct_backward_c` of the static 48 kHz mode,
     /// with its window and overlap.
     pub fn ref_mdct_forward(input: *mut f32, out: *mut f32, shift: c_int, stride: c_int);
+    /// `clt_mdct_forward_c` of the static 48 kHz mode with another window
+    /// and overlap.
+    pub fn ref_mdct_forward_window(
+        input: *mut f32,
+        out: *mut f32,
+        window: *const f32,
+        overlap: c_int,
+        shift: c_int,
+        stride: c_int,
+    );
     pub fn ref_mdct_backward(input: *mut f32, out: *mut f32, shift: c_int, stride: c_int);
     /// `opus_fft_impl` of the static mode's FFT at `shift` on interleaved
     /// (re, im) pairs, already in bit-reversed order.

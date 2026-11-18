@@ -67,6 +67,9 @@ void ref_mdct_forward(float *in, float *out, int shift, int stride) {
   const CELTMode *m = ref_celt_mode48();
   clt_mdct_forward_c(&m->mdct, in, out, m->window, m->overlap, shift, stride, 0);
 }
+void ref_mdct_forward_window(float *in, float *out, const float *window, int overlap, int shift, int stride) {
+  clt_mdct_forward_c(&ref_celt_mode48()->mdct, in, out, window, overlap, shift, stride, 0);
+}
 void ref_mdct_backward(float *in, float *out, int shift, int stride) {
   const CELTMode *m = ref_celt_mode48();
   clt_mdct_backward_c(&m->mdct, in, out, m->window, m->overlap, shift, stride, 0);

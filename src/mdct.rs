@@ -206,14 +206,11 @@ impl MdctLookup {
                 xp2 -= 2;
             }
 
-            // Loop 3 runs from `mid` to `n4` (C: for(;i<N4;i++)). When the
-            // frame is short enough that loop 2 is empty (mid == limit, i.e.
-            // n4 == 2*limit, e.g. 2.5 ms sub-frames at 48 kHz with shift=3),
-            // this still needs n4 - mid pairs.
-            let start = loop1_iters + mid.saturating_sub(limit);
+            // Loop 3 runs from where loops 1 and 2 stop up to `n4` (C:
+            // for(;i<N4;i++)): from `limit` when loop 2 is empty.
             let mut wp1 = 0usize;
             let mut wp2 = overlap.saturating_sub(1);
-            for i in start..start + n4.saturating_sub(mid) {
+            for i in limit.max(mid).min(n4)..n4 {
                 let w1 = window[wp1];
                 let w2 = window[wp2];
                 rotate(

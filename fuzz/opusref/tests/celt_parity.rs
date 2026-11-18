@@ -96,6 +96,40 @@ fn static_mode_tables_are_libopus_literals() {
     assert_eq!(mode.preemph, unsafe { *ref_preemph().cast::<[f32; 4]>() });
 }
 
+/// The forward MDCT's third folding loop runs from where the first two
+/// stop up to N/4 (mdct.c:183-200), also when an overlap above N/2
+/// leaves the second loop empty.
+#[test]
+fn mdct_forward_folds_overlaps_above_half_the_frame() {
+    let mode = opus_rs::modes::default_mode();
+    let mut seed = 3u32;
+    let mut rnd = move || {
+        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        (seed >> 9) as f32 / (1u32 << 23) as f32 - 0.5
+    };
+    for (shift, overlap) in [(3, 120), (3, 136), (3, 200), (2, 240), (2, 300)] {
+        let n2 = 960 >> shift;
+        let window: Vec<f32> = (0..overlap).map(|_| rnd()).collect();
+        let input: Vec<f32> = (0..n2 + overlap).map(|_| rnd() * 1000.0).collect();
+        let mut a = vec![0.0f32; n2];
+        mode.mdct
+            .forward(&input, &mut a, &window, overlap, shift, 1);
+        let mut b = vec![0.0f32; n2];
+        let mut x = input.clone();
+        unsafe {
+            ref_mdct_forward_window(
+                x.as_mut_ptr(),
+                b.as_mut_ptr(),
+                window.as_ptr(),
+                overlap as i32,
+                shift as i32,
+                1,
+            )
+        };
+        assert_eq!(a, b, "shift {shift} overlap {overlap}");
+    }
+}
+
 /// The static mode's FFTs round like libopus's kiss_fft butterflies.
 #[test]
 fn fft_matches_libopus() {
