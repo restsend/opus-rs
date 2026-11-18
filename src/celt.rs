@@ -328,7 +328,7 @@ fn patch_transient_decision(
             mean_diff += (x1 - x2).max(0.0);
         }
     }
-    mean_diff /= (channels * (end - 1 - first)) as f32;
+    mean_diff /= (channels as i32 * (end as i32 - 1 - first as i32)) as f32;
     mean_diff > 1.0
 }
 
@@ -4574,6 +4574,21 @@ mod tests {
                 "vbr {vbr} bitrate {bitrate} is_vbr {is_vbr}"
             );
         }
+    }
+
+    /// patch_transient_decision divides by the signed band count
+    /// C*(end-1-IMAX(2,start)) (celt_encoder.c:504), which is negative for
+    /// end bands 1 and 2: the mean stays -0 and the frame is no transient.
+    #[test]
+    fn end_bands_below_three_patch_no_transient() {
+        let new_e = [10.0f32; 42];
+        let old_e = [-10.0f32; 42];
+        for end in [1, 2, 3] {
+            for c in [1, 2] {
+                assert!(!patch_transient_decision(&new_e, &old_e, 21, 0, end, c));
+            }
+        }
+        assert!(patch_transient_decision(&new_e, &old_e, 21, 0, 4, 2));
     }
 
     /// libopus's CELT ctls reject out-of-range values and keep the setting
