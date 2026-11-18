@@ -156,10 +156,10 @@ fn kernels() {
             opus_rs::silk::sigproc_fix::silk_sum_sqr_shift(&mut e, &mut s, &x, len);
         }
         for (n, ord) in [(1usize, 1usize), (7, 4), (64, 16), (240, 24)] {
-            let x: Vec<f32> = (0..n).map(|_| r.f()).collect();
+            let x: Vec<f32> = (0..ord + n).map(|_| r.f()).collect();
             let num: Vec<f32> = (0..ord).map(|_| r.f() * 0.1).collect();
             let mut y = vec![0f32; n];
-            opus_rs::celt_lpc::celt_fir(&x, &num, &mut y, n, ord);
+            opus_rs::celt_lpc::celt_fir(&x, &num, &mut y, n, ord, opus_rs::Arch::select());
         }
         for (t0, t1, n, overlap) in [(15usize, 15usize, 120usize, 120usize), (100, 400, 240, 120), (1024, 15, 960, 0)] {
             let hist = 1026;

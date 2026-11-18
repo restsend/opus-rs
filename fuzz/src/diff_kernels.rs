@@ -208,19 +208,16 @@ fn run(which: u8, u: &mut Unstructured) -> R {
                 }
             }
         }
-        // celt_fir: same filter, different summation order.
+        // celt_fir with `ord` samples of history before the input.
         3 => {
             let ord = 1 + u8::arbitrary(u)? as usize % 24;
             let n = 1 + u16::arbitrary(u)? as usize % 960;
             let num = floats(u, ord, 1.0)?;
-            let x = floats(u, n, 1.0)?;
-            // libopus reads `ord` samples of history before x; opus-rs treats it as zero.
-            let mut cx = vec![0f32; ord];
-            cx.extend_from_slice(&x);
+            let x = floats(u, ord + n, 1.0)?;
             let mut cy = vec![0f32; n];
             unsafe {
                 c::celt_fir_c(
-                    cx.as_ptr().add(ord),
+                    x.as_ptr().add(ord),
                     num.as_ptr(),
                     cy.as_mut_ptr(),
                     n as i32,
@@ -228,16 +225,11 @@ fn run(which: u8, u: &mut Unstructured) -> R {
                     0,
                 )
             };
-            check2!(
-                "celt_fir",
-                tol,
-                both(|| {
-                    let mut y = vec![0f32; n];
-                    opus_rs::celt_lpc::celt_fir(&x, &num, &mut y, n, ord);
-                    y
-                }),
-                cy
-            );
+            let mut y = vec![0f32; n];
+            opus_rs::celt_lpc::celt_fir(&x, &num, &mut y, n, ord, opus_rs::Arch::Scalar);
+            if let Err(f) = exact("celt_fir", &y, &cy) {
+                return Ok(Err(f));
+            }
         }
         // silk_sum_sqr_shift: fixed point, bit-exact.
         4 => {

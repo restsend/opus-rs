@@ -130,6 +130,35 @@ fn mdct_forward_folds_overlaps_above_half_the_frame() {
     }
 }
 
+/// celt_fir filters across the `ord` history samples before the input
+/// and sums the oldest sample first (celt_lpc.c:158-189).
+#[test]
+fn celt_fir_matches_libopus() {
+    let mut seed = 9u32;
+    let mut rnd = move || {
+        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        (seed >> 9) as f32 / (1u32 << 23) as f32 - 0.5
+    };
+    for (n, ord) in [(1, 1), (7, 4), (64, 16), (240, 24), (961, 24), (3, 5)] {
+        let x: Vec<f32> = (0..ord + n).map(|_| rnd()).collect();
+        let num: Vec<f32> = (0..ord).map(|_| rnd()).collect();
+        let mut a = vec![0f32; n];
+        opus_rs::celt_lpc::celt_fir(&x, &num, &mut a, n, ord, opus_rs::Arch::select());
+        let mut b = vec![0f32; n];
+        unsafe {
+            celt_fir_c(
+                x.as_ptr().add(ord),
+                num.as_ptr(),
+                b.as_mut_ptr(),
+                n as i32,
+                ord as i32,
+                ref_arch(),
+            )
+        };
+        assert_eq!(a, b, "n {n} ord {ord}");
+    }
+}
+
 /// The static mode's FFTs round like libopus's kiss_fft butterflies.
 #[test]
 fn fft_matches_libopus() {
