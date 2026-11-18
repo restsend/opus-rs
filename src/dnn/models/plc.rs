@@ -24,6 +24,18 @@ pub struct PlcModel<'a> {
     pub plc_gru2_recurrent: LinearLayer<'a>,
 }
 
+impl PlcModel<'_> {
+    /// A model without weights, for a state built in place.
+    pub(crate) const EMPTY: Self = Self {
+        plc_dense_in: LinearLayer::EMPTY,
+        plc_dense_out: LinearLayer::EMPTY,
+        plc_gru1_input: LinearLayer::EMPTY,
+        plc_gru1_recurrent: LinearLayer::EMPTY,
+        plc_gru2_input: LinearLayer::EMPTY,
+        plc_gru2_recurrent: LinearLayer::EMPTY,
+    };
+}
+
 impl<'a> PlcModel<'a> {
     /// libopus `init_plcmodel`.
     pub fn init(list: &WeightList<'a>) -> Result<Self, WeightError> {

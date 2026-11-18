@@ -5506,27 +5506,52 @@ mod tests {
     }
 }
 
-/// `OpusEncoder::init` builds the encoder without a stack temporary of it:
-/// in a release build without `heap`, creating and running an encoder fits
-/// a 128 KiB thread (`cargo test --release --no-default-features
-/// --features std --lib small_stack`).
-#[cfg(all(test, feature = "std", not(feature = "heap")))]
+/// The codecs are built without a stack temporary of their state: creating
+/// and running an encoder and a decoder fits a 128 KiB thread in a release
+/// build, also with the neural features (`cargo test --release
+/// --no-default-features --features std,dred,osce --lib small_stack`, and
+/// with `heap` for `new`).
+#[cfg(all(test, feature = "std"))]
 mod small_stack {
     use super::*;
 
+    fn on_small_stack(f: impl FnOnce() + Send + 'static) {
+        std::thread::Builder::new().stack_size(128 * 1024).spawn(f).unwrap().join().unwrap();
+    }
+
+    /// Encodes and decodes a frame and conceals one, at complexity 10
+    /// (the neural decoder features run from 5).
+    fn run(enc: &mut OpusEncoder, dec: &mut OpusDecoder) {
+        enc.set_complexity(10).unwrap();
+        dec.set_complexity(10).unwrap();
+        let mut packet = [0u8; 1500];
+        let len = enc.encode(&[0.0; 960 * 2], 960, &mut packet).unwrap();
+        let mut pcm = [0.0f32; 960 * 2];
+        assert_eq!(dec.decode(&packet[..len], 960, &mut pcm).unwrap(), 960);
+        assert_eq!(dec.decode(&[], 960, &mut pcm).unwrap(), 960);
+    }
+
+    #[cfg(not(feature = "heap"))]
     #[test]
     #[cfg_attr(debug_assertions, ignore = "release builds only")]
-    fn encoder_init_and_encode_on_a_128_kib_thread() {
-        let mut slot = Box::new(MaybeUninit::<OpusEncoder>::uninit());
-        std::thread::Builder::new()
-            .stack_size(128 * 1024)
-            .spawn(move || {
-                let enc = OpusEncoder::init(&mut slot, 48000, 2, Application::Audio).unwrap();
-                let mut out = [0u8; 1500];
-                assert!(enc.encode(&[0.0; 960 * 2], 960, &mut out).unwrap() > 0);
-            })
-            .unwrap()
-            .join()
-            .unwrap();
+    fn init_on_a_128_kib_thread() {
+        let mut enc = Box::new(MaybeUninit::<OpusEncoder>::uninit());
+        let mut dec = Box::new(MaybeUninit::<OpusDecoder>::uninit());
+        on_small_stack(move || {
+            let enc = OpusEncoder::init(&mut enc, 48000, 2, Application::Audio).unwrap();
+            let dec = OpusDecoder::init(&mut dec, 48000, 2).unwrap();
+            run(enc, dec);
+        });
+    }
+
+    #[cfg(feature = "heap")]
+    #[test]
+    #[cfg_attr(debug_assertions, ignore = "release builds only")]
+    fn new_on_a_128_kib_thread() {
+        on_small_stack(|| {
+            let mut enc = OpusEncoder::new(48000, 2, Application::Audio).unwrap();
+            let mut dec = OpusDecoder::new(48000, 2).unwrap();
+            run(&mut enc, &mut dec);
+        });
     }
 }

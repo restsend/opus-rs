@@ -157,15 +157,24 @@ impl Osce {
     /// The state after `silk_init_decoder`: zero, then
     /// `osce_reset(OSCE_DEFAULT_METHOD)`.
     pub fn new() -> Self {
-        let mut st = Osce {
-            features: OsceFeatureState::new(),
-            lace: LaceState::new(),
-            nolace: NolaceState::new(),
-            method: OsceMethod::None,
-            arch: Arch::select(),
-        };
-        osce_reset(&mut st, OSCE_DEFAULT_METHOD);
+        let mut st = Self::EMPTY;
+        st.init();
         st
+    }
+
+    /// The zero state, for [`Self::init`] in place.
+    pub const EMPTY: Self = Osce {
+        features: OsceFeatureState::new(),
+        lace: LaceState::new(),
+        nolace: NolaceState::new(),
+        method: OsceMethod::None,
+        arch: Arch::Scalar,
+    };
+
+    /// [`Self::new`] on an [`Self::EMPTY`] state in place.
+    pub fn init(&mut self) {
+        self.arch = Arch::select();
+        osce_reset(self, OSCE_DEFAULT_METHOD);
     }
 }
 
@@ -190,12 +199,15 @@ impl OsceBwe {
     /// `silk_init_decoder` and before the first extended frame, so the
     /// zeros are never read.
     pub fn new() -> Self {
-        OsceBwe {
-            features: OsceBweFeatureState::new(),
-            bbwenet: BbwenetState::new(),
-            arch: Arch::select(),
-        }
+        OsceBwe { arch: Arch::select(), ..Self::EMPTY }
     }
+
+    /// The zero state; [`Self::new`] adds the level of the layers.
+    pub const EMPTY: Self = OsceBwe {
+        features: OsceBweFeatureState::new(),
+        bbwenet: BbwenetState::new(),
+        arch: Arch::Scalar,
+    };
 }
 
 impl Default for OsceBwe {

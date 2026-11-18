@@ -94,29 +94,42 @@ pub struct LpcnetPlcState<'a> {
 impl<'a> LpcnetPlcState<'a> {
     /// `lpcnet_plc_init` with the given models.
     pub fn new(models: PlcModels<'a>) -> Self {
-        let mut st = LpcnetPlcState {
-            model: models.plc,
-            fargan: FarganState::new(models.fargan),
-            enc: LpcnetEncState::new(models.pitchdnn),
-            fec: [[0.0; NB_FEATURES]; PLC_MAX_FEC],
-            analysis_gap: 0,
-            fec_read_pos: 0,
-            fec_fill_pos: 0,
-            fec_skip: 0,
-            analysis_pos: 0,
-            predict_pos: 0,
-            pcm: [0.0; PLC_BUF_SIZE],
-            blend: 0,
-            features: [0.0; NB_TOTAL_FEATURES],
-            cont_features: [0.0; CONT_VECTORS * NB_FEATURES],
-            loss_count: 0,
-            plc_net: PlcNetState::ZERO,
-            plc_bak: [PlcNetState::ZERO; 2],
-            arch: Arch::select(),
-        };
-        st.reset();
+        let mut st = Self::EMPTY;
+        st.init(models);
         st
     }
+
+    /// [`Self::new`] on an [`Self::EMPTY`] state in place.
+    pub fn init(&mut self, models: PlcModels<'a>) {
+        self.model = models.plc;
+        self.fargan.model = models.fargan;
+        self.fargan.arch = Arch::select();
+        self.enc.pitchdnn.model = models.pitchdnn;
+        self.arch = Arch::select();
+        self.reset();
+    }
+
+    /// A state without models, for [`Self::init`].
+    pub const EMPTY: Self = LpcnetPlcState {
+        model: PlcModel::EMPTY,
+        fargan: FarganState::EMPTY,
+        enc: LpcnetEncState::new(PitchDnn::EMPTY),
+        fec: [[0.0; NB_FEATURES]; PLC_MAX_FEC],
+        analysis_gap: 0,
+        fec_read_pos: 0,
+        fec_fill_pos: 0,
+        fec_skip: 0,
+        analysis_pos: 0,
+        predict_pos: 0,
+        pcm: [0.0; PLC_BUF_SIZE],
+        blend: 0,
+        features: [0.0; NB_TOTAL_FEATURES],
+        cont_features: [0.0; CONT_VECTORS * NB_FEATURES],
+        loss_count: 0,
+        plc_net: PlcNetState::ZERO,
+        plc_bak: [PlcNetState::ZERO; 2],
+        arch: Arch::Scalar,
+    };
 
     /// `lpcnet_plc_reset`: clears everything from `fec` on and the feature
     /// analysis. The FARGAN state is kept, as in libopus.

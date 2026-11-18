@@ -54,6 +54,32 @@ pub struct Fargan<'a> {
     pub sig_net_gain_dense_out: LinearLayer<'a>,
 }
 
+impl Fargan<'_> {
+    /// A model without weights, for a state built in place.
+    pub(crate) const EMPTY: Self = Self {
+        cond_net_pembed: LinearLayer::EMPTY,
+        cond_net_fdense1: LinearLayer::EMPTY,
+        cond_net_fconv1: LinearLayer::EMPTY,
+        cond_net_fdense2: LinearLayer::EMPTY,
+        sig_net_cond_gain_dense: LinearLayer::EMPTY,
+        sig_net_fwc0_conv: LinearLayer::EMPTY,
+        sig_net_fwc0_glu_gate: LinearLayer::EMPTY,
+        sig_net_gru1_input: LinearLayer::EMPTY,
+        sig_net_gru1_recurrent: LinearLayer::EMPTY,
+        sig_net_gru2_input: LinearLayer::EMPTY,
+        sig_net_gru2_recurrent: LinearLayer::EMPTY,
+        sig_net_gru3_input: LinearLayer::EMPTY,
+        sig_net_gru3_recurrent: LinearLayer::EMPTY,
+        sig_net_gru1_glu_gate: LinearLayer::EMPTY,
+        sig_net_gru2_glu_gate: LinearLayer::EMPTY,
+        sig_net_gru3_glu_gate: LinearLayer::EMPTY,
+        sig_net_skip_glu_gate: LinearLayer::EMPTY,
+        sig_net_skip_dense: LinearLayer::EMPTY,
+        sig_net_sig_dense_out: LinearLayer::EMPTY,
+        sig_net_gain_dense_out: LinearLayer::EMPTY,
+    };
+}
+
 impl<'a> Fargan<'a> {
     /// libopus `init_fargan`.
     pub fn init(list: &WeightList<'a>) -> Result<Self, WeightError> {

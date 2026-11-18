@@ -49,20 +49,23 @@ pub struct FarganState<'a> {
 impl<'a> FarganState<'a> {
     /// `fargan_init`: zero state with the given model.
     pub fn new(model: Fargan<'a>) -> Self {
-        FarganState {
-            model,
-            cont_initialized: false,
-            deemph_mem: 0.0,
-            pitch_buf: [0.0; PITCH_MAX_PERIOD],
-            cond_conv1_state: [0.0; COND_NET_FCONV1_STATE_SIZE],
-            fwc0_mem: [0.0; SIG_NET_FWC0_STATE_SIZE],
-            gru1_state: [0.0; SIG_NET_GRU1_STATE_SIZE],
-            gru2_state: [0.0; SIG_NET_GRU2_STATE_SIZE],
-            gru3_state: [0.0; SIG_NET_GRU3_STATE_SIZE],
-            last_period: 0,
-            arch: Arch::select(),
-        }
+        FarganState { model, arch: Arch::select(), ..Self::EMPTY }
     }
+
+    /// The zero state without a model, for a state built in place.
+    pub(crate) const EMPTY: Self = FarganState {
+        model: Fargan::EMPTY,
+        cont_initialized: false,
+        deemph_mem: 0.0,
+        pitch_buf: [0.0; PITCH_MAX_PERIOD],
+        cond_conv1_state: [0.0; COND_NET_FCONV1_STATE_SIZE],
+        fwc0_mem: [0.0; SIG_NET_FWC0_STATE_SIZE],
+        gru1_state: [0.0; SIG_NET_GRU1_STATE_SIZE],
+        gru2_state: [0.0; SIG_NET_GRU2_STATE_SIZE],
+        gru3_state: [0.0; SIG_NET_GRU3_STATE_SIZE],
+        last_period: 0,
+        arch: Arch::Scalar,
+    };
 }
 
 /// `fargan_period`: the pitch period of a feature vector,

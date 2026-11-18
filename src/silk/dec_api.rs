@@ -150,20 +150,26 @@ impl SilkDecoder {
         // libopus `lpcnet_plc_init` in opus_decoder_init.
         #[cfg(feature = "deep-plc")]
         {
-            let models =
-                crate::dnn::lpcnet_plc::PlcModels::builtin().expect("built-in deep PLC models");
-            self.lpcnet = Some(crate::dnn::lpcnet_plc::LpcnetPlcState::new(models));
+            use crate::dnn::lpcnet_plc::{LpcnetPlcState, PlcModels};
+            let models = PlcModels::builtin().expect("built-in deep PLC models");
+            // Set up in place: the state is about 70 KB.
+            self.lpcnet = const { Some(LpcnetPlcState::EMPTY) };
+            if let Some(plc) = &mut self.lpcnet {
+                plc.init(models);
+            }
         }
         // silk_InitDecoder loads the built-in OSCE models; silk_init_decoder
         // resets each channel to OSCE_DEFAULT_METHOD.
         #[cfg(feature = "osce")]
         {
             self.osce_model = crate::dnn::osce::OsceModel::builtin().ok();
-            self.osce = Some([crate::dnn::osce::Osce::new(), crate::dnn::osce::Osce::new()]);
-            self.osce_bwe = Some([
-                crate::dnn::osce::OsceBwe::new(),
-                crate::dnn::osce::OsceBwe::new(),
-            ]);
+            use crate::dnn::osce::{Osce, OsceBwe};
+            // Set up in place: the states are about 110 KB.
+            self.osce = const { Some([Osce::EMPTY, Osce::EMPTY]) };
+            self.osce_bwe = const { Some([OsceBwe::EMPTY, OsceBwe::EMPTY]) };
+            let arch = crate::Arch::select();
+            self.osce.iter_mut().flatten().for_each(Osce::init);
+            self.osce_bwe.iter_mut().flatten().for_each(|bwe| bwe.arch = arch);
         }
     }
 
