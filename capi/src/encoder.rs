@@ -2,14 +2,13 @@
 
 use core::ffi::c_int;
 use core::mem::size_of;
-use core::ptr;
 use core::slice;
 
 use opus_rs::{Application, Bandwidth, FrameDuration, OpusMode, Signal};
 
 use crate::{
-    CtlArgs, OPUS_ALLOC_FAIL, OPUS_AUTO, OPUS_BAD_ARG, OPUS_INTERNAL_ERROR, OPUS_OK, OPUS_UNIMPLEMENTED, code,
-    get, guard, ok, req, set_bool, set_out,
+    CtlArgs, OPUS_AUTO, OPUS_BAD_ARG, OPUS_INTERNAL_ERROR, OPUS_OK, OPUS_UNIMPLEMENTED, code,
+    get, guard, ok, req, set_bool,
 };
 
 /// libopus's `OpusEncoder` is the opus-rs encoder: one flat block (opus-rs
@@ -167,27 +166,7 @@ pub unsafe extern "C" fn opus_encoder_init(st: *mut OpusEncoder, fs: i32, channe
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn opus_encoder_create(fs: i32, channels: c_int, app: c_int, error: *mut c_int) -> *mut OpusEncoder {
-    let size = opus_encoder_get_size(channels);
-    // SAFETY: `error` is NULL or valid for a write (opus.h); the state
-    // comes from alloc_state with the size opus_encoder_init needs.
-    unsafe {
-        if size == 0 {
-            set_out(error, OPUS_BAD_ARG);
-            return ptr::null_mut();
-        }
-        let st = crate::alloc_state(size as usize).cast::<OpusEncoder>();
-        if st.is_null() {
-            set_out(error, OPUS_ALLOC_FAIL);
-            return st;
-        }
-        let ret = opus_encoder_init(st, fs, channels, app);
-        set_out(error, ret);
-        if ret != OPUS_OK {
-            crate::free_state(st);
-            return ptr::null_mut();
-        }
-        st
-    }
+    unsafe { crate::create(opus_encoder_get_size(channels), error, |st| opus_encoder_init(st, fs, channels, app)) }
 }
 
 #[unsafe(no_mangle)]

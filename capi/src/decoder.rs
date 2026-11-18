@@ -2,11 +2,10 @@
 
 use core::ffi::c_int;
 use core::mem::{MaybeUninit, size_of};
-use core::ptr;
 
 use crate::{
-    CtlArgs, OPUS_ALLOC_FAIL, OPUS_BAD_ARG, OPUS_INTERNAL_ERROR, OPUS_OK, OPUS_UNIMPLEMENTED,
-    decode_with, get, guard, ok, req, set_bool, set_out,
+    CtlArgs, OPUS_BAD_ARG, OPUS_INTERNAL_ERROR, OPUS_OK, OPUS_UNIMPLEMENTED,
+    decode_with, get, guard, ok, req, set_bool,
 };
 
 /// libopus's `OpusDecoder` is the opus-rs decoder: one flat block (opus-rs
@@ -73,27 +72,7 @@ pub unsafe extern "C" fn opus_decoder_init(st: *mut OpusDecoder, fs: i32, channe
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn opus_decoder_create(fs: i32, channels: c_int, error: *mut c_int) -> *mut OpusDecoder {
-    let size = opus_decoder_get_size(channels);
-    // SAFETY: `error` is NULL or valid for a write (opus.h); the state
-    // comes from alloc_state with the size opus_decoder_init needs.
-    unsafe {
-        if size == 0 {
-            set_out(error, OPUS_BAD_ARG);
-            return ptr::null_mut();
-        }
-        let st = crate::alloc_state(size as usize).cast::<OpusDecoder>();
-        if st.is_null() {
-            set_out(error, OPUS_ALLOC_FAIL);
-            return st;
-        }
-        let ret = opus_decoder_init(st, fs, channels);
-        set_out(error, ret);
-        if ret != OPUS_OK {
-            crate::free_state(st);
-            return ptr::null_mut();
-        }
-        st
-    }
+    unsafe { crate::create(opus_decoder_get_size(channels), error, |st| opus_decoder_init(st, fs, channels)) }
 }
 
 #[unsafe(no_mangle)]

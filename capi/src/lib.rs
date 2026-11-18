@@ -19,6 +19,7 @@
 #![allow(clippy::needless_range_loop)]
 
 use core::ffi::{c_char, c_int};
+use core::ptr;
 
 mod decoder;
 #[cfg(feature = "dred")]
@@ -237,6 +238,28 @@ pub(crate) unsafe fn alloc_state(size: usize) -> *mut u8 {
 
 pub(crate) unsafe fn free_state<T>(st: *mut T) {
     unsafe { free(st as *mut core::ffi::c_void) }
+}
+
+/// libopus's `opus_*_create`: a state of `size` bytes from `alloc_state`
+/// (`OPUS_BAD_ARG` for 0) set up by `init`, whose result goes to `error`;
+/// NULL when either fails.
+pub(crate) unsafe fn create<T>(size: c_int, error: *mut c_int, init: impl FnOnce(*mut T) -> c_int) -> *mut T {
+    // SAFETY: `error` is NULL or valid for a write (opus.h); `init` gets
+    // `size` bytes from malloc and the state is freed when it fails.
+    unsafe {
+        let st = if size > 0 { alloc_state(size as usize).cast::<T>() } else { ptr::null_mut() };
+        let ret = match size {
+            ..=0 => OPUS_BAD_ARG,
+            _ if st.is_null() => OPUS_ALLOC_FAIL,
+            _ => init(st),
+        };
+        set_out(error, ret);
+        if ret != OPUS_OK {
+            free_state(st);
+            return ptr::null_mut();
+        }
+        st
+    }
 }
 
 /// libopus's `align()` of state sizes.

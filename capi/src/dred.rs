@@ -7,7 +7,7 @@ use core::ptr;
 use opus_rs::dred::{OpusDred, OpusDredDecoder};
 
 use crate::decoder::OpusDecoder;
-use crate::{OPUS_ALLOC_FAIL, OPUS_BAD_ARG, OPUS_INTERNAL_ERROR, OPUS_OK, OPUS_UNIMPLEMENTED, code, guard, packet, set_out};
+use crate::{OPUS_BAD_ARG, OPUS_INTERNAL_ERROR, OPUS_OK, OPUS_UNIMPLEMENTED, code, guard, packet, set_out};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn opus_dred_decoder_get_size() -> c_int {
@@ -29,22 +29,7 @@ pub unsafe extern "C" fn opus_dred_decoder_init(dec: *mut OpusDredDecoder) -> c_
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn opus_dred_decoder_create(error: *mut c_int) -> *mut OpusDredDecoder {
-    // SAFETY: `error` is NULL or valid for a write; the state comes from
-    // alloc_state with the size opus_dred_decoder_init needs.
-    unsafe {
-        let dec = crate::alloc_state(size_of::<OpusDredDecoder>()).cast::<OpusDredDecoder>();
-        if dec.is_null() {
-            set_out(error, OPUS_ALLOC_FAIL);
-            return dec;
-        }
-        let ret = opus_dred_decoder_init(dec);
-        set_out(error, ret);
-        if ret != OPUS_OK {
-            crate::free_state(dec);
-            return ptr::null_mut();
-        }
-        dec
-    }
+    unsafe { crate::create(opus_dred_decoder_get_size(), error, |dec| opus_dred_decoder_init(dec)) }
 }
 
 #[unsafe(no_mangle)]
@@ -60,17 +45,12 @@ pub extern "C" fn opus_dred_get_size() -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn opus_dred_alloc(error: *mut c_int) -> *mut OpusDred {
-    // SAFETY: `error` is NULL or valid for a write; alloc_state returns
-    // NULL or room for an OpusDred.
+    // SAFETY: `create` hands the closure room for an OpusDred.
     unsafe {
-        let dred = crate::alloc_state(size_of::<OpusDred>()).cast::<OpusDred>();
-        if dred.is_null() {
-            set_out(error, OPUS_ALLOC_FAIL);
-            return dred;
-        }
-        dred.write(OpusDred::default());
-        set_out(error, OPUS_OK);
-        dred
+        crate::create(opus_dred_get_size(), error, |dred: *mut OpusDred| {
+            dred.write(OpusDred::default());
+            OPUS_OK
+        })
     }
 }
 

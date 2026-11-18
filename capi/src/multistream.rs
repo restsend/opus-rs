@@ -9,8 +9,8 @@ use opus_rs::multistream::{ChannelMappingTable, MultistreamDecoder};
 
 use crate::decoder::{self, OpusDecoder};
 use crate::{
-    Arg, CtlArgs, OPUS_ALLOC_FAIL, OPUS_BAD_ARG, OPUS_INTERNAL_ERROR, OPUS_OK, OPUS_UNIMPLEMENTED, align_size,
-    decode_with, guard, req, set_out,
+    Arg, CtlArgs, OPUS_BAD_ARG, OPUS_INTERNAL_ERROR, OPUS_OK, OPUS_UNIMPLEMENTED, align_size,
+    decode_with, guard, req,
 };
 
 /// libopus's `OpusMSDecoder`.
@@ -115,27 +115,8 @@ pub unsafe extern "C" fn opus_multistream_decoder_create(
     mapping: *const u8,
     error: *mut c_int,
 ) -> *mut OpusMSDecoder {
-    // SAFETY: `error` is NULL or valid for a write; `mapping` holds
-    // `channels` bytes (opus_multistream.h).
-    unsafe {
-        let size = opus_multistream_decoder_get_size(streams, coupled_streams);
-        if size == 0 {
-            set_out(error, OPUS_BAD_ARG);
-            return ptr::null_mut();
-        }
-        let st = crate::alloc_state(size as usize).cast::<OpusMSDecoder>();
-        if st.is_null() {
-            set_out(error, OPUS_ALLOC_FAIL);
-            return st;
-        }
-        let ret = opus_multistream_decoder_init(st, fs, channels, streams, coupled_streams, mapping);
-        set_out(error, ret);
-        if ret != OPUS_OK {
-            crate::free_state(st);
-            return ptr::null_mut();
-        }
-        st
-    }
+    let size = opus_multistream_decoder_get_size(streams, coupled_streams);
+    unsafe { crate::create(size, error, |st| opus_multistream_decoder_init(st, fs, channels, streams, coupled_streams, mapping)) }
 }
 
 #[unsafe(no_mangle)]
