@@ -10,8 +10,9 @@
 //! - exact: integer kernels and element-wise float kernels must match bit for bit.
 //! - tol: float kernels whose summation order differs from libopus must
 //!   match within `OFZ_KTOL` (relative, default 1e-5).
-//! - pvq: the pulse vector must have K pulses and an objective
-//!   (Rxy^2/Ryy) no worse than libopus's search.
+//! - pvq: the pulse vector must have K pulses, and at the reference's level
+//!   it must equal libopus's (op_pvq_search_sse2 follows the CPU's rcp/rsqrt,
+//!   so other levels may pick other pulses).
 
 use crate::common::*;
 use arbitrary::{Arbitrary, Unstructured};
@@ -154,8 +155,11 @@ fn run(which: u8, u: &mut Unstructured) -> R {
             if x.iter().all(|&v| v == 0.0) {
                 return Ok(Ok(()));
             }
+            // libopus's alg_quant allocates N+3 entries: op_pvq_search_sse2
+            // clears and writes them in groups of four.
             let mut cx = x.clone();
-            let mut cy = vec![0i32; n];
+            cx.resize(n + 3, 0.0);
+            let mut cy = vec![0i32; n + 3];
             // The fixed-point reference has no float search wrapper.
             #[cfg(not(feature = "fixed"))]
             unsafe {
@@ -165,15 +169,28 @@ fn run(which: u8, u: &mut Unstructured) -> R {
             unsafe {
                 c::op_pvq_search_c(cx.as_mut_ptr(), cy.as_mut_ptr(), k, n as i32, 0)
             };
-            let oc = objective(&x, &cy);
+            cy.truncate(n);
+            // A run at the reference's level gives libopus's pulses (libopus
+            // arch: 0 C, 1 SSE, 2 SSE2, 3 SSE4.1, 4 AVX2).
+            // The fixed-point reference searches in fixed point: no exact check.
+            #[cfg(not(feature = "fixed"))]
+            let lref = Some(match unsafe { c::ref_arch() } {
+                0 => opus_rs::Arch::Scalar,
+                1 | 2 => opus_rs::Arch::Sse2,
+                3 => opus_rs::Arch::Sse4_1,
+                _ => opus_rs::Arch::Avx2,
+            });
+            #[cfg(feature = "fixed")]
+            let lref = None;
+            let (lc, ln) = both(opus_rs::Arch::select);
             let (sc, si) = both(|| {
                 let mut y = vec![0i32; n + 8];
                 opus_rs::pvq::pvq_search(&x, &mut y, k, n, opus_rs::Arch::select());
                 y.truncate(n);
                 y
             });
-            ijon_set(0x200 | (n.min(64) as u64) << 1 | (sc != cy) as u64);
-            for (tag, y) in [("scalar", &sc), ("simd", &si)] {
+            ijon_set(0x200 | (n.min(64) as u64) << 1 | (si != cy) as u64);
+            for (tag, y, level) in [("scalar", &sc, lc), ("simd", &si, ln)] {
                 let pulses: i32 = y.iter().map(|v| v.abs()).sum();
                 if pulses != k {
                     fail_k!(
@@ -181,11 +198,12 @@ fn run(which: u8, u: &mut Unstructured) -> R {
                         "pvq_search/{tag}: {pulses} pulses, K={k}, N={n}"
                     );
                 }
-                let o = objective(&x, y);
-                if o < oc * (1.0 - 1e-6) {
+                if Some(level) == lref && *y != cy {
                     fail_k!(
-                        format!("pvq_search/{tag} objective"),
-                        "pvq_search/{tag}: objective {o} < libopus {oc} (N={n} K={k})"
+                        format!("pvq_search/{tag} exact"),
+                        "pvq_search/{tag}: pulses differ from libopus at the same level (N={n} K={k}, objective {} vs {})",
+                        objective(&x, y),
+                        objective(&x, &cy)
                     );
                 }
             }
