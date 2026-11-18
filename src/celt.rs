@@ -1458,6 +1458,12 @@ struct FrameDecisions {
     weak_transient: bool,
 }
 
+#[cfg(test)]
+impl FrameDecisions {
+    const DEFAULT: Self =
+        Self { alloc_trim: 0, tf_select: 0, tf_res: [0; MAX_NB_EBANDS], is_transient: false, weak_transient: false };
+}
+
 const INTEN_THRESHOLDS: [i32; 21] = [
     1, 2, 3, 4, 5, 6, 7, 8, 16, 24, 36, 44, 50, 56, 62, 67, 72, 79, 88, 106, 134,
 ];
@@ -1983,107 +1989,145 @@ impl CeltEncoder {
         channels: usize,
         sampling_rate: i32,
     ) -> Self {
+        let mut enc = Self::EMPTY;
+        enc.init(mode, channels, sampling_rate);
+        enc
+    }
+
+    /// An encoder with empty buffers for [`Self::init`] to set up. It is a
+    /// constant so that it can be written straight into its final memory.
+    pub(crate) const EMPTY: Self = Self {
+        mode: crate::modes::default_mode(),
+        channels: 0,
+        arch: crate::Arch::Scalar,
+        upsample: 1,
+        end_band: 0,
+        // celt_encoder.c:220.
+        complexity: 5,
+        syn_mem: FixedVec::new(),
+        old_band_e: FixedVec::new(),
+        preemph_mem: FixedVec::new(),
+        tonal_average: 256,
+        hf_average: 0,
+        tapset_decision: 0,
+        spread_decision: SPREAD_NORMAL,
+        intensity: 0,
+        last_coded_bands: 0,
+        prefilter_mem: FixedVec::new(),
+        prefilter_period: 0,
+        prefilter_gain: 0.0,
+        prefilter_tapset: 0,
+        old_band_e2: FixedVec::new(),
+        old_band_e3: FixedVec::new(),
+        last_band_log_e: FixedVec::new(),
+        delayed_intra: 0.0,
+        energy_error: [0.0; CELT_NB_X_CH],
+        rng: 0,
+        stream_channels: 0,
+        lsb_depth: 24,
+        overlap_max: 0.0,
+        bitrate: OPUS_BITRATE_MAX,
+        vbr: false,
+        constrained_vbr: true,
+        vbr_reservoir: 0,
+        vbr_drift: 0,
+        vbr_offset: 0,
+        vbr_count: 0,
+        w_in_buf: FixedVec::new(),
+        w_freq: FixedVec::new(),
+        w_band_e: FixedVec::new(),
+        w_band_e2: FixedVec::new(),
+        w_x: FixedVec::new(),
+        w_band_log_e: FixedVec::new(),
+        w_band_log_e2: FixedVec::new(),
+        w_error: FixedVec::new(),
+        w_tf_res: FixedVec::new(),
+        w_cap: FixedVec::new(),
+        w_offsets: FixedVec::new(),
+        w_pulses: FixedVec::new(),
+        w_ebits: FixedVec::new(),
+        w_fine_priority: FixedVec::new(),
+        w_collapse_masks: FixedVec::new(),
+        w_prefilter_pre: FixedVec::new(),
+        w_prefilter_pitch_buf: FixedVec::new(),
+        w_prefilter_before: FixedVec::new(),
+        w_prefilter_after: FixedVec::new(),
+        w_transient_tmp: FixedVec::new(),
+        consec_transient: 0,
+        analysis: AnalysisInfo::zeroed(),
+        stereo_saving: 0.0,
+        spec_avg: 0.0,
+        loss_rate: 0,
+        silk_signal_type: 0,
+        silk_offset: 0,
+        disable_pf: false,
+        force_intra: false,
+        disable_inv: false,
+        lfe: false,
+        energy_mask: None,
+        #[cfg(test)]
+        decisions: FrameDecisions::DEFAULT,
+    };
+
+    /// Sets up an [`Self::EMPTY`] encoder in place for `sampling_rate`, as
+    /// [`Self::with_sampling_rate`] builds one.
+    pub(crate) fn init(&mut self, mode: &'static CeltMode, channels: usize, sampling_rate: i32) {
         // All internal buffers are sized for at most 2 channels; a larger
-        // value would panic later inside `FixedVec::from_value` with an
-        // unhelpful message (issue #27 deep scan).
+        // value would panic later with an unhelpful message (issue #27 deep
+        // scan).
         assert!(
             (1..=2).contains(&channels),
             "CeltEncoder::new: channels must be 1 or 2 (got {channels})"
         );
-        let upsample = resampling_factor(sampling_rate);
         let overlap = mode.overlap;
-        let channel_mem_size = 2048 + overlap;
-        let syn_mem_size = channels * channel_mem_size;
         let nb_ebands = mode.nb_ebands;
         let nb_x_ch = nb_ebands * channels;
         let frame_x_ch = MAX_FRAME_SIZE * channels;
-        let bufstride_x_ch = (MAX_FRAME_SIZE + overlap) * channels;
+        self.mode = mode;
+        self.channels = channels;
+        self.stream_channels = channels;
+        self.arch = crate::Arch::select();
+        self.upsample = resampling_factor(sampling_rate);
+        self.end_band = nb_ebands;
+        // The buffers, zeroed at their lengths.
+        macro_rules! zeroed {
+            ($($buf:ident: $len:expr,)*) => {$(
+                self.$buf.clear();
+                self.$buf.resize($len, Default::default());
+            )*};
+        }
+        zeroed! {
+            syn_mem: channels * (2048 + overlap),
+            old_band_e: nb_x_ch,
+            preemph_mem: channels,
+            prefilter_mem: channels * COMBFILTER_MAXPERIOD,
+            old_band_e2: nb_x_ch,
+            old_band_e3: nb_x_ch,
+            last_band_log_e: nb_x_ch,
+            w_in_buf: (MAX_FRAME_SIZE + overlap) * channels,
+            w_freq: frame_x_ch + 4,
+            w_band_e: nb_x_ch,
+            w_band_e2: nb_x_ch,
+            w_x: frame_x_ch + STRIDE_ACCESS_PAD,
+            w_band_log_e: nb_x_ch,
+            w_band_log_e2: nb_x_ch,
+            w_error: nb_x_ch,
+            w_tf_res: nb_ebands,
+            w_cap: nb_ebands,
+            w_offsets: nb_ebands,
+            w_pulses: nb_ebands,
+            w_ebits: nb_x_ch,
+            w_fine_priority: nb_x_ch,
+            w_collapse_masks: nb_x_ch,
+            w_prefilter_pre: channels * (COMBFILTER_MAXPERIOD + MAX_FRAME_SIZE),
+            w_prefilter_pitch_buf: (COMBFILTER_MAXPERIOD + MAX_FRAME_SIZE) >> 1,
+            w_prefilter_before: channels,
+            w_prefilter_after: channels,
+            w_transient_tmp: MAX_TRANSIENT_LEN,
+        }
         // libopus initialises through OPUS_RESET_STATE
         // (celt_encoder.c:229).
-        let mut enc = Self {
-            mode,
-            channels,
-            arch: crate::Arch::select(),
-            upsample,
-            end_band: mode.nb_ebands,
-            // celt_encoder.c:220.
-            complexity: 5,
-            syn_mem: FixedVec::from_value(0.0, syn_mem_size),
-            old_band_e: FixedVec::from_value(0.0, nb_x_ch),
-            preemph_mem: FixedVec::from_value(0.0, channels),
-            tonal_average: 256,
-            hf_average: 0,
-            tapset_decision: 0,
-            spread_decision: SPREAD_NORMAL,
-            intensity: 0,
-            last_coded_bands: 0,
-            prefilter_mem: FixedVec::from_value(0.0, channels * COMBFILTER_MAXPERIOD),
-            prefilter_period: 0,
-            prefilter_gain: 0.0,
-            prefilter_tapset: 0,
-            old_band_e2: FixedVec::from_value(0.0, nb_x_ch),
-            old_band_e3: FixedVec::from_value(0.0, nb_x_ch),
-            last_band_log_e: FixedVec::from_value(0.0, nb_x_ch),
-            delayed_intra: 0.0,
-            energy_error: [0.0; CELT_NB_X_CH],
-            rng: 0,
-            stream_channels: channels,
-            lsb_depth: 24,
-            overlap_max: 0.0,
-            bitrate: OPUS_BITRATE_MAX,
-            vbr: false,
-            constrained_vbr: true,
-            vbr_reservoir: 0,
-            vbr_drift: 0,
-            vbr_offset: 0,
-            vbr_count: 0,
-
-            w_in_buf: FixedVec::from_value(0.0, bufstride_x_ch),
-            w_freq: FixedVec::from_value(0.0, frame_x_ch + 4),
-            w_band_e: FixedVec::from_value(0.0, nb_x_ch),
-            w_band_e2: FixedVec::from_value(0.0, nb_x_ch),
-
-            w_x: FixedVec::from_value(0.0, frame_x_ch + STRIDE_ACCESS_PAD),
-            w_band_log_e: FixedVec::from_value(0.0, nb_x_ch),
-            w_band_log_e2: FixedVec::from_value(0.0, nb_x_ch),
-            w_error: FixedVec::from_value(0.0, nb_x_ch),
-            w_tf_res: FixedVec::from_value(0, nb_ebands),
-            w_cap: FixedVec::from_value(0, nb_ebands),
-            w_offsets: FixedVec::from_value(0, nb_ebands),
-            w_pulses: FixedVec::from_value(0, nb_ebands),
-            w_ebits: FixedVec::from_value(0, nb_x_ch),
-            w_fine_priority: FixedVec::from_value(0, nb_x_ch),
-            w_collapse_masks: FixedVec::from_value(0, nb_x_ch),
-
-            w_prefilter_pre: FixedVec::from_value(
-                0.0,
-                channels * (COMBFILTER_MAXPERIOD + MAX_FRAME_SIZE),
-            ),
-            w_prefilter_pitch_buf: FixedVec::from_value(
-                0.0,
-                (COMBFILTER_MAXPERIOD + MAX_FRAME_SIZE) >> 1,
-            ),
-            w_prefilter_before: FixedVec::from_value(0.0, channels),
-            w_prefilter_after: FixedVec::from_value(0.0, channels),
-            w_transient_tmp: FixedVec::from_value(0.0, MAX_TRANSIENT_LEN),
-            consec_transient: 0,
-
-            analysis: AnalysisInfo::default(),
-            stereo_saving: 0.0,
-            spec_avg: 0.0,
-            loss_rate: 0,
-            silk_signal_type: 0,
-            silk_offset: 0,
-            disable_pf: false,
-            force_intra: false,
-            disable_inv: false,
-            lfe: false,
-            energy_mask: None,
-            #[cfg(test)]
-            decisions: FrameDecisions::default(),
-        };
-        enc.reset_state();
-        enc
+        self.reset_state();
     }
 
     /// libopus `OPUS_RESET_STATE`: forget the signal history and the rate
