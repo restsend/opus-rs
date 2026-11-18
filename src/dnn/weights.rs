@@ -34,6 +34,9 @@ pub enum WeightError {
     /// An array a layer needs is missing or has the wrong size (libopus
     /// `linear_init`/`conv2d_init` return 1). Holds the array name.
     Missing(&'static str),
+    /// A layer has more inputs than `MAX_INPUTS` (libopus `linear_init`
+    /// returns 1).
+    TooManyInputs,
 }
 
 /// Little-endian `f32` values borrowed from a blob.
@@ -270,6 +273,9 @@ impl<'a> WeightList<'a> {
         nb_inputs: usize,
         nb_outputs: usize,
     ) -> Result<LinearLayer<'a>, WeightError> {
+        if nb_inputs > super::vec::MAX_INPUTS {
+            return Err(WeightError::TooManyInputs);
+        }
         let mut l = LinearLayer {
             nb_inputs,
             nb_outputs,
@@ -376,5 +382,19 @@ mod tests {
             WeightList::parse(&blob[..100]).unwrap_err(),
             WeightError::InvalidBlob
         );
+    }
+
+    /// linear_init refuses layers of more than MAX_INPUTS inputs before
+    /// looking up an array (parse_lpcnet_weights.c:154).
+    #[test]
+    fn linear_layers_take_at_most_max_inputs() {
+        const N: usize = super::super::vec::MAX_INPUTS + 1;
+        let mut blob =
+            vec![0u8; WEIGHT_BLOCK_SIZE + (4 * N).div_ceil(WEIGHT_BLOCK_SIZE) * WEIGHT_BLOCK_SIZE];
+        blob[..WEIGHT_BLOCK_SIZE].copy_from_slice(&record("w", WEIGHT_TYPE_FLOAT, &[0; 4 * N]));
+        let list = WeightList::parse(&blob).unwrap();
+        let linear = |n| list.linear(None, None, None, Some("w"), None, None, None, n, N / n);
+        assert!(linear(1).is_ok());
+        assert_eq!(linear(N).unwrap_err(), WeightError::TooManyInputs);
     }
 }
