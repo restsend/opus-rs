@@ -31,8 +31,10 @@ pub fn speech(sr: usize, channels: usize, samples: usize) -> Vec<f32> {
     let pcm = speech_pcm();
     (0..samples)
         .flat_map(|i| {
-            let at = i * 16000 / sr;
-            let fraction = (i * 16000 % sr) as f32 / sr as f32;
+            // In u64: the product overflows a 32-bit usize.
+            let pos = i as u64 * 16000;
+            let at = (pos / sr as u64) as usize;
+            let fraction = (pos % sr as u64) as f32 / sr as f32;
             let a = pcm[at] as f32;
             let b = pcm[(at + 1).min(pcm.len() - 1)] as f32;
             std::iter::repeat_n((a + fraction * (b - a)) / 32768.0, channels)

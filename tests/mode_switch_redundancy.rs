@@ -229,10 +229,12 @@ fn speech_i16(sr: usize, channels: usize) -> Vec<i16> {
         .iter()
         .map(|&x| x as f32 / 32768.0)
         .collect();
-    (0..source.len() * sr / 16000)
+    // In u64: the products overflow a 32-bit usize.
+    let sr = sr as u64;
+    (0..source.len() as u64 * sr / 16000)
         .flat_map(|i| {
             let pos = i * 16000;
-            let at = pos / sr;
+            let at = (pos / sr) as usize;
             let fraction = (pos % sr) as f32 / sr as f32;
             let x = source[at] + fraction * (source[(at + 1).min(source.len() - 1)] - source[at]);
             let x = (x * 32768.0).clamp(-32768.0, 32767.0).round_ties_even() as i16;
