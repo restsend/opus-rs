@@ -1682,15 +1682,15 @@ fn tone_lpc(x: &[f32], len: usize, delay: usize, r: [f32; 3], lpc: &mut [f32; 2]
 }
 
 fn tone_detect(in_buf: &[f32], cc: usize, n: usize, fs: i32) -> (f32, f32) {
-    // in_buf is at least N samples per channel, we use N = n (frame+overlap)
-    // For CC==2, average channels; for float, no shift scaling.
-    let mut avg;
+    // in_buf holds n = frame + overlap samples per channel. Stereo sums
+    // the channels (celt_encoder.c:1374; SHR32 is an identity in float).
+    let mut sum;
     let x = if cc == 2 {
-        avg = [0.0f32; 2048];
+        sum = [0.0f32; 2048];
         for i in 0..n {
-            avg[i] = 0.5 * (in_buf[i] + in_buf[i + n]);
+            sum[i] = in_buf[i] + in_buf[i + n];
         }
-        &avg[..n]
+        &sum[..n]
     } else {
         &in_buf[..n]
     };

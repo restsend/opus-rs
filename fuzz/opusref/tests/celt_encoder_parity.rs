@@ -259,3 +259,19 @@ fn coarse_energy_counts_the_bytes_left_in_the_range_coder() {
         assert_eq!(identical(cfg, 6, level), [true; 6], "{prefix} bits");
     }
 }
+
+/// tone_detect sums the two channels (celt_encoder.c:1374, SHR32 is an
+/// identity in the float build); an in-phase tone near 2000x full scale
+/// overflows tone_lpc's products to inf, so libopus sees no tone.
+#[test]
+fn tone_detect_sums_the_channels() {
+    let cfg = Cfg {
+        ch: 2,
+        n: 120,
+        bytes: 320,
+        ..Cfg::default()
+    };
+    let tone =
+        |f: usize, i: usize, _| ((f * 120 + i) as f32 * 0.8 * std::f32::consts::PI).sin() * 2850.0;
+    assert_eq!(identical(cfg, 20, tone), [true; 20]);
+}
