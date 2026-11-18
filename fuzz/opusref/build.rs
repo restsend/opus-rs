@@ -302,7 +302,9 @@ const DNN_DEFINES: [&str; 5] = [
 /// lpcnet_sources.mk) with the model data. Without `simd`, `-U__SSE2__`
 /// makes `dnn/vec.h` use its generic C kernels: x86-64 compilers always
 /// define `__SSE2__`, which would select `vec_avx.h` (SSE intrinsics,
-/// unsigned int8 inputs with `USE_SU_BIAS`). With `simd` the files build as
+/// unsigned int8 inputs with `USE_SU_BIAS`), and `DISABLE_NEON` does the
+/// same on aarch64, whose compilers always define `__ARM_NEON` (which would
+/// select `vec_neon.h`). With `simd` the files build as
 /// configure builds them, with the x86 kernels. A file with a
 /// `wrap/dnn/<name>` counterpart is compiled through it, so tests can call
 /// its static functions. The objects go into the one `opusref` archive.
@@ -367,7 +369,9 @@ fn build_dnn(src: &PathBuf, simd: bool, base: &cc::Build) -> Vec<PathBuf> {
         dnn_base.include(src.join("silk/float"));
         objects = x86_objects(src, &dnn_base, false, true);
     } else {
-        d.flag("-U__SSE2__").flag("-ffp-contract=off");
+        d.flag("-U__SSE2__")
+            .define("DISABLE_NEON", None)
+            .flag("-ffp-contract=off");
     }
     objects.extend(d.compile_intermediates());
     objects
