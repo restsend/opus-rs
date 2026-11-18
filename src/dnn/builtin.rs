@@ -11,19 +11,33 @@
 use super::models;
 use super::weights::{WeightError, WeightList};
 
-pub static PITCHDNN: &[u8] = include_bytes!("../../dnn-weights/pitchdnn.bin");
-pub static FARGAN: &[u8] = include_bytes!("../../dnn-weights/fargan.bin");
-pub static PLC: &[u8] = include_bytes!("../../dnn-weights/plc.bin");
+/// A blob at a 64-byte boundary: its records then start at cache line
+/// boundaries (`WEIGHT_BLOCK_SIZE`), as libopus's compiled arrays do, and each
+/// 32-byte load of an int8 weight block stays within one cache line.
+#[repr(C, align(64))]
+struct Aligned<T: ?Sized>(T);
+
+/// `include_bytes!` of `$path` at a 64-byte boundary.
+macro_rules! blob {
+    ($path:literal) => {{
+        static A: &Aligned<[u8]> = &Aligned(*include_bytes!($path));
+        &A.0
+    }};
+}
+
+pub static PITCHDNN: &[u8] = blob!("../../dnn-weights/pitchdnn.bin");
+pub static FARGAN: &[u8] = blob!("../../dnn-weights/fargan.bin");
+pub static PLC: &[u8] = blob!("../../dnn-weights/plc.bin");
 #[cfg(feature = "dred")]
-pub static DRED_RDOVAE_ENC: &[u8] = include_bytes!("../../dnn-weights/dred_rdovae_enc.bin");
+pub static DRED_RDOVAE_ENC: &[u8] = blob!("../../dnn-weights/dred_rdovae_enc.bin");
 #[cfg(feature = "dred")]
-pub static DRED_RDOVAE_DEC: &[u8] = include_bytes!("../../dnn-weights/dred_rdovae_dec.bin");
+pub static DRED_RDOVAE_DEC: &[u8] = blob!("../../dnn-weights/dred_rdovae_dec.bin");
 #[cfg(feature = "osce")]
-pub static LACE: &[u8] = include_bytes!("../../dnn-weights/lace.bin");
+pub static LACE: &[u8] = blob!("../../dnn-weights/lace.bin");
 #[cfg(feature = "osce")]
-pub static NOLACE: &[u8] = include_bytes!("../../dnn-weights/nolace.bin");
+pub static NOLACE: &[u8] = blob!("../../dnn-weights/nolace.bin");
 #[cfg(feature = "osce")]
-pub static BBWENET: &[u8] = include_bytes!("../../dnn-weights/bbwenet.bin");
+pub static BBWENET: &[u8] = blob!("../../dnn-weights/bbwenet.bin");
 
 fn list(blob: &'static [u8]) -> Result<WeightList<'static>, WeightError> {
     WeightList::parse(blob)
