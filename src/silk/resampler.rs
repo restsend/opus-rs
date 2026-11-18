@@ -289,8 +289,8 @@ impl SilkResampler {
         let in_id = rate_id(fs_hz_in);
         let out_id = rate_id(fs_hz_out);
 
-        if in_id > 2 || out_id > 5 || fs_hz_out <= 0 {
-            // fs_hz_out <= 0 would divide by zero below (issue #27 deep scan).
+        // Input 8, 12 or 16 kHz, output 8, 12, 16, 24 or 48 kHz.
+        if in_id > 2 || out_id > 4 {
             return -1;
         }
 
