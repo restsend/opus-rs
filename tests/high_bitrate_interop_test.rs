@@ -193,6 +193,10 @@ fn mux_ogg(packets: &[Vec<u8>]) -> Vec<u8> {
 }
 
 fn decode_with_ffmpeg(packets: &[Vec<u8>]) -> Option<Vec<f32>> {
+    // WASI has no temp dir and no processes.
+    if cfg!(target_os = "wasi") {
+        return None;
+    }
     let ogg = mux_ogg(packets);
     // Files of this process only: concurrent test runs share the temp dir.
     let dir = std::env::temp_dir();

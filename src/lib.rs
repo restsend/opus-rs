@@ -5534,6 +5534,7 @@ mod small_stack {
     #[cfg(not(feature = "heap"))]
     #[test]
     #[cfg_attr(debug_assertions, ignore = "release builds only")]
+    #[cfg_attr(target_os = "wasi", ignore = "WASI has no threads")]
     fn init_on_a_128_kib_thread() {
         let mut enc = Box::new(MaybeUninit::<OpusEncoder>::uninit());
         let mut dec = Box::new(MaybeUninit::<OpusDecoder>::uninit());
@@ -5547,6 +5548,7 @@ mod small_stack {
     #[cfg(feature = "heap")]
     #[test]
     #[cfg_attr(debug_assertions, ignore = "release builds only")]
+    #[cfg_attr(target_os = "wasi", ignore = "WASI has no threads")]
     fn new_on_a_128_kib_thread() {
         on_small_stack(|| {
             let mut enc = OpusEncoder::new(48000, 2, Application::Audio).unwrap();

@@ -104,6 +104,7 @@ fn roundtrip_on_stack_with(stack_size: usize, application: Application, bitrate:
 /// comfortably below a Windows main-thread's default 1 MiB stack.
 #[cfg(feature = "heap")]
 #[test]
+#[cfg_attr(target_os = "wasi", ignore = "WASI has no threads")]
 fn construction_and_roundtrip_fit_in_768kb_stack() {
     assert!(
         roundtrip_on_stack(768 * 1024),
@@ -115,6 +116,7 @@ fn construction_and_roundtrip_fit_in_768kb_stack() {
 /// channel (issue #48).
 #[cfg(feature = "heap")]
 #[test]
+#[cfg_attr(target_os = "wasi", ignore = "WASI has no threads")]
 fn stereo_hybrid_roundtrip_fits_in_768kb_stack() {
     assert!(
         roundtrip_on_stack_with(768 * 1024, Application::Voip, 32_000),

@@ -37,6 +37,7 @@ fn check(v: i32, fs: u32, decay: i32) {
 }
 
 #[test]
+#[cfg_attr(target_os = "wasi", ignore = "WASI has no threads")]
 fn laplace_codes_like_libopus() {
     for fs in [1, 2, 100, 8000, 16000, 24000, 32640, 32700, 32735, 32736] {
         for decay in [0, 1, 100, 6000, 11456, 16383, 16384] {
@@ -50,6 +51,7 @@ fn laplace_codes_like_libopus() {
 /// The arguments RangeCoder refuses, among them calls where libopus's
 /// coder never returns: the error flag is set and nothing is coded.
 #[test]
+#[cfg_attr(target_os = "wasi", ignore = "WASI has no threads")]
 fn laplace_refuses_arguments_libopus_loops_on() {
     let libopus_loops = [
         (-1, 32737, 1), (1, 32737, 1), (-1, 32737, 100), (1, 32737, 100),
