@@ -230,22 +230,27 @@ with a libopus without these options are ignored under the features.
 
 ## Performance
 
-opus-rs is as fast as libopus with its SIMD kernels, or faster, in almost
-every case measured. The numbers are opus-rs's time divided by libopus's
-time for the same work, so below 1.0 means opus-rs is faster (0.5 would be
-twice as fast). Measured on an idle AMD Zen 5 against libopus 1.6.1 from
-nixpkgs (run-time CPU detection), both at their AVX2 level; wall time, the
-minimum of 20 interleaved runs on one core, over 58 encode and decode cases
-(mono and stereo, 8–48 kHz, 2.5–60 ms frames, VoIP and audio, complexity
-0–10, CBR/VBR, DTX, FEC, losses):
+opus-rs is faster than libopus with its SIMD kernels in almost every case
+measured. The numbers are opus-rs's time divided by libopus's time for the
+same work, so below 1.0 means opus-rs is faster (0.5 would be twice as fast).
+Each row is the geometric mean over its cases, with a 95% confidence interval
+for measurement noise (bootstrap over 10 rounds per case; each round takes the
+minimum of 20 interleaved runs). Measured on an idle AMD Zen 5 against libopus
+1.6.1 from nixpkgs (run-time CPU detection), both at their AVX2 level, over 57
+encode and decode cases (mono and stereo, 8–48 kHz, 2.5–60 ms frames, VoIP and
+audio, complexity 0–10, CBR/VBR, DTX, FEC, losses):
 
 | | opus-rs time / libopus time |
 |---|---|
-| Encoding, all cases | 0.70–0.99 |
-| Encoding, CELT/Hybrid at complexity 9/10 | about 0.71 |
-| Decoding, all but three cases | 0.81–0.98 |
-| Decoding, high-bitrate CELT (256–510 kbit/s) | 1.00 ± 0.5 % |
-| Deep PLC, per concealed frame | 0.86–0.91 |
+| Encoding, all cases | 0.805 (0.805–0.805) |
+| Encoding, CELT/Hybrid at complexity 9/10 | 0.773 (0.773–0.773) |
+| Decoding, all cases | 0.911 (0.910–0.911) |
+| Decoding, high-bitrate CELT (256–510 kbit/s) | 1.005 (1.004–1.007) |
+| Deep PLC, per concealed frame | 0.878 (0.877–0.878) |
+
+The deep PLC row compares with libopus main built as its configure builds it
+with the neural options (intrinsics and run-time CPU detection), since
+nixpkgs' libopus has no deep PLC.
 
 On aarch64 and wasm32, opus-rs runs its scalar code plus NEON or simd128
 kernels for the SILK quantizer; these targets were not measured in this
