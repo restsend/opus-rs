@@ -243,11 +243,26 @@ fn short_prediction_and_shaping<const N: usize>(
 /// The delayed-decision quantizer of one subframe over `N` states. The
 /// short-term prediction and the warped noise-shaping filter of the states
 /// are independent and run interleaved.
+/// The output sample of `xq_q14` at `gain` (Q16 + `bits`): NSQ_del_dec.c's
+/// `silk_RSHIFT_ROUND(silk_SMULWW(..), bits)`, which keeps the product's
+/// 32 bits above bit 16 first, or with `wide` NSQ_del_dec_avx2.c's
+/// `silk_sar_round_smulww`, which rounds the 64-bit product. They differ
+/// when the product reaches 2^47.
+fn xq_out(xq_q14: i32, gain: i32, bits: i32, wide: bool) -> i16 {
+    let v = if wide {
+        ((xq_q14 as i64 * gain as i64 + (1i64 << (bits + 15))) >> (bits + 16)) as i32
+    } else {
+        silk_rshift_round(silk_smulww(xq_q14, gain), bits)
+    };
+    silk_sat16(v) as i16
+}
+
 pub fn silk_noise_shape_quantizer_del_dec<const N: usize>(
     nsq: &mut SilkNSQState,
     ps_del_dec: &mut [NSQDelDecStruct; N],
     filters: &mut NSQDelDecFilters,
     simd: Simd,
+    wide_round: bool,
     signal_type: i32,
     x_q10: &[i32],
     pulses: &mut [i8],
@@ -499,10 +514,12 @@ pub fn silk_noise_shape_quantizer_del_dec<const N: usize>(
                     silk_rshift_round(ps_dd.q_q10[last_smple_idx], 10) as i8;
             }
             if xq_idx >= 0 && xq_idx < nsq.xq.len() as isize {
-                nsq.xq[xq_idx as usize] = silk_sat16(silk_rshift_round(
-                    silk_smulww(ps_dd.xq_q14[last_smple_idx], delayed_ga_q10[last_smple_idx]),
+                nsq.xq[xq_idx as usize] = xq_out(
+                    ps_dd.xq_q14[last_smple_idx],
+                    delayed_ga_q10[last_smple_idx],
                     8,
-                )) as i16;
+                    wide_round,
+                );
             }
             if shp_idx >= 0 && shp_idx < nsq.s_ltp_shp_q14.len() as isize {
                 nsq.s_ltp_shp_q14[shp_idx as usize] = ps_dd.shape_q14[last_smple_idx];
@@ -571,6 +588,8 @@ pub fn silk_nsq_del_dec(
     let mut lag = ps_nsq.lag_prev;
 
     let n_states = (ps_common.n_states_delayed_decision as usize).min(NSQ_MAX_STATES_OPERATING);
+    // libopus's AVX2 kernel, which it runs for 3 and 4 states.
+    let wide_round = ps_common.arch >= crate::Arch::Avx2 && matches!(n_states, 3 | 4);
 
     for k in 0..n_states {
         let ps_dd = &mut ps_del_dec[k];
@@ -664,10 +683,12 @@ pub fn silk_nsq_del_dec(
                         if pulse_idx >= 0 && xq_idx >= 0 && shp_idx >= 0 {
                             pulses[pulse_idx as usize] =
                                 silk_rshift_round(ps_dd.q_q10[last_smple_idx as usize], 10) as i8;
-                            ps_nsq.xq[xq_idx as usize] = silk_sat16(silk_rshift_round(
-                                silk_smulww(ps_dd.xq_q14[last_smple_idx as usize], gains_q16[1]),
+                            ps_nsq.xq[xq_idx as usize] = xq_out(
+                                ps_dd.xq_q14[last_smple_idx as usize],
+                                gains_q16[1],
                                 14,
-                            )) as i16;
+                                wide_round,
+                            );
                             ps_nsq.s_ltp_shp_q14[shp_idx as usize] =
                                 ps_dd.shape_q14[last_smple_idx as usize];
                         }
@@ -727,6 +748,7 @@ pub fn silk_nsq_del_dec(
                     (&mut ps_del_dec[..$n]).try_into().unwrap(),
                     &mut filters,
                     simd,
+                    wide_round,
                     ps_indices.signal_type as i32,
                     &x_sc_q10,
                     pulses,
@@ -792,10 +814,12 @@ pub fn silk_nsq_del_dec(
                 silk_rshift_round(ps_dd.q_q10[last_smple_idx as usize], 10) as i8;
         }
         if xq_idx >= 0 && (xq_idx as usize) < ps_nsq.xq.len() {
-            ps_nsq.xq[xq_idx as usize] = silk_sat16(silk_rshift_round(
-                silk_smulww(ps_dd.xq_q14[last_smple_idx as usize], gain_q10_final),
+            ps_nsq.xq[xq_idx as usize] = xq_out(
+                ps_dd.xq_q14[last_smple_idx as usize],
+                gain_q10_final,
                 8,
-            )) as i16;
+                wide_round,
+            );
         }
         let shp_idx = (ps_nsq.s_ltp_shp_buf_idx - decision_delay + i) as isize;
         if shp_idx >= 0 && (shp_idx as usize) < ps_nsq.s_ltp_shp_q14.len() {

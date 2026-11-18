@@ -1,7 +1,8 @@
 //! silk_nsq_del_dec against libopus's silk_NSQ_del_dec (silk/NSQ_del_dec.c;
 //! with the feature `simd` the kernel libopus picks at each x86 level,
 //! silk/x86/NSQ_del_dec_avx2.c at arch 4), frame by frame on one carried
-//! quantizer state: random frames and an unvoiced frame after a lag of 3.
+//! quantizer state: random frames, an unvoiced frame after a lag of 3, and
+//! reconstructed samples past the 32-bit range of SMULWW.
 use opus_rs::Arch;
 use opus_rs::silk::{SideInfoIndices, SilkEncoderStateCommon, SilkNSQState, silk_nsq_del_dec};
 use opusref::*;
@@ -325,6 +326,46 @@ fn unvoiced_after_lag_3_matches_libopus() {
                 ..Default::default()
             };
             check(&f, &mut nsq, arch, c, &format!("lag 3, frame {i}"));
+        }
+    }
+}
+
+/// Reconstructed samples near 2^26 in Q14 with a gain of 2^21 in Q10: their
+/// product passes 2^47, where SMULWW leaves the 32-bit range.
+/// NSQ_del_dec_avx2.c rounds the 64-bit product (3 and 4 states).
+#[test]
+fn large_reconstruction_matches_libopus() {
+    let _ = unsafe { silk_lin2log(1) };
+    for (arch, c) in levels() {
+        for n_states in 1..=4 {
+            for &gain in &[(1 << 27) + (1 << 8), (1 << 27) + (1 << 23), 3 << 26] {
+                let mut r = Rng(5);
+                let mut f = random_frame(&mut r, 16);
+                f.signal_type = 0;
+                f.n_states = n_states;
+                f.pred_coef_q12 = [0; 32];
+                f.pred_coef_q12[0] = 4096;
+                f.pred_coef_q12[16] = 4096;
+                f.ar_q13 = [0; 96];
+                f.harm_shape_gain_q14 = [0; 4];
+                f.tilt_q14 = [0; 4];
+                f.lf_shp_q14 = [0; 4];
+                f.gains_q16 = [gain; 4];
+                f.x16.fill(0);
+                let mut nsq = SilkNSQState {
+                    prev_gain_q16: gain,
+                    lag_prev: 100,
+                    ..Default::default()
+                };
+                nsq.s_lpc_q14 = [1 << 26; 96];
+                check(
+                    &f,
+                    &mut nsq,
+                    arch,
+                    c,
+                    &format!("{n_states} states, gain {gain}"),
+                );
+            }
         }
     }
 }
