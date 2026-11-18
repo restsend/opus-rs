@@ -150,15 +150,20 @@ pub fn clt_compute_allocation(
         }
     }
 
+    // Every band index below is under `end`: slices of that length let the
+    // compiler drop the bounds checks in the search loops.
+    let (e_bands, offsets, cap) = (&m.e_bands[..end + 1], &offsets[..end], &cap[..end]);
+    let (thresh, trim_offset) = (&thresh[..end], &trim_offset[..end]);
     let mut lo = 1;
     let mut hi = m.nb_alloc_vectors as i32 - 1;
     while lo <= hi {
         let mut done = false;
         let mut psum = 0;
         let mid = (lo + hi) >> 1;
+        let row = &m.alloc_vectors[mid as usize * m.alloc_stride..][..end];
         for j in (start..end).rev() {
-            let n = (m.e_bands[j + 1] - m.e_bands[j]) as i32;
-            let raw = m.alloc_vectors[mid as usize * m.alloc_stride + j] as i32;
+            let n = (e_bands[j + 1] - e_bands[j]) as i32;
+            let raw = row[j] as i32;
             let mut bitsj = (c * n * raw) << lm >> 2;
             if bitsj > 0 {
                 bitsj = max(0, bitsj + trim_offset[j]);
@@ -278,6 +283,8 @@ fn interp_bits2pulses(
     let mut bits_buf = [0i32; MAX_EBANDS];
     let bits = &mut bits_buf[..m.nb_ebands];
 
+    // Band indices stay under `end` (see clt_compute_allocation).
+    let (bits1, bits2, thresh, cap) = (&bits1[..end], &bits2[..end], &thresh[..end], &cap[..end]);
     for _ in 0..6 {
         let mid = (lo + hi) >> 1;
         psum = 0;
