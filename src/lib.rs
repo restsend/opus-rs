@@ -629,11 +629,19 @@ fn decide_fec(
 }
 
 /// libopus `is_digital_silence`: no sample above the resolution of
-/// `depth` bits.
+/// `depth` bits. Float input takes celt_maxabs16's running maximum and
+/// minimum, which a NaN replaces and the next sample replaces again.
 fn is_digital_silence(input: PcmInput<'_>, len: usize, depth: i32) -> bool {
     let limit = 1.0 / (1 << depth) as f32;
     match input {
-        PcmInput::F32(s) => s[..len].iter().all(|x| x.abs() <= limit),
+        PcmInput::F32(s) => {
+            let (mut max, mut min) = (0.0f32, 0.0f32);
+            for &x in &s[..len] {
+                max = if max > x { max } else { x };
+                min = if min < x { min } else { x };
+            }
+            (if max > -min { max } else { -min }) <= limit
+        }
         PcmInput::I16(s) => s[..len]
             .iter()
             .all(|&x| (x as f32 * (1.0 / 32768.0)).abs() <= limit),

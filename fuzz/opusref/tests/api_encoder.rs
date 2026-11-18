@@ -80,6 +80,21 @@ impl Pair {
         self.check(&a[..n], &b[..m as usize], coded, what);
     }
 
+    /// Encodes `pcm` on both and asserts the same result, packet bytes and
+    /// final range.
+    fn encode_exact(&mut self, pcm: &[f32], frame: usize, what: &str) {
+        let (mut a, mut b) = ([0u8; 1500], [0u8; 1500]);
+        let n = self.rs.encode(pcm, frame, &mut a);
+        let m = unsafe { opus_encode_float(self.c, pcm.as_ptr(), frame as i32, b.as_mut_ptr(), 1500) };
+        assert_eq!(n.map_or_else(|e| opus_rs::error::code(e).unwrap(), |n| n as i32), m, "{what}");
+        if m > 0 {
+            assert_eq!(a[..m as usize], b[..m as usize], "{what}: bytes");
+        }
+        let mut r = 0u32;
+        unsafe { opus_encoder_ctl(self.c, GET_FINAL_RANGE, &mut r as *mut u32) };
+        assert_eq!(self.rs.final_range(), r, "{what}: final range");
+    }
+
     /// Encodes frame `f` on both and checks the packets.
     fn encode(&mut self, frame: usize, f: usize, what: &str) {
         let pcm: Vec<f32> = signal(self.fs, self.ch, frame, f)
@@ -438,6 +453,27 @@ fn restricted_applications_match_libopus() {
                     p.encode(frame, f, &format!("{app:?} {fs} {ch} {rate} {units}"));
                 }
             }
+        }
+    }
+}
+
+/// Digital silence takes libopus's maximum and minimum (celt_maxabs16):
+/// a NaN drops the samples before it, so loud samples followed by a NaN
+/// and zeros are silence, and the frames go out as DTX.
+#[test]
+fn nan_input_silence_matches_libopus() {
+    for app in [Application::Voip, Application::Audio, Application::RestrictedLowDelay] {
+        let (fs, frame) = (48000, 960);
+        let mut p = Pair::new(fs, 1, app);
+        p.rs.set_dtx(true);
+        p.ctl(SET_DTX, 1);
+        for f in 0..40 {
+            let mut pcm = signal(fs, 1, frame, f);
+            if f >= 10 {
+                pcm[frame / 2] = f32::NAN;
+                pcm[frame / 2 + 1..].fill(0.0);
+            }
+            p.encode_exact(&pcm, frame, &format!("{app:?} frame {f}"));
         }
     }
 }
