@@ -74,6 +74,8 @@ pub unsafe extern "C" fn opus_projection_ambisonics_encoder_create(
     error: *mut c_int,
 ) -> *mut OpusProjectionEncoder {
     let size = opus_projection_ambisonics_encoder_get_size(channels, mapping_family);
+    // SAFETY: `create` hands `init` a block of the size it asks for; the
+    // arguments are the caller's, as the header requires.
     unsafe {
         crate::create(size, error, |st| {
             opus_projection_ambisonics_encoder_init(st, fs, channels, mapping_family, streams, coupled_streams, application)
@@ -177,8 +179,8 @@ pub unsafe extern "C" fn opus_projection_decoder_init(
         st.write(layout);
         let (_, matrix) = decoder_parts(st, &layout);
         let bytes = slice::from_raw_parts(demixing_matrix, 2 * cells);
-        for (cell, b) in matrix.iter_mut().zip(bytes.chunks_exact(2)) {
-            *cell = i16::from_le_bytes([b[0], b[1]]);
+        for (cell, b) in matrix.iter_mut().zip(bytes.as_chunks::<2>().0) {
+            *cell = i16::from_le_bytes(*b);
         }
         init_decoders(st, fs, &layout)
     })
@@ -195,6 +197,8 @@ pub unsafe extern "C" fn opus_projection_decoder_create(
     error: *mut c_int,
 ) -> *mut OpusProjectionDecoder {
     let size = opus_projection_decoder_get_size(channels, streams, coupled_streams);
+    // SAFETY: `create` hands `init` a block of the size it asks for; the
+    // arguments are the caller's, as the header requires.
     unsafe {
         crate::create(size, error, |st| {
             opus_projection_decoder_init(st, fs, channels, streams, coupled_streams, demixing_matrix, demixing_matrix_size)
@@ -223,6 +227,7 @@ macro_rules! decode_fn {
         ) -> c_int {
             // SAFETY: see the macro.
             let layout = unsafe { &*st };
+            // SAFETY: see the macro.
             let (decoders, matrix) = unsafe { decoder_parts(st, layout) };
             // libopus decodes at most 120 ms.
             let (channels, frame_size) = (layout.channels(), frame_size.min(decoders[0].sample_rate() / 25 * 3));
@@ -230,6 +235,7 @@ macro_rules! decode_fn {
             let Ok(mut dec) = view else {
                 return OPUS_INTERNAL_ERROR;
             };
+            // SAFETY: the C buffers as `decode_with` requires (opus.h).
             guard(OPUS_INTERNAL_ERROR, || unsafe {
                 decode_with(data, len, pcm, frame_size, decode_fec, channels, |p, n, out, fec| {
                     if fec { dec.$decode_fec(p, n, out) } else { dec.$decode(p, n, out) }

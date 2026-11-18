@@ -29,6 +29,8 @@ pub unsafe extern "C" fn opus_dred_decoder_init(dec: *mut OpusDredDecoder) -> c_
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn opus_dred_decoder_create(error: *mut c_int) -> *mut OpusDredDecoder {
+    // SAFETY: `create` hands `init` a block of the size it asks for; the
+    // arguments are the caller's, as the header requires.
     unsafe { crate::create(opus_dred_decoder_get_size(), error, |dec| opus_dred_decoder_init(dec)) }
 }
 

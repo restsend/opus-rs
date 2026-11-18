@@ -166,6 +166,8 @@ pub unsafe extern "C" fn opus_encoder_init(st: *mut OpusEncoder, fs: i32, channe
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn opus_encoder_create(fs: i32, channels: c_int, app: c_int, error: *mut c_int) -> *mut OpusEncoder {
+    // SAFETY: `create` hands `init` a block of the size it asks for; the
+    // arguments are the caller's, as the header requires.
     unsafe { crate::create(opus_encoder_get_size(channels), error, |st| opus_encoder_init(st, fs, channels, app)) }
 }
 
@@ -216,6 +218,7 @@ macro_rules! encode_fn {
             // SAFETY: see the macro.
             let st = unsafe { &mut *st };
             let select = usize::try_from(analysis_frame_size).ok().and_then(|n| st.select_frame_size(n));
+            // SAFETY: the C buffers as `encode_with` requires (opus.h).
             unsafe {
                 encode_with(pcm, analysis_frame_size, data, max_data_bytes, st.channels(), select, |p, n, out| {
                     st.$encode(p, n, out)

@@ -115,6 +115,8 @@ pub unsafe extern "C" fn opus_multistream_decoder_create(
     error: *mut c_int,
 ) -> *mut OpusMSDecoder {
     let size = opus_multistream_decoder_get_size(streams, coupled_streams);
+    // SAFETY: `create` hands `init` a block of the size it asks for; the
+    // arguments are the caller's, as the header requires.
     unsafe { crate::create(size, error, |st| opus_multistream_decoder_init(st, fs, channels, streams, coupled_streams, mapping)) }
 }
 
@@ -145,6 +147,7 @@ macro_rules! decode_fn {
             let Ok(mut ms) = MultistreamDecoderView::new(layout, decoders) else {
                 return OPUS_INTERNAL_ERROR;
             };
+            // SAFETY: the C buffers as `decode_with` requires (opus.h).
             guard(OPUS_INTERNAL_ERROR, || unsafe {
                 decode_with(data, len, pcm, frame_size, decode_fec, channels, |p, n, out, fec| {
                     if fec { ms.$decode_fec(p, n, out) } else { ms.$decode(p, n, out) }
@@ -196,6 +199,7 @@ pub(crate) unsafe fn init_encoders(st: *mut OpusMSEncoder, head: Result<OpusMSEn
                 Err(e) => return code(e),
             }
         }
+        // SAFETY: see the function.
         unsafe { st.write(head) };
         OPUS_OK
     })
@@ -373,6 +377,8 @@ pub unsafe extern "C" fn opus_multistream_encoder_create(
     error: *mut c_int,
 ) -> *mut OpusMSEncoder {
     let size = opus_multistream_encoder_get_size(streams, coupled_streams);
+    // SAFETY: `create` hands `init` a block of the size it asks for; the
+    // arguments are the caller's, as the header requires.
     unsafe {
         crate::create(size, error, |st| {
             opus_multistream_encoder_init(st, fs, channels, streams, coupled_streams, mapping, application)
@@ -392,6 +398,8 @@ pub unsafe extern "C" fn opus_multistream_surround_encoder_create(
     error: *mut c_int,
 ) -> *mut OpusMSEncoder {
     let size = opus_multistream_surround_encoder_get_size(channels, mapping_family);
+    // SAFETY: `create` hands `init` a block of the size it asks for; the
+    // arguments are the caller's, as the header requires.
     unsafe {
         crate::create(size, error, |st| {
             opus_multistream_surround_encoder_init(st, fs, channels, mapping_family, streams, coupled_streams, mapping, application)
@@ -422,9 +430,11 @@ macro_rules! encode_fn {
             let head = unsafe { &*st };
             let select = usize::try_from(frame_size).ok().and_then(|n| head.select_frame_size(n));
             let channels = head.channels();
+            // SAFETY: see the macro.
             let Some(mut ms) = (unsafe { $crate::multistream::encoder_view(st) }) else {
                 return $crate::OPUS_INTERNAL_ERROR;
             };
+            // SAFETY: the C buffers as `encode_with` requires.
             unsafe {
                 $crate::encoder::encode_with(pcm, frame_size, data, max_data_bytes, channels, select, |p, n, out| {
                     ms.$encode(p, n, out)

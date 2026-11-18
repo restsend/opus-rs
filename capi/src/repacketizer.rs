@@ -104,11 +104,13 @@ unsafe fn pad_with(data: *mut u8, len: i32, new_len: i32, pad: impl FnOnce(&[u8]
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn opus_packet_pad(data: *mut u8, len: i32, new_len: i32) -> c_int {
+    // SAFETY: `data` holds `new_len` bytes (opus.h).
     unsafe { pad_with(data, len, new_len, rs::pad) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn opus_multistream_packet_pad(data: *mut u8, len: i32, new_len: i32, nb_streams: c_int) -> c_int {
+    // SAFETY: `data` holds `new_len` bytes (opus_multistream.h).
     unsafe { pad_with(data, len, new_len, |p, out| rs::multistream_pad(p, nb_streams.max(1) as usize, out)) }
 }
 

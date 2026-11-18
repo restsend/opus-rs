@@ -1,22 +1,25 @@
-//! The libopus C API (`opus.h`, `opus_multistream.h`) over opus-rs.
+//! The libopus C API (`opus.h`, `opus_multistream.h`, `opus_projection.h`)
+//! over opus-rs.
 //!
 //! Every function keeps libopus's name, signature and argument checking, so
-//! the `libopus.so` / `libopus.a` this crate builds can stand in for libopus
-//! for C callers, and libopus's own test programs can be linked against it
-//! (`capi/run_libopus_tests.sh`).
+//! the `libopus.so.0` / `libopus.a` this crate builds stand in for libopus
+//! for C callers, and libopus's own test programs link against it
+//! (`capi/test.sh`).
 //!
-//! The codec state is one flat block of memory, as in libopus: callers may
+//! Every state is one flat block of memory, as in libopus: callers may
 //! size it with `opus_*_get_size()`, place it themselves with `opus_*_init()`,
-//! and copy it with `memcpy`. That is why opus-rs is built without its `heap`
-//! feature here.
+//! release it with `free()` and copy it with `memcpy`. That is why opus-rs
+//! is built without its `heap` feature here, and why the multistream and
+//! projection states are a header followed by their streams, used through
+//! opus-rs's views.
 //!
-//! What opus-rs has no counterpart for (multistream encoding, projection,
-//! DRED, extensions in repacketized padding, some ctls) returns
-//! `OPUS_UNIMPLEMENTED`, as libopus does for features compiled out.
+//! The unsafe code is the C ABI: every unsafe block states the caller
+//! contract of the libopus header it relies on.
 
+#![deny(unsafe_op_in_unsafe_fn)]
+#![deny(clippy::undocumented_unsafe_blocks)]
 #![allow(clippy::missing_safety_doc)]
 #![allow(clippy::too_many_arguments)]
-#![allow(clippy::needless_range_loop)]
 
 use core::ffi::{c_char, c_int};
 use core::ptr;
@@ -29,6 +32,8 @@ mod multistream;
 mod packet;
 mod projection;
 mod repacketizer;
+#[cfg(test)]
+mod tests;
 #[cfg(not(feature = "dred"))]
 mod unimplemented;
 
@@ -40,7 +45,6 @@ pub const OPUS_UNIMPLEMENTED: c_int = -5;
 pub const OPUS_ALLOC_FAIL: c_int = -7;
 
 pub const OPUS_AUTO: i32 = -1000;
-
 
 /// The ctl requests of `opus_defines.h`, and the private ones of
 /// `opus_private.h` that libopus's tests use.
@@ -110,10 +114,12 @@ pub(crate) trait CtlArgs {
 
 impl CtlArgs for core::ffi::VaList<'_> {
     unsafe fn int(&mut self) -> i32 {
+        // SAFETY: the caller's next variadic argument is an `opus_int32`.
         unsafe { self.next_arg::<i32>() }
     }
 
     unsafe fn ptr<T>(&mut self) -> *mut T {
+        // SAFETY: the caller's next variadic argument is a pointer.
         unsafe { self.next_arg::<*mut T>() }
     }
 }
@@ -161,6 +167,7 @@ pub(crate) unsafe fn get<T>(ap: &mut impl CtlArgs, value: T) -> c_int {
     if p.is_null() {
         return OPUS_BAD_ARG;
     }
+    // SAFETY: a non-NULL getter pointer is valid for a write (opus_defines.h).
     unsafe { p.write(value) };
     OPUS_OK
 }
@@ -204,6 +211,7 @@ pub(crate) unsafe fn decode_with<T>(
     let (Some(n @ 1..), false, 0..=1) = (frame_size.checked_mul(channels), pcm.is_null(), decode_fec) else {
         return OPUS_BAD_ARG;
     };
+    // SAFETY: `data` holds `len` bytes (opus.h).
     let packet = match unsafe { packet(data, len) } {
         Ok(p) => p,
         Err(e) => return e,
@@ -224,6 +232,7 @@ pub(crate) fn guard<T>(fallback: T, f: impl FnOnce() -> T) -> T {
 /// Stores `value` in an optional C out-parameter.
 pub(crate) unsafe fn set_out<T>(out: *mut T, value: T) {
     if !out.is_null() {
+        // SAFETY: the caller's out-parameter is NULL or valid for a write.
         unsafe { out.write(value) };
     }
 }
@@ -236,10 +245,12 @@ unsafe extern "C" {
 /// libc `malloc`, as libopus's `opus_alloc`: C code may release the states
 /// `opus_*_create` returns with `free`, like libopus's.
 pub(crate) unsafe fn alloc_state(size: usize) -> *mut u8 {
+    // SAFETY: malloc takes any size.
     unsafe { malloc(size) as *mut u8 }
 }
 
 pub(crate) unsafe fn free_state<T>(st: *mut T) {
+    // SAFETY: the caller's `st` is NULL or came from alloc_state.
     unsafe { free(st as *mut core::ffi::c_void) }
 }
 

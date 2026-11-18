@@ -22,6 +22,7 @@ macro_rules! unimplemented_create {
     ($( fn $name:ident($($arg:ident: $ty:ty),* $(,)?); )*) => {$(
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $name($(_: $ty,)* error: *mut c_int) -> *mut c_void {
+            // SAFETY: `error` is NULL or valid for a write (opus.h).
             unsafe { set_out(error, OPUS_UNIMPLEMENTED) };
             ptr::null_mut()
         }
@@ -43,6 +44,7 @@ macro_rules! free_fns {
     ($( fn $name:ident; )*) => {$(
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $name(st: *mut c_void) {
+            // SAFETY: `st` is NULL, the only state the constructors give.
             unsafe { crate::free_state(st) }
         }
     )*};

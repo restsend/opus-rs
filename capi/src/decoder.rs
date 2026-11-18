@@ -72,6 +72,8 @@ pub unsafe extern "C" fn opus_decoder_init(st: *mut OpusDecoder, fs: i32, channe
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn opus_decoder_create(fs: i32, channels: c_int, error: *mut c_int) -> *mut OpusDecoder {
+    // SAFETY: `create` hands `init` a block of the size it asks for; the
+    // arguments are the caller's, as the header requires.
     unsafe { crate::create(opus_decoder_get_size(channels), error, |st| opus_decoder_init(st, fs, channels)) }
 }
 
@@ -96,6 +98,7 @@ macro_rules! decode_fn {
         ) -> c_int {
             // SAFETY: see the macro.
             let st = unsafe { &mut *st };
+            // SAFETY: the C buffers as `decode_with` requires (opus.h).
             guard(OPUS_INTERNAL_ERROR, || unsafe {
                 decode_with(data, len, pcm, frame_size, decode_fec, st.channels(), |p, n, out, fec| {
                     if fec { st.$decode_fec(p, n, out) } else { st.$decode(p, n, out) }
