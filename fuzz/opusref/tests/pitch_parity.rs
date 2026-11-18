@@ -168,3 +168,40 @@ fn concealment_pitch_search_matches_libopus() {
     };
     assert_eq!(a, b as usize);
 }
+
+/// remove_doubling clamps 2*T+offset to minperiod0 as a signed int
+/// (pitch.c:564-567): T0 = 1 halves to T = 0, and a falling correlation
+/// gives offset -1.
+#[test]
+fn doubling_clamps_a_negative_period() {
+    let (mp, n) = (MAX_PERIOD >> 1, N >> 1);
+    let mut x = vec![0.0f32; mp + n + 1];
+    x[mp + n - 1] = 1.0;
+    x[mp + n] = 1.0;
+    let mut ta = 1;
+    let ga = opus_rs::pitch::remove_doubling(
+        &x,
+        MAX_PERIOD,
+        MIN_PERIOD,
+        N,
+        &mut ta,
+        MIN_PERIOD,
+        0.0,
+        opus_rs::Arch::select(),
+    );
+    let mut tb = 1;
+    let mut y = x.clone();
+    let gb = unsafe {
+        remove_doubling(
+            y.as_mut_ptr(),
+            MAX_PERIOD as i32,
+            MIN_PERIOD as i32,
+            N as i32,
+            &mut tb,
+            MIN_PERIOD as i32,
+            0.0,
+            ref_arch(),
+        )
+    };
+    assert_eq!((ta, ga.to_bits()), (tb as usize, gb.to_bits()));
+}

@@ -765,10 +765,7 @@ pub fn remove_doubling(
     }
 
     let pg = pg.min(g);
-    *t0_ptr = (2 * t as i32 + offset) as usize;
-    if *t0_ptr < min_period0 {
-        *t0_ptr = min_period0;
-    }
+    *t0_ptr = (2 * t as i32 + offset).max(min_period0 as i32) as usize;
 
     pg
 }
