@@ -37,10 +37,6 @@ impl ChannelMappingTable {
             mapping: tail[2..2 + channels as usize].to_vec(),
         })
     }
-
-    fn decoded_channel_count(&self) -> usize {
-        self.coupled_count as usize * 2 + (self.stream_count - self.coupled_count) as usize
-    }
 }
 
 /// Splits one leading self-delimited packet (RFC 6716 Appendix B) off
@@ -192,13 +188,85 @@ fn packet_validate(
     Ok(samples)
 }
 
+/// A multistream layout (libopus `ChannelLayout`): `channels` channels
+/// from `streams` streams, the first `coupled` of them stereo. Entry `c` of
+/// the mapping is the decoded channel of channel `c` (coupled streams' left
+/// and right, then mono streams), 255 for silence. It has a fixed size, so
+/// a multistream state is this layout plus its streams.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MultistreamLayout {
+    channels: u8,
+    streams: u8,
+    coupled: u8,
+    mapping: [u8; 255],
+}
+
+impl MultistreamLayout {
+    /// libopus `opus_multistream_decoder_init`'s checks and
+    /// `validate_layout`: `error::BAD_ARG` for 0 or more than 255
+    /// channels, no stream, more coupled streams than streams, more than
+    /// 255 decoded channels, a mapping shorter than `channels` or an entry
+    /// past the decoded channels.
+    pub fn new(channels: usize, streams: usize, coupled: usize, mapping: &[u8]) -> Result<Self, &'static str> {
+        if !(1..=255).contains(&channels)
+            || coupled > streams
+            || streams < 1
+            || streams > 255 - coupled
+            || mapping.len() < channels
+            || mapping[..channels].iter().any(|&m| m as usize >= streams + coupled && m != SILENT_CHANNEL)
+        {
+            return Err(crate::error::BAD_ARG);
+        }
+        let mut layout = MultistreamLayout { channels: channels as u8, streams: streams as u8, coupled: coupled as u8, mapping: [0; 255] };
+        layout.mapping[..channels].copy_from_slice(&mapping[..channels]);
+        Ok(layout)
+    }
+
+    /// The channels.
+    pub fn channels(&self) -> usize {
+        self.channels as usize
+    }
+
+    /// The streams.
+    pub fn streams(&self) -> usize {
+        self.streams as usize
+    }
+
+    /// The coupled streams.
+    pub fn coupled_streams(&self) -> usize {
+        self.coupled as usize
+    }
+
+    /// The decoded channel of each channel.
+    pub fn mapping(&self) -> &[u8] {
+        &self.mapping[..self.channels as usize]
+    }
+
+    /// The channels of stream `s`: 2 for a coupled stream, else 1.
+    pub fn stream_channels(&self, s: usize) -> usize {
+        if s < self.coupled as usize { 2 } else { 1 }
+    }
+
+    /// The channels the streams decode: two per coupled stream, one per
+    /// mono stream.
+    fn decoded_channels(&self) -> usize {
+        (self.streams + self.coupled) as usize
+    }
+}
+
 /// One [`OpusDecoder`] per elementary stream, fanned out per
 /// [`ChannelMappingTable`]. CELT/SILK still only ever see 1–2 channels.
 pub struct MultistreamDecoder {
+    layout: MultistreamLayout,
     decoders: Vec<OpusDecoder>,
-    table: ChannelMappingTable,
-    stream_scratch: Vec<f32>,
-    packet_scratch: Vec<u8>,
+}
+
+/// A multistream decoder over a layout and its stream decoders held
+/// elsewhere, such as in one block of memory: what [`MultistreamDecoder`]
+/// decodes with.
+pub struct MultistreamDecoderView<'a> {
+    layout: &'a MultistreamLayout,
+    decoders: &'a mut [OpusDecoder],
 }
 
 impl MultistreamDecoder {
@@ -206,55 +274,35 @@ impl MultistreamDecoder {
         if table.mapping.len() != table.channels as usize {
             return Err("channel mapping table length does not match declared channel count");
         }
-        // libopus opus_multistream_decoder_init and validate_layout.
-        let (streams, coupled) = (table.stream_count as usize, table.coupled_count as usize);
-        if table.channels < 1 || coupled > streams || streams < 1 || streams > 255 - coupled {
-            return Err("invalid stream or channel count");
-        }
-        if table
-            .mapping
-            .iter()
-            .any(|&m| m as usize >= streams + coupled && m != SILENT_CHANNEL)
-        {
-            return Err("channel mapping entry exceeds the decoded channels");
-        }
+        let layout = MultistreamLayout::new(
+            table.channels as usize,
+            table.stream_count as usize,
+            table.coupled_count as usize,
+            &table.mapping,
+        )?;
+        let decoders = (0..layout.streams())
+            .map(|s| OpusDecoder::new(sampling_rate, layout.stream_channels(s)))
+            .collect::<Result<_, _>>()?;
+        Ok(Self { layout, decoders })
+    }
 
-        let mut decoders = Vec::with_capacity(table.stream_count as usize);
-        for i in 0..table.stream_count {
-            let ch = if i < table.coupled_count { 2 } else { 1 };
-            decoders.push(OpusDecoder::new(sampling_rate, ch)?);
-        }
-
-        Ok(Self {
-            decoders,
-            table,
-            stream_scratch: Vec::new(),
-            packet_scratch: Vec::with_capacity(1500),
-        })
+    /// The decoder as a [`MultistreamDecoderView`].
+    pub fn view(&mut self) -> MultistreamDecoderView<'_> {
+        MultistreamDecoderView { layout: &self.layout, decoders: &mut self.decoders }
     }
 
     /// `frame_size` is per-channel capacity; `out` must hold at least
     /// `frame_size * table.channels`. Returns frames decoded (per channel).
     /// An empty packet conceals `frame_size` samples on every stream.
-    pub fn decode(
-        &mut self,
-        packet: &[u8],
-        frame_size: usize,
-        out: &mut [f32],
-    ) -> Result<usize, &'static str> {
-        self.decode_native(packet, frame_size, out, false, false)
+    pub fn decode(&mut self, packet: &[u8], frame_size: usize, out: &mut [f32]) -> Result<usize, &'static str> {
+        self.view().decode(packet, frame_size, out)
     }
 
     /// Rebuilds a lost packet from the in-band FEC of the packet after it,
     /// as [`OpusDecoder::decode_fec`] does for each stream (libopus
     /// `opus_multistream_decode_float(..., decode_fec = 1)`).
-    pub fn decode_fec(
-        &mut self,
-        packet: &[u8],
-        frame_size: usize,
-        out: &mut [f32],
-    ) -> Result<usize, &'static str> {
-        self.decode_native(packet, frame_size, out, true, false)
+    pub fn decode_fec(&mut self, packet: &[u8], frame_size: usize, out: &mut [f32]) -> Result<usize, &'static str> {
+        self.view().decode_fec(packet, frame_size, out)
     }
 
     /// The XOR of every stream decoder's final range (libopus
@@ -266,46 +314,23 @@ impl MultistreamDecoder {
     /// Decodes into interleaved 16-bit PCM, soft clipped per stream
     /// (libopus `opus_multistream_decode` of the float build).
     pub fn decode_i16(&mut self, packet: &[u8], frame_size: usize, out: &mut [i16]) -> Result<usize, &'static str> {
-        self.decode_int(packet, frame_size, out, false, true)
+        self.view().decode_i16(packet, frame_size, out)
     }
 
     /// [`Self::decode_i16`] with in-band FEC.
     pub fn decode_fec_i16(&mut self, packet: &[u8], frame_size: usize, out: &mut [i16]) -> Result<usize, &'static str> {
-        self.decode_int(packet, frame_size, out, true, true)
+        self.view().decode_fec_i16(packet, frame_size, out)
     }
 
     /// Decodes into interleaved 24-bit PCM in 32-bit integers (libopus
     /// `opus_multistream_decode24`).
     pub fn decode24(&mut self, packet: &[u8], frame_size: usize, out: &mut [i32]) -> Result<usize, &'static str> {
-        self.decode_int(packet, frame_size, out, false, false)
+        self.view().decode24(packet, frame_size, out)
     }
 
     /// [`Self::decode24`] with in-band FEC.
     pub fn decode_fec24(&mut self, packet: &[u8], frame_size: usize, out: &mut [i32]) -> Result<usize, &'static str> {
-        self.decode_int(packet, frame_size, out, true, false)
-    }
-
-    fn decode_int<T: IntSample>(
-        &mut self,
-        packet: &[u8],
-        frame_size: usize,
-        out: &mut [T],
-        decode_fec: bool,
-        soft_clip: bool,
-    ) -> Result<usize, &'static str> {
-        let mut buf = vec![0.0f32; out.len()];
-        let n = self.decode_native(packet, frame_size, &mut buf, decode_fec, soft_clip)?;
-        let len = n * self.table.channels as usize;
-        for (o, &x) in out.iter_mut().zip(&buf[..len]) {
-            *o = T::from_float(x);
-        }
-        Ok(n)
-    }
-
-    /// The channels the streams decode: two per coupled stream, one per
-    /// mono stream.
-    pub(crate) fn decoded_channels(&self) -> usize {
-        self.table.decoded_channel_count()
+        self.view().decode_fec24(packet, frame_size, out)
     }
 
     /// Restarts every stream (libopus `OPUS_RESET_STATE`).
@@ -369,6 +394,80 @@ impl MultistreamDecoder {
     pub fn decoder_state(&mut self, stream: usize) -> Result<&mut OpusDecoder, &'static str> {
         self.decoders.get_mut(stream).ok_or(crate::error::BAD_ARG)
     }
+}
+
+impl<'a> MultistreamDecoderView<'a> {
+    /// The decoder of `layout` with `decoders`, one per stream with the
+    /// stream's channels and one sampling rate; `error::BAD_ARG` otherwise.
+    pub fn new(layout: &'a MultistreamLayout, decoders: &'a mut [OpusDecoder]) -> Result<Self, &'static str> {
+        let fs = decoders.first().map(OpusDecoder::sample_rate);
+        if decoders.len() != layout.streams()
+            || decoders
+                .iter()
+                .enumerate()
+                .any(|(s, d)| d.channels() != layout.stream_channels(s) || Some(d.sample_rate()) != fs)
+        {
+            return Err(crate::error::BAD_ARG);
+        }
+        Ok(MultistreamDecoderView { layout, decoders })
+    }
+
+    /// [`MultistreamDecoder::decode`].
+    pub fn decode(&mut self, packet: &[u8], frame_size: usize, out: &mut [f32]) -> Result<usize, &'static str> {
+        self.decode_native(packet, frame_size, out, false, false)
+    }
+
+    /// [`MultistreamDecoder::decode_fec`].
+    pub fn decode_fec(&mut self, packet: &[u8], frame_size: usize, out: &mut [f32]) -> Result<usize, &'static str> {
+        self.decode_native(packet, frame_size, out, true, false)
+    }
+
+    /// [`MultistreamDecoder::final_range`].
+    pub fn final_range(&self) -> u32 {
+        self.decoders.iter().fold(0, |r, d| r ^ d.final_range())
+    }
+
+    /// [`MultistreamDecoder::decode_i16`].
+    pub fn decode_i16(&mut self, packet: &[u8], frame_size: usize, out: &mut [i16]) -> Result<usize, &'static str> {
+        self.decode_int(packet, frame_size, out, false, true)
+    }
+
+    /// [`MultistreamDecoder::decode_fec_i16`].
+    pub fn decode_fec_i16(&mut self, packet: &[u8], frame_size: usize, out: &mut [i16]) -> Result<usize, &'static str> {
+        self.decode_int(packet, frame_size, out, true, true)
+    }
+
+    /// [`MultistreamDecoder::decode24`].
+    pub fn decode24(&mut self, packet: &[u8], frame_size: usize, out: &mut [i32]) -> Result<usize, &'static str> {
+        self.decode_int(packet, frame_size, out, false, false)
+    }
+
+    /// [`MultistreamDecoder::decode_fec24`].
+    pub fn decode_fec24(&mut self, packet: &[u8], frame_size: usize, out: &mut [i32]) -> Result<usize, &'static str> {
+        self.decode_int(packet, frame_size, out, true, false)
+    }
+
+    /// The channels the streams decode.
+    pub(crate) fn decoded_channels(&self) -> usize {
+        self.layout.decoded_channels()
+    }
+
+    fn decode_int<T: IntSample>(
+        &mut self,
+        packet: &[u8],
+        frame_size: usize,
+        out: &mut [T],
+        decode_fec: bool,
+        soft_clip: bool,
+    ) -> Result<usize, &'static str> {
+        let mut buf = vec![0.0f32; out.len()];
+        let n = self.decode_native(packet, frame_size, &mut buf, decode_fec, soft_clip)?;
+        let len = n * self.layout.channels();
+        for (o, &x) in out.iter_mut().zip(&buf[..len]) {
+            *o = T::from_float(x);
+        }
+        Ok(n)
+    }
 
     /// libopus `opus_multistream_decode_native`, soft clipping each stream
     /// with `soft_clip`.
@@ -380,11 +479,11 @@ impl MultistreamDecoder {
         decode_fec: bool,
         soft_clip: bool,
     ) -> Result<usize, &'static str> {
-        let out_channels = self.table.channels as usize;
+        let out_channels = self.layout.channels();
         let (frames_decoded, decoded) = self.decode_checked(packet, frame_size, out.len(), decode_fec, soft_clip)?;
-        let decoded_channels = self.table.decoded_channel_count();
+        let decoded_channels = self.layout.decoded_channels();
         for f in 0..frames_decoded {
-            for (out_c, &src) in self.table.mapping.iter().enumerate() {
+            for (out_c, &src) in self.layout.mapping().iter().enumerate() {
                 out[f * out_channels + out_c] = if src == SILENT_CHANNEL {
                     0.0
                 } else {
@@ -411,7 +510,7 @@ impl MultistreamDecoder {
         }
         // libopus limits frame_size to 120 ms.
         let frame_size = frame_size.min(self.decoders[0].sampling_rate as usize / 25 * 3);
-        let out_channels = self.table.channels as usize;
+        let out_channels = self.layout.channels();
         if out_len < frame_size * out_channels {
             return Err("output buffer too small for frame_size * channels");
         }
@@ -426,7 +525,7 @@ impl MultistreamDecoder {
                 packet,
                 nb_streams,
                 self.decoders[0].sampling_rate,
-                &mut self.packet_scratch,
+                &mut Vec::new(),
             )
             .map_err(|_| crate::error::INVALID_PACKET)?;
             if samples > frame_size {
@@ -447,21 +546,18 @@ impl MultistreamDecoder {
         decode_fec: bool,
         soft_clip: bool,
     ) -> Result<(usize, Vec<f32>), &'static str> {
-        let decoded_channels = self.table.decoded_channel_count();
+        let decoded_channels = self.layout.decoded_channels();
         let mut decoded = vec![0.0f32; frame_size * decoded_channels];
         let mut decoded_offset_channels = 0usize;
         let mut frames_decoded = 0usize;
 
         let mut rest = packet;
         let num_streams = self.decoders.len();
+        let (mut stream_scratch, mut packet_scratch) = (Vec::new(), Vec::new());
         for (i, decoder) in self.decoders.iter_mut().enumerate() {
-            let ch = if (i as u8) < self.table.coupled_count {
-                2
-            } else {
-                1
-            };
-            self.stream_scratch.clear();
-            self.stream_scratch.resize(frame_size * ch, 0.0);
+            let ch = self.layout.stream_channels(i);
+            stream_scratch.clear();
+            stream_scratch.resize(frame_size * ch, 0.0);
 
             // RFC 6716 Appendix B: only the last sub-packet is unframed —
             // decode it directly. Every other sub-packet must first be
@@ -469,11 +565,11 @@ impl MultistreamDecoder {
             // strips the injected Appendix B length field(s)). An empty
             // packet is a loss: every stream conceals frame_size samples.
             let n = if packet.is_empty() || i + 1 == num_streams {
-                decoder.decode_native(rest, frame_size, &mut self.stream_scratch, decode_fec, soft_clip)?
+                decoder.decode_native(rest, frame_size, &mut stream_scratch, decode_fec, soft_clip)?
             } else {
-                let (pkt, consumed) = split_self_delimited(rest, &mut self.packet_scratch)?;
+                let (pkt, consumed) = split_self_delimited(rest, &mut packet_scratch)?;
                 let n =
-                    decoder.decode_native(pkt, frame_size, &mut self.stream_scratch, decode_fec, soft_clip)?;
+                    decoder.decode_native(pkt, frame_size, &mut stream_scratch, decode_fec, soft_clip)?;
                 rest = &rest[consumed..];
                 n
             };
@@ -486,7 +582,7 @@ impl MultistreamDecoder {
             for f in 0..n {
                 for c in 0..ch {
                     decoded[f * decoded_channels + decoded_offset_channels + c] =
-                        self.stream_scratch[f * ch + c];
+                        stream_scratch[f * ch + c];
                 }
             }
             decoded_offset_channels += ch;
@@ -510,7 +606,8 @@ mod tests {
         assert_eq!(table.stream_count, 4);
         assert_eq!(table.coupled_count, 2);
         assert_eq!(table.mapping, vec![0, 1, 4, 5, 2, 3]);
-        assert_eq!(table.decoded_channel_count(), 6);
+        let layout = MultistreamLayout::new(6, 4, 2, &table.mapping).unwrap();
+        assert_eq!(layout.decoded_channels(), 6);
     }
 
     #[test]

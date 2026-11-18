@@ -201,8 +201,8 @@ impl ProjectionDecoder {
     }
 
     fn decode_float(&mut self, packet: &[u8], frame_size: usize, out: &mut [f32], fec: bool) -> Result<usize, &'static str> {
-        let (n, decoded) = self.ms.decode_checked(packet, frame_size, out.len(), fec, false)?;
-        let (ch, d) = (self.channels, self.ms.decoded_channels());
+        let (n, decoded) = self.ms.view().decode_checked(packet, frame_size, out.len(), fec, false)?;
+        let (ch, d) = (self.channels, self.ms.view().decoded_channels());
         out[..n * ch].fill(0.0);
         let m = self.matrix();
         for i in 0..d.min(ch) {
@@ -242,8 +242,8 @@ impl ProjectionDecoder {
         soft_clip: bool,
         demix: impl Fn(&MappingMatrix<'_>, &[f32], usize, usize, &mut [T], usize, usize),
     ) -> Result<usize, &'static str> {
-        let (n, decoded) = self.ms.decode_checked(packet, frame_size, out.len(), fec, soft_clip)?;
-        let (ch, d) = (self.channels, self.ms.decoded_channels());
+        let (n, decoded) = self.ms.view().decode_checked(packet, frame_size, out.len(), fec, soft_clip)?;
+        let (ch, d) = (self.channels, self.ms.view().decoded_channels());
         out[..n * ch].fill(T::default());
         let m = self.matrix();
         for i in 0..d.min(ch) {
