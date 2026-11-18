@@ -231,7 +231,7 @@ impl OpusEncoder {
 
     /// libopus `frame_size_select`: the samples per channel a call of
     /// `frame_size` codes, `None` when that is no valid frame.
-    pub(crate) fn select_frame_size(&self, frame_size: usize) -> Option<usize> {
+    pub fn select_frame_size(&self, frame_size: usize) -> Option<usize> {
         frame_size_select(self.sampling_rate, frame_size, self.variable_duration)
             .filter(|&n| self.application != Application::RestrictedSilk || n >= self.sampling_rate as usize / 100)
     }
