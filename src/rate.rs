@@ -43,11 +43,12 @@ pub fn bits2pulses(m: &CeltMode, band: usize, mut lm: i32, bits: i32) -> i32 {
     for _ in 0..6 {
         // LOG_MAX_PSEUDO = 6
         let mid = (lo + hi + 1) >> 1; // round up, matches C
-        if cache[mid as usize] as i32 >= bits {
-            hi = mid;
-        } else {
-            lo = mid;
-        }
+        // libopus: "Make sure this is implemented with a conditional move".
+        (lo, hi) = core::hint::select_unpredictable(
+            cache[mid as usize] as i32 >= bits,
+            (lo, mid),
+            (mid, hi),
+        );
     }
 
     let lo_val = if lo == 0 {
