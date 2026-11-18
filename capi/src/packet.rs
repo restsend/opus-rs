@@ -79,17 +79,6 @@ fn parse_size(data: &[u8]) -> Option<(usize, i16)> {
     }
 }
 
-pub(crate) fn encode_size(size: usize, out: &mut [u8]) -> usize {
-    if size < 252 {
-        out[0] = size as u8;
-        1
-    } else {
-        out[0] = 252 + (size & 0x3) as u8;
-        out[1] = ((size - out[0] as usize) >> 2) as u8;
-        2
-    }
-}
-
 /// libopus `opus_packet_parse_impl`, with its exact validation.
 pub(crate) fn parse(packet: &[u8], self_delimited: bool) -> Result<Parsed, c_int> {
     if packet.is_empty() {
