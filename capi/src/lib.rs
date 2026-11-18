@@ -193,19 +193,10 @@ pub extern "C" fn opus_get_version_string() -> *const c_char {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn opus_strerror(error: c_int) -> *const c_char {
-    const STRINGS: [&core::ffi::CStr; 8] = [
-        c"success",
-        c"invalid argument",
-        c"buffer too small",
-        c"internal error",
-        c"corrupted stream",
-        c"request not implemented",
-        c"invalid state",
-        c"memory allocation failed",
-    ];
-    if (-7..=0).contains(&error) {
-        STRINGS[(-error) as usize].as_ptr()
-    } else {
-        c"unknown error".as_ptr()
-    }
+    // opus_rs::error::strerror's texts of -7..=0 and "unknown error", as C strings.
+    static TEXTS: std::sync::LazyLock<Vec<std::ffi::CString>> = std::sync::LazyLock::new(|| {
+        (-8..=0).map(|c| std::ffi::CString::new(opus_rs::error::strerror(c)).unwrap()).collect()
+    });
+    let i = if (-7..=0).contains(&error) { error + 8 } else { 0 };
+    TEXTS[i as usize].as_ptr()
 }
