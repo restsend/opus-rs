@@ -612,7 +612,8 @@ pub fn silk_schur(rc_q15: &mut [i16], c: &[i32], order: usize) -> i32 {
             } else {
                 rc_q15[k] = 32440;
             }
-            return c_inner[0][1];
+            rc_q15[k + 1..order].fill(0);
+            break;
         }
 
         rc_tmp_q15 = -silk_div32_16(c_inner[k + 1][0], (c_inner[0][1] >> 15).max(1));
@@ -629,7 +630,7 @@ pub fn silk_schur(rc_q15: &mut [i16], c: &[i32], order: usize) -> i32 {
         }
     }
 
-    c_inner[0][1]
+    c_inner[0][1].max(1)
 }
 
 pub fn silk_k2a(a_q24: &mut [i32], rc_q15: &[i16], order: usize) {
