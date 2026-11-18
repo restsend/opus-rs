@@ -168,9 +168,9 @@ pub(crate) fn apply(f: Elem, x: &mut [f32], arch: Arch) {
     }
 }
 
-/// The SSE2 token (SSE2 is in the x86-64 baseline).
+/// The SSE2 token, which every level above `Scalar` has.
 pub(crate) fn sse2() -> Sse2 {
-    fearless_simd::Level::baseline().as_sse2().unwrap()
+    crate::arch::cpu_sse2().expect("levels above Scalar have SSE2")
 }
 
 /// `vector_ps_to_epi8` without AVX2: the unsigned inputs of the int8

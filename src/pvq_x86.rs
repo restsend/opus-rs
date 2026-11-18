@@ -39,7 +39,7 @@ fn cvtt(v: f32) -> i32 {
 /// in all) whose direction best matches `x`.
 pub fn op_pvq_search_sse2(x: &[f32], iy: &mut [i32], k: i32) {
     let n = x.len();
-    let simd = fearless_simd::Level::baseline().as_sse2().unwrap();
+    let simd = crate::arch::cpu_sse2().expect("levels above Scalar have SSE2");
     // libopus pads X, y and signy by three for whole blocks of four.
     let padded = n + 3;
     with_scratch(padded, |xs: &mut [f32]| {

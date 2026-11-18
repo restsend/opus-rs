@@ -3,10 +3,10 @@
 
 /// The kernels whose arithmetic a codec state reproduces, chosen when the
 /// state is created as libopus's `opus_select_arch()` chooses them.
-/// `Scalar` is libopus built without intrinsics. On x86-64, where libopus
-/// presumes SSE and SSE2, the other levels are libopus's: `Sse2` (arch 2),
-/// `Sse4_1` (3) and `Avx2` (4, AVX2 and FMA). Elsewhere the level is
-/// `Scalar`.
+/// `Scalar` is libopus built without intrinsics (arch 0). On x86 and x86-64
+/// the other levels are libopus's: `Sse2` (arch 2), `Sse4_1` (3) and `Avx2`
+/// (4). On other targets the level is `Scalar`. Kernel functions take a
+/// level at most [`Arch::native`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Arch {
     #[default]
@@ -45,15 +45,28 @@ impl Arch {
     }
 }
 
-/// libopus's `opus_select_arch()` on x86-64 (SSE4.1 from fearless_simd's
-/// SSE4.2 level; without `std` no detection runs and SSE2 is presumed).
+/// libopus's `opus_select_arch()` on x86 and x86-64, from the CPU level
+/// fearless_simd detects (with `std`) or the target's baseline (without):
+/// - `Sse2` needs fearless_simd's SSE2 token (SSE2 and FXSR) and a target
+///   with SSE2 in its baseline (x86-64, i686). Elsewhere the level is
+///   `Scalar`: libopus takes arch 0 without SSE, arch 1 with SSE (the SSE
+///   float kernels with the C PVQ search and C neural kernels, a level
+///   opus-rs does not have) and detects arch 2 to 4 in an i586 build.
+/// - `Sse4_1` needs fearless_simd's SSE4.2 level, `Avx2` its AVX2 level.
+/// - Without `std` the level is the target's baseline: on a CPU above it,
+///   libopus detects a higher level.
 fn detect() -> Arch {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        match fearless_simd::Level::try_detect() {
-            Some(level) if level.as_avx2().is_some() => Arch::Avx2,
-            Some(level) if level.as_sse4_2().is_some() => Arch::Sse4_1,
-            _ => Arch::Sse2,
+        let level = cpu_level();
+        if level.as_avx2().is_some() {
+            Arch::Avx2
+        } else if level.as_sse2().is_none() {
+            Arch::Scalar
+        } else if level.as_sse4_2().is_some() {
+            Arch::Sse4_1
+        } else {
+            Arch::Sse2
         }
     }
     #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
@@ -62,12 +75,34 @@ fn detect() -> Arch {
     }
 }
 
-/// The AVX2 token when the CPU has AVX2 (runtime detection needs `std`),
-/// for kernels that give the scalar results.
+/// The CPU's level: detected at runtime with `std`, the target's baseline
+/// without. A 32-bit x86 target without SSE2 in its baseline (i586) has
+/// none: there fearless_simd's SSE2 kernels give wrong results in release
+/// builds (`op_pvq_search_sse2` reads past its blocks), and the scalar code
+/// computes on the x87 FPU.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[inline]
+fn cpu_level() -> fearless_simd::Level {
+    if cfg!(target_feature = "sse2") {
+        fearless_simd::Level::try_detect().unwrap_or(fearless_simd::Level::baseline())
+    } else {
+        fearless_simd::Level::baseline()
+    }
+}
+
+/// The AVX2 token when the CPU has fearless_simd's AVX2 level, for kernels
+/// that give the scalar results.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline]
 pub(crate) fn cpu_avx2() -> Option<fearless_simd::Avx2> {
-    fearless_simd::Level::try_detect().and_then(|level| level.as_avx2())
+    cpu_level().as_avx2()
+}
+
+/// The SSE2 token; every level above `Scalar` has it.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[inline]
+pub(crate) fn cpu_sse2() -> Option<fearless_simd::Sse2> {
+    cpu_level().as_sse2()
 }
 
 /// The NEON token (NEON is in the aarch64 baseline).
@@ -107,5 +142,22 @@ fn forced() -> Arch {
             _ => Arch::Scalar,
         },
         v => ALL[v as usize - 1],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every level above `Scalar` has the token its SSE2 kernels take.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn levels_above_scalar_have_sse2() {
+        if Arch::native() > Arch::Scalar {
+            assert!(cpu_sse2().is_some());
+        }
+        if Arch::native() == Arch::Avx2 {
+            assert!(cpu_avx2().is_some());
+        }
     }
 }
