@@ -93,7 +93,7 @@ impl Dec {
                 (r, m, f(x), f(y), 64.0 / 8388608.0)
             }
         };
-        assert_eq!(r.map(|v| v as i32).unwrap_or(-1).signum(), m.signum(), "{what}: {r:?} vs {m}");
+        assert_eq!(r.map_or_else(|e| error::code(e).unwrap_or(0), |v| v as i32), m, "{what}: {r:?}");
         let Ok(k) = r else { return };
         assert_eq!(k as i32, m, "{what}");
         for i in 0..k * self.ch {
@@ -151,6 +151,8 @@ fn packets_and_decoding_match_libopus() {
                 // libopus's packets decode alike on both decoders.
                 let pkt = &y[..m as usize];
                 d.decode(if f == 5 { &[] } else { pkt }, 1920, f % 3, &what);
+                // A frame size of 0 is an invalid argument.
+                d.decode(if f == 5 { &[] } else { pkt }, 0, f % 3, &what);
             }
             unsafe { opus_projection_encoder_destroy(p) };
         }

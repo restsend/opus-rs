@@ -372,8 +372,8 @@ fn integer_decoding_matches_libopus() {
     }
 }
 
-/// The errors of every entry point: OPUS_BAD_ARG for a concealment or FEC
-/// call that is no multiple of 2.5 ms,
+/// The errors of every entry point: OPUS_BAD_ARG for a frame size of 0
+/// and a concealment or FEC call that is no multiple of 2.5 ms,
 /// OPUS_INVALID_PACKET for malformed packets, OPUS_BUFFER_TOO_SMALL for a
 /// frame size below the packet's.
 #[test]
@@ -387,6 +387,9 @@ fn decode_errors_match_libopus() {
         for (data, frame, fec) in [
             (None, 100, false),
             (Some(ok), 100, true),
+            (None, 0, false),
+            (Some(ok), 0, false),
+            (Some(ok), 0, true),
             (Some(&[0x01, 0, 0][..]), 960, false),
             (Some(&[0x03, 0x00][..]), 960, false),
             (Some(&[0x03, 0x00][..]), 960, true),

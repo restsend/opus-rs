@@ -4405,7 +4405,11 @@ impl OpusDecoder {
     ) -> Result<usize, &'static str> {
         let fs = self.sampling_rate as usize;
         let ch = self.channels;
-        // For FEC/PLC, frame_size has to be a multiple of 2.5 ms.
+        // opus_decode_float's frame_size <= 0 check; for FEC/PLC,
+        // frame_size has to be a multiple of 2.5 ms.
+        if frame_size == 0 {
+            return Err(crate::error::BAD_ARG);
+        }
         if (decode_fec || data.is_empty()) && !frame_size.is_multiple_of(fs / 400) {
             return Err(crate::error::BAD_ARG);
         }

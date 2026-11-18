@@ -406,6 +406,9 @@ impl MultistreamDecoder {
         decode_fec: bool,
         soft_clip: bool,
     ) -> Result<(usize, Vec<f32>), &'static str> {
+        if frame_size == 0 {
+            return Err(crate::error::BAD_ARG);
+        }
         // libopus limits frame_size to 120 ms.
         let frame_size = frame_size.min(self.decoders[0].sampling_rate as usize / 25 * 3);
         let out_channels = self.table.channels as usize;
