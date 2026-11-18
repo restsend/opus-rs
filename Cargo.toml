@@ -75,9 +75,11 @@ libm = { version = "0.2", optional = true, default-features = false }
 [target.'cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32"))'.dependencies]
 fearless_simd = { version = "1.2", default-features = false }
 
-[dev-dependencies]
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
-proptest = "1"
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
 opus = { version = "0.3", default-features = false }
 opusic-sys = "0.7"
 [[bench]]
