@@ -154,32 +154,12 @@ pub fn silk_decode_core(
         if eff_signal_type == TYPE_VOICED {
             let pred_lag_ptr_start = (s_ltp_buf_idx - lag + LTP_ORDER as i32 / 2) as usize;
             for i in 0..ps_dec.subfr_length as usize {
+                let p = pred_lag_ptr_start + i;
+                let hist: &[i32; LTP_ORDER] = s_ltp_q15[p + 1 - LTP_ORDER..=p].try_into().unwrap();
                 let mut ltp_pred_q13: i32 = 2;
-                ltp_pred_q13 = silk_smlawb(
-                    ltp_pred_q13,
-                    s_ltp_q15[pred_lag_ptr_start + i],
-                    b_q14[0] as i32,
-                );
-                ltp_pred_q13 = silk_smlawb(
-                    ltp_pred_q13,
-                    s_ltp_q15[pred_lag_ptr_start + i - 1],
-                    b_q14[1] as i32,
-                );
-                ltp_pred_q13 = silk_smlawb(
-                    ltp_pred_q13,
-                    s_ltp_q15[pred_lag_ptr_start + i - 2],
-                    b_q14[2] as i32,
-                );
-                ltp_pred_q13 = silk_smlawb(
-                    ltp_pred_q13,
-                    s_ltp_q15[pred_lag_ptr_start + i - 3],
-                    b_q14[3] as i32,
-                );
-                ltp_pred_q13 = silk_smlawb(
-                    ltp_pred_q13,
-                    s_ltp_q15[pred_lag_ptr_start + i - 4],
-                    b_q14[4] as i32,
-                );
+                for (j, &b) in b_q14.iter().enumerate() {
+                    ltp_pred_q13 = silk_smlawb(ltp_pred_q13, hist[LTP_ORDER - 1 - j], b as i32);
+                }
 
                 res_q14[i] = silk_add_lshift32(ps_dec.exc_q14[pexc_q14_idx + i], ltp_pred_q13, 1);
 
@@ -193,90 +173,11 @@ pub fn silk_decode_core(
         }
 
         for i in 0..ps_dec.subfr_length as usize {
+            // Short-term prediction from the last `lpc_order` outputs.
+            let hist: &[i32; MAX_LPC_ORDER] = s_lpc_q14[i..i + MAX_LPC_ORDER].try_into().unwrap();
             let mut lpc_pred_q10: i32 = ps_dec.lpc_order >> 1;
-
-            lpc_pred_q10 = silk_smlawb(
-                lpc_pred_q10,
-                s_lpc_q14[MAX_LPC_ORDER + i - 1],
-                a_q12[0] as i32,
-            );
-            lpc_pred_q10 = silk_smlawb(
-                lpc_pred_q10,
-                s_lpc_q14[MAX_LPC_ORDER + i - 2],
-                a_q12[1] as i32,
-            );
-            lpc_pred_q10 = silk_smlawb(
-                lpc_pred_q10,
-                s_lpc_q14[MAX_LPC_ORDER + i - 3],
-                a_q12[2] as i32,
-            );
-            lpc_pred_q10 = silk_smlawb(
-                lpc_pred_q10,
-                s_lpc_q14[MAX_LPC_ORDER + i - 4],
-                a_q12[3] as i32,
-            );
-            lpc_pred_q10 = silk_smlawb(
-                lpc_pred_q10,
-                s_lpc_q14[MAX_LPC_ORDER + i - 5],
-                a_q12[4] as i32,
-            );
-            lpc_pred_q10 = silk_smlawb(
-                lpc_pred_q10,
-                s_lpc_q14[MAX_LPC_ORDER + i - 6],
-                a_q12[5] as i32,
-            );
-            lpc_pred_q10 = silk_smlawb(
-                lpc_pred_q10,
-                s_lpc_q14[MAX_LPC_ORDER + i - 7],
-                a_q12[6] as i32,
-            );
-            lpc_pred_q10 = silk_smlawb(
-                lpc_pred_q10,
-                s_lpc_q14[MAX_LPC_ORDER + i - 8],
-                a_q12[7] as i32,
-            );
-            lpc_pred_q10 = silk_smlawb(
-                lpc_pred_q10,
-                s_lpc_q14[MAX_LPC_ORDER + i - 9],
-                a_q12[8] as i32,
-            );
-            lpc_pred_q10 = silk_smlawb(
-                lpc_pred_q10,
-                s_lpc_q14[MAX_LPC_ORDER + i - 10],
-                a_q12[9] as i32,
-            );
-
-            if ps_dec.lpc_order == 16 {
-                lpc_pred_q10 = silk_smlawb(
-                    lpc_pred_q10,
-                    s_lpc_q14[MAX_LPC_ORDER + i - 11],
-                    a_q12[10] as i32,
-                );
-                lpc_pred_q10 = silk_smlawb(
-                    lpc_pred_q10,
-                    s_lpc_q14[MAX_LPC_ORDER + i - 12],
-                    a_q12[11] as i32,
-                );
-                lpc_pred_q10 = silk_smlawb(
-                    lpc_pred_q10,
-                    s_lpc_q14[MAX_LPC_ORDER + i - 13],
-                    a_q12[12] as i32,
-                );
-                lpc_pred_q10 = silk_smlawb(
-                    lpc_pred_q10,
-                    s_lpc_q14[MAX_LPC_ORDER + i - 14],
-                    a_q12[13] as i32,
-                );
-                lpc_pred_q10 = silk_smlawb(
-                    lpc_pred_q10,
-                    s_lpc_q14[MAX_LPC_ORDER + i - 15],
-                    a_q12[14] as i32,
-                );
-                lpc_pred_q10 = silk_smlawb(
-                    lpc_pred_q10,
-                    s_lpc_q14[MAX_LPC_ORDER + i - 16],
-                    a_q12[15] as i32,
-                );
+            for (j, &a) in a_q12[..ps_dec.lpc_order as usize].iter().enumerate() {
+                lpc_pred_q10 = silk_smlawb(lpc_pred_q10, hist[MAX_LPC_ORDER - 1 - j], a as i32);
             }
 
             s_lpc_q14[MAX_LPC_ORDER + i] =
@@ -313,15 +214,12 @@ fn silk_lpc_analysis_filter_offset(
     }
 
     for ix in d..len {
-        let mut out32_q12: i32 = 0;
-        for j in 0..d {
-            out32_q12 = out32_q12.wrapping_add(silk_smulbb(
-                input[input_offset + ix - j - 1] as i32,
-                b[j] as i32,
-            ));
-        }
+        let hist = &input[input_offset + ix - d..input_offset + ix];
+        let out32_q12 = hist.iter().rev().zip(&b[..d]).fold(0i32, |acc, (&x, &c)| {
+            acc.wrapping_add(silk_smulbb(x as i32, c as i32))
+        });
 
-        out32_q12 = ((input[input_offset + ix] as i32) << 12).wrapping_sub(out32_q12);
+        let out32_q12 = ((input[input_offset + ix] as i32) << 12).wrapping_sub(out32_q12);
 
         let out32 = silk_rshift_round(out32_q12, 12);
 
