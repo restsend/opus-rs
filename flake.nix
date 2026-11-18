@@ -171,7 +171,8 @@
         };
         # scripts/test-wasm.sh: Rust with the wasm32-wasip1 standard library,
         # clang for wasm32-wasip1 (libopus for the opus dev-dependencies and
-        # fuzz/opusref), wasmtime, and libopus for the `opus` dev-dependency.
+        # fuzz/opusref), lld (rustc's wasm linker), wasmtime, and libopus for
+        # the `opus` dev-dependency.
         wasm =
           let
             wasi = pkgs.pkgsCross.wasi32;
@@ -182,6 +183,7 @@
               wasi.stdenv.cc
               pkgs.cargo
               pkgs.cmake
+              pkgs.lld
               pkgs.wasmtime
             ];
             CC_wasm32_wasip1 = "${wasi.stdenv.cc}/bin/${wasi.stdenv.cc.targetPrefix}cc";
