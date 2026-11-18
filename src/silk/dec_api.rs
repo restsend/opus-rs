@@ -86,6 +86,20 @@ pub struct SilkDecoder {
     pub osce_bwe: Option<[crate::dnn::osce::OsceBwe; 2]>,
 }
 
+/// The 16-bit samples `pcm` as floats in every `stride`-th slot of `out`.
+fn to_float(out: &mut [f32], stride: usize, pcm: &[i16]) {
+    let f = |v: i16| v as f32 * (1.0 / 32768.0);
+    if stride == 1 {
+        for (o, &v) in out.iter_mut().zip(pcm) {
+            *o = f(v);
+        }
+    } else {
+        for (o, &v) in out.iter_mut().step_by(stride).zip(pcm) {
+            *o = f(v);
+        }
+    }
+}
+
 impl Default for SilkDecoder {
     fn default() -> Self {
         Self::new()
@@ -606,9 +620,7 @@ impl SilkDecoder {
                 );
             }
             // Interleave if stereo output and stereo stream.
-            for (i, &v) in resample_out.iter().enumerate() {
-                samples_out[n + api_channels * i] = v as f32 * (1.0 / 32768.0);
-            }
+            to_float(&mut samples_out[n..], api_channels, resample_out);
         }
 
         // Create two channel output from a mono stream.
@@ -621,9 +633,7 @@ impl SilkDecoder {
                     resample_out,
                     &self.w_silk_buf[0][1..1 + n_dec],
                 );
-                for (i, &v) in resample_out.iter().enumerate() {
-                    samples_out[1 + 2 * i] = v as f32 * (1.0 / 32768.0);
-                }
+                to_float(&mut samples_out[1..], 2, resample_out);
             } else {
                 for i in 0..n_out {
                     samples_out[1 + 2 * i] = samples_out[2 * i];
