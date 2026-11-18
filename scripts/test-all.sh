@@ -8,9 +8,11 @@
 #                                the same with --features fixed
 #
 # Needs: stable cargo, a C/C++ compiler, pkg-config, cmake, libopus (the
-# interop dev-dependencies), and the pinned libopus sources for fuzz/opusref:
-# OPUSREF_SRC=<dir> or libopus/ in the repository root (scripts/fetch-libopus.sh). The flake's dev
-# shell provides all of them: nix develop -c scripts/test-all.sh
+# interop dev-dependencies), python3, the pinned libopus sources for
+# fuzz/opusref and capi: OPUSREF_SRC=<dir> or libopus/ in the repository
+# root (scripts/fetch-libopus.sh), and the RFC 8251 test vectors in
+# OPUS_TESTVECTORS. The flake's dev shell provides all of them:
+# nix develop -c scripts/test-all.sh
 #
 # Steps:
 #   suite            cargo test --release
@@ -35,6 +37,11 @@
 #                    must give byte-identical packets (also for the simd pair)
 #   replay           the fuzz reproducers in fuzz/regressions, in cargo test,
 #                    for the default, dnn and fixed builds
+#   capi             capi/test.sh on capi's libopus.so.0: libopus's test
+#                    programs, the RFC 8251 vectors (OPUS_TESTVECTORS) and
+#                    the cross-check with the reference libopus
+#   capi-dnn         the same with the deep-plc, dred and osce features,
+#                    and test_opus_dred
 #
 # Known failure off x86-64, skipped there: oracle_celt_sine_48k_mono_64k
 # (tests/oracle_celt.rs) compares with packet bytes of libopus built with
@@ -90,6 +97,16 @@ simd_pair_dnn() {
 }
 simd_parity() { OPUS_RS_ARCH=native parity --features simd; }
 
+# capi_test <test.sh option> <name> <cargo arguments>: builds capi's
+# libopus.so.0 into <target>/capi-<name> and runs capi/test.sh on it.
+capi_test() {
+  local option=$1 target=${CARGO_TARGET_DIR:-$PWD/target}/capi-$2
+  shift 2
+  (cd capi && CARGO_TARGET_DIR=$target cargo build --release "$@") &&
+    ln -sf libopus.so "$target/release/libopus.so.0" &&
+    capi/test.sh "$target/release" "$target/tests" ${option:+"$option"}
+}
+
 step suite cargo test --release --no-fail-fast -- "${known[@]}"
 step suite-dnn cargo test --release --no-fail-fast --features deep-plc,dred,osce -- "${known[@]}"
 step suite-silk-fixed cargo test --release --no-fail-fast --features silk-fixed -- "${known[@]}"
@@ -115,6 +132,8 @@ fi
 step replay in_fuzz cargo test --test regressions
 step replay-dnn in_fuzz cargo test --features dnn --test regressions
 step replay-fixed in_fuzz cargo test --features fixed --test regressions
+step capi capi_test "" default
+step capi-dnn capi_test --dred dnn --features deep-plc,dred,osce
 if [ $fuzz = 1 ]; then
   step fuzz-build in_fuzz cargo fuzz build
   step check.sh fuzz/regressions/check.sh

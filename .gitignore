@@ -18,6 +18,7 @@ fixtures/ref_c_*.wav
 tests/*.c
 opus-1.6.1/
 libopus/
+testvectors/
 fuzz/bin
 fuzz/survey
 .direnv/

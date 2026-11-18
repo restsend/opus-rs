@@ -4,7 +4,7 @@
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs =
-    { nixpkgs, ... }:
+    { self, nixpkgs, ... }:
     let
       forAllSystems =
         f:
@@ -20,6 +20,18 @@
           rev = "f1afc4222aff7c5456d27581ec618ae64158fbe1";
           hash = "sha256-mx6HoWA8t8NKm5AMs06kjGlmAJe9cEsQh61J1u+AM3I=";
         };
+      # The RFC 8251 decoder test vectors.
+      testvectors =
+        pkgs:
+        pkgs.runCommand "opus-testvectors-rfc8251" { } ''
+          mkdir $out
+          tar -xzf ${
+            pkgs.fetchurl {
+              url = "https://opus-codec.org/static/testvectors/opus_testvectors-rfc8251.tar.gz";
+              sha256 = "6b26a22f9ba87b2b836906a9bb7afec5f8e54d49553b1200382520ee6fedfa55";
+            }
+          } -C $out --strip-components=1
+        '';
       # A drop-in libopus from capi/: libopus's C API, headers and
       # pkg-config file, with the cargo features of capi/Cargo.toml.
       mkLibopus =
@@ -89,6 +101,39 @@
         default = libopus;
       });
 
+      # capi/test.sh against packages.libopus.
+      checks = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ] (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          libopus =
+            pkgs.runCommandCC "libopus-opus-rs-tests"
+              {
+                nativeBuildInputs = with pkgs; [
+                  pkg-config
+                  python3
+                  glibc.bin
+                ];
+                buildInputs = [ pkgs.libopus ];
+                OPUSREF_SRC = libopusSrc pkgs;
+                OPUS_TESTVECTORS = testvectors pkgs;
+                tests = pkgs.lib.fileset.toSource {
+                  root = ./.;
+                  fileset = pkgs.lib.fileset.unions [
+                    ./capi/test.sh
+                    ./fixtures/answer_16k.wav
+                  ];
+                };
+              }
+              ''
+                bash $tests/capi/test.sh ${self.packages.${system}.libopus}/lib $TMPDIR/work
+                touch $out
+              '';
+        }
+      );
+
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
           packages = with pkgs; [
@@ -99,10 +144,12 @@
             pkg-config
             cmake
             libopus
+            python3
           ];
           # libopus with the neural model data autogen.sh names: the
-          # differential reference fuzz/opusref builds
-          # (scripts/fetch-libopus.sh fetches the same without Nix).
+          # differential reference fuzz/opusref builds and the source of
+          # capi's test programs (scripts/fetch-libopus.sh fetches the same
+          # without Nix).
           OPUSREF_SRC = pkgs.runCommand "libopus-f1afc4222a-src" { } ''
             cp -r ${libopusSrc pkgs} $out
             chmod -R u+w $out
@@ -113,6 +160,7 @@
               }
             } -C $out --wildcards 'dnn/*_data.[ch]' 'dnn/dred_rdovae_constants.h'
           '';
+          OPUS_TESTVECTORS = testvectors pkgs;
         };
       });
     };
