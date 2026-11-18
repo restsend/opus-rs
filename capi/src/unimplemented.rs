@@ -1,6 +1,5 @@
-//! The parts of the libopus API opus-rs has no counterpart for yet:
-//! multistream and projection encoding, and DRED. They answer like a libopus
-//! built without them: `OPUS_UNIMPLEMENTED`, a NULL state, a size of 0.
+//! The DRED calls without the `dred` feature, which answer as a libopus
+//! built without DRED: `OPUS_UNIMPLEMENTED`, a NULL state, a size of 0.
 
 use core::ffi::{c_int, c_void};
 use core::ptr;
@@ -52,44 +51,15 @@ macro_rules! free_fns {
 type P = *mut c_void;
 
 zero_size! {
-    fn opus_projection_ambisonics_encoder_get_size(channels: c_int, mapping_family: c_int);
-    fn opus_projection_decoder_get_size(channels: c_int, streams: c_int, coupled_streams: c_int);
-}
-
-unimplemented_create! {
-    fn opus_projection_ambisonics_encoder_create(fs: i32, channels: c_int, mapping_family: c_int, streams: P, coupled_streams: P, application: c_int);
-    fn opus_projection_decoder_create(fs: i32, channels: c_int, streams: c_int, coupled_streams: c_int, demixing_matrix: P, demixing_matrix_size: i32);
-}
-
-unimplemented_fns! {
-    fn opus_projection_ambisonics_encoder_init(st: P, fs: i32, channels: c_int, mapping_family: c_int, streams: P, coupled_streams: P, application: c_int) -> c_int;
-    fn opus_projection_encode(st: P, pcm: P, frame_size: c_int, data: P, max_data_bytes: i32) -> c_int;
-    fn opus_projection_encode24(st: P, pcm: P, frame_size: c_int, data: P, max_data_bytes: i32) -> c_int;
-    fn opus_projection_encode_float(st: P, pcm: P, frame_size: c_int, data: P, max_data_bytes: i32) -> c_int;
-    fn opus_projection_decoder_init(st: P, fs: i32, channels: c_int, streams: c_int, coupled_streams: c_int, demixing_matrix: P, demixing_matrix_size: i32) -> c_int;
-    fn opus_projection_decode(st: P, data: P, len: i32, pcm: P, frame_size: c_int, decode_fec: c_int) -> c_int;
-    fn opus_projection_decode24(st: P, data: P, len: i32, pcm: P, frame_size: c_int, decode_fec: c_int) -> c_int;
-    fn opus_projection_decode_float(st: P, data: P, len: i32, pcm: P, frame_size: c_int, decode_fec: c_int) -> c_int;
-}
-
-free_fns! {
-    fn opus_projection_encoder_destroy;
-    fn opus_projection_decoder_destroy;
-}
-
-#[cfg(not(feature = "dred"))]
-zero_size! {
     fn opus_dred_decoder_get_size();
     fn opus_dred_get_size();
 }
 
-#[cfg(not(feature = "dred"))]
 unimplemented_create! {
     fn opus_dred_decoder_create();
     fn opus_dred_alloc();
 }
 
-#[cfg(not(feature = "dred"))]
 unimplemented_fns! {
     fn opus_dred_decoder_init(dec: P) -> c_int;
     fn opus_dred_parse(dred_dec: P, dred: P, data: P, len: i32, max_dred_samples: i32, sampling_rate: i32, dred_end: P, defer_processing: c_int) -> c_int;
@@ -99,20 +69,9 @@ unimplemented_fns! {
     fn opus_decoder_dred_decode_float(st: P, dred: P, dred_offset: i32, pcm: P, frame_size: i32) -> c_int;
 }
 
-#[cfg(not(feature = "dred"))]
 free_fns! {
     fn opus_dred_decoder_destroy;
     fn opus_dred_free;
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn opus_projection_encoder_ctl(_st: P, _request: c_int, _args: ...) -> c_int {
-    OPUS_UNIMPLEMENTED
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn opus_projection_decoder_ctl(_st: P, _request: c_int, _args: ...) -> c_int {
-    OPUS_UNIMPLEMENTED
 }
 
 #[unsafe(no_mangle)]

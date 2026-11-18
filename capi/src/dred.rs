@@ -38,6 +38,12 @@ pub unsafe extern "C" fn opus_dred_decoder_destroy(dec: *mut OpusDredDecoder) {
     unsafe { crate::free_state(dec) }
 }
 
+/// libopus's DRED decoder has requests only for a weights file build.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opus_dred_decoder_ctl(_dec: *mut OpusDredDecoder, _request: c_int, _args: ...) -> c_int {
+    OPUS_UNIMPLEMENTED
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn opus_dred_get_size() -> c_int {
     crate::align_size(size_of::<OpusDred>()) as c_int

@@ -433,6 +433,7 @@ macro_rules! encode_fn {
         }
     };
 }
+pub(crate) use encode_fn;
 
 encode_fn!(opus_multistream_encode, i16, encode_i16);
 encode_fn!(opus_multistream_encode24, i32, encode24);

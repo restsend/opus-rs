@@ -27,7 +27,9 @@ mod dred;
 mod encoder;
 mod multistream;
 mod packet;
+mod projection;
 mod repacketizer;
+#[cfg(not(feature = "dred"))]
 mod unimplemented;
 
 pub const OPUS_OK: c_int = 0;
