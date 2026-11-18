@@ -1,211 +1,122 @@
-# opus-rs-capi
+# libopus from opus-rs
 
-The libopus C API over opus-rs. `cargo build --release` produces
-`target/release/libopus.so` (soname `libopus.so.0`) and `libopus.a`, exporting
-libopus 1.6.1's functions with their signatures and argument checking, so C
-programs built against libopus's headers link and run against opus-rs.
+`capi/` builds `libopus.so.0` and `libopus.a` with libopus's C API
+(`opus.h`, `opus_multistream.h`, `opus_projection.h`) from opus-rs, so C
+programs built against libopus link and run against opus-rs unchanged.
+It started as PR #115 by Object905, which wrote the C layer, its test
+harness and the RFC 8251 conformance runs; this version calls opus-rs for
+everything libopus has.
 
-```sh
-cd capi && cargo build --release
-cc app.c -I/usr/include/opus -Ltarget/release -lopus -lm
-# or, for an existing binary:
-ln -s libopus.so target/release/libopus.so.0
-LD_LIBRARY_PATH=target/release ./app
-```
+Every function keeps libopus's name, signature, argument checks and error
+codes, and calls the opus-rs API of the same libopus function: the
+encoder, decoder and every ctl, packet parsing, the repacketizer and
+padding, soft clipping, the multistream and surround encoders and the
+multistream decoder, the projection (ambisonics) encoder and decoder, and
+with the `dred` feature DRED.
 
-The codec state is one flat block, as in libopus (opus-rs is built without
-`heap`): `opus_*_get_size()` / `opus_*_init()` on caller memory and `memcpy`
-of a state work. libopus's tests rely on this: they `memcpy` and `memset`
-decoder states.
+Every state is one flat block, as in libopus: `opus_*_get_size()` and
+`opus_*_init()` place it in caller memory, `free()` releases it and
+`memcpy` copies it (libopus's tests copy decoder and encoder states).
+opus-rs is built without its `heap` feature for this, and a multistream
+or projection state is a header (`MultistreamLayout`,
+`MultistreamEncoderHeader`) followed by its stream codecs, used through
+opus-rs's `MultistreamDecoderView`, `MultistreamEncoderView` and
+`ProjectionDecoderView`.
 
-The `opus_*_ctl()` functions are C-variadic functions written in Rust
-(`args: ...`, stable since Rust 1.99), with no C shim.
+## Build and use
 
-## Testing with libopus's test suite
-
-The libopus sources come from `LIBOPUS_SRC`, `../opus-1.6.1`, or the copy the
-`opusic-sys` dev-dependency unpacks in the cargo registry. The cross-check and
-`--ref` need a reference libopus (pkg-config `opus`). The test vectors are
-https://opus-codec.org/static/testvectors/opus_testvectors-rfc8251.tar.gz,
-which unpacks to `opus_newvectors/`.
+With Nix:
 
 ```sh
-capi/run_libopus_tests.sh                 # test programs + cross-check
-capi/conformance.sh --ref capi/target/opus_newvectors   # every vector case
+nix build .#libopus        # libopus's default build
+nix build .#libopus-dnn    # with --enable-deep-plc, --enable-dred, --enable-osce
 ```
 
-`run_libopus_tests.sh` compiles libopus's test programs, unmodified, against
-this library and runs them. `conformance.sh` runs every test vector case in
-parallel (12 vectors × mono/stereo × 5 output rates) and lists each failure
-with `opus_compare`'s error; with `--ref` it runs the reference libopus too,
-which should pass all of them.
-
-### Results
-
-| test | result |
-|---|---|
-| `test_opus_padding` | pass |
-| `test_opus_decode` | pass (random and adversarial packets, PLC, state copies) |
-| `test_opus_api` | fails one check: `opus_encoder_get_size()` must be ≤ 256 KiB; it is 317 KiB. With that bound relaxed, all of it passes (~118M calls: every ctl, packet parsing, repacketizer, multistream decoder) |
-| `test_opus_encode` | fails at its first multistream encode (not implemented) |
-| cross-check | pass: libopus encodes / opus-rs decodes and the reverse over 16 settings, the range coder state checked per packet |
-| test vectors | 95/120 (reference libopus: 120/120) |
-
-### Test vector failures
-
-No case fails to decode: in every packet of every vector the range decoder
-ends in the encoder's state, so the bitstream is parsed exactly. The failures
-are in the output, judged by `opus_compare`, which passes a weighted error up
-to about 0.277. They fall into two groups.
-
-**Output below SILK's internal rate (8 and 12 kHz).** Large errors (6 to 88):
-
-| vector | content | 12 kHz | 8 kHz |
-|---|---|---|---|
-| 02 | SILK NB | pass | pass |
-| 03 | SILK MB | pass | 23.7 |
-| 04 | SILK WB | 15.2 | 88.0 |
-| 05 | Hybrid SWB | 6.6–8.9 | 31.1 |
-| 06 | Hybrid FB | 6.4–6.5 | 29.6 |
-| 12 | SILK NB/MB/WB, Hybrid SWB | 14.6 | 71.6 |
-
-A vector fails exactly when its SILK layer runs at a higher rate than the
-output (MB is 12 kHz, WB and Hybrid 16 kHz), and passes at 16 kHz and above.
-That points at SILK's output resampling when it downsamples. This is
-unconfirmed.
-
-**testvector07 (CELT, all bandwidths, mono/stereo switches).** Fails just
-over the threshold at every rate except 16 kHz mono: error 0.28 to 0.36
-against `testvector07m.dec`, and about 0.54 to 0.59 against
-`testvector07.dec`. The other CELT vectors (01, 08–11) pass at every rate.
-
-All 25 failing cases (`conformance.sh` output; the first error is against
-`testvectorNN.dec`, the second against `testvectorNNm.dec`):
+The package is laid out as libopus installs itself:
 
 ```
-testvector07 48000 mono   error 0.538594 (.dec) / 0.356175 (m.dec)
-testvector07 48000 stereo error 0.591799 (.dec) / 0.304483 (m.dec)
-testvector07 24000 mono   error 0.537134 (.dec) / 0.350395 (m.dec)
-testvector07 24000 stereo error 0.590130 (.dec) / 0.294463 (m.dec)
-testvector07 16000 stereo error 0.586232 (.dec) / 0.280777 (m.dec)
-testvector04 12000 mono   error 15.233897 (.dec) / 15.233897 (m.dec)
-testvector04 12000 stereo error 15.128353 (.dec) / 15.128353 (m.dec)
-testvector05 12000 mono   error 6.573266 (.dec) / 6.570979 (m.dec)
-testvector05 12000 stereo error 8.866322 (.dec) / 8.873761 (m.dec)
-testvector06 12000 mono   error 6.430621 (.dec) / 6.430621 (m.dec)
-testvector06 12000 stereo error 6.501177 (.dec) / 6.500511 (m.dec)
-testvector07 12000 stereo error 0.584466 (.dec) / 0.279432 (m.dec)
-testvector12 12000 mono   error 14.631038 (.dec) / 14.631038 (m.dec)
-testvector12 12000 stereo error 14.531920 (.dec) / 14.531920 (m.dec)
-testvector03  8000 mono   error 23.752755 (.dec) / 23.752755 (m.dec)
-testvector03  8000 stereo error 23.694767 (.dec) / 23.694767 (m.dec)
-testvector04  8000 mono   error 88.041362 (.dec) / 88.041362 (m.dec)
-testvector04  8000 stereo error 87.857932 (.dec) / 87.857932 (m.dec)
-testvector05  8000 mono   error 31.160963 (.dec) / 31.160961 (m.dec)
-testvector05  8000 stereo error 31.147843 (.dec) / 31.147613 (m.dec)
-testvector06  8000 mono   error 29.630099 (.dec) / 29.630099 (m.dec)
-testvector06  8000 stereo error 29.583030 (.dec) / 29.583031 (m.dec)
-testvector07  8000 stereo error 0.581190 (.dec) / 0.279549 (m.dec)
-testvector12  8000 mono   error 71.715824 (.dec) / 71.715824 (m.dec)
-testvector12  8000 stereo error 71.573301 (.dec) / 71.573301 (m.dec)
+lib/libopus.so.0          soname libopus.so.0
+lib/libopus.so -> libopus.so.0
+lib/libopus.a
+lib/pkgconfig/opus.pc     Cflags: -I${includedir}/opus, Libs: -lopus
+include/opus/opus.h opus_defines.h opus_multistream.h opus_projection.h opus_types.h
 ```
 
-Content of the vectors, from their ToC bytes:
+so `pkg-config opus` and `-lopus` users build against it unchanged. To
+use it for every package of a nixpkgs set:
 
-| vector | packets | modes | channels |
-|---|---|---|---|
-| 01 | 2147 | CELT FB | stereo |
-| 02 | 1185 | SILK NB | mono/stereo |
-| 03 | 998 | SILK MB | mono/stereo |
-| 04 | 1265 | SILK WB | mono/stereo |
-| 05 | 2037 | Hybrid SWB | mono/stereo |
-| 06 | 1876 | Hybrid FB | mono/stereo |
-| 07 | 4186 | CELT NB/WB/SWB/FB, ~equal shares | mono/stereo |
-| 08 | 1247 | CELT NB–FB, 5 SILK NB | mono/stereo |
-| 09 | 1337 | mostly CELT FB, 5 SILK NB | mono/stereo |
-| 10 | 1912 | CELT FB, Hybrid FB | mono/stereo |
-| 11 | 553 | CELT FB | stereo |
-| 12 | 1332 | SILK NB/MB/WB, Hybrid SWB | mono |
-
-## Reproducing
-
-Environment of the results above: opus-rs 5d8230f (0.1.42), rustc 1.99.0,
-gcc 16.2.1, x86_64 Linux; libopus 1.6.1 test sources from opusic-sys 0.7.5;
-reference libopus: Arch `opus 1.6.1-1` (float build, custom modes enabled).
-
-The programs land in `capi/target/libopus-tests/` (`capi/run_libopus_tests.sh
-build` builds them alone). From there:
-
-```sh
-# one test vector case: decode (range coder checked per packet), then compare
-./opus_demo -d 12000 1 -ignore_extensions $V/testvector04.bit out.pcm
-./opus_compare -r 12000 $V/testvector04.dec out.pcm      # -s for stereo
-# the same with the reference libopus
-./opus_demo_ref -d 12000 1 -ignore_extensions $V/testvector04.bit out.pcm
-
-# a cross-check: libopus encodes, opus-rs decodes (and swap the two)
-./opus_demo_ref -e audio 48000 2 64000 speech_stereo.raw x.bit
-./opus_demo -d 48000 2 x.bit x.pcm
-
-# test_opus_api past the encoder size check: a copy with the bound raised
-cp $SRC/tests/test_opus_api.c api_relaxed.c
-sed -i 's/(i<=2048||i>1<<18)/(i<=2048||i>1<<19)/' api_relaxed.c
-cc -O2 -Icfg -I$SRC/include -I$SRC/celt -I$SRC/silk -I$SRC/src -I$SRC/tests \
-    api_relaxed.c -o api_relaxed -L. -Wl,-rpath,'$ORIGIN' -l:libopus.so.0 -lm
+```nix
+nixpkgs.overlays = [ (final: prev: { libopus = opus-rs.packages.${final.system}.libopus; }) ];
 ```
 
-`test_opus_decode` and `test_opus_encode` draw a random seed per run (printed
-first; the failure message gives `SEED=`); a run is repeated with
-`./test_opus_decode <seed>` or `SEED=<seed> ./test_opus_decode`. The passing runs' seeds were not recorded.
+With cargo, `cargo build --release` in `capi/` writes `libopus.so` (soname
+`libopus.so.0`) and `libopus.a` to the target directory; the features
+`deep-plc`, `dred` and `osce` are libopus's configure options of the same
+names. A program that loads the library by its soname needs a
+`libopus.so.0` link next to it.
 
-## Not covered
+The headers are libopus's own, from the revision opus-rs follows
+(`f1afc4222a`, `OPUSREF_SRC` in the dev shell or `libopus/` from
+`scripts/fetch-libopus.sh`).
 
-Passing tests here say less than they may seem to:
+## Tests
 
-- The encoder is only checked for producing packets libopus decodes with the
-  same range coder state. Its output is not compared with libopus's encoder
-  (bitrate, quality, mode and bandwidth decisions), and only over 16 settings
-  on one speech file read at several rates.
-- That the encoder reports a non-zero final range on every packet (without
-  which `opus_demo` skips the comparison) was checked for one setting
-  (audio, 48 kHz stereo, 64 kb/s).
-- Decoder output is compared with libopus only through the test vectors:
-  not for PLC, FEC (`decode_fec`), decoder gain, soft clipping, `opus_decode24`,
-  or multistream streams. `test_opus_decode` checks robustness and API
-  behaviour, not output values.
-- `opus_encode24` is not exercised by any test.
-- Only x86_64 Linux was tested. The variadic ctls rely on Rust's C-variadic
-  support for the target's ABI.
+`capi/test.sh <dir with libopus.so.0> <work dir> [--dred]` runs:
 
-## Gaps
+- libopus's test programs, compiled unmodified from the pinned sources:
+  `test_opus_api`, `test_opus_decode`, `test_opus_encode` (with
+  `opus_encode_regressions.c`), `test_opus_padding`,
+  `test_opus_projection` (with libopus's `src/mapping_matrix.c`, whose
+  internal functions it also tests) and, with `--dred`, `test_opus_dred`.
+  `test_opus_extensions` tests libopus's internal extension functions and
+  is left out.
+- every RFC 8251 test vector case (12 vectors, mono and stereo, 5 rates),
+  decoded and compared as libopus's `tests/run_vectors.sh` does.
+- a cross-check with the reference libopus (pkg-config `opus`): each
+  `opus_demo` encodes what the other decodes, over 16 settings, with the
+  final range checked on every packet.
 
-- Multistream and projection (ambisonics) encoding, DRED: return
-  `OPUS_UNIMPLEMENTED`, as a libopus built without them would. Multistream
-  decoding works. This blocks `test_opus_encode`, whose regressions use
-  surround and ambisonics encoders.
-- `opus_custom_*` is not exported.
-- Encoder state is 317 KiB, about 3× libopus's 107–123 KiB. The largest part is per-call
-  CELT scratch that opus-rs keeps in the state, where libopus uses the stack:
-  the `w_*` buffers, ~129 KB of `CeltEncoder`'s 174 KB. Decoder state is close to libopus's (175 KiB
-  vs 151–160 KiB).
-- Accepted, validated and reported back, but not acted on (opus-rs has no
-  counterpart): `OPUS_SET_FORCE_CHANNELS`, `OPUS_SET_LSB_DEPTH`,
-  `OPUS_SET_PREDICTION_DISABLED`, `OPUS_SET_PHASE_INVERSION_DISABLED` (encoder
-  and decoder), `OPUS_SET_FORCE_MODE`; `OPUS_GET_PITCH` reports 0.
-- `OPUS_APPLICATION_RESTRICTED_SILK` is `OPUS_UNIMPLEMENTED`;
-  `RESTRICTED_CELT` codes as `RESTRICTED_LOWDELAY`.
-- The repacketizer drops extensions found in padding instead of carrying them
-  over.
+`scripts/test-all.sh` runs it for the default and the neural build (steps
+`capi` and `capi-dnn`), and `nix flake check` on `packages.libopus`.
+`cargo test` in `capi/` calls the C API from Rust; `cargo +nightly miri
+test` runs those tests under Miri, except the one of the C-variadic ctls.
 
-## Harness pitfalls
+Results on x86-64 Linux:
 
-- cargo writes `libopus.so`, but programs link to the soname
-  `libopus.so.0`; without a `libopus.so.0` next to them they silently load
-  the system libopus. `run_libopus_tests.sh` links through a `libopus.so.0`
-  symlink and refuses to run unless `ldd` shows it.
-- `run_vectors.sh` exits 0 when it finds no vectors, and stops at the first
-  failing vector of each rate. `run_libopus_tests.sh test-vectors` counts the
-  comparisons that matched, and `conformance.sh` runs every case.
-- `opus_demo` only compares range coder states when the stored one is
-  non-zero. The encoder sets it on every packet (checked), and a corrupted
-  packet makes both decoders report a mismatch, with the same wrong value.
+| | PR #115 | now |
+|---|---|---|
+| `test_opus_api` | fails at the encoder size check | fails at the encoder size check; the rest passes |
+| `test_opus_decode` | pass | pass |
+| `test_opus_encode` | fails (no multistream encoder) | pass |
+| `test_opus_padding` | pass | pass |
+| `test_opus_projection` | not run (no projection) | pass |
+| `test_opus_dred` | not run (no DRED) | pass (`libopus-dnn`) |
+| RFC 8251 vectors | 95/120 | 120/120 |
+| cross-check | pass | pass |
+
+`test_opus_api` requires `opus_encoder_get_size()` to be at most 256 KiB;
+opus-rs's encoder is 304800 bytes, as it keeps CELT's per-call buffers in
+its state. `test.sh` reports that check as a known failure and runs a copy
+of the test with the bound raised to 512 KiB, which passes.
+
+## Differences from libopus
+
+- `opus_custom_*` is not exported: libopus exports it only with
+  `--enable-custom-modes`.
+- The private ctls `OPUS_SET_VOICE_RATIO`, `OPUS_SET_LFE` and
+  `OPUS_SET_ENERGY_MASK` return `OPUS_UNIMPLEMENTED`; the multistream
+  encoder sets the latter two on its streams itself. `OPUS_SET_QEXT` and
+  `OPUS_SET_DNN_BLOB` are `OPUS_UNIMPLEMENTED`, as in libopus's default
+  build.
+- `OPUS_SET_EXPERT_FRAME_DURATION` on a multistream encoder rejects values
+  outside `OPUS_FRAMESIZE_*` with `OPUS_BAD_ARG`; libopus stores them and
+  fails the next encode call.
+- The encoder state is 304800 bytes (libopus: about 110 KiB) and
+  `opus_rs::OpusEncoder::new` builds it on the stack: `opus_encoder_create`
+  and `opus_encoder_init` need between 768 KiB and 1 MiB of stack (x86-64,
+  release build), and crash on a thread with less, such as musl's default
+  128 KiB. Encoding a 20 ms stereo frame needs up to 128 KiB, decoding one
+  less than 64 KiB. The decoder state is 63760 bytes.
+- `libopus.a` holds the Rust standard library: a program that links
+  another Rust static library besides it can get duplicate symbols.
+- `opus_get_version_string()` returns `libopus 1.6.1-opus-rs`.

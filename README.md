@@ -57,7 +57,10 @@ constants of `opus_rs::error` (`Err(error::BAD_ARG)` for `OPUS_BAD_ARG`,
 and so on); `error::code` gives the libopus number and `error::strerror`
 its text. The multistream and projection codecs keep their stream codecs
 in a `Vec` and need `std`; everything else builds without `std` and
-`alloc`.
+`alloc`. `MultistreamDecoderView`, `MultistreamEncoderView` and
+`ProjectionDecoderView` run them over a `MultistreamLayout` or
+`MultistreamEncoderHeader` and stream codecs held elsewhere, as the C
+library's flat states do.
 
 | libopus | opus-rs |
 | --- | --- |
@@ -68,6 +71,7 @@ in a `Vec` and need `std`; everything else builds without `std` and
 | `OPUS_SET_COMPLEXITY`, `OPUS_SET_OSCE_BWE` (decoder) | `OpusDecoder::set_complexity`, `complexity`, `set_osce_bwe`, `osce_bwe` |
 | `OPUS_SET_DRED_DURATION`, `opus_dred_decoder_create`, `opus_dred_parse`, `opus_dred_process` (feature `dred`) | `OpusEncoder::set_dred_duration`, `dred::OpusDredDecoder::new`, `parse`, `process` |
 | `opus_encoder_ctl(OPUS_RESET_STATE)` | `OpusEncoder::reset` |
+| `OPUS_SET_FORCE_MODE` (private) | `OpusEncoder::set_force_mode` (`OpusMode`) |
 | `OPUS_APPLICATION_VOIP`, `_AUDIO`, `_RESTRICTED_LOWDELAY`, `_RESTRICTED_SILK`, `_RESTRICTED_CELT` | `Application::Voip`, `Audio`, `RestrictedLowDelay`, `RestrictedSilk`, `RestrictedCelt` |
 | `OPUS_SET_APPLICATION`, `OPUS_GET_APPLICATION` | `OpusEncoder::set_application`, `application` |
 | `OPUS_SET_BITRATE`, `OPUS_GET_BITRATE` | `OpusEncoder::set_bitrate`, `bitrate` (the field `bitrate_bps` holds the set value) |
@@ -114,12 +118,22 @@ more are `error::ALLOC_FAIL`, where libopus allocates them on its stack.
 Left out: `OPUS_SET_QEXT` (libopus builds it only with `--enable-qext`),
 `OPUS_SET_DNN_BLOB` (only with `USE_WEIGHTS_FILE`; the models are built in,
 and `OpusDredDecoder::with_model` takes others), and libopus's private
-encoder controls (`OPUS_SET_FORCE_MODE`, `OPUS_SET_LFE`,
-`OPUS_SET_ENERGY_MASK`), which the multistream encoder uses inside the
-crate. `opus_custom.h` is left out too: libopus exports it only with
+encoder controls `OPUS_SET_LFE` and `OPUS_SET_ENERGY_MASK`, which the
+multistream encoder uses inside the crate. `opus_custom.h` is left out too: libopus exports it only with
 `--enable-custom-modes`, its modes need run-time tables for other frame
 sizes and rates, and its streams carry no ToC. The standard 48 kHz mode is
 `CeltEncoder`/`CeltDecoder`.
+
+## C library (libopus drop-in)
+
+`capi/` builds `libopus.so.0` and `libopus.a` with libopus's C API over
+opus-rs, from PR #115 by Object905: `nix build .#libopus` gives a package
+laid out as libopus's (headers, `opus.pc`), and an overlay
+`libopus = opus-rs.packages.${system}.libopus` puts it under every package
+of a nixpkgs set. libopus's own test programs (all but the encoder size
+check of `test_opus_api`) and the RFC 8251 vectors pass against it;
+[capi/README.md](capi/README.md) has the details and the differences from
+libopus.
 
 ## `#![no_std]` + no-`alloc` Support
 
