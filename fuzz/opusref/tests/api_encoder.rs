@@ -570,3 +570,34 @@ fn encode24_long_calls_match_libopus() {
         }
     }
 }
+
+/// SILK's internal rate switches under OPUS_APPLICATION_RESTRICTED_SILK
+/// code no CELT redundancy frames.
+#[test]
+fn restricted_silk_rate_switch_matches_libopus() {
+    for (fs, ch) in [(48000, 1), (16000, 1), (48000, 2)] {
+        for narrow in [false, true] {
+            let frame = fs as usize / 50;
+            let mut p = Pair::new(fs, ch, Application::RestrictedSilk);
+            // Down at frame 20 (SILK's low-pass transition takes about 130
+            // frames) and up again at frame 200; the pauses let SILK switch.
+            for f in 0..300 {
+                if f == 20 || f == 200 {
+                    let down = f == 20;
+                    if narrow {
+                        let bw = if down { opus_rs::Bandwidth::Narrowband } else { opus_rs::Bandwidth::Fullband };
+                        p.rs.set_max_bandwidth(bw);
+                        p.ctl(SET_MAX_BANDWIDTH, if down { 1101 } else { 1105 });
+                    } else {
+                        let rate = if down { 8000 } else { 32000 };
+                        p.rs.set_bitrate(rate).unwrap();
+                        p.ctl(SET_BITRATE, rate);
+                    }
+                }
+                let gain = if f % 10 >= 6 { 0.0 } else { 1.0 };
+                let pcm: Vec<f32> = signal(fs, ch, frame, f).iter().map(|x| x * gain).collect();
+                p.encode_exact(&pcm, frame, &format!("{fs} {ch} narrow {narrow} frame {f}"));
+            }
+        }
+    }
+}

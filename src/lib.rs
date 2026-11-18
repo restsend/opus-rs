@@ -3288,11 +3288,13 @@ impl OpusEncoder {
             }
             self.silk_bw_switch = silk_can_switch;
             if silk_can_switch {
-                // The packet before the switch ends with redundancy
-                // (opus_encoder.c:2250-2260).
-                redundancy_bytes =
-                    compute_redundancy_bytes(n_bytes, self.rate, frame_rate, coded_channels);
-                redundancy = redundancy_bytes != 0;
+                // The packet before the switch ends with redundancy, except
+                // under RestrictedSilk (opus_encoder.c:2269-2278).
+                if self.application != Application::RestrictedSilk {
+                    redundancy_bytes =
+                        compute_redundancy_bytes(n_bytes, self.rate, frame_rate, coded_channels);
+                    redundancy = redundancy_bytes != 0;
+                }
                 celt_to_silk = false;
             }
         } else {
