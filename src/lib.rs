@@ -3797,9 +3797,12 @@ impl OpusEncoder {
             Ok(())
         }
 
-        let mut sub = [[0u8; 1276]; MAX_SUB];
+        // The sub-packets one after the other (libopus `tmp_data`), at most
+        // max_len_sum bytes, which is below six frames' maximum.
+        let mut tmp = [0u8; 6 * OPUS_MAX_PACKET_BYTES];
         let mut lens = [0usize; MAX_SUB];
-        // Where each sub-packet's frame starts in `sub`.
+        // Where each sub-packet and its frame start in `tmp`.
+        let mut starts = [0usize; MAX_SUB];
         let mut offs = [0usize; MAX_SUB];
         // `output` is the packet's room (libopus `repacketize_len`): the
         // output buffer capped at six frames, or under CBR the CBR size, to
@@ -3816,8 +3819,7 @@ impl OpusEncoder {
             (bitrate_to_bits(self.dred_bitrate(), self.sampling_rate, frame_size) / 8) as usize;
         let sub_budget = frame_bytes
             .min(max_len_sum / nb)
-            .min(max_len_sum.saturating_sub(dred_bytes) / nb)
-            .clamp(2, 1276);
+            .min(max_len_sum.saturating_sub(dred_bytes) / nb);
         let mut used = 0usize;
         let mut dtx_count = 0;
         let mut sub_lens = [0usize; MAX_SUB];
@@ -3871,11 +3873,15 @@ impl OpusEncoder {
                     first_frame,
                 };
                 let bonus = if first_frame { dred_bytes } else { 0 };
-                let budget = (sub_budget + bonus)
-                    .min(1276)
-                    .min(max_len_sum.saturating_sub(used))
-                    .max(2);
-                let n = self.encode_subframe(sub_input, enc_frame, &mut sub[i][..budget], args)?;
+                // The frame's share may pass 1276 bytes (libopus `curr_max`):
+                // DRED and CBR padding fill the room above the frame.
+                let budget = (sub_budget + bonus).min(max_len_sum.saturating_sub(used));
+                if budget < 2 {
+                    return Err(crate::error::INTERNAL_ERROR);
+                }
+                starts[i] = used;
+                let sub = &mut tmp[used..used + budget];
+                let n = self.encode_subframe(sub_input, enc_frame, sub, args)?;
                 if n == 0 {
                     return Err("Empty sub-frame");
                 }
@@ -3889,15 +3895,16 @@ impl OpusEncoder {
                 // bytes is sent empty, padded the same way (a two-byte code 3
                 // packet has no room for padding). Take its one frame, as
                 // libopus's repacketizer does.
-                if n == 2 && sub[i][0] & 0x03 == 0x03 {
-                    (offs[i], lens[i]) = (2, 0);
+                let sub = &tmp[starts[i]..starts[i] + n];
+                if n == 2 && sub[0] & 0x03 == 0x03 {
+                    (offs[i], lens[i]) = (starts[i] + 2, 0);
                     continue;
                 }
-                let frames = frame_payloads(&sub[i][..n])?;
+                let frames = frame_payloads(sub)?;
                 if frames.len() != 1 {
                     return Err("Unexpected sub-frame packet");
                 }
-                offs[i] = frames[0].as_ptr() as usize - sub[i].as_ptr() as usize;
+                offs[i] = frames[0].as_ptr() as usize - tmp.as_ptr() as usize;
                 lens[i] = frames[0].len();
             }
             Ok(())
@@ -3908,8 +3915,8 @@ impl OpusEncoder {
 
         // Every 20 ms frame in DTX: libopus's repacketizer sends the empty
         // frames as code 1 (two frames) or code 3 CBR, unpadded.
-        if lens[..nb].iter().all(|&len| len == 0) && sub[..nb].iter().all(|s| s[0] & 0x03 == 0) {
-            let toc = sub[0][0] & 0xFC;
+        if lens[..nb].iter().all(|&len| len == 0) && starts[..nb].iter().all(|&s| tmp[s] & 0x03 == 0) {
+            let toc = tmp[0] & 0xFC;
             if nb == 2 {
                 output[0] = toc | 0x01;
                 return Ok(1);
@@ -3925,9 +3932,9 @@ impl OpusEncoder {
         // Extensions (DRED) of the frames go in the packet's padding.
         #[cfg(feature = "dred")]
         {
-            let subs: [&[u8]; MAX_SUB] = core::array::from_fn(|i| &sub[i][..sub_lens[i]]);
-            let frames: [&[u8]; MAX_SUB] =
-                core::array::from_fn(|i| &sub[i][offs[i]..offs[i] + lens[i]]);
+            let subs: [&[u8]; MAX_SUB] =
+                core::array::from_fn(|i| &tmp[starts[i]..starts[i] + sub_lens[i]]);
+            let frames: [&[u8]; MAX_SUB] = core::array::from_fn(|i| &tmp[offs[i]..offs[i] + lens[i]]);
             let maxlen = cbr_total.unwrap_or(output.len());
             if let Some(ret) = dred::repacketize_extensions(
                 output,
@@ -3942,7 +3949,7 @@ impl OpusEncoder {
         #[cfg(not(feature = "dred"))]
         let _ = sub_lens;
 
-        let toc = sub[0][0] & 0xFC;
+        let toc = tmp[0] & 0xFC;
         let mut pos = 0usize;
         let push = |out: &mut [u8], pos: &mut usize, byte: u8| -> Result<(), &'static str> {
             if *pos >= out.len() {
@@ -4017,7 +4024,7 @@ impl OpusEncoder {
         }
 
         for i in 0..nb {
-            let payload = &sub[i][offs[i]..offs[i] + lens[i]];
+            let payload = &tmp[offs[i]..offs[i] + lens[i]];
             if pos + payload.len() > output.len() {
                 return Err("Output buffer too small");
             }

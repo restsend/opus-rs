@@ -1410,3 +1410,43 @@ fn dred_parse_without_payload_ignores_the_rate() {
         assert_eq!((c.process_stage, r.process_stage), (-1, -1), "rate {rate}");
     }
 }
+
+/// Multiframe packets at high rates: the first frame's budget with
+/// DRED's share passes 1276 bytes, and DRED fills the room above the
+/// frame as in libopus.
+#[test]
+fn dred_in_large_multiframe_packets_matches_libopus() {
+    for (vbr, bitrate) in [(true, 600_000), (false, 520_000)] {
+        let s = Setup { channels: 2, bitrate, frame_ms: 40, vbr, ..CELT_48K };
+        let frame = s.fs as usize * s.frame_ms / 1000;
+        let pcm = signal(s, 2, 5);
+        let mut rs = opus_rs::OpusEncoder::new(s.fs, 2, opus_rs::Application::RestrictedLowDelay).unwrap();
+        rs.bitrate_bps = s.bitrate;
+        rs.complexity = 9;
+        rs.use_cbr = !s.vbr;
+        rs.packet_loss_perc = s.loss;
+        rs.set_dred_duration(s.dred).unwrap();
+        let mut dred = 0;
+        unsafe {
+            let mut err = 0;
+            let enc = opus_encoder_create(s.fs, 2, s.app, &mut err);
+            opus_encoder_ctl(enc, SET_BITRATE, s.bitrate);
+            opus_encoder_ctl(enc, SET_COMPLEXITY, 9);
+            opus_encoder_ctl(enc, SET_VBR, s.vbr as i32);
+            opus_encoder_ctl(enc, SET_PACKET_LOSS_PERC, s.loss);
+            set_dred_duration(enc, s.dred);
+            for (k, f) in pcm.chunks_exact(frame * 2).enumerate() {
+                let (mut a, mut b) = (vec![0u8; 7656], vec![0u8; 7656]);
+                let m = opus_encode_float(enc, f.as_ptr(), frame as i32, b.as_mut_ptr(), 7656);
+                let n = rs.encode(f, frame, &mut a).unwrap();
+                let what = format!("vbr {vbr} packet {k}");
+                assert_eq!(n as i32, m, "{what}: length");
+                let p = dred_payload(&b[..m as usize]);
+                dred += usize::from(p.is_some());
+                assert_eq!(dred_payload(&a[..n]), p, "{what}: DRED");
+            }
+            opus_encoder_destroy(enc);
+        }
+        assert!(dred > 10, "vbr {vbr}: {dred} packets with DRED");
+    }
+}
