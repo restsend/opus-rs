@@ -4271,6 +4271,11 @@ impl OpusDecoder {
         self.sampling_rate
     }
 
+    /// The output channels, 1 or 2.
+    pub fn channels(&self) -> usize {
+        self.channels
+    }
+
     /// The bandwidth of the last packet (libopus `OPUS_GET_BANDWIDTH`),
     /// `None` before the first packet and after a reset.
     pub fn bandwidth(&self) -> Option<Bandwidth> {

@@ -50,6 +50,11 @@ impl OpusEncoder {
         self.sampling_rate
     }
 
+    /// The input channels, 1 or 2.
+    pub fn channels(&self) -> usize {
+        self.channels
+    }
+
     /// Sets [`Self::bitrate_bps`] as libopus `OPUS_SET_BITRATE` does:
     /// [`Self::BITRATE_AUTO`], [`Self::BITRATE_MAX`], or a rate clamped to
     /// 500 to 750000 b/s per channel; 0 and other negative values are
