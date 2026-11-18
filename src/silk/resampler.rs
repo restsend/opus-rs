@@ -565,6 +565,10 @@ impl SilkResampler {
 
                 // Carry the FIR history over to the next block.
                 self.s_down_fir[..order].copy_from_slice(&buf[n..n + order]);
+                // libopus leaves a one-sample remainder unprocessed.
+                if input.len() - in_pos == 1 {
+                    break;
+                }
             }
         }
     }
