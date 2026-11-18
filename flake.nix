@@ -123,6 +123,7 @@
                   root = ./.;
                   fileset = pkgs.lib.fileset.unions [
                     ./capi/test.sh
+                    ./capi/small_stack.c
                     ./fixtures/answer_16k.wav
                   ];
                 };
