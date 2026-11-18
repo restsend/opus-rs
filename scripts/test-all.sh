@@ -42,10 +42,6 @@
 #                    the cross-check with the reference libopus
 #   capi-dnn         the same with the deep-plc, dred and osce features,
 #                    and test_opus_dred
-#
-# Known failure off x86-64, skipped there: oracle_celt_sine_48k_mono_64k
-# (tests/oracle_celt.rs) compares with packet bytes of libopus built with
-# NEON kernels and contraction, which opus-rs does not reproduce yet.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -59,8 +55,6 @@ done
 
 x86=0
 [ "$(uname -m)" = x86_64 ] && x86=1
-known=(--skip oracle_celt_sine_48k_mono_64k)
-[ $x86 = 1 ] && known=()
 results=()
 failed=0
 
@@ -107,16 +101,16 @@ capi_test() {
     capi/test.sh "$target/release" "$target/tests" ${option:+"$option"}
 }
 
-step suite cargo test --release --no-fail-fast -- "${known[@]}"
-step suite-dnn cargo test --release --no-fail-fast --features deep-plc,dred,osce -- "${known[@]}"
-step suite-silk-fixed cargo test --release --no-fail-fast --features silk-fixed -- "${known[@]}"
+step suite cargo test --release --no-fail-fast
+step suite-dnn cargo test --release --no-fail-fast --features deep-plc,dred,osce
+step suite-silk-fixed cargo test --release --no-fail-fast --features silk-fixed
 step no_std-build cargo build --release --no-default-features --features libm
 step no_std-build-dnn cargo build --release --no-default-features --features libm,dred,osce
 step no_std-build-silk-fixed cargo build --release --no-default-features --features libm,silk-fixed
 # Without `heap` the codec structs are inline arrays; the tests need a big stack.
 export RUST_MIN_STACK=${RUST_MIN_STACK:-33554432}
 step no_std-lib-tests cargo test --release --no-default-features --features libm --lib
-step no_std-tests cargo test --release --no-fail-fast --no-default-features --features libm --test '*' -- "${known[@]}"
+step no_std-tests cargo test --release --no-fail-fast --no-default-features --features libm --test '*'
 step opusref in_fuzz cargo test --release --no-fail-fast -p opusref
 step opusref-dnn in_fuzz cargo test --release --no-fail-fast -p opusref --features dnn
 step opusref-fixed in_fuzz cargo test --release -p opusref --features fixed --test silk_fixed
@@ -142,6 +136,6 @@ if [ $fuzz = 1 ]; then
 fi
 
 echo
-echo "Summary${known[*]:+ (skipped known failure: oracle_celt_sine_48k_mono_64k)}:"
+echo "Summary:"
 printf '  %s\n' "${results[@]}"
 exit $failed

@@ -22,19 +22,21 @@ fn hex_to_bytes(s: &str) -> Vec<u8> {
         .collect()
 }
 
-// Byte-exact fixtures per arch. The x86 sine packet depends on the CPU: the
+// Byte-exact fixtures. On x86 and x86-64 opus-rs takes the CPU's level of
+// libopus's x86 SIMD kernels. The x86 sine packet depends on the CPU: the
 // SSE2 PVQ search uses rcpps/rsqrtps, whose results differ between vendors,
 // as in libopus, so x86 has no sine fixture; the opusref tests compare x86
-// packets with libopus on the same CPU. Arches without a fixture check size,
-// determinism and decoding.
-#[cfg(target_arch = "aarch64")]
+// packets with libopus on the same CPU. On other targets opus-rs gives the
+// results of libopus built without intrinsics: the fixtures are the packets
+// of the scalar reference (fuzz/opusref, libopus main at f1afc4222a).
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 fn sine_fixture_hex() -> Option<&'static str> {
     Some(
-        "f87b5e0950b78c08d0bbae9ae1d725a72fe5ee25c26a2bc9885951173822973b042c80fdb66da4a3a2cb9c192af55d6bf6dd65c5d6cebf67144ecc6b0565f260a3585de2215ab8fc6f9f4f48cad42d1c1999da21cfa221cfa037aa44b81ad922530d1d581511cf6c6116331bf2570f00b4620320a328ae650837e79c9e8f6ce17951dc2e4d33034de491e34014167106e2646590e686571dcf2104af43ab137d",
+        "f87b5e0950b78c08d0bbae9ae1d725a725ea8827c26a2bc988615b113822973b042c80fdb66da4a3a2cb9c192af55d6bf6dd65c5c7653367144ecc6b0565efad221c5de2215ab8fc6f9f4f48cad42d1c1999da21cfa221cfa037aa44b81ad91d4a8d1d581511cf6c39176eeab2770f00b461d43fa328ae650837e79c9e8f6c417951dc2e4d32634de493b88e0d167366e2646548e686571dcf2104af43ab137d",
     )
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn sine_fixture_hex() -> Option<&'static str> {
     None
 }
@@ -49,14 +51,14 @@ fn impulse_fixture_hex() -> Option<&'static str> {
     )
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 fn impulse_fixture_hex() -> Option<&'static str> {
     Some(
-        "f87346b9c0165896519f68c91698758327739376655822edca7ba4112abfbe8e8e45751c39f5ab3e37ec047bf7c9945c769c77af896db7fc3a421232312f816f7ef7c4afde81ec65f3ff020ca26dc7cf054cc5dbfcd4ce3a38b1967ed47e4217a6d910efd6c11f3824611653bfacdcab60dc35fc261f7945c3c899e131822bbb84feeff4e7afd104cdf41f008e3ed56572028fa2e8a25f10ef5ccb482b623856",
+        "f87346b9c0165896519f68c91698758327739376655822edca7ba4112abfbe8e8e44a2f891f5ab3e37ec047bf7c99459e3cb9e4e8115b744661012318adec16f7ef7c4afde81ec65f3ff020ca26dc7cf053b6bdbeddab1967eb1967ed4072ed4a6d9c85d41115f3924611653bfacdcab60dc357c261f7945c3c899e131822bbb84feefa187afd104cdf41f008e3ed56572028fa2e8a25f18d75ccb482b623856",
     )
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(target_arch = "x86")]
 fn impulse_fixture_hex() -> Option<&'static str> {
     None
 }
