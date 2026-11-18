@@ -2201,7 +2201,7 @@ impl OpusEncoder {
         if mode != OpusMode::CeltOnly && frame_size < self.sampling_rate as usize / 100 {
             mode = OpusMode::CeltOnly;
         }
-        if self.lfe {
+        if self.lfe && self.application != Application::RestrictedSilk {
             mode = OpusMode::CeltOnly;
         }
 

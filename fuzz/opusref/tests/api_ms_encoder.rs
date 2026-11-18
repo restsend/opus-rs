@@ -262,10 +262,10 @@ fn surround_matches_libopus() {
 }
 
 /// Surround streams under OPUS_APPLICATION_RESTRICTED_SILK code without
-/// surround masking.
+/// surround masking, and the LFE stream stays SILK-only narrowband.
 #[test]
 fn restricted_silk_surround_matches_libopus() {
-    for ch in [3] {
+    for ch in [3, 6] {
         for (vbr, rate) in [(true, -1000), (true, 256000), (true, 48000), (false, 96000)] {
             let mut p = Pair::surround(ch, 1, Application::RestrictedSilk).unwrap();
             p.bytes = true;
