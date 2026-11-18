@@ -108,6 +108,9 @@ pub fn fuzz(data: &[u8]) {
 
 /// The libFuzzer entry point's body.
 pub fn run(inp: Input) {
+    if crate::common::parse_only(&inp) {
+        return;
+    }
     // Print only the aborting UB-check panics; ordinary panics are expected.
     std::panic::set_hook(Box::new(|info| {
         let msg = info.payload().downcast_ref::<&str>().copied().unwrap_or("");

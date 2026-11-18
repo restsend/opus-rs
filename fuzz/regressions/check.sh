@@ -6,11 +6,13 @@
 # OFZ_BUILD=dnn or fixed; such a build parses inputs differently or compares
 # with another reference, so then only its own entries run.
 # ../tests/regressions.rs replays the same entries in an ordinary cargo test.
+# An entry whose input no longer parses to the hash of its parse column
+# (OFZ_PARSE) reports drift: re-encode it for the new input layout.
 set -uo pipefail
 cd "$(dirname "$0")"
 dir=$(cd .. && cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 status=0
-while IFS=$'\t' read -r id target env pattern desc; do
+while IFS=$'\t' read -r id target env pattern parse desc; do
   [[ $id == \#* || -z $id ]] && continue
   if [[ $target == test:* ]]; then
     # A directed differential test in ../opusref/tests.
@@ -32,6 +34,14 @@ while IFS=$'\t' read -r id target env pattern desc; do
   esac
   [ -x "${run[-1]}" ] || { printf '%-4s %-8s %s\n' "$id" "no-build" "$desc"; continue; }
   [ "$env" = - ] && env=
+  if [ "$parse" != - ]; then
+    got=$(OFZ_PARSE=1 "${run[@]}" "$id.bin" 2>&1 | sed -n 's/^parsed //p' | head -1)
+    if [ "$got" != "$parse" ]; then
+      printf '%-4s %-8s %s (parses to %s, manifest %s)\n' "$id" drift "$desc" "${got:-nothing}" "$parse"
+      status=1
+      continue
+    fi
+  fi
   out=$(env $env "${run[@]}" "$id.bin" 2>&1)
   if grep -qF -- "$pattern" <<<"$out"; then r=present; status=1; else r=absent; fi
   printf '%-4s %-8s %s\n' "$id" "$r" "$desc"

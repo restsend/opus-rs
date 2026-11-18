@@ -1,2 +1,2 @@
-f1	diff_encoder	OFZ_SUPPRESS=toc,simd	fidelity] scalar silk	SILK after an 8 kHz step at 6 kb/s: noise at the held gain far louder than float libopus's (fixed-point SILK)
-f2	diff_encoder	OFZ_SUPPRESS=toc,simd	fidelity] scalar silk	SILK after a loud 24 kHz tone: noise at the held gain far louder than float libopus's (fixed-point SILK)
+f1	diff_encoder	OFZ_SUPPRESS=toc,simd	fidelity] scalar silk	d3c66edf157bc029	SILK after an 8 kHz step at 6 kb/s: noise at the held gain far louder than float libopus's (fixed-point SILK)
+f2	diff_encoder	OFZ_SUPPRESS=toc,simd	fidelity] scalar silk	2d8b577a5481c5d0	SILK after a loud 24 kHz tone: noise at the held gain far louder than float libopus's (fixed-point SILK)

@@ -74,6 +74,22 @@ cargo-fuzz does; `stack-buffer-overflow` patterns need AddressSanitizer and
 show only in check.sh. `REGRESSIONS.md` maps every fix to the test or
 reproducer that guards it.
 
+The `parse` column holds the hash of the input as its target parses it
+(the FNV-1a hash of the parsed input's Debug text, which a target prints
+as `parsed <hash>` with `OFZ_PARSE` set and then stops), or `-` for
+`test:` entries and `diff_kernels`, which reads its input while it runs.
+An entry whose input parses to another hash fails the replay and shows as
+`drift` in check.sh: a change of the target's input layout (a field, a
+variant, the variant encoding) changed what the saved input does. Such a
+change re-encodes the affected reproducers so that they parse into the
+operations they were recorded with, checked against the parse at the
+recording commit (`OFZ_DEBUG` scripts, Debug dumps), and records the new
+hashes:
+
+```sh
+OFZ_PARSE=1 <target-dir>/release/diff_decoder regressions/02.bin
+```
+
 ## Targets
 
 | Target | Compares | Oracles |

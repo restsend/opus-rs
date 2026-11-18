@@ -14,6 +14,9 @@
 //!   changes SILK output, the fixed build compares with fixed-point libopus.
 //! - The `stack-buffer-overflow` pattern needs AddressSanitizer; without it
 //!   the entry runs, but its pattern cannot appear.
+//! - An entry's `parse` column is the hash its input parses to
+//!   (`OFZ_PARSE`, `common::parse_only`); the test fails when the input
+//!   parses to another one, as after a change of the target's input layout.
 //!
 //! UB precondition checks and overflow checks need debug assertions, as in
 //! cargo-fuzz builds, so this test refuses to run without them.
@@ -60,6 +63,8 @@ struct Entry {
     target: String,
     env: Vec<(String, String)>,
     pattern: String,
+    /// The hash of the parsed input, for the targets that print one.
+    parse: Option<String>,
     desc: String,
 }
 
@@ -79,7 +84,7 @@ fn manifest(dir: &Path) -> Vec<Entry> {
             if cols.is_empty() || cols[0].starts_with('#') {
                 continue;
             }
-            assert!(cols.len() >= 4, "{}: short line {line:?}", f.display());
+            assert!(cols.len() >= 5, "{}: short line {line:?}", f.display());
             let env = match cols[2] {
                 "-" => Vec::new(),
                 e => e
@@ -95,7 +100,8 @@ fn manifest(dir: &Path) -> Vec<Entry> {
                 target: cols[1].to_string(),
                 env,
                 pattern: cols[3].to_string(),
-                desc: cols.get(4).unwrap_or(&"").to_string(),
+                parse: (cols[4] != "-").then(|| cols[4].to_string()),
+                desc: cols.get(5).unwrap_or(&"").to_string(),
             });
         }
     }
@@ -137,6 +143,28 @@ fn reproducers_stay_fixed() {
         let input = dir.join(format!("{}.bin", e.id));
         assert!(input.exists(), "{}: missing {}", e.id, input.display());
         let name = e.target.split('@').next().unwrap();
+        if let Some(want) = &e.parse {
+            let out = Command::new(&exe)
+                .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+                .env("OFZ_REPLAY", format!("{name}:{}", input.display()))
+                .env("OFZ_PARSE", "1")
+                .output()
+                .unwrap();
+            let text = String::from_utf8_lossy(&out.stderr);
+            let got = text
+                .lines()
+                .find_map(|l| l.strip_prefix("parsed "))
+                .unwrap_or("nothing");
+            if got != want {
+                println!("{:<4} {:<8} {}", e.id, "drift", e.desc);
+                present.push(format!(
+                    "{} ({}): the input parses to {got}, the manifest records {want}; \
+                     re-encode the reproducer for the new input layout (fuzz/DIFFERENTIAL.md)",
+                    e.id, e.desc
+                ));
+                continue;
+            }
+        }
         let out = Command::new(&exe)
             .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
             .env("OFZ_REPLAY", format!("{name}:{}", input.display()))
@@ -156,7 +184,7 @@ fn reproducers_stay_fixed() {
     }
     assert!(
         present.is_empty(),
-        "reproducers that still reproduce:\n{}",
+        "reproducers that still reproduce or parse differently:\n{}",
         present.join("\n\n")
     );
 }

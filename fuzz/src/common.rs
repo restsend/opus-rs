@@ -73,6 +73,23 @@ pub fn set_simd(on: bool) {
     opus_rs::fuzzing::force_arch(on.then(opus_rs::Arch::native));
 }
 
+/// With `OFZ_PARSE` set, prints `parsed <hash>`, the FNV-1a hash of the
+/// parsed input's Debug text, and returns true: the target then stops. The
+/// manifests of fuzz/regressions record it per reproducer.
+pub fn parse_only(input: &impl std::fmt::Debug) -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var_os("OFZ_PARSE").is_some()) {
+        return false;
+    }
+    let h = format!("{input:?}")
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+            (h ^ b as u64).wrapping_mul(0x100_0000_01b3)
+        });
+    eprintln!("parsed {h:016x}");
+    true
+}
+
 /// Reads a tolerance or switch from the environment once per process.
 pub fn env_f64(name: &str, default: f64) -> f64 {
     std::env::var(name)

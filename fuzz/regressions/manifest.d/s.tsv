@@ -1,1 +1,1 @@
-s1	test:silk_frame_switch_range	-	(first ms, complexity, cbr, packet)	SILK codes stale padding pulses in the last shell block of 10 ms 12 kHz frames
+s1	test:silk_frame_switch_range	-	(first ms, complexity, cbr, packet)	-	SILK codes stale padding pulses in the last shell block of 10 ms 12 kHz frames

@@ -119,6 +119,9 @@ pub fn fuzz(data: &[u8]) {
     let Ok(inp) = Input::arbitrary_take_rest(arbitrary::Unstructured::new(data)) else {
         return;
     };
+    if parse_only(&inp) {
+        return;
+    }
     report("diff_ms_encoder", data, guarded(|| run(inp)));
 }
 
