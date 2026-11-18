@@ -20,6 +20,22 @@
           rev = "f1afc4222aff7c5456d27581ec618ae64158fbe1";
           hash = "sha256-mx6HoWA8t8NKm5AMs06kjGlmAJe9cEsQh61J1u+AM3I=";
         };
+      # libopus with the neural model data autogen.sh names: the
+      # differential reference fuzz/opusref builds and the source of capi's
+      # test programs (scripts/fetch-libopus.sh fetches the same without
+      # Nix).
+      opusrefSrc =
+        pkgs:
+        pkgs.runCommand "libopus-f1afc4222a-src" { } ''
+          cp -r ${libopusSrc pkgs} $out
+          chmod -R u+w $out
+          tar -xzf ${
+            pkgs.fetchurl {
+              url = "https://media.xiph.org/opus/models/opus_data-a5177ec6fb7d15058e99e57029746100121f68e4890b1467d4094aa336b6013e.tar.gz";
+              sha256 = "a5177ec6fb7d15058e99e57029746100121f68e4890b1467d4094aa336b6013e";
+            }
+          } -C $out --wildcards 'dnn/*_data.[ch]' 'dnn/dred_rdovae_constants.h'
+        '';
       # The RFC 8251 decoder test vectors.
       testvectors =
         pkgs:
@@ -150,22 +166,39 @@
             libopus
             python3
           ];
-          # libopus with the neural model data autogen.sh names: the
-          # differential reference fuzz/opusref builds and the source of
-          # capi's test programs (scripts/fetch-libopus.sh fetches the same
-          # without Nix).
-          OPUSREF_SRC = pkgs.runCommand "libopus-f1afc4222a-src" { } ''
-            cp -r ${libopusSrc pkgs} $out
-            chmod -R u+w $out
-            tar -xzf ${
-              pkgs.fetchurl {
-                url = "https://media.xiph.org/opus/models/opus_data-a5177ec6fb7d15058e99e57029746100121f68e4890b1467d4094aa336b6013e.tar.gz";
-                sha256 = "a5177ec6fb7d15058e99e57029746100121f68e4890b1467d4094aa336b6013e";
-              }
-            } -C $out --wildcards 'dnn/*_data.[ch]' 'dnn/dred_rdovae_constants.h'
-          '';
+          OPUSREF_SRC = opusrefSrc pkgs;
           OPUS_TESTVECTORS = testvectors pkgs;
         };
+        # scripts/test-wasm.sh: Rust with the wasm32-wasip1 standard library,
+        # clang for wasm32-wasip1 (libopus for the opus dev-dependencies and
+        # fuzz/opusref), wasmtime, and libopus for the `opus` dev-dependency.
+        wasm =
+          let
+            wasi = pkgs.pkgsCross.wasi32;
+          in
+          pkgs.mkShell {
+            packages = [
+              wasi.buildPackages.rustc
+              wasi.stdenv.cc
+              pkgs.cargo
+              pkgs.cmake
+              pkgs.wasmtime
+            ];
+            CC_wasm32_wasip1 = "${wasi.stdenv.cc}/bin/${wasi.stdenv.cc.targetPrefix}cc";
+            CXX_wasm32_wasip1 = "${wasi.stdenv.cc}/bin/${wasi.stdenv.cc.targetPrefix}c++";
+            AR_wasm32_wasip1 = "${wasi.stdenv.cc}/bin/${wasi.stdenv.cc.targetPrefix}ar";
+            LIBOPUS_LIB_DIR = wasi.libopus.overrideAttrs (old: {
+              mesonFlags = old.mesonFlags ++ [
+                "-Ddefault_library=static"
+                # wasm-ld has no --start-group, which the test programs use.
+                "-Dtests=disabled"
+                "-Dextra-programs=disabled"
+              ];
+            });
+            LIBOPUS_STATIC = 1;
+            LIBOPUS_NO_PKG = 1;
+            OPUSREF_SRC = opusrefSrc pkgs;
+          };
       });
     };
 }
