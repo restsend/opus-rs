@@ -7,7 +7,6 @@ use core::slice;
 
 use opus_rs::{Application, Bandwidth, Signal};
 
-use crate::decoder::valid_fs;
 use crate::{
     OPUS_ALLOC_FAIL, OPUS_APPLICATION_AUDIO, OPUS_APPLICATION_RESTRICTED_CELT,
     OPUS_APPLICATION_RESTRICTED_LOWDELAY, OPUS_APPLICATION_RESTRICTED_SILK, OPUS_APPLICATION_VOIP,
@@ -51,6 +50,10 @@ pub struct OpusEncoder {
     /// No frame coded since init or reset (libopus `first`).
     first: i32,
     inner: opus_rs::OpusEncoder,
+}
+
+fn valid_fs(fs: i32) -> bool {
+    matches!(fs, 8000 | 12000 | 16000 | 24000 | 48000)
 }
 
 fn rs_application(application: c_int) -> Option<Application> {

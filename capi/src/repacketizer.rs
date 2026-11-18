@@ -323,15 +323,3 @@ pub unsafe extern "C" fn opus_multistream_packet_unpad(mut data: *mut u8, mut le
     }
     dst_len
 }
-
-/// The standard (not self-delimited) form of a self-delimited packet, as
-/// opus-rs decodes, written to `out`; its length.
-pub(crate) fn undelimit(packet: &[u8], out: &mut [u8]) -> Result<usize, c_int> {
-    let mut rp = OpusRepacketizer::new();
-    let ret = unsafe { rp.cat(packet.as_ptr(), packet.len() as i32, true) };
-    if ret < 0 {
-        return Err(ret);
-    }
-    let ret = unsafe { rp.out_range(0, rp.nb_frames, out.as_mut_ptr(), out.len() as i32, false, false) };
-    if ret < 0 { Err(ret) } else { Ok(ret as usize) }
-}

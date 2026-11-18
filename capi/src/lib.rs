@@ -153,6 +153,80 @@ impl CtlArgs for Arg {
     }
 }
 
+/// The libopus code of an opus-rs error.
+pub(crate) fn code(e: &str) -> c_int {
+    opus_rs::error::code(e).unwrap_or(OPUS_INTERNAL_ERROR)
+}
+
+/// `OPUS_OK`, or the code of the error.
+pub(crate) fn ok(r: Result<(), &str>) -> c_int {
+    r.map_or_else(code, |()| OPUS_OK)
+}
+
+/// A getter ctl: writes `value` through the pointer argument, `OPUS_BAD_ARG`
+/// for NULL.
+pub(crate) unsafe fn get<T>(ap: &mut impl CtlArgs, value: T) -> c_int {
+    // SAFETY: the caller passes the ctl's argument list, whose next argument
+    // is the getter's `T *` (opus_defines.h), and the pointer is NULL or
+    // valid for a write of `T`.
+    let p = unsafe { ap.ptr::<T>() };
+    if p.is_null() {
+        return OPUS_BAD_ARG;
+    }
+    unsafe { p.write(value) };
+    OPUS_OK
+}
+
+/// A setter ctl's 0/1 argument, `OPUS_BAD_ARG` for other values.
+pub(crate) unsafe fn set_bool(ap: &mut impl CtlArgs, set: impl FnOnce(bool)) -> c_int {
+    // SAFETY: the caller passes the ctl's argument list, whose next argument
+    // is the setter's `opus_int32`.
+    match unsafe { ap.int() } {
+        v @ 0..=1 => {
+            set(v == 1);
+            OPUS_OK
+        }
+        _ => OPUS_BAD_ARG,
+    }
+}
+
+/// The packet of a decode call: empty for a loss (NULL or length 0),
+/// `OPUS_BAD_ARG` for a negative length.
+pub(crate) unsafe fn packet<'a>(data: *const u8, len: i32) -> Result<&'a [u8], c_int> {
+    match len {
+        _ if data.is_null() || len == 0 => Ok(&[]),
+        ..0 => Err(OPUS_BAD_ARG),
+        // SAFETY: the caller's `data` holds `len` bytes (opus.h).
+        _ => Ok(unsafe { core::slice::from_raw_parts(data, len as usize) }),
+    }
+}
+
+/// The checks every decode call shares, then `decode(packet, frame_size,
+/// pcm, fec)` with the C output of `frame_size` samples of `channels`.
+pub(crate) unsafe fn decode_with<T>(
+    data: *const u8,
+    len: i32,
+    pcm: *mut T,
+    frame_size: c_int,
+    decode_fec: c_int,
+    channels: usize,
+    decode: impl FnOnce(&[u8], usize, &mut [T], bool) -> Result<usize, &'static str>,
+) -> c_int {
+    if frame_size <= 0 || pcm.is_null() || !(0..=1).contains(&decode_fec) {
+        return OPUS_BAD_ARG;
+    }
+    let packet = match unsafe { packet(data, len) } {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    // SAFETY: `pcm` holds `frame_size` samples per channel (opus.h).
+    let pcm = unsafe { core::slice::from_raw_parts_mut(pcm, frame_size as usize * channels) };
+    match decode(packet, frame_size as usize, pcm, decode_fec == 1) {
+        Ok(n) => n as c_int,
+        Err(e) => code(e),
+    }
+}
+
 /// Runs `f`, turning a panic into `fallback` instead of unwinding into C.
 pub(crate) fn guard<T>(fallback: T, f: impl FnOnce() -> T) -> T {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(fallback)
