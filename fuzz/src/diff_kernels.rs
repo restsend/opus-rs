@@ -268,7 +268,13 @@ fn run(which: u8, u: &mut Unstructured) -> R {
         5 => {
             let t0 = 15 + u16::arbitrary(u)? as usize % 1010;
             let t1 = 15 + u16::arbitrary(u)? as usize % 1010;
-            let n = 1 + u16::arbitrary(u)? as usize % 960;
+            let mut n = 1 + u16::arbitrary(u)? as usize % 960;
+            // libopus's comb_filter_const_sse handles N in groups of four (its
+            // tail loop is compiled only with CUSTOM_MODES); every codec call
+            // passes multiples of four.
+            if unsafe { c::ref_arch() } > 0 {
+                n = n.next_multiple_of(4).min(960);
+            }
             let g0 = u8::arbitrary(u)? as f32 / 256.0 * 0.75;
             let g1 = u8::arbitrary(u)? as f32 / 256.0 * 0.75;
             let tap0 = u8::arbitrary(u)? as i32 % 3;
