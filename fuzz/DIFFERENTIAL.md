@@ -48,7 +48,15 @@ summary; it exits non-zero if a step fails:
 - `opusref/examples/parity.rs`, which must report every 48 kHz CELT
   configuration byte-identical with libopus;
 - the regression replay `tests/regressions.rs` (below) for the default, dnn
-  and fixed builds.
+  and fixed builds;
+- on x86-64, the SIMD pairs (below) at the CPU's level and at SSE2 (and
+  SSE4.1 for the neural features);
+- the C library (`capi/test.sh`): libopus's test programs, the RFC 8251
+  vectors and a cross-check with libopus.
+
+`scripts/test-wasm.sh` runs the main suites and the opusref tests on
+`wasm32-wasip1` under wasmtime, without and with simd128, in the `wasm` dev
+shell (`nix develop .#wasm`).
 
 `scripts/test-all.sh --fuzz` also builds the targets with `cargo fuzz build`
 (nightly cargo and cargo-fuzz on `PATH`) and runs `regressions/check.sh`,
@@ -56,6 +64,29 @@ then the same for the fixed build (`--features fixed`, `OFZ_BUILD=fixed`).
 The script needs stable cargo, a C and C++ compiler, pkg-config, cmake,
 libopus (for the interop dev-dependencies) and the pinned libopus sources
 (`OPUSREF_SRC` or `libopus/`); the dev shell provides them.
+
+## Platforms
+
+CI (`.github/workflows/test.yml`) runs `scripts/test-all.sh` on x86-64
+(GitHub's runners, so far AMD Zen 4) and aarch64 (ARM Neoverse N2), and
+`scripts/test-wasm.sh` on wasm32. Beyond CI, `scripts/test-all.sh` has
+passed on AMD Zen 3, and static musl builds of its steps have passed on an
+Intel Core 13th gen (every step) and a Cortex-A53 (all but the C library).
+
+How the output relates across platforms, checked by hashing every packet
+and decoded sample of 240 encode/decode configurations (all rates, mono and
+stereo, every application, 2.5-60 ms frames, CBR/VBR, FEC, DTX, losses,
+with and without the neural features):
+
+- Scalar opus-rs is identical everywhere: x86-64 at `Arch::Scalar` (AMD
+  and Intel), aarch64 with its NEON kernels, and wasm32 with and without
+  simd128, under glibc, musl and wasi-libc.
+- At its SSE2, SSE4.1 and AVX2 levels opus-rs equals libopus's SIMD build
+  on the same CPU. Packets at these levels differ between Intel and AMD, as
+  libopus's do: the SSE2 PVQ search scores pulses with `rcpps` and
+  `rsqrtps`, whose approximations the CPU defines. The opusref tests compare
+  x86 SIMD packets with libopus on the same CPU, and stored byte fixtures
+  hold only packets that agree across vendors.
 
 ## Regression reproducers
 
