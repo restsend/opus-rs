@@ -30,39 +30,37 @@ pub fn get_pulses(i: i32) -> i32 {
 pub fn bits2pulses(m: &CeltMode, band: usize, mut lm: i32, bits: i32) -> i32 {
     lm += 1;
     let idx = lm as usize * m.nb_ebands + band;
-    let cache_index = unsafe { *m.cache.index.get_unchecked(idx) };
+    let cache_index = m.cache.index[idx];
     if cache_index < 0 {
         return 0;
     }
     let cache = &m.cache.bits[cache_index as usize..];
-    let cache_ptr = cache.as_ptr();
 
     let mut lo = 0i32;
-    let mut hi = unsafe { *cache_ptr } as i32;
+    let mut hi = cache[0] as i32;
     let bits = bits - 1; // bits--
 
-    unsafe {
-        for _ in 0..6 {
-            // LOG_MAX_PSEUDO = 6
-            let mid = (lo + hi + 1) >> 1; // round up, matches C
-            if *cache_ptr.add(mid as usize) as i32 >= bits {
-                hi = mid;
-            } else {
-                lo = mid;
-            }
-        }
+    for _ in 0..6 {
+        // LOG_MAX_PSEUDO = 6
+        let mid = (lo + hi + 1) >> 1; // round up, matches C
+        // libopus: "Make sure this is implemented with a conditional move".
+        (lo, hi) = core::hint::select_unpredictable(
+            cache[mid as usize] as i32 >= bits,
+            (lo, mid),
+            (mid, hi),
+        );
+    }
 
-        let lo_val = if lo == 0 {
-            -1i32
-        } else {
-            *cache_ptr.add(lo as usize) as i32
-        };
-        let hi_val = *cache_ptr.add(hi as usize) as i32;
-        if bits - lo_val <= hi_val - bits {
-            lo
-        } else {
-            hi
-        }
+    let lo_val = if lo == 0 {
+        -1i32
+    } else {
+        cache[lo as usize] as i32
+    };
+    let hi_val = cache[hi as usize] as i32;
+    if bits - lo_val <= hi_val - bits {
+        lo
+    } else {
+        hi
     }
 }
 
@@ -73,13 +71,13 @@ pub fn pulses2bits(m: &CeltMode, band: usize, mut lm: i32, pulses: i32) -> i32 {
     }
     lm += 1;
     let idx = lm as usize * m.nb_ebands + band;
-    let cache_index = unsafe { *m.cache.index.get_unchecked(idx) };
+    let cache_index = m.cache.index[idx];
     if cache_index < 0 {
         return 0;
     }
     let cache = &m.cache.bits[cache_index as usize..];
 
-    unsafe { (*cache.as_ptr().add(pulses as usize) as i32) + 1 }
+    cache[pulses as usize] as i32 + 1
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -153,15 +151,20 @@ pub fn clt_compute_allocation(
         }
     }
 
+    // Every band index below is under `end`: slices of that length let the
+    // compiler drop the bounds checks in the search loops.
+    let (e_bands, offsets, cap) = (&m.e_bands[..end + 1], &offsets[..end], &cap[..end]);
+    let (thresh, trim_offset) = (&thresh[..end], &trim_offset[..end]);
     let mut lo = 1;
     let mut hi = m.nb_alloc_vectors as i32 - 1;
     while lo <= hi {
         let mut done = false;
         let mut psum = 0;
         let mid = (lo + hi) >> 1;
+        let row = &m.alloc_vectors[mid as usize * m.alloc_stride..][..end];
         for j in (start..end).rev() {
-            let n = (m.e_bands[j + 1] - m.e_bands[j]) as i32;
-            let raw = m.alloc_vectors[mid as usize * m.alloc_stride + j] as i32;
+            let n = (e_bands[j + 1] - e_bands[j]) as i32;
+            let raw = row[j] as i32;
             let mut bitsj = (c * n * raw) << lm >> 2;
             if bitsj > 0 {
                 bitsj = max(0, bitsj + trim_offset[j]);
@@ -281,6 +284,8 @@ fn interp_bits2pulses(
     let mut bits_buf = [0i32; MAX_EBANDS];
     let bits = &mut bits_buf[..m.nb_ebands];
 
+    // Band indices stay under `end` (see clt_compute_allocation).
+    let (bits1, bits2, thresh, cap) = (&bits1[..end], &bits2[..end], &thresh[..end], &cap[..end]);
     for _ in 0..6 {
         let mid = (lo + hi) >> 1;
         psum = 0;

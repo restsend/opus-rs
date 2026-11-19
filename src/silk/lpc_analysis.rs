@@ -4,10 +4,6 @@ use crate::silk::macros::*;
 use crate::silk::nlsf::*;
 use crate::silk::sigproc_fix::*;
 use crate::silk::structs::*;
-use crate::silk::tuning_parameters::*;
-
-#[cfg(not(feature = "std"))]
-use crate::compat::Math;
 
 pub fn silk_find_lpc_fix(
     ps_enc_c: &mut SilkEncoderStateCommon,
@@ -220,8 +216,10 @@ pub fn silk_burg_modified_fix(
     let mut ca_f = [0i32; MAX_LPC_ORDER + 1];
     let mut ca_b = [0i32; MAX_LPC_ORDER + 1];
 
+    // Autocorrelations, added over subframes. The noise corresponds to at
+    // least a unit pulse.
     let total_len = subfr_length * nb_subfr;
-    let mut c0_64: i64 = 0;
+    let mut c0_64: i64 = 1;
     for i in 0..total_len {
         c0_64 += (x[i] as i64) * (x[i] as i64);
     }
@@ -464,172 +462,9 @@ pub fn silk_burg_modified_fix(
     }
 }
 
-pub fn energy_flp(x: &[f32]) -> f64 {
-    let mut sum = 0.0;
-    for &val in x {
-        sum += val as f64 * val as f64;
-    }
-    sum
-}
-
-pub fn inner_product_flp(x1: &[f32], x2: &[f32]) -> f64 {
-    let len = x1.len().min(x2.len());
-    let mut sum = 0.0;
-    for i in 0..len {
-        sum += x1[i] as f64 * x2[i] as f64;
-    }
-    sum
-}
-
-pub fn silk_lpc_analysis_filter_flp(
-    r_lpc: &mut [f32],
-    pred_coef: &[f32],
-    s: &[f32],
-    length: usize,
-    order: usize,
-) {
-    assert!(order <= MAX_LPC_ORDER);
-
-    for ix in order..length {
-        let mut lpc_pred = 0.0f32;
-        for j in 0..order {
-            lpc_pred += s[ix - 1 - j] * pred_coef[j];
-        }
-        r_lpc[ix] = s[ix] - lpc_pred;
-    }
-}
-
-pub fn silk_burg_modified_flp(
-    a: &mut [f32],
-    x: &[f32],
-    min_inv_gain: f32,
-    subfr_length: usize,
-    nb_subfr: usize,
-    d: usize,
-) -> f32 {
-    let mut c_first_row = [0.0f64; MAX_LPC_ORDER];
-    let mut c_last_row = [0.0f64; MAX_LPC_ORDER];
-    let mut caf = [0.0f64; MAX_LPC_ORDER + 1];
-    let mut cab = [0.0f64; MAX_LPC_ORDER + 1];
-    let mut af = [0.0f64; MAX_LPC_ORDER];
-
-    let c0 = energy_flp(&x[..nb_subfr * subfr_length]);
-
-    for s in 0..nb_subfr {
-        let x_ptr = &x[s * subfr_length..];
-        for n in 1..d + 1 {
-            c_first_row[n - 1] +=
-                inner_product_flp(&x_ptr[..subfr_length - n], &x_ptr[n..subfr_length]);
-        }
-    }
-    c_last_row[..d].copy_from_slice(&c_first_row[..d]);
-
-    caf[0] = c0 + (FIND_LPC_COND_FAC as f64) * c0 + 1e-9;
-    cab[0] = caf[0];
-
-    let mut inv_gain = 1.0f64;
-    let mut reached_max_gain = false;
-
-    for n in 0..d {
-        for s in 0..nb_subfr {
-            let x_ptr = &x[s * subfr_length..];
-            let mut tmp1 = x_ptr[n] as f64;
-            let mut tmp2 = x_ptr[subfr_length - n - 1] as f64;
-            for k in 0..n {
-                let atmp = af[k];
-                tmp1 += x_ptr[n - k - 1] as f64 * atmp;
-                tmp2 += x_ptr[subfr_length - n + k] as f64 * atmp;
-            }
-            for k in 0..=n {
-                caf[k] -= tmp1 * x_ptr[n - k] as f64;
-                cab[k] -= tmp2 * x_ptr[subfr_length - n + k - 1] as f64;
-            }
-        }
-
-        let mut tmp1 = c_first_row[n];
-        let mut tmp2 = c_last_row[n];
-        for k in 0..n {
-            let atmp = af[k];
-            tmp1 += c_last_row[n - k - 1] * atmp;
-            tmp2 += c_first_row[n - k - 1] * atmp;
-        }
-
-        caf[n + 1] = tmp1;
-        cab[n + 1] = tmp2;
-
-        let mut num = cab[n + 1];
-        let mut nrg_b = cab[0];
-        let mut nrg_f = caf[0];
-        for k in 0..n {
-            let atmp = af[k];
-            num += cab[n - k] * atmp;
-            nrg_b += cab[k + 1] * atmp;
-            nrg_f += caf[k + 1] * atmp;
-        }
-
-        let mut rc = -2.0 * num / (nrg_f + nrg_b);
-
-        let tmp1_rc = inv_gain * (1.0 - rc * rc);
-        if tmp1_rc <= min_inv_gain as f64 {
-            rc = (1.0 - min_inv_gain as f64 / inv_gain).sqrt();
-            if num > 0.0 {
-                rc = -rc;
-            }
-            inv_gain = min_inv_gain as f64;
-            reached_max_gain = true;
-        } else {
-            inv_gain = tmp1_rc;
-        }
-
-        for k in 0..n.div_ceil(2) {
-            let tmp1 = af[k];
-            let tmp2 = af[n - k];
-            af[k] = tmp1 + rc * tmp2;
-            af[n - k] = tmp2 + rc * tmp1;
-        }
-        af[n] = rc;
-
-        if reached_max_gain {
-            for k in n + 1..d {
-                af[k] = 0.0;
-            }
-            break;
-        }
-
-        for k in 0..=n + 1 {
-            let tmp1 = caf[k];
-            caf[k] += rc * cab[n - k + 1];
-            cab[n - k + 1] += rc * tmp1;
-        }
-    }
-
-    let mut final_nrg_f: f64;
-    if reached_max_gain {
-        for k in 0..d {
-            a[k] = (-af[k]) as f32;
-        }
-        let mut c0_mod = c0;
-        for s in 0..nb_subfr {
-            c0_mod -= energy_flp(&x[s * subfr_length..s * subfr_length + d]);
-        }
-        final_nrg_f = c0_mod * inv_gain;
-    } else {
-        final_nrg_f = caf[0];
-        let mut tmp1 = 1.0f64;
-        for k in 0..d {
-            let atmp = af[k];
-            final_nrg_f += caf[k + 1] * atmp;
-            tmp1 += atmp * atmp;
-            a[k] = (-atmp) as f32;
-        }
-        final_nrg_f -= (FIND_LPC_COND_FAC as f64) * c0 * tmp1;
-    }
-
-    final_nrg_f as f32
-}
-
 const QA_INV: i32 = 24;
-const A_LIMIT: i32 = 16773043;
+/// SILK_FIX_CONST(0.99975, 24) (LPC_inv_pred_gain.c:36).
+const A_LIMIT: i32 = 16773022;
 
 fn lpc_inverse_pred_gain_qa(a_qa_in: &mut [i32], order: usize) -> i32 {
     let mut inv_gain_q30 = 1 << 30;
@@ -658,7 +493,7 @@ fn lpc_inverse_pred_gain_qa(a_qa_in: &mut [i32], order: usize) -> i32 {
             };
 
             let tmp64_1 = silk_rshift_round64(
-                silk_smull(tmp1.wrapping_sub(mul_q(tmp2, rc_q31, 31)), rc_mult2),
+                silk_smull(tmp1.saturating_sub(mul_q(tmp2, rc_q31, 31)), rc_mult2),
                 mult2q,
             );
             if tmp64_1 > i32::MAX as i64 || tmp64_1 < i32::MIN as i64 {
@@ -667,7 +502,7 @@ fn lpc_inverse_pred_gain_qa(a_qa_in: &mut [i32], order: usize) -> i32 {
             a_qa_in[n] = tmp64_1 as i32;
 
             let tmp64_2 = silk_rshift_round64(
-                silk_smull(tmp2.wrapping_sub(mul_q(tmp1, rc_q31, 31)), rc_mult2),
+                silk_smull(tmp2.saturating_sub(mul_q(tmp1, rc_q31, 31)), rc_mult2),
                 mult2q,
             );
             if tmp64_2 > i32::MAX as i64 || tmp64_2 < i32::MIN as i64 {

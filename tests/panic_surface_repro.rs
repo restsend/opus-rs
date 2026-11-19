@@ -119,13 +119,27 @@ fn p0_silk_layer_cross_bandwidth_recovery() {
     let mut wb_enc = OpusEncoder::new(16000, 1, Application::Voip).unwrap();
     wb_enc.bitrate_bps = 24000;
     wb_enc.use_cbr = true;
-    let wb_input: Vec<f32> = (0..wb_frame)
-        .map(|i| (2.0 * PI * 120.0 * (i as f32 / 16000.0)).sin() * 0.4)
-        .collect();
+    // A 70 Hz tone, a lag of about 229 at 16 kHz: its first packet that
+    // decodes voiced with a lag above NB's ltp_mem_length (the frames right
+    // after the encoder's reset are coded unvoiced).
     let mut wb_pkt = vec![0u8; 1500];
-    let n = wb_enc
-        .encode(&wb_input, wb_frame, &mut wb_pkt)
-        .expect("enc");
+    let mut n = 0;
+    for f in 0..10 {
+        let wb_input: Vec<f32> = (f * wb_frame..(f + 1) * wb_frame)
+            .map(|i| (2.0 * PI * 70.0 * (i as f32 / 16000.0)).sin() * 0.4)
+            .collect();
+        n = wb_enc
+            .encode(&wb_input, wb_frame, &mut wb_pkt)
+            .expect("enc");
+        let mut probe = SilkDecoder::new();
+        probe.init(16000, 1);
+        let mut out = vec![0i16; wb_frame];
+        let mut rc = RangeCoder::new_decoder(&wb_pkt[2..n]);
+        probe.decode(&mut rc, &mut out, FLAG_DECODE_NORMAL, true, 20, 16000);
+        if probe.channel_state[0].prev_signal_type == 2 && probe.channel_state[0].lag_prev > 160 {
+            break;
+        }
+    }
 
     let mut nb_enc = OpusEncoder::new(8000, 1, Application::Voip).unwrap();
     nb_enc.bitrate_bps = 12000;
@@ -255,7 +269,7 @@ fn p1_pitch_xcorr_short_y_no_panic() {
     let x = vec![0.25f32; 40];
     let y = vec![0.5f32; 50]; // contract would need len + max_pitch - 1 = 99
     let mut xcorr = vec![0.0f32; 60];
-    opus_rs::pitch::pitch_xcorr(&x, &y, &mut xcorr, 40, 60);
+    opus_rs::pitch::pitch_xcorr(&x, &y, &mut xcorr, 40, 60, opus_rs::Arch::Scalar);
 }
 
 // ---------------------------------------------------------------------------

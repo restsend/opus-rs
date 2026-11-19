@@ -1,0 +1,1 @@
+p1	diff_decoder@dnn	OFZ_SUPPRESS=simd	DIFF[pcm]	c91ad7d11b27cb6c	reset compared as a new opus-rs decoder with a reset libopus decoder, which keeps the deep PLC FARGAN state

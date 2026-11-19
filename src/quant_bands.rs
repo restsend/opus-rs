@@ -126,7 +126,6 @@ fn quant_coarse_energy_impl(
             let f = x - coef * old_e - prev[c];
 
             let mut qi = ((f + 0.5).floor() as i32).clamp(-32767, 32767);
-            let qi0 = qi;
 
             let decay_bound = old_e_val.max(-28.0) - max_decay;
             if qi < 0 && x < decay_bound {
@@ -135,6 +134,8 @@ fn quant_coarse_energy_impl(
                     qi = 0;
                 }
             }
+            // The badness counts only the budget's changes (quant_bands.c:212).
+            let qi0 = qi;
 
             let tell = enc.tell();
             let bits_left = budget as i32 - tell - 3 * channels as i32 * (end - i) as i32;

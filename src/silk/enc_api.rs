@@ -1,17 +1,11 @@
 use crate::range_coder::RangeCoder;
-use crate::silk::control_fixed::*;
 use crate::silk::control_snr::silk_control_snr;
 use crate::silk::define::*;
 use crate::silk::encode_indices::*;
 use crate::silk::encode_pulses::*;
-use crate::silk::gain_quant::{silk_gains_dequant, silk_gains_id, silk_gains_quant};
 use crate::silk::hp_variable_cutoff::silk_hp_variable_cutoff;
 use crate::silk::lp_variable_cutoff::*;
 use crate::silk::macros::*;
-use crate::silk::noise_shape_analysis::*;
-use crate::silk::nsq::*;
-use crate::silk::nsq_del_dec::*;
-use crate::silk::pitch_analysis::*;
 use crate::silk::stereo_lr_to_ms::silk_stereo_lr_to_ms;
 use crate::silk::structs::*;
 use crate::silk::tuning_parameters::BITRESERVOIR_DECAY_TIME_MS;
@@ -56,18 +50,21 @@ pub fn silk_reset_for_rate_switch(ps_enc: &mut SilkEncoderState) {
     s_lp.saved_fs_khz = ps_enc.s_cmn.fs_khz;
     let stereo = ps_enc.stereo.clone();
     let (n_bits_used_lbrr, n_bits_exceeded) = (ps_enc.n_bits_used_lbrr, ps_enc.n_bits_exceeded);
-    let (allow, since) = (
+    let (allow, since, to_mono) = (
         ps_enc.allow_bandwidth_switch,
         ps_enc.time_since_switch_allowed_ms,
+        ps_enc.to_mono,
     );
+    let arch = ps_enc.s_cmn.arch;
     *ps_enc = SilkEncoderState::default();
-    crate::silk::init_encoder::silk_init_encoder(ps_enc, 0);
+    crate::silk::init_encoder::silk_init_encoder(ps_enc, arch);
     ps_enc.s_cmn.s_lp = s_lp;
     ps_enc.stereo = stereo;
     ps_enc.n_bits_used_lbrr = n_bits_used_lbrr;
     ps_enc.n_bits_exceeded = n_bits_exceeded;
     ps_enc.allow_bandwidth_switch = allow;
     ps_enc.time_since_switch_allowed_ms = since;
+    ps_enc.to_mono = to_mono;
 }
 
 /// After each packet, allow a change of the internal rate if the speech
@@ -148,12 +145,21 @@ pub fn silk_encode_prefill_stereo(
     if left.len() < prefill_frame_length || right.len() < prefill_frame_length {
         return;
     }
+    // libopus's prefill restores channel 0's variable low-pass state into
+    // every channel (enc_API.c:223-232); after a reset without a rate
+    // switch both states are the initial one.
+    side.s_cmn.s_lp = mid.s_cmn.s_lp;
 
     let mut x1 = [0i16; MAX_FRAME_LENGTH + 2];
     let mut x2 = [0i16; MAX_FRAME_LENGTH + 2];
     x1[2..2 + prefill_frame_length].copy_from_slice(&left[..prefill_frame_length]);
     x2[2..2 + prefill_frame_length].copy_from_slice(&right[..prefill_frame_length]);
     let (mut ix, mut mid_only, mut rates) = ([[0i8; 3]; 2], 0i8, [0i32; 2]);
+    // The frame target of a 10 ms packet of one frame, without LBRR
+    // (enc_API.c:411-431 with payloadSize_ms 10).
+    let target_rate_bps = (total_rate_bps * 10 / 1000 * 100
+        - mid.n_bits_exceeded * 1000 / BITRESERVOIR_DECAY_TIME_MS)
+        .clamp(total_rate_bps.min(5000), total_rate_bps.max(5000));
     // The encoders were just reset, so the previous speech activity is 0.
     silk_stereo_lr_to_ms(
         &mut mid.stereo,
@@ -162,9 +168,9 @@ pub fn silk_encode_prefill_stereo(
         &mut ix,
         &mut mid_only,
         &mut rates,
-        total_rate_bps,
+        target_rate_bps,
         0,
-        false,
+        mid.to_mono,
         fs_khz,
         prefill_frame_length,
     );
@@ -189,7 +195,7 @@ pub fn silk_encode_prefill_stereo(
     mid.stereo.prev_decode_only_middle = mid_only as i32;
 }
 
-/// The prefill part of libopus's `silk_encode_frame_FIX`: low-pass the 10 ms
+/// The prefill part of libopus's `silk_encode_frame_Fxx`: low-pass the 10 ms
 /// frame at `input_buf[1..]` and push it into the encoder's analysis buffer,
 /// coding nothing.
 fn prefill_frame(
@@ -197,7 +203,6 @@ fn prefill_frame(
     input_buf: &mut [i16; MAX_FRAME_LENGTH + 2],
     prefill_frame_length: usize,
 ) {
-    let fs_khz = ps_enc.s_cmn.fs_khz as usize;
     let real_frame_length = ps_enc.s_cmn.frame_length as usize;
     let real_nb_subfr = ps_enc.s_cmn.nb_subfr;
     let real_subfr_length = ps_enc.s_cmn.subfr_length;
@@ -205,12 +210,10 @@ fn prefill_frame(
     ps_enc.s_cmn.frame_length = prefill_frame_length as i32;
     ps_enc.s_cmn.nb_subfr = 2;
     ps_enc.s_cmn.subfr_length = (prefill_frame_length / 2) as i32;
-    // The frame takes a seed like a coded one (encode_frame_FIX.c:120).
+    // The frame takes a seed like a coded one (encode_frame_FIX.c:120,
+    // encode_frame_FLP.c:123).
     ps_enc.s_cmn.indices.seed = (ps_enc.s_cmn.frame_counter & 3) as i8;
     ps_enc.s_cmn.frame_counter += 1;
-
-    let ltp_mem_length = ps_enc.s_cmn.ltp_mem_length as usize;
-    let la_shape_ms_samples = 5 * fs_khz;
 
     silk_lp_variable_cutoff(
         &mut ps_enc.s_cmn.s_lp,
@@ -218,27 +221,21 @@ fn prefill_frame(
         prefill_frame_length,
     );
 
-    let x_frame_idx = ltp_mem_length;
-    let dst = x_frame_idx + la_shape_ms_samples;
-
-    if dst + prefill_frame_length <= ps_enc.s_cmn.x_buf.len() {
-        ps_enc.s_cmn.x_buf[dst..dst + prefill_frame_length]
-            .copy_from_slice(&input_buf[1..1 + prefill_frame_length]);
-    }
-
-    let move_len = ltp_mem_length + la_shape_ms_samples;
-    if prefill_frame_length + move_len <= ps_enc.s_cmn.x_buf.len() {
-        ps_enc
-            .s_cmn
-            .x_buf
-            .copy_within(prefill_frame_length..prefill_frame_length + move_len, 0);
-    }
+    let frame = &input_buf[1..1 + prefill_frame_length];
+    #[cfg(feature = "silk-fixed")]
+    crate::silk::encode_frame_fix::silk_prefill_frame_fix(ps_enc, frame);
+    #[cfg(not(feature = "silk-fixed"))]
+    crate::silk::float::encode_frame_flp::silk_prefill_frame_flp(ps_enc, frame);
 
     ps_enc.s_cmn.frame_length = real_frame_length as i32;
     ps_enc.s_cmn.nb_subfr = real_nb_subfr;
     ps_enc.s_cmn.subfr_length = real_subfr_length;
 }
 
+/// libopus `silk_encode_frame_Fxx` without the prefill: codes the frame
+/// `input` (16-bit, after the variable low-pass) into `rc` within
+/// `max_bits`, with the float encoder (`silk_encode_frame_FLP`) or, with the
+/// `silk-fixed` feature, the fixed-point one (`silk_encode_frame_FIX`).
 pub fn silk_encode_frame(
     ps_enc: &mut SilkEncoderState,
     input: &[i16],
@@ -248,438 +245,26 @@ pub fn silk_encode_frame(
     max_bits: i32,
     use_cbr: i32,
 ) -> i32 {
-    let mut s_enc_ctrl = SilkEncoderControl::default();
-
-    ps_enc.s_cmn.indices.seed = (ps_enc.s_cmn.frame_counter & 3) as i8;
-    ps_enc.s_cmn.frame_counter += 1;
-
-    let frame_length = ps_enc.s_cmn.frame_length as usize;
-    let ltp_mem_length = ps_enc.s_cmn.ltp_mem_length as usize;
-    let la_shape = ps_enc.s_cmn.la_shape as usize;
-
-    let x_frame_idx = ltp_mem_length;
-
-    let la_shape_max = 5 * ps_enc.s_cmn.fs_khz as usize;
-    let new_samples_idx = x_frame_idx + la_shape_max;
-    ps_enc.s_cmn.x_buf[new_samples_idx..new_samples_idx + frame_length]
-        .copy_from_slice(&input[..frame_length]);
-
-    let x_buf_copy = ps_enc.s_cmn.x_buf;
-
-    let mut res_pitch = [0i16; LA_PITCH_MAX + MAX_FRAME_LENGTH + LTP_MEM_LENGTH_MS * MAX_FS_KHZ];
-    let res_pitch_frame_idx = ltp_mem_length;
-
-    silk_find_pitch_lags_fix(ps_enc, &mut s_enc_ctrl, &mut res_pitch, &x_buf_copy, 0);
-
-    let x_tmp = &x_buf_copy[x_frame_idx - la_shape..];
-    silk_noise_shape_analysis_fix(
+    #[cfg(feature = "silk-fixed")]
+    return crate::silk::encode_frame_fix::silk_encode_frame_fix(
         ps_enc,
-        &mut s_enc_ctrl,
-        &res_pitch[res_pitch_frame_idx..],
-        x_tmp,
-    );
-
-    let predict_lpc_order = ps_enc.s_cmn.predict_lpc_order as usize;
-    let x_tmp_frame = &x_buf_copy[x_frame_idx - predict_lpc_order..];
-    silk_find_pred_coefs_fix(
-        ps_enc,
-        &mut s_enc_ctrl,
-        &res_pitch,
-        res_pitch_frame_idx,
-        x_tmp_frame,
-        &x_buf_copy,
+        input,
+        rc,
+        pn_bytes_out,
         cond_coding,
+        max_bits,
+        use_cbr,
     );
-
-    silk_process_gains_fix(ps_enc, &mut s_enc_ctrl, cond_coding);
-
-    /****************************************/
-    /* Low Bitrate Redundant Encoding       */
-    /****************************************/
-    // Port of silk_LBRR_encode_FIX: runs on the frame-entry NSQ state, i.e.
-    // after the gains are quantized and before the rate-control loop below.
-    silk_lbrr_encode(ps_enc, &s_enc_ctrl, x_frame_idx, cond_coding);
-
-    let max_iter = 6;
-    let mut gain_mult_q8: i32 = 256;
-    let mut found_lower = false;
-    let mut found_upper = false;
-    #[allow(unused_assignments)]
-    let mut n_bits: i32 = 0;
-    let mut n_bits_lower: i32 = 0;
-    let mut n_bits_upper: i32 = 0;
-    let mut gain_mult_lower: i32 = 0;
-    let mut gain_mult_upper: i32 = 0;
-    let mut gains_id: i32 =
-        silk_gains_id(&ps_enc.s_cmn.indices.gains_indices, ps_enc.s_cmn.nb_subfr);
-    let mut gains_id_lower: i32 = -1;
-    let mut gains_id_upper: i32 = -1;
-
-    let bits_margin = if use_cbr != 0 { 5 } else { max_bits / 4 };
-
-    let rc_copy = rc.clone();
-    let nsq_copy = ps_enc.s_nsq;
-    let seed_copy = ps_enc.s_cmn.indices.seed;
-    let ec_prev_lag_index_copy = ps_enc.s_cmn.ec_prev_lag_index;
-    let ec_prev_signal_type_copy = ps_enc.s_cmn.ec_prev_signal_type;
-    let mut rc_copy2: Option<RangeCoder> = None;
-    let mut nsq_copy2: Option<SilkNSQState> = None;
-    let mut ec_buf_copy = [0u8; 1275];
-    let mut last_gain_index_copy2: i8 = 0;
-
-    let mut gain_lock = [false; MAX_NB_SUBFR];
-    let mut best_gain_mult = [256i32; MAX_NB_SUBFR];
-    let mut best_sum = [i32::MAX; MAX_NB_SUBFR];
-
-    for iter in 0..=max_iter {
-        if gains_id == gains_id_lower {
-            n_bits = n_bits_lower;
-        } else if gains_id == gains_id_upper {
-            n_bits = n_bits_upper;
-        } else {
-            if iter > 0 {
-                *rc = rc_copy.clone();
-                ps_enc.s_nsq = nsq_copy;
-                ps_enc.s_cmn.indices.seed = seed_copy;
-                ps_enc.s_cmn.ec_prev_lag_index = ec_prev_lag_index_copy;
-                ps_enc.s_cmn.ec_prev_signal_type = ec_prev_signal_type_copy;
-            }
-
-            let mut pred_coef_q12_flat = [0i16; 2 * MAX_LPC_ORDER];
-            pred_coef_q12_flat[..MAX_LPC_ORDER].copy_from_slice(&s_enc_ctrl.pred_coef_q12[0]);
-            pred_coef_q12_flat[MAX_LPC_ORDER..].copy_from_slice(&s_enc_ctrl.pred_coef_q12[1]);
-
-            if ps_enc.s_cmn.n_states_delayed_decision > 1 {
-                let winner_seed = silk_nsq_del_dec(
-                    &ps_enc.s_cmn,
-                    &mut ps_enc.s_nsq,
-                    &ps_enc.s_cmn.indices,
-                    &ps_enc.s_cmn.x_buf[x_frame_idx..],
-                    &mut ps_enc.pulses,
-                    &pred_coef_q12_flat,
-                    &s_enc_ctrl.ltp_coef_q14,
-                    &s_enc_ctrl.ar_q13,
-                    &s_enc_ctrl.harm_shape_gain_q14,
-                    &s_enc_ctrl.tilt_q14,
-                    &s_enc_ctrl.lf_shp_q14,
-                    &s_enc_ctrl.gains_q16,
-                    &s_enc_ctrl.pitch_l,
-                    s_enc_ctrl.lambda_q10,
-                    s_enc_ctrl.ltp_scale_q14,
-                );
-
-                ps_enc.s_cmn.indices.seed = winner_seed as i8;
-            } else {
-                silk_nsq(
-                    &ps_enc.s_cmn,
-                    &mut ps_enc.s_nsq,
-                    &ps_enc.s_cmn.indices,
-                    &ps_enc.s_cmn.x_buf[x_frame_idx..],
-                    &mut ps_enc.pulses,
-                    &pred_coef_q12_flat,
-                    &s_enc_ctrl.ltp_coef_q14,
-                    &s_enc_ctrl.ar_q13,
-                    &s_enc_ctrl.harm_shape_gain_q14,
-                    &s_enc_ctrl.tilt_q14,
-                    &s_enc_ctrl.lf_shp_q14,
-                    &s_enc_ctrl.gains_q16,
-                    &s_enc_ctrl.pitch_l,
-                    s_enc_ctrl.lambda_q10,
-                    s_enc_ctrl.ltp_scale_q14,
-                );
-            }
-
-            if iter == max_iter && !found_lower {
-                rc_copy2 = Some(rc.clone());
-            }
-
-            silk_encode_indices(
-                ps_enc,
-                rc,
-                ps_enc.s_cmn.n_frames_encoded as usize,
-                false,
-                cond_coding,
-            );
-
-            silk_encode_pulses(
-                rc,
-                ps_enc.s_cmn.indices.signal_type as i32,
-                ps_enc.s_cmn.indices.quant_offset_type as i32,
-                &ps_enc.pulses,
-                ps_enc.s_cmn.frame_length as usize,
-            );
-
-            n_bits = rc.tell();
-
-            if iter == max_iter && !found_lower && n_bits > max_bits {
-                if let Some(rc_c2) = &rc_copy2 {
-                    *rc = rc_c2.clone();
-                }
-
-                ps_enc.s_shape.last_gain_index = s_enc_ctrl.last_gain_index_prev;
-                for i in 0..ps_enc.s_cmn.nb_subfr as usize {
-                    ps_enc.s_cmn.indices.gains_indices[i] = 4;
-                }
-                if cond_coding != CODE_CONDITIONALLY {
-                    ps_enc.s_cmn.indices.gains_indices[0] = s_enc_ctrl.last_gain_index_prev;
-                }
-                ps_enc.s_cmn.ec_prev_lag_index = ec_prev_lag_index_copy;
-                ps_enc.s_cmn.ec_prev_signal_type = ec_prev_signal_type_copy;
-
-                ps_enc.pulses.fill(0);
-
-                silk_encode_indices(
-                    ps_enc,
-                    rc,
-                    ps_enc.s_cmn.n_frames_encoded as usize,
-                    false,
-                    cond_coding,
-                );
-                silk_encode_pulses(
-                    rc,
-                    ps_enc.s_cmn.indices.signal_type as i32,
-                    ps_enc.s_cmn.indices.quant_offset_type as i32,
-                    &ps_enc.pulses,
-                    ps_enc.s_cmn.frame_length as usize,
-                );
-
-                n_bits = rc.tell();
-            }
-
-            if use_cbr == 0 && iter == 0 && n_bits <= max_bits {
-                break;
-            }
-        }
-
-        if iter == max_iter {
-            if found_lower && (gains_id == gains_id_lower || n_bits > max_bits) {
-                if let Some(rc_c2) = &rc_copy2 {
-                    *rc = rc_c2.clone();
-                    let offs = rc.offs as usize;
-                    rc.buf[..offs].copy_from_slice(&ec_buf_copy[..offs]);
-                }
-                if let Some(nsq_c2) = &nsq_copy2 {
-                    ps_enc.s_nsq = *nsq_c2;
-                }
-                ps_enc.s_shape.last_gain_index = last_gain_index_copy2;
-            }
-            break;
-        }
-
-        if n_bits > max_bits {
-            if !found_lower && iter >= 2 {
-                s_enc_ctrl.lambda_q10 =
-                    silk_add_rshift32(s_enc_ctrl.lambda_q10, s_enc_ctrl.lambda_q10, 1);
-                found_upper = false;
-                gains_id_upper = -1;
-            } else {
-                found_upper = true;
-                n_bits_upper = n_bits;
-                gain_mult_upper = gain_mult_q8;
-                gains_id_upper = gains_id;
-            }
-        } else if n_bits < max_bits - bits_margin {
-            found_lower = true;
-            n_bits_lower = n_bits;
-            gain_mult_lower = gain_mult_q8;
-            if gains_id != gains_id_lower {
-                gains_id_lower = gains_id;
-
-                rc_copy2 = Some(rc.clone());
-                let offs = rc.offs as usize;
-                ec_buf_copy[..offs].copy_from_slice(&rc.buf[..offs]);
-                nsq_copy2 = Some(ps_enc.s_nsq);
-                last_gain_index_copy2 = ps_enc.s_shape.last_gain_index;
-            }
-        } else {
-            break;
-        }
-
-        if !found_lower && n_bits > max_bits {
-            let subfr_length = ps_enc.s_cmn.subfr_length as usize;
-            for i in 0..ps_enc.s_cmn.nb_subfr as usize {
-                let mut sum: i32 = 0;
-                for j in (i * subfr_length)..((i + 1) * subfr_length) {
-                    sum += ps_enc.pulses[j].abs() as i32;
-                }
-                if iter == 0 || (sum < best_sum[i] && !gain_lock[i]) {
-                    best_sum[i] = sum;
-                    best_gain_mult[i] = gain_mult_q8;
-                } else {
-                    gain_lock[i] = true;
-                }
-            }
-        }
-
-        if !(found_lower && found_upper) {
-            if n_bits > max_bits {
-                gain_mult_q8 = silk_min_32(1024, (gain_mult_q8 * 3) / 2);
-            } else {
-                gain_mult_q8 = silk_max_32(64, (gain_mult_q8 * 4) / 5);
-            }
-        } else {
-            let delta = gain_mult_upper - gain_mult_lower;
-            gain_mult_q8 = gain_mult_lower
-                + silk_div32_16(
-                    (gain_mult_upper - gain_mult_lower) * (max_bits - n_bits_lower),
-                    n_bits_upper - n_bits_lower,
-                );
-
-            let lower_limit = silk_add_rshift32(gain_mult_lower, delta, 2);
-            let upper_limit = silk_sub_rshift32(gain_mult_upper, delta, 2);
-            if gain_mult_q8 > lower_limit {
-                gain_mult_q8 = lower_limit;
-            } else if gain_mult_q8 < upper_limit {
-                gain_mult_q8 = upper_limit;
-            }
-        }
-
-        for i in 0..ps_enc.s_cmn.nb_subfr as usize {
-            let tmp = if gain_lock[i] {
-                best_gain_mult[i]
-            } else {
-                gain_mult_q8
-            };
-            s_enc_ctrl.gains_q16[i] =
-                silk_lshift_sat32(silk_smulwb(s_enc_ctrl.gains_unq_q16[i], tmp), 8);
-        }
-
-        ps_enc.s_shape.last_gain_index = s_enc_ctrl.last_gain_index_prev;
-        silk_gains_quant(
-            &mut ps_enc.s_cmn.indices.gains_indices,
-            &mut s_enc_ctrl.gains_q16,
-            &mut ps_enc.s_shape.last_gain_index,
-            if cond_coding == CODE_CONDITIONALLY {
-                1
-            } else {
-                0
-            },
-            ps_enc.s_cmn.nb_subfr as usize,
-        );
-
-        gains_id = silk_gains_id(&ps_enc.s_cmn.indices.gains_indices, ps_enc.s_cmn.nb_subfr);
-    }
-
-    let move_len = ltp_mem_length + 5 * ps_enc.s_cmn.fs_khz as usize;
-    ps_enc
-        .s_cmn
-        .x_buf
-        .copy_within(frame_length..frame_length + move_len, 0);
-
-    ps_enc.s_cmn.prev_lag = s_enc_ctrl.pitch_l[ps_enc.s_cmn.nb_subfr as usize - 1];
-    ps_enc.s_cmn.prev_signal_type = ps_enc.s_cmn.indices.signal_type as i32;
-    ps_enc.s_cmn.first_frame_after_reset = 0;
-
-    *pn_bytes_out = (rc.tell() + 7) >> 3;
-
-    0
-}
-
-/// Low-Bitrate Redundancy (LBRR) encoding: reuse all parameters but encode
-/// the excitation at a lower rate. Port of `silk_LBRR_encode_FIX`
-/// (encode_frame_FIX.c:391-448), called after the gains are quantized and
-/// before the rate-control loop, so the NSQ state is the frame-entry state.
-///
-/// On success this frame's LBRR payload lives in
-/// `s_cmn.indices_lbrr[fi]` / `s_cmn.pulses_lbrr[fi]` and
-/// `s_cmn.lbrr_flags[fi]` is set for the *next* packet's LBRR section.
-fn silk_lbrr_encode(
-    ps_enc: &mut SilkEncoderState,
-    s_enc_ctrl: &SilkEncoderControl,
-    x16_offset: usize,
-    cond_coding: i32,
-) {
-    // Control use of inband LBRR. LBRR_SPEECH_ACTIVITY_THRES = 0.3
-    // (SILK_FIX_CONST(0.3, 8) = 77).
-    if ps_enc.s_cmn.lbrr_enabled == 0
-        || ps_enc.s_cmn.speech_activity_q8 <= 77
-    {
-        return;
-    }
-
-    let fi = ps_enc.s_cmn.n_frames_encoded as usize;
-    if fi >= MAX_FRAMES_PER_PACKET {
-        return;
-    }
-    ps_enc.s_cmn.lbrr_flags[fi] = 1;
-
-    // Copy noise shaping quantizer state and quantization indices from the
-    // regular encoding.
-    let mut nsq_lbrr = ps_enc.s_nsq;
-    let mut indices_lbrr = ps_enc.s_cmn.indices;
-
-    if fi == 0 || ps_enc.s_cmn.lbrr_flags[fi - 1] == 0 {
-        // First frame in packet or previous frame not LBRR coded.
-        ps_enc.s_cmn.lbrr_prev_last_gain_index = ps_enc.s_shape.last_gain_index;
-
-        // Increase gains to get the target LBRR rate. This index is coded
-        // absolutely here (first frame of an LBRR run), so it must stay
-        // within 0..=N_LEVELS_QGAIN-1.
-        indices_lbrr.gains_indices[0] = (indices_lbrr.gains_indices[0] as i32
-            + ps_enc.s_cmn.lbrr_gain_increases)
-            .min(N_LEVELS_QGAIN - 1) as i8;
-    }
-
-    // Decode to get gains in sync with the decoder. Works on a scratch copy
-    // of the gains; the main frame's gains are left untouched.
-    let mut gains_lbrr = s_enc_ctrl.gains_q16;
-    silk_gains_dequant(
-        &mut gains_lbrr,
-        &indices_lbrr.gains_indices,
-        &mut ps_enc.s_cmn.lbrr_prev_last_gain_index,
-        if cond_coding == CODE_CONDITIONALLY { 1 } else { 0 },
-        ps_enc.s_cmn.nb_subfr as usize,
-    );
-
-    let mut pred_coef_q12_flat = [0i16; 2 * MAX_LPC_ORDER];
-    pred_coef_q12_flat[..MAX_LPC_ORDER].copy_from_slice(&s_enc_ctrl.pred_coef_q12[0]);
-    pred_coef_q12_flat[MAX_LPC_ORDER..].copy_from_slice(&s_enc_ctrl.pred_coef_q12[1]);
-
-    /*****************************************/
-    /* Noise shaping quantization            */
-    /*****************************************/
-    let mut pulses_lbrr = [0i8; MAX_FRAME_LENGTH];
-    if ps_enc.s_cmn.n_states_delayed_decision > 1 || ps_enc.s_cmn.warping_q16 > 0 {
-        let winner_seed = silk_nsq_del_dec(
-            &ps_enc.s_cmn,
-            &mut nsq_lbrr,
-            &indices_lbrr,
-            &ps_enc.s_cmn.x_buf[x16_offset..],
-            &mut pulses_lbrr,
-            &pred_coef_q12_flat,
-            &s_enc_ctrl.ltp_coef_q14,
-            &s_enc_ctrl.ar_q13,
-            &s_enc_ctrl.harm_shape_gain_q14,
-            &s_enc_ctrl.tilt_q14,
-            &s_enc_ctrl.lf_shp_q14,
-            &gains_lbrr,
-            &s_enc_ctrl.pitch_l,
-            s_enc_ctrl.lambda_q10,
-            s_enc_ctrl.ltp_scale_q14,
-        );
-        indices_lbrr.seed = winner_seed as i8;
-    } else {
-        silk_nsq(
-            &ps_enc.s_cmn,
-            &mut nsq_lbrr,
-            &indices_lbrr,
-            &ps_enc.s_cmn.x_buf[x16_offset..],
-            &mut pulses_lbrr,
-            &pred_coef_q12_flat,
-            &s_enc_ctrl.ltp_coef_q14,
-            &s_enc_ctrl.ar_q13,
-            &s_enc_ctrl.harm_shape_gain_q14,
-            &s_enc_ctrl.tilt_q14,
-            &s_enc_ctrl.lf_shp_q14,
-            &gains_lbrr,
-            &s_enc_ctrl.pitch_l,
-            s_enc_ctrl.lambda_q10,
-            s_enc_ctrl.ltp_scale_q14,
-        );
-    }
-
-    ps_enc.s_cmn.indices_lbrr[fi] = indices_lbrr;
-    ps_enc.s_cmn.pulses_lbrr[fi] = pulses_lbrr;
+    #[cfg(not(feature = "silk-fixed"))]
+    crate::silk::float::encode_frame_flp::silk_encode_frame_flp(
+        ps_enc,
+        input,
+        rc,
+        pn_bytes_out,
+        cond_coding,
+        max_bits,
+        use_cbr,
+    )
 }
 
 /// Encode the LBRR (in-band FEC) section for a whole packet and return the
@@ -716,7 +301,7 @@ fn encode_lbrr_section(
                 rc,
                 ps_enc.s_cmn.indices_lbrr[i].signal_type as i32,
                 ps_enc.s_cmn.indices_lbrr[i].quant_offset_type as i32,
-                &ps_enc.s_cmn.pulses_lbrr[i],
+                &mut ps_enc.s_cmn.pulses_lbrr[i],
                 ps_enc.s_cmn.frame_length as usize,
             );
         }
@@ -817,17 +402,15 @@ pub fn silk_encode(
     use_cbr: i32,
     activity: i32,
 ) -> i32 {
-    // The frame loop slices samples_in[..frame_end] based on this declared
-    // length; a mismatched declaration would panic mid-encode
-    // (issue #27 deep scan).
-    assert!(
-        n_samples_in <= samples_in.len(),
-        "silk_encode: n_samples_in ({}) exceeds samples_in.len() ({})",
-        n_samples_in,
-        samples_in.len()
-    );
     let n_frames_per_packet = ps_enc.s_cmn.n_frames_per_packet;
     let frame_length = ps_enc.s_cmn.frame_length as usize;
+    // The whole packet must be there: a skipped frame would leave the
+    // header's VAD flags without their frame (libopus rejects such input,
+    // enc_API.c:247-251).
+    let packet_length = n_frames_per_packet as usize * frame_length;
+    if n_samples_in < packet_length || samples_in.len() < packet_length {
+        return SILK_ENC_INPUT_INVALID_NO_OF_SAMPLES;
+    }
 
     ps_enc.s_cmn.n_frames_encoded = 0;
     // In DTX unless a frame of the packet has speech (silk_encode_do_vad
@@ -858,26 +441,11 @@ pub fn silk_encode(
     let mut lbrr_bits = 0i32;
 
     for frame_idx in 0..n_frames_per_packet {
-        if frame_idx == 0 {
-            silk_hp_variable_cutoff(&mut ps_enc.s_cmn);
-        }
+        // Once per frame, from the previous frame's state (enc_API.c:409).
+        silk_hp_variable_cutoff(&mut ps_enc.s_cmn);
 
-        let frame_end = (sample_offset + frame_length).min(n_samples_in);
-        let raw_frame = &samples_in[sample_offset..frame_end];
-
-        let fs_in_khz = ps_enc.s_cmn.fs_khz as usize;
-
-        if raw_frame.len() < fs_in_khz {
-            sample_offset += frame_length;
-            continue;
-        }
-
-        let n = raw_frame.len();
-
-        if n > MAX_FRAME_LENGTH {
-            sample_offset += frame_length;
-            continue;
-        }
+        let raw_frame = &samples_in[sample_offset..sample_offset + frame_length];
+        let n = frame_length;
 
         // The API-rate -> internal-rate conversion (with its delay_matrix_enc
         // input delay) is done by the caller's encoder resampler; frames
@@ -1055,9 +623,7 @@ pub fn silk_encode_stereo_packet(
 
     for frame_idx in 0..n_frames_per_packet {
         let fi = frame_idx as usize;
-        if frame_idx == 0 {
-            silk_hp_variable_cutoff(&mut mid.s_cmn);
-        }
+        silk_hp_variable_cutoff(&mut mid.s_cmn);
 
         // libopus `inputBuf` layout: two history slots, then the frame.
         let offset = fi * frame_length;
@@ -1097,7 +663,7 @@ pub fn silk_encode_stereo_packet(
             &mut rates,
             frame_rate_bps,
             mid.s_cmn.speech_activity_q8,
-            false,
+            mid.to_mono,
             fs_khz,
             frame_length,
         );
@@ -1230,7 +796,7 @@ fn encode_lbrr_frame(rc: &mut RangeCoder, ch: &mut SilkEncoderState, i: usize) {
         rc,
         ch.s_cmn.indices_lbrr[i].signal_type as i32,
         ch.s_cmn.indices_lbrr[i].quant_offset_type as i32,
-        &ch.s_cmn.pulses_lbrr[i],
+        &mut ch.s_cmn.pulses_lbrr[i],
         ch.s_cmn.frame_length as usize,
     );
 }
@@ -1324,6 +890,121 @@ mod tests {
         assert_eq!(silk_frame_target_rate_bps(&mut enc, 4000, 0, 0), 4000);
         enc.n_bits_exceeded = 100;
         assert_eq!(silk_frame_target_rate_bps(&mut enc, 4000, 0, 0), 4000);
+    }
+
+    #[test]
+    fn stereo_prefill_targets_a_10_ms_frame_less_the_reservoir() {
+        // libopus's prefill frame target: (40000 / 100) * 100 less a 500 ms
+        // payback of the 10000 bits over target, 20000 b/s. Less 1200 for
+        // the stereo parameters, 8 * 18800 < 13 * 11600 at 16 kHz: the
+        // frame collapses to zero width (stereo_LR_to_MS.c:142-145).
+        let mut ch = [0, 1].map(|_| {
+            let mut enc = SilkEncoderState::default();
+            crate::silk::init_encoder::silk_init_encoder(&mut enc, crate::Arch::Scalar);
+            crate::silk::control_codec::silk_control_encoder(&mut enc, 16, 20, 40000, 10);
+            enc
+        });
+        let [mid, side] = &mut ch;
+        mid.n_bits_exceeded = 10000;
+        let left: [i16; 160] = core::array::from_fn(|i| {
+            let i = i as i32;
+            ((i * 37 % 101) * 60 - 3000) as i16
+        });
+        let right: [i16; 160] = core::array::from_fn(|i| {
+            let i = i as i32;
+            ((i * 53 % 89) * 70 - 3000) as i16
+        });
+        silk_encode_prefill_stereo(mid, side, &left, &right, 40000, 1);
+        assert_eq!(mid.stereo.width_prev_q14, 0);
+    }
+
+    #[test]
+    fn stereo_prefill_gives_the_side_the_mids_low_pass_state() {
+        let mut ch = [0, 1].map(|_| {
+            let mut enc = SilkEncoderState::default();
+            crate::silk::init_encoder::silk_init_encoder(&mut enc, crate::Arch::Scalar);
+            crate::silk::control_codec::silk_control_encoder(&mut enc, 16, 20, 40000, 10);
+            enc
+        });
+        let [mid, side] = &mut ch;
+        // A low-pass transition the side, coding the mid only, lags in.
+        mid.s_cmn.s_lp.mode = 1;
+        mid.s_cmn.s_lp.transition_frame_no = 40;
+        side.s_cmn.s_lp.mode = 1;
+        side.s_cmn.s_lp.transition_frame_no = 10;
+        let left: [i16; 160] = core::array::from_fn(|i| {
+            let i = i as i32;
+            ((i * 37 % 101) * 60 - 3000) as i16
+        });
+        silk_encode_prefill_stereo(mid, side, &left, &left, 40000, 1);
+        assert_eq!(side.s_cmn.s_lp.transition_frame_no, 41);
+    }
+
+    #[test]
+    fn encode_rejects_a_partial_packet() {
+        let mut enc = SilkEncoderState::default();
+        crate::silk::init_encoder::silk_init_encoder(&mut enc, crate::Arch::Scalar);
+        crate::silk::control_codec::silk_control_encoder(&mut enc, 16, 40, 20000, 10);
+        let mut rc = RangeCoder::new_encoder(1275);
+        let mut n_bytes = 0;
+        // 30 ms of a 40 ms packet.
+        let input = [0i16; 480];
+        let ret = silk_encode(
+            &mut enc,
+            &input,
+            480,
+            &mut rc,
+            &mut n_bytes,
+            20000,
+            10000,
+            0,
+            1,
+        );
+        assert_eq!(ret, SILK_ENC_INPUT_INVALID_NO_OF_SAMPLES);
+    }
+
+    #[test]
+    fn to_mono_collapses_the_stereo_width() {
+        // Decorrelated channels at 40 kb/s code full width, unless the
+        // packet is the last before a switch to mono (stereo_LR_to_MS.c:135-140).
+        let left: [i16; 320] = core::array::from_fn(|i| {
+            let i = i as i32;
+            ((i * 37 % 101) * 60 - 3000) as i16
+        });
+        let right: [i16; 320] = core::array::from_fn(|i| {
+            let i = i as i32;
+            ((i * 53 % 89) * 70 - 3000) as i16
+        });
+        for to_mono in [false, true] {
+            let mut ch = [0, 1].map(|_| {
+                let mut enc = SilkEncoderState::default();
+                crate::silk::init_encoder::silk_init_encoder(&mut enc, crate::Arch::Scalar);
+                crate::silk::control_codec::silk_control_encoder(&mut enc, 16, 20, 40000, 10);
+                enc.s_cmn.n_channels = 2;
+                enc
+            });
+            let [mid, side] = &mut ch;
+            mid.to_mono = to_mono;
+            let mut rc = RangeCoder::new_encoder(1275);
+            let mut n_bytes = 0;
+            let ret = silk_encode_stereo_packet(
+                mid,
+                side,
+                &left,
+                &right,
+                320,
+                &mut rc,
+                &mut n_bytes,
+                40000,
+                10000,
+                0,
+                1,
+            );
+            assert_eq!(ret, SILK_NO_ERROR);
+            let width = if to_mono { 0 } else { 1 << 14 };
+            assert_eq!(mid.stereo.width_prev_q14, width);
+            assert_eq!(mid.stereo.pred_prev_q13[0] == 0, to_mono);
+        }
     }
 
     #[test]

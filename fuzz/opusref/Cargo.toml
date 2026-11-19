@@ -1,0 +1,27 @@
+[package]
+name = "opusref"
+version = "0.0.0"
+edition = "2024"
+publish = false
+links = "opusref"
+
+[build-dependencies]
+cc = "1"
+
+[dev-dependencies]
+opus-rs = { path = "../..", features = ["fuzzing"] }
+
+[features]
+# Builds the reference as libopus configured with `--enable-deep-plc
+# --enable-dred --enable-osce` (see build.rs) and opus-rs with its matching
+# features, for the neural network tests in `tests/dnn_*.rs`.
+dnn = ["opus-rs/deep-plc", "opus-rs/dred", "opus-rs/osce"]
+# Builds the reference as fixed-point libopus (FIXED_POINT), for the SILK
+# encoder comparison in `tests/silk_fixed.rs`, and opus-rs with its
+# fixed-point SILK encoder (`silk-fixed`); excludes `dnn`. The float-only
+# kernel wrappers of shim.c are left out.
+fixed = ["opus-rs/silk-fixed"]
+# Builds the reference as libopus's configure does on x86-64 (intrinsics,
+# RTCD, the instruction sets' flags, GCC's default contraction), the
+# reference of opus-rs's SIMD levels. `set_arch` forces the level.
+simd = []

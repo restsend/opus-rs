@@ -36,7 +36,7 @@ fn test_celt_realistic_bitrate() {
 
         // Approach A: done() + copy full buffer (correct layout)
         let mut rc = RangeCoder::new_encoder(budget as u32);
-        encoder.encode(&pcm_in, frame_size, &mut rc);
+        encoder.encode(&pcm_in, frame_size, &mut rc).unwrap();
         rc.done();
         let compressed = rc.buf[..budget].to_vec();
 

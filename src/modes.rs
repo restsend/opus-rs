@@ -1,5 +1,3 @@
-use crate::compat::OnceCell;
-
 use crate::mdct::MdctLookup;
 
 pub const BAND_ALLOCATION: [u8; 11 * 21] = [
@@ -91,49 +89,52 @@ pub const EBAND_5MS: [i16; 22] = [
 ];
 
 impl CeltMode {
+    /// The 48 kHz mode with 960-sample frames and a 120-sample overlap, the
+    /// one Opus uses, with its MDCT built at run time (see `default_mode` for
+    /// the precomputed one).
     pub fn new_48000_960_120() -> Self {
-        let short_mdct_size = 120;
-        let nb_short_mdcts = 8;
-
-        let max_lm = 3usize;
-        let mdct = MdctLookup::new(2 * short_mdct_size * nb_short_mdcts, max_lm);
         Self {
-            fs: 48000,
-            overlap: 120,
-            nb_ebands: 21,
-            eff_ebands: 21,
-            preemph: [0.850_006_1, 0.100_006_1, 1.512_834_7, 0.661_010_7],
-            e_bands: &EBAND_5MS,
-            max_lm,
-            nb_short_mdcts,
-            short_mdct_size,
-            nb_alloc_vectors: 11,
-            alloc_vectors: &BAND_ALLOCATION,
-            alloc_stride: 21,
-            log_n: &LOG_N_400,
-            window: &WINDOW_120,
-            mdct,
-            cache: PulseCache {
-                size: 392,
-                index: &CACHE_INDEX50,
-                bits: &CACHE_BITS50,
-                caps: &CACHE_CAPS50,
-            },
-            e_means: &E_MEANS,
+            mdct: MdctLookup::new(1920, 3),
+            ..MODE_48000_960_120_FIELDS
         }
     }
 }
+
+const MODE_48000_960_120_FIELDS: CeltMode = CeltMode {
+    fs: 48000,
+    overlap: 120,
+    nb_ebands: 21,
+    eff_ebands: 21,
+    preemph: [0.850_006_1, 0.0, 1.0, 1.0],
+    e_bands: &EBAND_5MS,
+    max_lm: 3,
+    nb_short_mdcts: 8,
+    short_mdct_size: 120,
+    nb_alloc_vectors: 11,
+    alloc_vectors: &BAND_ALLOCATION,
+    alloc_stride: 21,
+    log_n: &LOG_N_400,
+    window: &WINDOW_120,
+    mdct: MdctLookup::STATIC_1920,
+    cache: PulseCache {
+        size: 392,
+        index: &CACHE_INDEX50,
+        bits: &CACHE_BITS50,
+        caps: &CACHE_CAPS50,
+    },
+    e_means: &E_MEANS,
+};
 
 pub const E_MEANS: [f32; 25] = [
     6.4375, 6.25, 5.75, 5.3125, 5.0625, 4.8125, 4.5, 4.375, 4.875, 4.6875, 4.5625, 4.4375, 4.875,
     4.625, 4.3125, 4.5, 4.375, 4.625, 4.75, 4.4375, 3.75, 3.75, 3.75, 3.75, 3.75,
 ];
 
-pub fn default_mode() -> &'static CeltMode {
-    MODE_48000_960_120.get(CeltMode::new_48000_960_120)
+pub const fn default_mode() -> &'static CeltMode {
+    &MODE_48000_960_120
 }
 
-static MODE_48000_960_120: OnceCell<CeltMode> = OnceCell::new();
+static MODE_48000_960_120: CeltMode = MODE_48000_960_120_FIELDS;
 
 const LOG_N_400: [i16; 21] = [
     0, 0, 0, 0, 0, 0, 0, 0, 8, 8, 8, 8, 16, 16, 16, 21, 21, 24, 29, 34, 36,
@@ -141,7 +142,7 @@ const LOG_N_400: [i16; 21] = [
 
 const WINDOW_120: [f32; 120] = [
     6.728_696_6e-05,
-    0.000_605_513_5,
+    0.00060551348,
     0.001_681_597,
     0.003_294_796_2,
     0.005_443_994_3,

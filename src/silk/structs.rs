@@ -46,25 +46,29 @@ pub struct SilkStereoState {
     pub prev_decode_only_middle: i32,
 }
 
-impl Default for SilkStereoState {
+impl SilkStereoState {
     /// The state libopus's `silk_Encode` sets up when a stream starts coding
     /// two channels (enc_API.c, mono -> stereo transition): full smoothed
     /// width, zero previous width and predictors, unit residual norms.
+    pub(crate) const DEFAULT: Self = Self {
+        s_mid: [0; 2],
+        s_side: [0; 2],
+        left: 0,
+        side: FixedVec::new(),
+        pred_prev_q13: [0; 2],
+        mid_side_amp_q0: [0, 1, 0, 1],
+        smth_width_q14: 1 << 14,
+        width_prev_q14: 0,
+        silent_side_len: 0,
+        pred_ix: [[[0; 3]; 2]; MAX_FRAMES_PER_PACKET],
+        mid_only_flags: [0; MAX_FRAMES_PER_PACKET],
+        prev_decode_only_middle: 0,
+    };
+}
+
+impl Default for SilkStereoState {
     fn default() -> Self {
-        Self {
-            s_mid: [0; 2],
-            s_side: [0; 2],
-            left: 0,
-            side: FixedVec::new(),
-            pred_prev_q13: [0; 2],
-            mid_side_amp_q0: [0, 1, 0, 1],
-            smth_width_q14: 1 << 14,
-            width_prev_q14: 0,
-            silent_side_len: 0,
-            pred_ix: [[[0; 3]; 2]; MAX_FRAMES_PER_PACKET],
-            mid_only_flags: [0; MAX_FRAMES_PER_PACKET],
-            prev_decode_only_middle: 0,
-        }
+        Self::DEFAULT
     }
 }
 
@@ -114,34 +118,58 @@ pub struct SideInfoIndices {
     pub only_middle: i8,
 }
 
+impl SideInfoIndices {
+    pub(crate) const DEFAULT: Self = Self {
+        gains_indices: [0; MAX_NB_SUBFR],
+        ltp_index: [0; MAX_NB_SUBFR],
+        nlsf_indices: [0; MAX_LPC_ORDER + 1],
+        lag_index: 0,
+        contour_index: 0,
+        signal_type: 0,
+        voicing_idx: 0,
+        quant_offset_type: 0,
+        nlsf_interp_coef_q2: 4,
+        per_index: 0,
+        ltp_scale_index: 0,
+        seed: 0,
+        pred_idx: 0,
+        side_idx: 0,
+        only_middle: 0,
+    };
+}
+
 impl Default for SideInfoIndices {
     fn default() -> Self {
-        Self {
-            gains_indices: [0; MAX_NB_SUBFR],
-            ltp_index: [0; MAX_NB_SUBFR],
-            nlsf_indices: [0; MAX_LPC_ORDER + 1],
-            lag_index: 0,
-            contour_index: 0,
-            signal_type: 0,
-            voicing_idx: 0,
-            quant_offset_type: 0,
-            nlsf_interp_coef_q2: 4,
-            per_index: 0,
-            ltp_scale_index: 0,
-            seed: 0,
-            pred_idx: 0,
-            side_idx: 0,
-            only_middle: 0,
-        }
+        Self::DEFAULT
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct SilkShapeState {
     pub last_gain_index: i8,
     pub harm_boost_smth_q16: i32,
     pub harm_shape_gain_smth_q16: i32,
     pub tilt_smth_q16: i32,
+    /// The float encoder's smoothing (libopus `silk_shape_state_FLP`).
+    pub harm_shape_gain_smth: f32,
+    pub tilt_smth: f32,
+}
+
+impl SilkShapeState {
+    pub(crate) const DEFAULT: Self = Self {
+        last_gain_index: 0,
+        harm_boost_smth_q16: 0,
+        harm_shape_gain_smth_q16: 0,
+        tilt_smth_q16: 0,
+        harm_shape_gain_smth: 0.0,
+        tilt_smth: 0.0,
+    };
+}
+
+impl Default for SilkShapeState {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -158,24 +186,28 @@ pub struct SilkVADState {
     pub counter: i32,
 }
 
+impl SilkVADState {
+    pub(crate) const DEFAULT: Self = Self {
+        ana_state: [0; 2],
+        ana_state1: [0; 2],
+        ana_state2: [0; 2],
+        xnrg_subfr: [0; VAD_N_BANDS],
+        nrg_ratio_smth_q8: [0; VAD_N_BANDS],
+        hp_state: 0,
+        nl: [0; VAD_N_BANDS],
+        inv_nl: [0; VAD_N_BANDS],
+        noise_level_bias: [0; VAD_N_BANDS],
+        counter: 0,
+    };
+}
+
 impl Default for SilkVADState {
     fn default() -> Self {
-        Self {
-            ana_state: [0; 2],
-            ana_state1: [0; 2],
-            ana_state2: [0; 2],
-            xnrg_subfr: [0; VAD_N_BANDS],
-            nrg_ratio_smth_q8: [0; VAD_N_BANDS],
-            hp_state: 0,
-            nl: [0; VAD_N_BANDS],
-            inv_nl: [0; VAD_N_BANDS],
-            noise_level_bias: [0; VAD_N_BANDS],
-            counter: 0,
-        }
+        Self::DEFAULT
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct SilkLPState {
     pub in_lp_state: [i32; 2],
     pub transition_frame_no: i32,
@@ -183,7 +215,27 @@ pub struct SilkLPState {
     pub saved_fs_khz: i32,
 }
 
+impl SilkLPState {
+    pub(crate) const DEFAULT: Self = Self { in_lp_state: [0; 2], transition_frame_no: 0, mode: 0, saved_fs_khz: 0 };
+}
+
+impl Default for SilkLPState {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// A sample of the encoder's analysis buffer: `silk_float` in libopus's
+/// float encoder, `opus_int16` in the fixed-point one (`silk-fixed`).
+#[cfg(not(feature = "silk-fixed"))]
+pub type SilkXBufSample = f32;
+#[cfg(feature = "silk-fixed")]
+pub type SilkXBufSample = i16;
+
 pub struct SilkEncoderStateCommon {
+    /// libopus `silk_encoder_state.arch`: the level whose arithmetic the
+    /// float analysis kernels follow.
+    pub arch: crate::Arch,
     pub indices: SideInfoIndices,
     pub in_hp_state: [i32; 2],
     pub snr_db_q7: i32,
@@ -209,7 +261,8 @@ pub struct SilkEncoderStateCommon {
     pub input_tilt_q15: i32,
     pub n_states_delayed_decision: i32,
     pub prev_lag: i32,
-    pub x_buf: [i16; 2 * MAX_FRAME_LENGTH + LA_SHAPE_MAX],
+    /// The analysis buffer (libopus `silk_encoder_state_Fxx.x_buf`).
+    pub x_buf: [SilkXBufSample; 2 * MAX_FRAME_LENGTH + LA_SHAPE_MAX],
     pub x_buf_idx: i32,
     pub prev_nlsf_q15: [i16; MAX_LPC_ORDER],
     pub nlsf_mu_q20: i32,
@@ -254,73 +307,78 @@ pub struct SilkEncoderStateCommon {
     pub n_channels: i32,
 }
 
+impl SilkEncoderStateCommon {
+    pub(crate) const DEFAULT: Self = Self {
+        arch: crate::Arch::Scalar,
+        indices: SideInfoIndices::DEFAULT,
+        in_hp_state: [0; 2],
+        snr_db_q7: 0,
+        input_quality_bands_q15: [0; VAD_N_BANDS],
+        speech_activity_q8: 0,
+        use_cbr: 0,
+        fs_khz: 0,
+        nb_subfr: 0,
+        warping_q16: 0,
+        la_shape: 0,
+        shape_win_length: 0,
+        shaping_lpc_order: 0,
+        predict_lpc_order: 0,
+        subfr_length: 0,
+        la_pitch: 0,
+        frame_length: 0,
+        ltp_mem_length: 0,
+        pitch_lpc_win_length: 0,
+        pitch_estimation_complexity: 0,
+        pitch_estimation_threshold_q16: 0,
+        first_frame_after_reset: 0,
+        prev_signal_type: 0,
+        input_tilt_q15: 0,
+        n_states_delayed_decision: 0,
+        prev_lag: 0,
+        x_buf: [0 as SilkXBufSample; 2 * MAX_FRAME_LENGTH + LA_SHAPE_MAX],
+        x_buf_idx: 0,
+        prev_nlsf_q15: [0; MAX_LPC_ORDER],
+        nlsf_mu_q20: 0,
+        n_nlsf_survivors: 0,
+        variable_hp_smth1_q15: 0,
+        variable_hp_smth2_q15: 0,
+        s_lp: SilkLPState::DEFAULT,
+        s_vad: SilkVADState::DEFAULT,
+        lbrr_enabled: 0,
+        indices_lbrr: [SideInfoIndices::DEFAULT; MAX_FRAMES_PER_PACKET],
+        pulses_lbrr: [[0; MAX_FRAME_LENGTH]; MAX_FRAMES_PER_PACKET],
+        n_frames_encoded: 0,
+        n_frames_per_packet: 0,
+        target_rate_bps: 0,
+        packet_size_ms: 0,
+        complexity: 0,
+        sum_log_gain_q7: 0,
+        packet_loss_perc: 0,
+        lbrr_flag: 0,
+        lbrr_prev_last_gain_index: 0,
+        no_speech_counter: 0,
+        in_dtx: 0,
+        vad_flags: [0; MAX_FRAMES_PER_PACKET],
+        frame_counter: 0,
+        ec_prev_signal_type: 0,
+        ec_prev_lag_index: 0,
+        frames_since_onset: 0,
+        input_buf: [0; MAX_FRAME_LENGTH + 2],
+        input_buf_ix: 0,
+        controlled_since_last_payload: 0,
+        use_interpolated_nlsfs: 0,
+        use_dtx: 0,
+        use_in_band_fec: 0,
+        lbrr_gain_increases: 0,
+        lbrr_flags: [0; MAX_FRAMES_PER_PACKET],
+        prefill_flag: 0,
+        n_channels: 1,
+    };
+}
+
 impl Default for SilkEncoderStateCommon {
     fn default() -> Self {
-        Self {
-            indices: SideInfoIndices::default(),
-            in_hp_state: [0; 2],
-            snr_db_q7: 0,
-            input_quality_bands_q15: [0; VAD_N_BANDS],
-            speech_activity_q8: 0,
-            use_cbr: 0,
-            fs_khz: 0,
-            nb_subfr: 0,
-            warping_q16: 0,
-            la_shape: 0,
-            shape_win_length: 0,
-            shaping_lpc_order: 0,
-            predict_lpc_order: 0,
-            subfr_length: 0,
-            la_pitch: 0,
-            frame_length: 0,
-            ltp_mem_length: 0,
-            pitch_lpc_win_length: 0,
-            pitch_estimation_complexity: 0,
-            pitch_estimation_threshold_q16: 0,
-            first_frame_after_reset: 0,
-            prev_signal_type: 0,
-            input_tilt_q15: 0,
-            n_states_delayed_decision: 0,
-            prev_lag: 0,
-            x_buf: [0; 2 * MAX_FRAME_LENGTH + LA_SHAPE_MAX],
-            x_buf_idx: 0,
-            prev_nlsf_q15: [0; MAX_LPC_ORDER],
-            nlsf_mu_q20: 0,
-            n_nlsf_survivors: 0,
-            variable_hp_smth1_q15: 0,
-            variable_hp_smth2_q15: 0,
-            s_lp: SilkLPState::default(),
-            s_vad: SilkVADState::default(),
-            lbrr_enabled: 0,
-            indices_lbrr: [SideInfoIndices::default(); MAX_FRAMES_PER_PACKET],
-            pulses_lbrr: [[0; MAX_FRAME_LENGTH]; MAX_FRAMES_PER_PACKET],
-            n_frames_encoded: 0,
-            n_frames_per_packet: 0,
-            target_rate_bps: 0,
-            packet_size_ms: 0,
-            complexity: 0,
-            sum_log_gain_q7: 0,
-            packet_loss_perc: 0,
-            lbrr_flag: 0,
-            lbrr_prev_last_gain_index: 0,
-            no_speech_counter: 0,
-            in_dtx: 0,
-            vad_flags: [0; MAX_FRAMES_PER_PACKET],
-            frame_counter: 0,
-            ec_prev_signal_type: 0,
-            ec_prev_lag_index: 0,
-            frames_since_onset: 0,
-            input_buf: [0; MAX_FRAME_LENGTH + 2],
-            input_buf_ix: 0,
-            controlled_since_last_payload: 0,
-            use_interpolated_nlsfs: 0,
-            use_dtx: 0,
-            use_in_band_fec: 0,
-            lbrr_gain_increases: 0,
-            lbrr_flags: [0; MAX_FRAMES_PER_PACKET],
-            prefill_flag: 0,
-            n_channels: 1,
-        }
+        Self::DEFAULT
     }
 }
 
@@ -330,6 +388,9 @@ pub struct SilkEncoderState {
     pub pulses: [i8; MAX_FRAME_LENGTH],
     pub s_nsq: SilkNSQState,
     pub ltp_corr_q15: i32,
+    /// The float encoder's normalized pitch correlation (libopus
+    /// `silk_encoder_state_FLP.LTPCorr`).
+    pub ltp_corr: f32,
     pub res_nrg_smth: i32,
     pub pitch_estimation_lpc_order: i32,
     pub ps_nlsf_cb: Option<&'static NLSFCodebook>,
@@ -351,28 +412,38 @@ pub struct SilkEncoderState {
     /// and `timeSinceSwitchAllowed_ms`, also packet-level state).
     pub allow_bandwidth_switch: i32,
     pub time_since_switch_allowed_ms: i32,
+    /// The packet is the last stereo one before a switch to mono: its
+    /// frames collapse the stereo width (libopus `silk_EncControlStruct`
+    /// `toMono`, an input of the packet's call, read from the mid channel).
+    pub to_mono: bool,
 
     pub resampler_delay_buf: [i16; 48],
 }
 
+impl SilkEncoderState {
+    pub(crate) const DEFAULT: Self = Self {
+        s_cmn: SilkEncoderStateCommon::DEFAULT,
+        s_shape: SilkShapeState::DEFAULT,
+        pulses: [0; MAX_FRAME_LENGTH],
+        s_nsq: SilkNSQState::DEFAULT,
+        ltp_corr_q15: 0,
+        ltp_corr: 0.0,
+        res_nrg_smth: 0,
+        pitch_estimation_lpc_order: 0,
+        ps_nlsf_cb: None,
+        stereo: SilkStereoState::DEFAULT,
+        n_bits_used_lbrr: 0,
+        n_bits_exceeded: 0,
+        allow_bandwidth_switch: 0,
+        time_since_switch_allowed_ms: 0,
+        to_mono: false,
+        resampler_delay_buf: [0; 48],
+    };
+}
+
 impl Default for SilkEncoderState {
     fn default() -> Self {
-        Self {
-            s_cmn: SilkEncoderStateCommon::default(),
-            s_shape: SilkShapeState::default(),
-            pulses: [0; MAX_FRAME_LENGTH],
-            s_nsq: SilkNSQState::default(),
-            ltp_corr_q15: 0,
-            res_nrg_smth: 0,
-            pitch_estimation_lpc_order: 0,
-            ps_nlsf_cb: None,
-            stereo: SilkStereoState::default(),
-            n_bits_used_lbrr: 0,
-            n_bits_exceeded: 0,
-            allow_bandwidth_switch: 0,
-            time_since_switch_allowed_ms: 0,
-            resampler_delay_buf: [0; 48],
-        }
+        Self::DEFAULT
     }
 }
 
@@ -393,23 +464,27 @@ pub struct SilkNSQState {
     pub prev_sig_type: i8,
 }
 
+impl SilkNSQState {
+    pub(crate) const DEFAULT: Self = Self {
+        xq: [0; 2 * MAX_FRAME_LENGTH],
+        s_ltp_shp_q14: [0; 2 * MAX_FRAME_LENGTH],
+        s_lpc_q14: [0; MAX_SUB_FRAME_LENGTH + NSQ_LPC_BUF_LENGTH],
+        s_ar2_q14: [0; MAX_SHAPE_LPC_ORDER],
+        s_lf_ar_q14: 0,
+        s_diff_shp_q14: 0,
+        lag_prev: 0,
+        s_ltp_buf_idx: 0,
+        s_ltp_shp_buf_idx: 0,
+        rand_seed: 0,
+        prev_gain_q16: 0,
+        rewhite_flag: 0,
+        prev_sig_type: 0,
+    };
+}
+
 impl Default for SilkNSQState {
     fn default() -> Self {
-        Self {
-            xq: [0; 2 * MAX_FRAME_LENGTH],
-            s_ltp_shp_q14: [0; 2 * MAX_FRAME_LENGTH],
-            s_lpc_q14: [0; MAX_SUB_FRAME_LENGTH + NSQ_LPC_BUF_LENGTH],
-            s_ar2_q14: [0; MAX_SHAPE_LPC_ORDER],
-            s_lf_ar_q14: 0,
-            s_diff_shp_q14: 0,
-            lag_prev: 0,
-            s_ltp_buf_idx: 0,
-            s_ltp_shp_buf_idx: 0,
-            rand_seed: 0,
-            prev_gain_q16: 0,
-            rewhite_flag: 0,
-            prev_sig_type: 0,
-        }
+        Self::DEFAULT
     }
 }
 

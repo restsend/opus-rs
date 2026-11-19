@@ -1,13 +1,15 @@
+![WARN: LLM GENERATED](https://img.shields.io/badge/WARN-LLM%20GENERATED-FF6347)
+
 # opus-rs
 
-A pure-Rust implementation of the [Opus audio codec](https://opus-codec.org/) (RFC 6716), ported from the reference C implementation (libopus 1.6).
-
-> **Production-ready**
+A pure-Rust implementation of the [Opus audio codec](https://opus-codec.org/) (RFC 6716), ported from the reference C implementation, libopus. It tracks libopus main at f1afc4222a (after 1.6.1) and is tested bit for bit against it: CELT and SILK against the scalar float build, and the fixed-point SILK encoder of the `silk-fixed` feature against the fixed-point build. With SIMD, its output follows libopus's SIMD build at the same CPU level ([fuzz/DIFFERENTIAL.md](fuzz/DIFFERENTIAL.md)).
 
 ## Features
 
 - **Pure Rust** — no C dependencies
-- **High Performance:** Competitive with C libopus on x64/aarch64
+- **No `unsafe`:** the crate is `#![forbid(unsafe_code)]`; its SIMD kernels use [fearless_simd](https://crates.io/crates/fearless_simd)'s safe API. The C library in `capi/` uses `unsafe` for the C ABI only.
+- **SIMD like libopus:** on x86 the codec state holds a CPU level (scalar, SSE2, SSE4.1, AVX2) chosen at run time like libopus's, and the kernels at each level reproduce libopus's x86 kernels, so the output equals libopus's SIMD build on the same CPU. NEON and wasm simd128 kernels give the scalar results.
+- **Fast:** as fast as libopus with its SIMD kernels or faster in almost every case measured ([Performance](#performance)).
 - **`#![no_std]` + no `alloc`:** fully heap-free — runs on bare metal, RTOS, and WebAssembly with **no global allocator**
 
 ## Quick Start
@@ -43,11 +45,103 @@ let samples = decoder.decode(&output[..bytes], 320, &mut pcm).unwrap();
 cargo run --example wav_test
 ```
 
+## libopus API
+
+Each libopus function or control maps to an opus-rs method or function and
+is tested against libopus (`fuzz/opusref`, `fuzz/DIFFERENTIAL.md`).
+Constructors (`*_create`, `*_init`) are `new` (and `init` where a struct is
+built in place), `*_get_size` is `size_of`, and `*_destroy` is `Drop`. The
+setters with a range return libopus's error for values outside it; the
+public fields they set keep working, and are clamped when a frame is coded.
+Functions that mirror a libopus function return libopus's errors as the
+constants of `opus_rs::error` (`Err(error::BAD_ARG)` for `OPUS_BAD_ARG`,
+and so on); `error::code` gives the libopus number and `error::strerror`
+its text. The multistream and projection codecs keep their stream codecs
+in a `Vec` and need `std`; everything else builds without `std` and
+`alloc`. `MultistreamDecoderView`, `MultistreamEncoderView` and
+`ProjectionDecoderView` run them over a `MultistreamLayout` or
+`MultistreamEncoderHeader` and stream codecs held elsewhere, as the C
+library's flat states do.
+
+| libopus | opus-rs |
+| --- | --- |
+| `opus_encoder_create`, `opus_decoder_create`, `opus_decoder_init` | `OpusEncoder::new`, `OpusDecoder::new`, `OpusDecoder::init` |
+| `opus_decode_float` | `OpusDecoder::decode`, `decode_fec` |
+| `OPUS_SET_BANDWIDTH`, `OPUS_SET_MAX_BANDWIDTH`, `OPUS_SET_VBR_CONSTRAINT`, `OPUS_SET_DTX`, `OPUS_SET_SIGNAL` and their queries | `OpusEncoder::set_bandwidth`, `set_max_bandwidth`, `set_vbr_constraint`, `set_dtx`, `set_signal`, `bandwidth`, `max_bandwidth`, `vbr_constraint`, `dtx`, `signal` |
+| `OPUS_GET_LOOKAHEAD`, `OPUS_GET_FINAL_RANGE`, `OPUS_GET_IN_DTX` | `OpusEncoder::lookahead`, `final_range`, `in_dtx`; `OpusDecoder::final_range` |
+| `OPUS_SET_COMPLEXITY`, `OPUS_SET_OSCE_BWE` (decoder) | `OpusDecoder::set_complexity`, `complexity`, `set_osce_bwe`, `osce_bwe` |
+| `OPUS_SET_DRED_DURATION`, `opus_dred_decoder_create`, `opus_dred_parse`, `opus_dred_process` (feature `dred`) | `OpusEncoder::set_dred_duration`, `dred::OpusDredDecoder::new`, `parse`, `process` |
+| `opus_encoder_ctl(OPUS_RESET_STATE)` | `OpusEncoder::reset` |
+| `OPUS_SET_FORCE_MODE` (private) | `OpusEncoder::set_force_mode` (`OpusMode`) |
+| `OPUS_APPLICATION_VOIP`, `_AUDIO`, `_RESTRICTED_LOWDELAY`, `_RESTRICTED_SILK`, `_RESTRICTED_CELT` | `Application::Voip`, `Audio`, `RestrictedLowDelay`, `RestrictedSilk`, `RestrictedCelt` |
+| `OPUS_SET_APPLICATION`, `OPUS_GET_APPLICATION` | `OpusEncoder::set_application`, `application` |
+| `OPUS_SET_BITRATE`, `OPUS_GET_BITRATE` | `OpusEncoder::set_bitrate`, `bitrate` (the field `bitrate_bps` holds the set value) |
+| `OPUS_SET_COMPLEXITY`, `OPUS_SET_PACKET_LOSS_PERC` | `OpusEncoder::set_complexity`, `set_packet_loss_perc` (the fields `complexity`, `packet_loss_perc` hold the values) |
+| `OPUS_SET_INBAND_FEC`, `OPUS_GET_INBAND_FEC` | `OpusEncoder::set_inband_fec`, `inband_fec` (0, 1 or 2; the field `use_inband_fec` is on for 1 and 2) |
+| `OPUS_SET_VBR`, `OPUS_GET_VBR` | `OpusEncoder::set_vbr`, `vbr` (the field `use_cbr` is the opposite) |
+| `OPUS_GET_SAMPLE_RATE` (encoder) | `OpusEncoder::sample_rate` |
+| `OPUS_SET_LSB_DEPTH`, `OPUS_GET_LSB_DEPTH` | `OpusEncoder::set_lsb_depth`, `lsb_depth` |
+| `OPUS_SET_FORCE_CHANNELS`, `OPUS_GET_FORCE_CHANNELS` | `OpusEncoder::set_force_channels`, `force_channels` (`None` for `OPUS_AUTO`) |
+| `OPUS_SET_PREDICTION_DISABLED`, `OPUS_GET_PREDICTION_DISABLED` | `OpusEncoder::set_prediction_disabled`, `prediction_disabled` |
+| `OPUS_SET_EXPERT_FRAME_DURATION`, `OPUS_GET_EXPERT_FRAME_DURATION` | `OpusEncoder::set_expert_frame_duration`, `expert_frame_duration` (`FrameDuration`) |
+| `opus_decoder_ctl(OPUS_RESET_STATE)` | `OpusDecoder::reset` |
+| `OPUS_SET_GAIN`, `OPUS_GET_GAIN` | `OpusDecoder::set_gain`, `gain` |
+| `OPUS_SET_PHASE_INVERSION_DISABLED`, `OPUS_GET_PHASE_INVERSION_DISABLED` | `OpusEncoder::set_phase_inversion_disabled`, `phase_inversion_disabled`; `OpusDecoder::set_phase_inversion_disabled`, `phase_inversion_disabled` |
+| `OPUS_GET_SAMPLE_RATE`, `OPUS_GET_BANDWIDTH`, `OPUS_GET_PITCH`, `OPUS_GET_LAST_PACKET_DURATION` (decoder) | `OpusDecoder::sample_rate`, `bandwidth`, `pitch`, `last_packet_duration` |
+| `OPUS_SET_IGNORE_EXTENSIONS`, `OPUS_GET_IGNORE_EXTENSIONS` | `OpusDecoder::set_ignore_extensions`, `ignore_extensions` |
+| `opus_encode`, `opus_encode_float`, `opus_encode24` | `OpusEncoder::encode_i16`, `encode`, `encode24` |
+| `opus_decode`, `opus_decode24` | `OpusDecoder::decode_i16`, `decode_fec_i16`, `decode24`, `decode_fec24` |
+| `opus_multistream_encoder_create`, `opus_multistream_encode_float`, `opus_multistream_encode`, `opus_multistream_encode24` | `multistream_encoder::MultistreamEncoder::new`, `encode`, `encode_i16`, `encode24` |
+| `opus_multistream_surround_encoder_create` | `MultistreamEncoder::new_surround` (families 0, 1 with surround masking and the LFE stream, 2 ambisonics, 255; `streams`, `coupled_streams`, `mapping` give the layout) |
+| `opus_multistream_encoder_ctl` | `MultistreamEncoder::set_bitrate`, `bitrate`, `set_expert_frame_duration`, `reset`, `final_range`, the controls libopus forwards to every stream (`set_complexity`, `set_vbr`, ...), `first_stream` for the queries libopus answers from the first stream, and `encoder_state` (`OPUS_MULTISTREAM_GET_ENCODER_STATE`) |
+| `opus_projection_ambisonics_encoder_create`, `opus_projection_encode_float`, `opus_projection_encode`, `opus_projection_encode24` | `projection::ProjectionEncoder::new`, `encode`, `encode_i16`, `encode24` (`streams`, `coupled_streams` return the layout) |
+| `OPUS_PROJECTION_GET_DEMIXING_MATRIX_GAIN`, `_SIZE`, `OPUS_PROJECTION_GET_DEMIXING_MATRIX` | `ProjectionEncoder::demixing_matrix_gain`, `demixing_matrix_size`, `demixing_matrix`; the other controls through `ProjectionEncoder::multistream` |
+| `opus_projection_decoder_create`, `opus_projection_decode_float`, `opus_projection_decode`, `opus_projection_decode24` | `projection::ProjectionDecoder::new`, `decode`, `decode_i16`, `decode24` and their FEC variants; the controls through `ProjectionDecoder::multistream` |
+| `opus_multistream_decoder_create`, `opus_multistream_decode_float` | `multistream::MultistreamDecoder::new`, `decode`, `decode_fec` |
+| `opus_multistream_decode`, `opus_multistream_decode24` | `MultistreamDecoder::decode_i16`, `decode_fec_i16`, `decode24`, `decode_fec24` |
+| `opus_multistream_decoder_ctl` | `MultistreamDecoder::reset`, `set_gain`, `set_complexity`, `set_phase_inversion_disabled`, the queries (`gain`, `complexity`, `phase_inversion_disabled`, `bandwidth`, `sample_rate`, `last_packet_duration`, `final_range`) and `decoder_state` (`OPUS_MULTISTREAM_GET_DECODER_STATE`) |
+| `opus_packet_parse` | `packet::parse` |
+| `opus_packet_get_bandwidth`, `opus_packet_get_nb_channels`, `opus_packet_get_samples_per_frame` | `packet::bandwidth`, `nb_channels`, `samples_per_frame` (of the ToC byte) |
+| `opus_packet_get_nb_frames`, `opus_packet_get_nb_samples`, `opus_packet_has_lbrr` | `packet::nb_frames`, `nb_samples`, `has_lbrr` |
+| `opus_decoder_get_nb_samples` | `OpusDecoder::nb_samples` |
+| `opus_pcm_soft_clip` | `packet::soft_clip` |
+| `opus_repacketizer_create`, `_init`, `_cat`, `_get_nb_frames`, `_out_range`, `_out` | `repacketizer::Repacketizer::new`, `init`, `cat`, `nb_frames`, `out_range`, `out` (the repacketizer borrows the packets it holds and writes into another buffer) |
+| `opus_packet_pad`, `opus_multistream_packet_pad` | `repacketizer::pad`, `multistream_pad` (from the packet into a buffer of the padded length) |
+| `opus_packet_unpad`, `opus_multistream_packet_unpad` | `repacketizer::unpad`, `multistream_unpad` (in place) |
+| `opus_decoder_dred_decode`, `_decode24`, `_decode_float` (feature `dred`) | `OpusDecoder::dred_decode`, `dred_decode24`, `dred_decode_float` |
+| `opus_strerror` | `error::strerror` |
+| `opus_get_version_string` | `error::version_string` |
+
+The repacketizer and the padding functions keep the extensions of the
+frames they write, up to `repacketizer::MAX_EXTENSIONS` (256) per packet;
+more are `error::ALLOC_FAIL`, where libopus allocates them on its stack.
+
+Left out: `OPUS_SET_QEXT` (libopus builds it only with `--enable-qext`),
+`OPUS_SET_DNN_BLOB` (only with `USE_WEIGHTS_FILE`; the models are built in,
+and `OpusDredDecoder::with_model` takes others), and libopus's private
+encoder controls `OPUS_SET_LFE` and `OPUS_SET_ENERGY_MASK`, which the
+multistream encoder uses inside the crate. `opus_custom.h` is left out too: libopus exports it only with
+`--enable-custom-modes`, its modes need run-time tables for other frame
+sizes and rates, and its streams carry no ToC. The standard 48 kHz mode is
+`CeltEncoder`/`CeltDecoder`.
+
+## C library (libopus drop-in)
+
+`capi/` builds `libopus.so.0` and `libopus.a` with libopus's C API over
+opus-rs, from PR #115 by Object905: `nix build .#libopus` gives a package
+laid out as libopus's (headers, `opus.pc`), and an overlay
+`libopus = opus-rs.packages.${system}.libopus` puts it under every package
+of a nixpkgs set. libopus's own test programs (all but the encoder size
+check of `test_opus_api`) and the RFC 8251 vectors pass against it;
+[capi/README.md](capi/README.md) has the details and the differences from
+libopus.
+
 ## `#![no_std]` + no-`alloc` Support
 
 By default opus-rs runs on `std` with the **`heap` feature**: the large codec state
 (`OpusEncoder`/`OpusDecoder` working buffers) is allocated with `Box`, so the public
-structs are tiny (~1 KB each) and constructing them uses almost no stack.
+structs are small (about 3 KB for the encoder, under 0.1 KB for the decoder) and
+constructing them uses almost no stack.
 
 For `#![no_std]`, disable the default features. The crate then builds as
 `#![no_std]` with **no `alloc`** — fully heap-free, no global allocator required —
@@ -69,17 +163,54 @@ The public API (`OpusEncoder`/`OpusDecoder` with `encode`/`decode` writing into 
 
 | Feature  | Default | Description |
 |----------|---------|-------------|
-| `std`    | yes     | Enables OS-backed runtime x86 SIMD detection (CPUID). Without it the crate is `#![no_std]`. |
-| `heap`   | yes     | Allocates the large codec state on the heap (`Box`), shrinking `OpusEncoder`/`OpusDecoder` to ~1 KB so they can live on ordinary stacks. Requires `std`. |
+| `std`    | yes     | Links `std` for float math. Without it the crate is `#![no_std]`. |
+| `heap`   | yes     | Allocates the large codec state on the heap (`Box`), shrinking `OpusEncoder`/`OpusDecoder` to about 3 KB and 0.1 KB so they can live on ordinary stacks. Requires `std`. |
 | `libm`   | no      | Required for `#![no_std]` builds — provides float math via a pure-Rust port of musl `libm`. Not needed when `std` is on. |
-| `portable-atomic` | no | Uses the [`portable-atomic`](https://crates.io/crates/portable-atomic) crate for the lazily built mode table, so the crate builds on targets without compare-and-swap like `thumbv6m-none-eabi` (Cortex-M0/M0+) or `riscv32imc-unknown-none-elf` (ESP32-C3). There you also need its `critical-section` feature, or `--cfg portable_atomic_unsafe_assume_single_core` on single-core chips. |
+| `silk-fixed` | no | Encodes SILK with libopus's fixed-point encoder ([SILK encoder](#silk-encoder)). |
+| `portable-atomic` | no | No effect; kept for compatibility. The mode table is a compile-time `static`, so the crate uses no atomics and builds on targets without compare-and-swap like `thumbv6m-none-eabi` (Cortex-M0/M0+) or `riscv32imc-unknown-none-elf` (ESP32-C3). |
 
-> Runtime dependency footprint: `std` build → **0 deps**; `no_std` build → **1 dep** (`libm`, pure Rust).
+> Runtime dependencies: `libm` (pure Rust) in `no_std` builds, and `fearless_simd` (no dependencies of its own) on x86, x86-64, aarch64 and wasm32.
+
+### SILK encoder
+
+The SILK encoder is libopus's float encoder (`silk/float/`), the one of
+libopus's default and SIMD builds. The feature `silk-fixed` (off by
+default) selects the encoder of fixed-point libopus (`silk/fixed/`, a
+`FIXED_POINT` build) with its 16-bit SILK input for VoIP; its packets
+follow fixed-point libopus's with the fix of
+`fuzz/opusref/patches/silk-fixed-min-inv-gain.patch`, a Q-format slip in
+the fixed-point limit on the LPC prediction gain, which the fixed-point
+reference build applies too.
+
+### Neural network features
+
+The neural network features of libopus are ported to safe Rust and
+off by default, as in libopus. They follow its generic C kernels
+operation for operation and are tested bit for bit against a libopus
+built with them (`fuzz/opusref`, feature `dnn`).
+
+| Feature | libopus option | What it adds |
+|---------|----------------|--------------|
+| `dnn` | (the shared sources) | Layer kernels, weight blobs, the built-in 1.6.1 models, LPCNet features, PitchDNN, FARGAN. No codec change alone. |
+| `deep-plc` | `--enable-deep-plc` | Deep packet loss concealment at decoder complexity 5 and above (`OpusDecoder::set_complexity`). |
+| `osce` | `--enable-osce` | LACE (complexity 6) and NoLACE (7+) SILK enhancement, and the BBWENet bandwidth extension (`OpusDecoder::set_osce_bwe`, complexity 4+). Turns on `deep-plc`, as the configure option does. |
+| `dred` | `--enable-dred` | Deep redundancy: `OpusEncoder::set_dred_duration`, the DRED packet extension, `OpusDredDecoder` and `OpusDecoder::dred_decode[_float]`. Turns on `deep-plc`. |
+
+The weights (`dnn-weights/`, about 4.3 MB, SHA-256 in
+`dnn-weights/SHA256SUMS`) are embedded and read in place, so the features
+need no allocator and build without `std` (with `libm`). Their states make
+the codec larger: without `heap`, `OpusDecoder` grows from about 64 KB to
+about 256 KB and `OpusEncoder` from about 305 KB to about 384 KB with
+`deep-plc`, `osce` and `dred`, and setting the decoder up builds the deep
+PLC state (about 70 KB) on the stack. As in libopus, compiling `deep-plc` or `osce` changes
+SILK output at every complexity in small ways (no fade-in after a 16 kHz
+loss; a clamp to ±32767 for 20 ms 16 kHz frames); the affected comparisons
+with a libopus without these options are ignored under the features.
 
 ### Notes for `no_std` users
 
 - **Large structs:** without `heap`, every working buffer is inline, so
-  `OpusEncoder`/`OpusDecoder` are large (~250 KB / ~175 KB each). Place them in a
+  `OpusEncoder`/`OpusDecoder` are large (about 305 KB and 64 KB). Place them in a
   `static` (wrap init in your own `Once`-like guard) or a dedicated buffer rather
   than on the stack. `OpusDecoder::new` still returns the decoder through the stack,
   so use `OpusDecoder::init` to build it directly in that memory:
@@ -90,39 +221,42 @@ The public API (`OpusEncoder`/`OpusDecoder` with `encode`/`decode` writing into 
   let decoder = OpusDecoder::init(unsafe { &mut *(&raw mut DECODER) }, 48000, 2)?;
   ```
 
+  `init` copies a constant image of an empty decoder into the slot, so the
+  image (about 64 KB) is part of the binary's read-only data.
+
   Test threads use a 16 MB stack (see `.cargo/config.toml`).
-- **x86 SIMD:** without `std`, AVX/AVX2 dispatch falls back to compile-time detection. Build with `RUSTFLAGS="-C target-feature=+avx2"` to enable it. aarch64 NEON is unconditional.
 - **Packets are capped** at the RFC 6716 maximum of 1276 bytes (the heap-free range-coder buffer is sized accordingly); standalone `RangeCoder`/CELT use supports up to 2048 bytes.
-- **Verified targets:** `thumbv7em-none-eabi` (Cortex-M), `wasm32-unknown-unknown`, and any Linux no_std target. With `portable-atomic`, also `thumbv6m-none-eabi` and `riscv32imc-unknown-none-elf`. Check with `scripts/check_no_std.sh`.
+- **Verified targets:** `thumbv7em-none-eabi` (Cortex-M), `wasm32-unknown-unknown`, and any Linux no_std target, and targets without compare-and-swap such as `thumbv6m-none-eabi` and `riscv32imc-unknown-none-elf`. Check with `scripts/check_no_std.sh`.
 
 ## Performance
 
-Criterion benchmark (`cargo bench --bench opus_vs_c_bench`) with 20 samples, 100 ms warm-up, 500 ms measurement, real speech input (`fixtures/answer_16k.wav`), mono encode-only. All numbers below are wall-clock time for the full frame set.
+opus-rs is faster than libopus with its SIMD kernels in almost every case
+measured. The numbers are opus-rs's time divided by libopus's time for the
+same work, so below 1.0 means opus-rs is faster (0.5 would be twice as fast).
+Each row is the geometric mean over its cases, with a 95% confidence interval
+for measurement noise (bootstrap over 10 rounds per case; each round takes the
+minimum of 20 interleaved runs). Measured on an idle AMD Zen 5 against libopus
+1.6.1 from nixpkgs (run-time CPU detection), both at their AVX2 level, over 57
+encode and decode cases (mono and stereo, 8–48 kHz, 2.5–60 ms frames, VoIP and
+audio, complexity 0–10, CBR/VBR, DTX, FEC, losses):
 
-### vs C Opus (libopus 1.6.1) on x86-64 (AVX2/FMA)
+| | opus-rs time / libopus time |
+|---|---|
+| Encoding, all cases | 0.805 (0.805–0.805) |
+| Encoding, CELT/Hybrid at complexity 9/10 | 0.773 (0.773–0.773) |
+| Decoding, all cases | 0.911 (0.910–0.911) |
+| Decoding, high-bitrate CELT (256–510 kbit/s) | 1.005 (1.004–1.007) |
+| Deep PLC, per concealed frame | 0.878 (0.877–0.878) |
 
-Measured on AMD Ryzen 7 5700X, compiled with `--release` (opt-level=3 + ThinLTO).
+The deep PLC row compares with libopus main built as its configure builds it
+with the neural options (intrinsics and run-time CPU detection), since
+nixpkgs' libopus has no deep PLC.
 
-| Config | Pure Rust | C Opus | Ratio |
-|--------|-----------|--------|-------|
-| 8 kHz / 20 ms VoIP | **39.9 ms** | 40.6 ms | 0.98× (**Rust 2% faster**) |
-| 16 kHz / 20 ms VoIP | **66.8 ms** | 67.1 ms | 1.00× (**Rust 0.5% faster**) |
-| 16 kHz / 10 ms VoIP | 73.2 ms | **72.5 ms** | 1.01× (within noise) |
-| 48 kHz / 20 ms Audio | **25.1 ms** | 28.4 ms | 0.88× (**Rust 12% faster**) |
-| 48 kHz / 10 ms Audio | **29.7 ms** | 31.2 ms | 0.95× (**Rust 5% faster**) |
-
-### vs C Opus (libopus 1.6.1) on Apple Silicon
-
-Measured on Apple Silicon M-series (aarch64), compiled with `--release` (opt-level=3 + ThinLTO), latest run on 2026-04-23.
-
-| Config | Pure Rust | C Opus | Ratio |
-|--------|-----------|--------|-------|
-| 8 kHz / 20 ms VoIP | 31.47 ms | **31.20 ms** | 1.01× (C 0.9% faster) |
-| 16 kHz / 20 ms VoIP | **51.19 ms** | 52.81 ms | 0.97× (**Rust 3.1% faster**) |
-| 16 kHz / 10 ms VoIP | 55.69 ms | **55.49 ms** | 1.00× (within noise) |
-| 48 kHz / 20 ms Audio | **13.97 ms** | 19.39 ms | 0.72× (**Rust 28% faster**) |
-| 48 kHz / 10 ms Audio | **16.19 ms** | 20.28 ms | 0.80× (**Rust 20% faster**) |
-
+On aarch64 and wasm32, opus-rs runs its scalar code plus NEON or simd128
+kernels for the SILK quantizer; these targets were not measured in this
+round. `cargo bench --bench
+opus_vs_c_bench` compares opus-rs with the libopus that the `opus` crate
+links.
 
 ## Release Notes
 
@@ -603,6 +737,17 @@ C encoder, and packet framing against the C repacketizer.
 - **Performance:** unchanged vs 0.1.26 (measured within ±0.5% on `opus_real`; no per-frame allocation overhead).
 - **Conformance:** RFC 6716 1276-byte packet cap enforced on the Opus path; the standalone `RangeCoder`/CELT buffer supports up to 2048 bytes.
 - `wav_test` example now tags output files by build (`_std` / `_nostd`) for A/B listening across build modes.
+
+## AI assistance
+
+Much of opus-rs's code, tests and documentation was written by LLMs. This
+includes the libopus conformance fixes, the port to libopus main, the neural
+features (Deep PLC, DRED, OSCE, BWE), the fuzzing harnesses and the
+optimisations, which were written by Claude (Anthropic). They are checked
+against libopus with differential tests and fuzzing
+([fuzz/DIFFERENTIAL.md](fuzz/DIFFERENTIAL.md), `scripts/test-all.sh`);
+[fuzz/REGRESSIONS.md](fuzz/REGRESSIONS.md) lists every fix and the test that
+guards it. opus-rs has not had an independent security audit.
 
 ## License
 

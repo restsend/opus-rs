@@ -8,18 +8,21 @@
 
 use opus_rs::{Application, OpusDecoder, OpusEncoder};
 
-/// `size_of` returns bytes.
+/// The largest size of `OpusEncoder` and `OpusDecoder` with `heap`, in
+/// bytes (`size_of`).
+const HEAP_BOUND: usize = 4 * 1024;
+
 #[cfg(feature = "heap")]
 #[test]
 fn encoder_and_decoder_structs_are_small_with_heap() {
     assert!(
-        std::mem::size_of::<OpusEncoder>() < 4 * 1024,
-        "OpusEncoder is {} bytes with heap; expected < 4 KiB",
+        std::mem::size_of::<OpusEncoder>() < HEAP_BOUND,
+        "OpusEncoder is {} bytes with heap; expected < {HEAP_BOUND}",
         std::mem::size_of::<OpusEncoder>()
     );
     assert!(
-        std::mem::size_of::<OpusDecoder>() < 4 * 1024,
-        "OpusDecoder is {} bytes with heap; expected < 4 KiB",
+        std::mem::size_of::<OpusDecoder>() < HEAP_BOUND,
+        "OpusDecoder is {} bytes with heap; expected < {HEAP_BOUND}",
         std::mem::size_of::<OpusDecoder>()
     );
 }
@@ -27,17 +30,23 @@ fn encoder_and_decoder_structs_are_small_with_heap() {
 /// Without `heap` the state is inline, so the structs must be large — this
 /// keeps the tradeoff visible and guards against accidentally making the
 /// heap-free build tiny (which would break its `static`-placement model).
+/// The bound is relative to the boxed layout: with `heap` both structs stay
+/// below `HEAP_BOUND` (the test above), and the inline ones must hold more
+/// than 8 times that. Shrinking the working buffers keeps them above it
+/// (the decoder is 92408 bytes on lmyzrvyq, 63712 with the optimisation
+/// round's buffers).
 #[cfg(not(feature = "heap"))]
 #[test]
 fn structs_are_large_without_heap() {
+    const INLINE_BOUND: usize = 8 * HEAP_BOUND;
     assert!(
-        std::mem::size_of::<OpusEncoder>() > 100_000,
-        "OpusEncoder is {} bytes without heap; expected > 100 KiB",
+        std::mem::size_of::<OpusEncoder>() > INLINE_BOUND,
+        "OpusEncoder is {} bytes without heap; expected > {INLINE_BOUND}",
         std::mem::size_of::<OpusEncoder>()
     );
     assert!(
-        std::mem::size_of::<OpusDecoder>() > 100_000,
-        "OpusDecoder is {} bytes without heap; expected > 100 KiB",
+        std::mem::size_of::<OpusDecoder>() > INLINE_BOUND,
+        "OpusDecoder is {} bytes without heap; expected > {INLINE_BOUND}",
         std::mem::size_of::<OpusDecoder>()
     );
 }
@@ -95,6 +104,7 @@ fn roundtrip_on_stack_with(stack_size: usize, application: Application, bitrate:
 /// comfortably below a Windows main-thread's default 1 MiB stack.
 #[cfg(feature = "heap")]
 #[test]
+#[cfg_attr(target_os = "wasi", ignore = "WASI has no threads")]
 fn construction_and_roundtrip_fit_in_768kb_stack() {
     assert!(
         roundtrip_on_stack(768 * 1024),
@@ -106,6 +116,7 @@ fn construction_and_roundtrip_fit_in_768kb_stack() {
 /// channel (issue #48).
 #[cfg(feature = "heap")]
 #[test]
+#[cfg_attr(target_os = "wasi", ignore = "WASI has no threads")]
 fn stereo_hybrid_roundtrip_fits_in_768kb_stack() {
     assert!(
         roundtrip_on_stack_with(768 * 1024, Application::Voip, 32_000),

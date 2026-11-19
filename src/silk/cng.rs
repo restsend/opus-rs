@@ -16,7 +16,7 @@ const CNG_GAIN_SMTH_THRESHOLD_Q16: i32 = 46396;
 const CNG_NLSF_SMTH_Q16: i32 = 16348;
 
 /// Reset the comfort noise state (silk_CNG_Reset).
-fn silk_cng_reset(ps_dec: &mut SilkDecoderState) {
+pub(crate) fn silk_cng_reset(ps_dec: &mut SilkDecoderState) {
     let order = ps_dec.lpc_order as usize;
     let step_q15 = silk_div32_16(i16::MAX as i32, order as i32 + 1);
     let mut acc_q15 = 0;

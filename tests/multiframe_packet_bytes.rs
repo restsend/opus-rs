@@ -13,8 +13,8 @@
 //! for byte.
 
 use opusic_sys::{
-    opus_encode_float, opus_encoder_create, opus_encoder_ctl, opus_encoder_destroy,
     OPUS_APPLICATION_AUDIO, OPUS_APPLICATION_VOIP, OPUS_SET_BITRATE_REQUEST, OPUS_SET_VBR_REQUEST,
+    opus_encode_float, opus_encoder_create, opus_encoder_ctl, opus_encoder_destroy,
 };
 
 /// A deterministic speech-like signal: harmonic sweeps under syllable-rate
@@ -222,8 +222,9 @@ fn multiframe_framing_matches_libopus() {
                     enc.use_cbr = cbr;
                     let mut c_out = [0u8; 1500];
                     let mut rs_out = [0u8; 1500];
-                    let what =
-                        |f: usize| format!("{app} {ch}ch {bitrate} b/s cbr={cbr} {frame}smp pkt{f}");
+                    let what = |f: usize| {
+                        format!("{app} {ch}ch {bitrate} b/s cbr={cbr} {frame}smp pkt{f}")
+                    };
                     for (f, x) in pcm.chunks_exact(frame * ch).enumerate() {
                         let nc = c.encode_float(x, frame, &mut c_out);
                         let nr = enc

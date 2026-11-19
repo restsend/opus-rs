@@ -12,6 +12,13 @@ pub struct StereoDecState {
     pub s_side: [i16; 2],
 }
 
+impl StereoDecState {
+    pub(crate) const DEFAULT: Self = Self {
+        pred_prev_q13: [0; 2],
+        s_mid: [0; 2],
+        s_side: [0; 2],
+    };
+}
 
 /// Convert adaptive Mid/Side representation to Left/Right stereo signal.
 /// Ported from libopus `silk/stereo_MS_to_LR.c`.

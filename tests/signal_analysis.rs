@@ -132,7 +132,7 @@ fn check_input(input: &[f32], sr: usize, channels: usize, ms: usize, reference: 
     let mut expected = reference.iter().peekable();
     for f in 0..=last {
         let pcm = &input[f * frame * channels..(f + 1) * frame * channels];
-        let info = analysis.run(fft, AnalysisPcm::F32(pcm), frame, channels, 24);
+        let info = analysis.run(fft, AnalysisPcm::F32(pcm), frame, frame, channels, 24);
         let Some(&(_, values, bandwidth, leak_boost)) = expected.next_if(|r| r.0 == f) else {
             continue;
         };

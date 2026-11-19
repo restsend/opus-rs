@@ -1,0 +1,9 @@
+# Lane D fix round (multistream and decoders); same columns as ../manifest.tsv.
+m1	diff_multistream	-	DIFF[layout]	e058f294513553e2	MultistreamDecoder accepts a layout with zero streams
+m2	test:multistream	-	concealment_is_limited_to_120_ms ... FAILED	-	multistream concealment longer than 120 ms
+m3	diff_multistream	OFZ_SUPPRESS=ms-empty	DIFF[pcm]	870a8f6919615b01	multistream packet with a bad later stream advances the earlier streams
+m4	test:multistream	-	is_invalid ... FAILED	-	multistream packets decoded before the whole packet is validated
+m5	test:multistream	-	an_empty_packet_conceals_every_stream ... FAILED	-	empty multistream packet rejected where libopus conceals every stream
+m6	diff_multistream	-	DIFF[result]	0d0f9a194fce3320	lost multistream packet: opus-rs error, libopus conceals
+m7	test:multistream	-	fec_recovers_every_stream ... FAILED	-	multistream decoder without decode_fec and final range
+m8	diff_decoder@dnn	OFZ_SUPPRESS=simd	burg.rs	4c4f324bede76a8c	burg backward-correlation index computed through an intermediate below zero

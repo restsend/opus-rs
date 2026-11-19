@@ -1,12 +1,14 @@
 use crate::fixedvec::FixedVec;
-use crate::pitch::pitch_xcorr;
+use crate::pitch::{pitch_xcorr, xcorr_kernel};
 
+/// libopus `_celt_lpc` (celt_lpc.c, float build).
 pub fn lpc(lpc: &mut [f32], ac: &[f32], p: usize) {
+    // The coefficients start at zero, so those after an early stop stay
+    // zero; a NaN ac[0] fails the test and leaves them all zero.
+    lpc[..p].fill(0.0);
     let mut error = ac[0];
-    if error <= 1e-10 {
-        for x in lpc.iter_mut() {
-            *x = 0.0;
-        }
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    if !(error > 1e-10) {
         return;
     }
 
@@ -41,6 +43,7 @@ pub fn autocorr(
     overlap: usize,
     lag: usize,
     n: usize,
+    arch: crate::Arch,
 ) {
     let xx_vec: FixedVec<f32, 2880>;
     let xx: &[f32] = if let Some(win) = window {
@@ -62,7 +65,7 @@ pub fn autocorr(
 
     let fast_n = n - lag;
 
-    pitch_xcorr(xx, xx, ac, fast_n, lag + 1);
+    pitch_xcorr(xx, xx, ac, fast_n, lag + 1, arch);
 
     for k in 0..=lag {
         let mut d = 0.0f32;
@@ -73,149 +76,35 @@ pub fn autocorr(
     }
 }
 
-pub fn celt_fir(x: &[f32], num: &[f32], y: &mut [f32], n: usize, ord: usize) {
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        celt_fir_neon(x, num, y, n, ord);
+/// The largest order of [`celt_fir`].
+const MAX_FIR_ORDER: usize = 24;
+
+/// libopus `celt_fir_c` at `arch`: `y[i] = x[i] + sum_j num[ord-1-j] *
+/// x[i+j-ord]` with the history in `x[..ord]` and the input in
+/// `x[ord..ord + n]`. The outputs in whole groups of four are
+/// `xcorr_kernel` at `arch` (libopus's SSE kernel at the x86 levels), the
+/// rest sums in order.
+pub fn celt_fir(x: &[f32], num: &[f32], y: &mut [f32], n: usize, ord: usize, arch: crate::Arch) {
+    assert!(ord <= MAX_FIR_ORDER);
+    let mut rnum = [0.0f32; MAX_FIR_ORDER];
+    for (r, &v) in rnum[..ord].iter_mut().zip(num[..ord].iter().rev()) {
+        *r = v;
     }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        for i in 0..n {
-            let mut sum = x[i];
-            for j in 0..ord {
-                if i > j {
-                    sum += num[j] * x[i - j - 1];
-                }
-            }
-            y[i] = sum;
-        }
+    let rnum = &rnum[..ord];
+    let groups = n & !3;
+    for i in (0..groups).step_by(4) {
+        let sum: [f32; 4] = x[ord + i..ord + i + 4].try_into().unwrap();
+        let out = match arch {
+            crate::Arch::Scalar => xcorr_kernel::<4, false>(rnum, &x[i..], sum),
+            _ => xcorr_kernel::<4, true>(rnum, &x[i..], sum),
+        };
+        y[i..i + 4].copy_from_slice(&out);
     }
-}
-
-pub fn celt_iir(x: &[f32], den: &[f32], y: &mut [f32], n: usize, ord: usize, mem: &mut [f32]) {
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        celt_iir_neon(x, den, y, n, ord, mem);
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        for i in 0..n {
-            let mut sum = x[i];
-            for j in 0..ord {
-                sum -= den[j] * mem[j];
-            }
-            for j in (1..ord).rev() {
-                mem[j] = mem[j - 1];
-            }
-            mem[0] = sum;
-            y[i] = sum;
+    for i in groups..n {
+        let mut sum = x[ord + i];
+        for (j, &r) in rnum.iter().enumerate() {
+            sum += r * x[i + j];
         }
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn celt_fir_neon(x: &[f32], num: &[f32], y: &mut [f32], n: usize, ord: usize) {
-    use core::arch::aarch64::*;
-
-    if ord < 4 {
-        for i in 0..n {
-            let mut sum = x[i];
-            for j in 0..ord {
-                if i > j {
-                    sum += num[j] * x[i - j - 1];
-                }
-            }
-            y[i] = sum;
-        }
-        return;
-    }
-
-    for i in 0..n {
-        let mut sum = vdupq_n_f32(x[i]);
-
-        let mut j = 0;
-        while j + 4 <= ord && i > j + 3 {
-            let coeff = vld1q_f32(num.as_ptr().add(j));
-            let x_vals = vld1q_f32(x.as_ptr().add(i - j - 4));
-            let x_reversed = vrev64q_f32(x_vals);
-            let x_reversed = vextq_f32(x_reversed, x_reversed, 2);
-            sum = vfmaq_f32(sum, coeff, x_reversed);
-            j += 4;
-        }
-
-        let sum_low = vget_low_f32(sum);
-        let sum_high = vget_high_f32(sum);
-        let sum_pair = vadd_f32(sum_low, sum_high);
-        let mut result = vget_lane_f32(sum_pair, 0) + vget_lane_f32(sum_pair, 1);
-
-        while j < ord {
-            if i > j {
-                result += num[j] * x[i - j - 1];
-            }
-            j += 1;
-        }
-
-        y[i] = result;
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn celt_iir_neon(
-    x: &[f32],
-    den: &[f32],
-    y: &mut [f32],
-    n: usize,
-    ord: usize,
-    mem: &mut [f32],
-) {
-    use core::arch::aarch64::*;
-
-    if ord < 4 {
-        for i in 0..n {
-            let mut sum = x[i];
-            for j in 0..ord {
-                sum -= den[j] * mem[j];
-            }
-            for j in (1..ord).rev() {
-                mem[j] = mem[j - 1];
-            }
-            mem[0] = sum;
-            y[i] = sum;
-        }
-        return;
-    }
-
-    for i in 0..n {
-        let mut feedback = vdupq_n_f32(0.0);
-
-        let mut j = 0;
-        while j + 4 <= ord {
-            let coeff = vld1q_f32(den.as_ptr().add(j));
-            let mem_vals = vld1q_f32(mem.as_ptr().add(j));
-            feedback = vfmaq_f32(feedback, coeff, mem_vals);
-            j += 4;
-        }
-
-        let fb_low = vget_low_f32(feedback);
-        let fb_high = vget_high_f32(feedback);
-        let fb_pair = vadd_f32(fb_low, fb_high);
-        let mut fb_sum = vget_lane_f32(fb_pair, 0) + vget_lane_f32(fb_pair, 1);
-
-        while j < ord {
-            fb_sum += den[j] * mem[j];
-            j += 1;
-        }
-
-        let sum = x[i] - fb_sum;
-
-        for j in (1..ord).rev() {
-            mem[j] = mem[j - 1];
-        }
-        mem[0] = sum;
         y[i] = sum;
     }
 }

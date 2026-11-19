@@ -10,20 +10,14 @@
 //! libopus with the full duration and track the input, and libopus's own
 //! 40/60 ms packet must decode in opus-rs.
 
-use opus::{
-    Application as CApp, Channels as CCh, Decoder as CDec, Encoder as CEnc,
-};
+use opus::{Application as CApp, Channels as CCh, Decoder as CDec, Encoder as CEnc};
 use opus_rs::{Application, OpusDecoder, OpusEncoder};
 use std::f32::consts::PI;
 
 const MAX_FRAME: usize = 5760; // 120 ms @ 48 kHz, per channel
 
 fn c_channels(ch: usize) -> CCh {
-    if ch == 2 {
-        CCh::Stereo
-    } else {
-        CCh::Mono
-    }
+    if ch == 2 { CCh::Stereo } else { CCh::Mono }
 }
 
 /// Voiced-like harmonic series; the right channel is a phase-shifted copy.
@@ -118,30 +112,34 @@ fn rust_enc_c_dec(
     let mut buf = vec![0f32; MAX_FRAME * ch];
     for p in 0..packets {
         let n = enc
-            .encode(&input[p * frame * ch..(p + 1) * frame * ch], frame, &mut pkt)
+            .encode(
+                &input[p * frame * ch..(p + 1) * frame * ch],
+                frame,
+                &mut pkt,
+            )
             .unwrap_or_else(|e| panic!("{rate} {app:?} {ms}ms p{p}: opus-rs encode failed: {e}"));
         let got = dec
             .decode_float(&pkt[..n], &mut buf, false)
             .unwrap_or_else(|e| panic!("{rate} {app:?} {ms}ms p{p}: libopus rejected packet: {e}"));
         assert_eq!(
-            got,
-            frame,
+            got, frame,
             "{rate} {app:?} {ms}ms p{p}: libopus decoded {got}, want {frame}"
         );
         ref_pcm.extend_from_slice(&input[p * frame * ch..(p + 1) * frame * ch]);
         out_pcm.extend_from_slice(&buf[..got * ch]);
     }
     let _ = capp;
-    worst_window_snr(&mid(&ref_pcm, ch), &mid(&out_pcm, ch), rate / 50, frame, (rate * 40 / 1000) as isize)
+    worst_window_snr(
+        &mid(&ref_pcm, ch),
+        &mid(&out_pcm, ch),
+        rate / 50,
+        frame,
+        (rate * 40 / 1000) as isize,
+    )
 }
 
 /// libopus encodes `ms` frames; opus-rs decodes them.
-fn c_enc_rust_dec(
-    rate: usize,
-    ch: usize,
-    capp: CApp,
-    ms: usize,
-) -> f64 {
+fn c_enc_rust_dec(rate: usize, ch: usize, capp: CApp, ms: usize) -> f64 {
     let frame = expected(rate, ms);
     let packets = 1000 / ms;
     let input = voiced(rate, ch, frame * packets);
@@ -158,14 +156,19 @@ fn c_enc_rust_dec(
             .decode(&pkt[..n], MAX_FRAME, &mut buf)
             .unwrap_or_else(|e| panic!("{rate} {ms}ms p{p}: opus-rs decode failed: {e}"));
         assert_eq!(
-            got,
-            frame,
+            got, frame,
             "{rate} {ms}ms p{p}: opus-rs decoded {got}, want {frame}"
         );
         ref_pcm.extend_from_slice(&input[p * frame * ch..(p + 1) * frame * ch]);
         out_pcm.extend_from_slice(&buf[..got * ch]);
     }
-    worst_window_snr(&mid(&ref_pcm, ch), &mid(&out_pcm, ch), rate / 50, frame, (rate * 40 / 1000) as isize)
+    worst_window_snr(
+        &mid(&ref_pcm, ch),
+        &mid(&out_pcm, ch),
+        rate / 50,
+        frame,
+        (rate * 40 / 1000) as isize,
+    )
 }
 
 /// SILK is not waveform-matching; CELT is. Both clear this comfortably for
@@ -197,27 +200,99 @@ fn check_all(
 
 #[test]
 fn silk_60ms_mono_and_stereo() {
-    check_all(16000, 1, Application::Voip, CApp::Voip, 24000, 60, &[false, true]);
-    check_all(16000, 2, Application::Voip, CApp::Voip, 32000, 60, &[false, true]);
-    check_all(8000, 1, Application::Voip, CApp::Voip, 16000, 60, &[false, true]);
+    check_all(
+        16000,
+        1,
+        Application::Voip,
+        CApp::Voip,
+        24000,
+        60,
+        &[false, true],
+    );
+    check_all(
+        16000,
+        2,
+        Application::Voip,
+        CApp::Voip,
+        32000,
+        60,
+        &[false, true],
+    );
+    check_all(
+        8000,
+        1,
+        Application::Voip,
+        CApp::Voip,
+        16000,
+        60,
+        &[false, true],
+    );
 }
 
 #[test]
 fn silk_40ms_mono_and_stereo() {
-    check_all(16000, 1, Application::Voip, CApp::Voip, 24000, 40, &[false, true]);
-    check_all(16000, 2, Application::Voip, CApp::Voip, 32000, 40, &[false, true]);
+    check_all(
+        16000,
+        1,
+        Application::Voip,
+        CApp::Voip,
+        24000,
+        40,
+        &[false, true],
+    );
+    check_all(
+        16000,
+        2,
+        Application::Voip,
+        CApp::Voip,
+        32000,
+        40,
+        &[false, true],
+    );
 }
 
 #[test]
 fn celt_60ms_mono_and_stereo() {
-    check_all(48000, 1, Application::Audio, CApp::Audio, 64000, 60, &[false, true]);
-    check_all(48000, 2, Application::Audio, CApp::Audio, 96000, 60, &[false, true]);
+    check_all(
+        48000,
+        1,
+        Application::Audio,
+        CApp::Audio,
+        64000,
+        60,
+        &[false, true],
+    );
+    check_all(
+        48000,
+        2,
+        Application::Audio,
+        CApp::Audio,
+        96000,
+        60,
+        &[false, true],
+    );
 }
 
 #[test]
 fn celt_40ms_mono_and_stereo() {
-    check_all(48000, 1, Application::Audio, CApp::Audio, 64000, 40, &[false, true]);
-    check_all(48000, 2, Application::Audio, CApp::Audio, 96000, 40, &[false, true]);
+    check_all(
+        48000,
+        1,
+        Application::Audio,
+        CApp::Audio,
+        64000,
+        40,
+        &[false, true],
+    );
+    check_all(
+        48000,
+        2,
+        Application::Audio,
+        CApp::Audio,
+        96000,
+        40,
+        &[false, true],
+    );
 }
 
 #[test]
@@ -226,7 +301,15 @@ fn hybrid_60ms_mono_and_stereo() {
     // VBR only: Hybrid *stereo* CBR is already broken at 20 ms on `main`
     // (opus-rs->libopus ~0 dB), a pre-existing bug independent of frame size
     // and out of scope for #35.
-    check_all(48000, 1, Application::Voip, CApp::Voip, 32000, 60, &[false, true]);
+    check_all(
+        48000,
+        1,
+        Application::Voip,
+        CApp::Voip,
+        32000,
+        60,
+        &[false, true],
+    );
     check_all(48000, 2, Application::Voip, CApp::Voip, 48000, 60, &[false]);
 }
 
@@ -242,7 +325,12 @@ fn issue_repro_exact_config() {
     let n = enc.encode(&pcm, 960, &mut out).expect("60 ms must encode");
     assert!(n > 1);
     // TOC config 11 = SILK wideband 60 ms.
-    assert_eq!(out[0] >> 3, 11, "expected SILK WB 60 ms TOC, got {:#04x}", out[0]);
+    assert_eq!(
+        out[0] >> 3,
+        11,
+        "expected SILK WB 60 ms TOC, got {:#04x}",
+        out[0]
+    );
 
     let mut dec = OpusDecoder::new(16000, 2).unwrap();
     let mut decoded = vec![0f32; 960 * 2];

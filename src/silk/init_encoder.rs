@@ -4,8 +4,12 @@ use crate::silk::structs::SilkEncoderState;
 use crate::silk::tuning_parameters::VARIABLE_HP_MIN_CUTOFF_HZ;
 use crate::silk::vad::silk_vad_init;
 
-pub fn silk_init_encoder(ps_enc: &mut SilkEncoderState, _arch: i32) -> i32 {
+/// libopus `silk_init_encoder` on a state set to its default: the encoder
+/// runs its kernels at `arch`.
+pub fn silk_init_encoder(ps_enc: &mut SilkEncoderState, arch: crate::Arch) -> i32 {
     let mut ret = SILK_NO_ERROR;
+
+    ps_enc.s_cmn.arch = arch;
 
     ps_enc.s_cmn.variable_hp_smth1_q15 = silk_lin2log(VARIABLE_HP_MIN_CUTOFF_HZ) << 8;
     ps_enc.s_cmn.variable_hp_smth2_q15 = ps_enc.s_cmn.variable_hp_smth1_q15;

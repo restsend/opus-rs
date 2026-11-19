@@ -6,7 +6,22 @@ use crate::silk::decode_parameters::silk_decode_parameters;
 use crate::silk::decode_pulses::silk_decode_pulses;
 use crate::silk::decoder_structs::{SilkDecoderControl, SilkDecoderState};
 use crate::silk::define::*;
-use crate::silk::plc::{silk_plc, silk_plc_glue_frames};
+use crate::silk::plc::{DeepPlc, silk_plc, silk_plc_glue_frames};
+
+/// The OSCE model and one channel's OSCE state, which libopus's
+/// silk_decode_frame enhances each decoded frame with.
+#[cfg(feature = "osce")]
+pub struct OsceArgs<'a> {
+    /// `None` when no model is loaded (libopus `loaded == 0`).
+    pub model: Option<&'a crate::dnn::osce::OsceModel<'static>>,
+    pub state: &'a mut crate::dnn::osce::Osce,
+}
+/// The OSCE arguments of silk_decode_frame (ENABLE_OSCE).
+#[cfg(feature = "osce")]
+pub type OsceHook<'a> = Option<OsceArgs<'a>>;
+/// Without the `osce` feature there is nothing to pass.
+#[cfg(not(feature = "osce"))]
+pub type OsceHook<'a> = Option<&'a mut core::convert::Infallible>;
 
 pub const FLAG_DECODE_NORMAL: i32 = 0;
 pub const FLAG_PACKET_LOST: i32 = 1;
@@ -19,7 +34,11 @@ pub fn silk_decode_frame(
     p_n: &mut i32,
     lost_flag: i32,
     cond_coding: i32,
+    lpcnet: DeepPlc<'_>,
+    osce: OsceHook<'_>,
 ) -> i32 {
+    #[cfg(not(feature = "osce"))]
+    let _ = osce;
     let l = ps_dec.frame_length as usize;
     let mut ps_dec_ctrl = SilkDecoderControl::new();
     ps_dec_ctrl.ltp_scale_q14 = 0;
@@ -31,6 +50,8 @@ pub fn silk_decode_frame(
             && ps_dec.lbrr_flags[ps_dec.n_frames_decoded as usize] == 1)
     {
         let mut pulses: [i16; MAX_FRAME_LENGTH] = [0; MAX_FRAME_LENGTH];
+        #[cfg(feature = "osce")]
+        let ec_start = ps_range_dec.tell();
 
         silk_decode_indices(
             ps_dec,
@@ -50,14 +71,31 @@ pub fn silk_decode_frame(
 
         silk_decode_parameters(ps_dec, &mut ps_dec_ctrl, cond_coding);
 
-        silk_decode_core(ps_dec, &ps_dec_ctrl, p_out, &pulses);
+        silk_decode_core(ps_dec, &mut ps_dec_ctrl, p_out, &pulses);
 
         let mv_len = ps_dec.ltp_mem_length - ps_dec.frame_length;
         ps_dec.out_buf.rotate_left(ps_dec.frame_length as usize);
         ps_dec.out_buf[mv_len as usize..mv_len as usize + l].copy_from_slice(&p_out[..l]);
 
+        // Run the SILK enhancer (libopus osce_enhance_frame).
+        #[cfg(feature = "osce")]
+        if let Some(o) = osce {
+            let input = crate::dnn::osce::OsceFrameInput {
+                fs_khz: ps_dec.fs_khz,
+                nb_subfr: ps_dec.nb_subfr as usize,
+                lpc_order: ps_dec.lpc_order as usize,
+                signal_type: ps_dec.indices.signal_type as i32,
+                pitch_l: ps_dec_ctrl.pitch_l,
+                gains_q16: ps_dec_ctrl.gains_q16,
+                pred_coef_q12: ps_dec_ctrl.pred_coef_q12,
+                ltp_coef_q14: ps_dec_ctrl.ltp_coef_q14,
+                num_bits: ps_range_dec.tell() - ec_start,
+            };
+            crate::dnn::osce::osce_enhance_frame(o.model, o.state, &input, &mut p_out[..l]);
+        }
+
         // Update PLC state from the decoded frame.
-        silk_plc(ps_dec, &mut ps_dec_ctrl, p_out, 0);
+        silk_plc(ps_dec, &mut ps_dec_ctrl, p_out, 0, lpcnet);
 
         ps_dec.loss_cnt = 0;
         ps_dec.prev_signal_type = ps_dec.indices.signal_type as i32;
@@ -65,7 +103,12 @@ pub fn silk_decode_frame(
         ps_dec.first_frame_after_reset = 0;
     } else {
         // Packet loss: conceal via pitch-based extrapolation.
-        silk_plc(ps_dec, &mut ps_dec_ctrl, p_out, 1);
+        silk_plc(ps_dec, &mut ps_dec_ctrl, p_out, 1, lpcnet);
+        #[cfg(feature = "osce")]
+        if let Some(o) = osce {
+            let method = o.state.method;
+            crate::dnn::osce::osce_reset(o.state, method);
+        }
 
         let mv_len = ps_dec.ltp_mem_length - ps_dec.frame_length;
         ps_dec.out_buf.rotate_left(ps_dec.frame_length as usize);

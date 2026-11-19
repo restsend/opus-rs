@@ -11,6 +11,13 @@
 #[path = "common/vbr.rs"]
 mod vbr;
 
+/// The value of the build's SILK encoder: fixed-point libopus main's with
+/// `silk-fixed`, float libopus main's by default (both with the patches of
+/// fuzz/opusref/patches).
+fn silk_ref<T>(fixed: T, float: T) -> T {
+    if cfg!(feature = "silk-fixed") { fixed } else { float }
+}
+
 use opus::{
     Application as CApp, Bandwidth as CBw, Bitrate as CBitrate, Channels as CCh, Decoder as CDec,
     Encoder as CEnc, Signal as CSignal,
@@ -216,16 +223,18 @@ fn fnv(hash: u64, bytes: &[u8]) -> u64 {
     })
 }
 
-/// The fixture at `sr` in 16 bits, the same input fixed-point libopus coded.
+/// The fixture at `sr` in 16 bits, the same input libopus coded.
 fn speech_i16(sr: usize, channels: usize) -> Vec<i16> {
     let source: Vec<f32> = vbr::speech_pcm()
         .iter()
         .map(|&x| x as f32 / 32768.0)
         .collect();
-    (0..source.len() * sr / 16000)
+    // In u64: the products overflow a 32-bit usize.
+    let sr = sr as u64;
+    (0..source.len() as u64 * sr / 16000)
         .flat_map(|i| {
             let pos = i * 16000;
-            let at = pos / sr;
+            let at = (pos / sr) as usize;
             let fraction = (pos % sr) as f32 / sr as f32;
             let x = source[at] + fraction * (source[(at + 1).min(source.len() - 1)] - source[at]);
             let x = (x * 32768.0).clamp(-32768.0, 32767.0).round_ties_even() as i16;
@@ -352,19 +361,25 @@ fn silk_layers(packets: &[Vec<u8>], sr: i32, channels: i32) -> (u64, Vec<(char, 
 }
 
 #[test]
-fn silk_layer_follows_fixed_point_libopus_across_switches() {
+#[cfg_attr(
+    feature = "osce",
+    ignore = "libopus built with OSCE converts 20 ms 16 kHz SILK frames with a clamp to +-32767, which these \
+              hashes of a build without it do not have"
+)]
+fn silk_layer_follows_libopus_across_switches() {
     // Whole encodes of the fixture with 16-bit input: the SILK layer of
-    // every packet equals fixed-point libopus 1.6.1's, through SILK's restart
+    // every packet equals libopus main's (fixed-point with `silk-fixed`,
+    // float by default), through SILK's restart
     // after CELT (high-pass state and history kept in CELT frames, the second
     // control call after the prefill), its rate change into hybrid mode (the
     // history moved through the new resampler, the shaping state reset) and
     // FEC turning off (the previous packet's LBRR data still coded).
     let cases: [(Schedule, bool, usize, usize, usize, u64, usize); 5] = [
-        (silk_celt, true, 24000, 20, 1, 0xb0223bd54b9a2d7e, 483),
-        (silk_celt, true, 48000, 10, 1, 0xadd9c7509725d7f3, 943),
-        (silk_celt, true, 24000, 20, 2, 0x0890ebabb7ad3e52, 483),
-        (hybrid_silk, true, 24000, 20, 1, 0x55818a04b86bb9cf, 902),
-        (hybrid_celt, false, 24000, 20, 1, 0x88324b53f7859128, 483),
+        (silk_celt, true, 24000, 20, 1, silk_ref(0xcfbbb722a1efd6fb, 0xc72429cfa95de832), 483),
+        (silk_celt, true, 48000, 10, 1, silk_ref(0x4264d2f0a1f685e9, 0x8da310915bda7d91), 943),
+        (silk_celt, true, 24000, 20, 2, silk_ref(0x487332582d4237da, 0x31da79dbbd34d2ce), 483),
+        (hybrid_silk, true, 24000, 20, 1, silk_ref(0x905e33ffe5939ed2, 0x28bd27df0c4a47a8), 902),
+        (hybrid_celt, false, 24000, 20, 1, silk_ref(0x976a1c08a409da59, 0xaeda62d440e53a92), 483),
     ];
     for (schedule, fec, sr, ms, channels, expected, layers) in cases {
         let input = speech_i16(sr, channels);

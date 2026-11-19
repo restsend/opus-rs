@@ -43,7 +43,7 @@ fn generate_c_reference_input() -> Vec<i16> {
 /// 8kHz, 20ms, complexity 0, CBR, target_rate matched to C (snr_db_q7=2205)
 fn create_nb_encoder() -> SilkEncoderState {
     let mut enc = SilkEncoderState::default();
-    silk_init_encoder(&mut enc, 0);
+    silk_init_encoder(&mut enc, opus_rs::Arch::Scalar);
     silk_control_encoder(&mut enc, 8, 20, 10000, 0);
     enc.s_cmn.use_cbr = 1;
     // Match C reference: snr_db_q7=2205, target_rate_bps=9600
@@ -302,7 +302,7 @@ fn test_opus_encoder_silk_nb() {
 #[test]
 fn test_silk_encode_wb_frame() {
     let mut enc = SilkEncoderState::default();
-    silk_init_encoder(&mut enc, 0);
+    silk_init_encoder(&mut enc, opus_rs::Arch::Scalar);
     silk_control_encoder(&mut enc, 16, 20, 20000, 0);
     enc.s_cmn.use_cbr = 1;
     enc.s_cmn.snr_db_q7 = 25 * 128;

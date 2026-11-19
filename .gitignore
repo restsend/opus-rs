@@ -17,3 +17,10 @@ tests/c_ref_gen
 fixtures/ref_c_*.wav
 tests/*.c
 opus-1.6.1/
+libopus/
+testvectors/
+fuzz/bin
+fuzz/survey
+.direnv/
+capi/target
+!capi/Cargo.lock

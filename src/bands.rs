@@ -1,3 +1,5 @@
+use crate::compat::with_scratch;
+use crate::mathops::celt_log2;
 use crate::modes::CeltMode;
 use crate::pvq::*;
 use crate::range_coder::RangeCoder;
@@ -22,7 +24,7 @@ pub struct BandCtx<'a> {
     pub intensity: usize,
     pub theta_round: i32,
     pub avoid_split_noise: bool,
-    pub arch: i32,
+    pub arch: crate::Arch,
     pub disable_inv: bool,
     pub seed: u32,
 }
@@ -73,21 +75,13 @@ fn celt_sudiv(n: i32, d: i32) -> i32 {
     n / d
 }
 
+/// libopus `isqrt32`: floor(sqrt(val)) for val > 0. The double-precision
+/// square root is exact here: below 2^32 the root of k*k - 1 lies more than
+/// 1/(2k) >= 2^-17 under k, far above the rounding error, so the
+/// truncation gives libopus's bit-by-bit result.
 #[inline]
-fn isqrt32(mut val: u32) -> u32 {
-    let mut g = 0u32;
-    let mut bshift = ((32 - val.leading_zeros()) as i32 - 1) >> 1;
-    let mut b = 1u32 << bshift;
-    while bshift >= 0 {
-        let t = (((g << 1) + b) as u64) << bshift;
-        if t <= val as u64 {
-            g += b;
-            val -= t as u32;
-        }
-        b >>= 1;
-        bshift -= 1;
-    }
-    g
+fn isqrt32(val: u32) -> u32 {
+    (val as f64).sqrt() as u32
 }
 
 pub const SPREAD_NONE: i32 = 0;
@@ -198,127 +192,27 @@ pub fn spreading_decision(
 }
 
 pub fn haar1(x: &mut [f32], n0: usize, stride: usize) {
-    #[cfg(target_arch = "aarch64")]
-    {
-        if stride == 1 && n0 >= 64 {
-            haar1_neon(x, n0);
-        } else {
-            haar1_scalar(x, n0, stride);
-        }
-    }
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    unsafe {
-        // NOTE: the previous AVX1 kernel loaded its second vector at +4
-        // (overlapping the first) and deinterleaved into quartet-swapped
-        // order, corrupting every other 8-sample block. The corrected kernel
-        // needs a 64-bit lane permute, which is AVX2-only; pre-AVX2 CPUs use
-        // the scalar path.
-        if stride == 1 && n0 >= 16 && crate::compat::x86_has_avx2() {
-            haar1_avx2(x, n0);
-            return;
-        }
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    haar1_scalar(x, n0, stride);
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[target_feature(enable = "avx2")]
-unsafe fn haar1_avx2(x: &mut [f32], n0: usize) {
-    #[cfg(target_arch = "x86")]
-    use core::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
-    let n = n0 >> 1;
-    let scale = _mm256_set1_ps(core::f32::consts::FRAC_1_SQRT_2);
-    let fixup = _mm256_set_epi32(7, 6, 3, 2, 5, 4, 1, 0);
-    let mut j = 0;
-    while j + 8 <= n {
-        let ptr = x.as_mut_ptr().add(2 * j);
-        let a = _mm256_loadu_ps(ptr);
-        let b = _mm256_loadu_ps(ptr.add(8));
-
-        let t0 = _mm256_unpacklo_ps(a, b);
-        let t1 = _mm256_unpackhi_ps(a, b);
-
-        // unpacklo/hi leave the two middle quartets swapped; fix the 32-bit
-        // lane order so even/odd hold pairs 0-7 in order.
-        let even = _mm256_permutevar8x32_ps(_mm256_unpacklo_ps(t0, t1), fixup);
-        let odd = _mm256_permutevar8x32_ps(_mm256_unpackhi_ps(t0, t1), fixup);
-
-        let sum = _mm256_mul_ps(_mm256_add_ps(even, odd), scale);
-        let diff = _mm256_mul_ps(_mm256_sub_ps(even, odd), scale);
-
-        let r0 = _mm256_unpacklo_ps(sum, diff);
-        let r1 = _mm256_unpackhi_ps(sum, diff);
-
-        let out0 = _mm256_permute2f128_ps(r0, r1, 0x20);
-        let out1 = _mm256_permute2f128_ps(r0, r1, 0x31);
-
-        _mm256_storeu_ps(ptr, out0);
-        _mm256_storeu_ps(ptr.add(8), out1);
-        j += 8;
-    }
-
-    let scale = core::f32::consts::FRAC_1_SQRT_2;
-    while j < n {
-        let idx1 = 2 * j;
-        let idx2 = 2 * j + 1;
-        let tmp1 = scale * x[idx1];
-        let tmp2 = scale * x[idx2];
-        x[idx1] = tmp1 + tmp2;
-        x[idx2] = tmp1 - tmp2;
-        j += 1;
-    }
-}
-
-#[cfg_attr(target_arch = "aarch64", allow(dead_code))]
-#[inline]
-fn haar1_scalar(x: &mut [f32], n0: usize, stride: usize) {
     let n = n0 >> 1;
     let scale = core::f32::consts::FRAC_1_SQRT_2;
+    let step = |a: &mut f32, b: &mut f32| {
+        let tmp1 = scale * *a;
+        let tmp2 = scale * *b;
+        *a = tmp1 + tmp2;
+        *b = tmp1 - tmp2;
+    };
+    if stride == 1 {
+        for pair in x[..2 * n].chunks_exact_mut(2) {
+            let (a, b) = pair.split_at_mut(1);
+            step(&mut a[0], &mut b[0]);
+        }
+        return;
+    }
     for i in 0..stride {
         for j in 0..n {
             let idx1 = stride * 2 * j + i;
             let idx2 = stride * (2 * j + 1) + i;
-            let tmp1 = scale * x[idx1];
-            let tmp2 = scale * x[idx2];
-            x[idx1] = tmp1 + tmp2;
-            x[idx2] = tmp1 - tmp2;
-        }
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn haar1_neon(x: &mut [f32], n0: usize) {
-    use core::arch::aarch64::*;
-
-    let n = n0 >> 1;
-    let scale = core::f32::consts::FRAC_1_SQRT_2;
-
-    unsafe {
-        let vscale = vdupq_n_f32(scale);
-
-        let mut j = 0usize;
-        while j + 4 <= n {
-            let idx = 2 * j;
-            let pairs = vld2q_f32(x.as_ptr().add(idx));
-            let even = vmulq_f32(pairs.0, vscale);
-            let odd = vmulq_f32(pairs.1, vscale);
-
-            let out = float32x4x2_t(vaddq_f32(even, odd), vsubq_f32(even, odd));
-            vst2q_f32(x.as_mut_ptr().add(idx), out);
-            j += 4;
-        }
-
-        while j < n {
-            let idx1 = 2 * j;
-            let idx2 = idx1 + 1;
-            let tmp1 = scale * x[idx1];
-            let tmp2 = scale * x[idx2];
-            x[idx1] = tmp1 + tmp2;
-            x[idx2] = tmp1 - tmp2;
-            j += 1;
+            let (a, b) = x.split_at_mut(idx2);
+            step(&mut a[idx1], &mut b[0]);
         }
     }
 }
@@ -348,188 +242,26 @@ pub fn compute_qn(n: usize, b: i32, offset: i32, pulse_cap: i32, stereo: bool) -
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 #[inline(always)]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn stereo_itheta_neon(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i32 {
-    use core::arch::aarch64::*;
-
-    let mut emid = 1e-15f32;
-    let mut eside = 1e-15f32;
-
+pub fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool, n: usize, arch: crate::Arch) -> i32 {
+    let (x, y) = (&x[..n], &y[..n]);
+    let mut emid = 0.0f32;
+    let mut eside = 0.0f32;
     if stereo {
-        let mut sum_mid = vdupq_n_f32(0.0);
-        let mut sum_side = vdupq_n_f32(0.0);
-        let mut i = 0;
-
-        while i + 16 <= n {
-            let x0 = vld1q_f32(x.as_ptr().add(i));
-            let x1 = vld1q_f32(x.as_ptr().add(i + 4));
-            let x2 = vld1q_f32(x.as_ptr().add(i + 8));
-            let x3 = vld1q_f32(x.as_ptr().add(i + 12));
-            let y0 = vld1q_f32(y.as_ptr().add(i));
-            let y1 = vld1q_f32(y.as_ptr().add(i + 4));
-            let y2 = vld1q_f32(y.as_ptr().add(i + 8));
-            let y3 = vld1q_f32(y.as_ptr().add(i + 12));
-
-            let m0 = vaddq_f32(x0, y0);
-            let m1 = vaddq_f32(x1, y1);
-            let m2 = vaddq_f32(x2, y2);
-            let m3 = vaddq_f32(x3, y3);
-            let s0 = vsubq_f32(x0, y0);
-            let s1 = vsubq_f32(x1, y1);
-            let s2 = vsubq_f32(x2, y2);
-            let s3 = vsubq_f32(x3, y3);
-
-            sum_mid = vfmaq_f32(sum_mid, m0, m0);
-            sum_mid = vfmaq_f32(sum_mid, m1, m1);
-            sum_mid = vfmaq_f32(sum_mid, m2, m2);
-            sum_mid = vfmaq_f32(sum_mid, m3, m3);
-            sum_side = vfmaq_f32(sum_side, s0, s0);
-            sum_side = vfmaq_f32(sum_side, s1, s1);
-            sum_side = vfmaq_f32(sum_side, s2, s2);
-            sum_side = vfmaq_f32(sum_side, s3, s3);
-
-            i += 16;
-        }
-
-        while i + 8 <= n {
-            let x0 = vld1q_f32(x.as_ptr().add(i));
-            let x1 = vld1q_f32(x.as_ptr().add(i + 4));
-            let y0 = vld1q_f32(y.as_ptr().add(i));
-            let y1 = vld1q_f32(y.as_ptr().add(i + 4));
-
-            let m0 = vaddq_f32(x0, y0);
-            let m1 = vaddq_f32(x1, y1);
-            let s0 = vsubq_f32(x0, y0);
-            let s1 = vsubq_f32(x1, y1);
-
-            sum_mid = vfmaq_f32(sum_mid, m0, m0);
-            sum_mid = vfmaq_f32(sum_mid, m1, m1);
-            sum_side = vfmaq_f32(sum_side, s0, s0);
-            sum_side = vfmaq_f32(sum_side, s1, s1);
-
-            i += 8;
-        }
-
-        while i + 4 <= n {
-            let x0 = vld1q_f32(x.as_ptr().add(i));
-            let y0 = vld1q_f32(y.as_ptr().add(i));
-            let m0 = vaddq_f32(x0, y0);
-            let s0 = vsubq_f32(x0, y0);
-            sum_mid = vfmaq_f32(sum_mid, m0, m0);
-            sum_side = vfmaq_f32(sum_side, s0, s0);
-            i += 4;
-        }
-
-        emid += vaddvq_f32(sum_mid);
-        eside += vaddvq_f32(sum_side);
-
-        for j in i..n {
-            let m = x[j] + y[j];
-            let s = x[j] - y[j];
+        for (&a, &b) in x.iter().zip(y) {
+            let m = a + b;
+            let s = a - b;
             emid += m * m;
             eside += s * s;
         }
     } else {
-        let mut sum_mid = vdupq_n_f32(0.0);
-        let mut sum_side = vdupq_n_f32(0.0);
-        let mut i = 0;
-
-        while i + 16 <= n {
-            let x0 = vld1q_f32(x.as_ptr().add(i));
-            let x1 = vld1q_f32(x.as_ptr().add(i + 4));
-            let x2 = vld1q_f32(x.as_ptr().add(i + 8));
-            let x3 = vld1q_f32(x.as_ptr().add(i + 12));
-            let y0 = vld1q_f32(y.as_ptr().add(i));
-            let y1 = vld1q_f32(y.as_ptr().add(i + 4));
-            let y2 = vld1q_f32(y.as_ptr().add(i + 8));
-            let y3 = vld1q_f32(y.as_ptr().add(i + 12));
-
-            sum_mid = vfmaq_f32(sum_mid, x0, x0);
-            sum_mid = vfmaq_f32(sum_mid, x1, x1);
-            sum_mid = vfmaq_f32(sum_mid, x2, x2);
-            sum_mid = vfmaq_f32(sum_mid, x3, x3);
-            sum_side = vfmaq_f32(sum_side, y0, y0);
-            sum_side = vfmaq_f32(sum_side, y1, y1);
-            sum_side = vfmaq_f32(sum_side, y2, y2);
-            sum_side = vfmaq_f32(sum_side, y3, y3);
-
-            i += 16;
-        }
-
-        while i + 8 <= n {
-            let x0 = vld1q_f32(x.as_ptr().add(i));
-            let x1 = vld1q_f32(x.as_ptr().add(i + 4));
-            let y0 = vld1q_f32(y.as_ptr().add(i));
-            let y1 = vld1q_f32(y.as_ptr().add(i + 4));
-
-            sum_mid = vfmaq_f32(sum_mid, x0, x0);
-            sum_mid = vfmaq_f32(sum_mid, x1, x1);
-            sum_side = vfmaq_f32(sum_side, y0, y0);
-            sum_side = vfmaq_f32(sum_side, y1, y1);
-
-            i += 8;
-        }
-
-        while i + 4 <= n {
-            let x0 = vld1q_f32(x.as_ptr().add(i));
-            let y0 = vld1q_f32(y.as_ptr().add(i));
-            sum_mid = vfmaq_f32(sum_mid, x0, x0);
-            sum_side = vfmaq_f32(sum_side, y0, y0);
-            i += 4;
-        }
-
-        emid += vaddvq_f32(sum_mid);
-        eside += vaddvq_f32(sum_side);
-
-        for j in i..n {
-            emid += x[j] * x[j];
-            eside += y[j] * y[j];
-        }
+        emid += crate::pitch::inner_prod(x, x, n, arch);
+        eside += crate::pitch::inner_prod(y, y, n, arch);
     }
-
     let mid = emid.sqrt();
     let side = eside.sqrt();
-    let theta_norm = celt_atan2p_norm(side, mid);
-    (0.5 + 16384.0 * theta_norm) as i32
-}
-
-#[inline(always)]
-#[cfg(target_arch = "aarch64")]
-pub fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i32 {
-    unsafe { stereo_itheta_neon(x, y, stereo, n) }
-}
-
-#[inline(always)]
-#[cfg(not(target_arch = "aarch64"))]
-pub fn stereo_itheta(x: &[f32], y: &[f32], stereo: bool, n: usize) -> i32 {
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        return stereo_itheta_neon(x, y, stereo, n);
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        let mut emid = 1e-15f32;
-        let mut eside = 1e-15f32;
-        if stereo {
-            for i in 0..n {
-                let m = x[i] + y[i];
-                let s = x[i] - y[i];
-                emid += m * m;
-                eside += s * s;
-            }
-        } else {
-            for i in 0..n {
-                emid += x[i] * x[i];
-                eside += y[i] * y[i];
-            }
-        }
-        let mid = emid.sqrt();
-        let side = eside.sqrt();
-        let theta_norm = celt_atan2p_norm(side, mid);
-        (0.5 + 16384.0 * theta_norm) as i32
-    }
+    // The angle in Q30 (vq.c:749); compute_theta keeps its Q14 part.
+    (0.5f32 + 65536.0f32 * 16384.0 * celt_atan2p_norm(side, mid)).floor() as i32
 }
 
 #[inline(always)]
@@ -540,16 +272,15 @@ fn celt_atan2p_norm(y: f32, x: f32) -> f32 {
         const A03: f32 = -3.333_166e-1_f32;
         const A05: f32 = 1.996_270_4e-1_f32;
         const A07: f32 = -1.397_658_3e-1_f32;
-        const A09: f32 = 9.794_234_e-2_f32;
+        const A09: f32 = 9.794_234_5e-2_f32;
         const A11: f32 = -5.777_359_e-2_f32;
-        const A13: f32 = 2.304_014e-2_f32;
+        const A13: f32 = 2.304_013_6e-2_f32;
         const A15: f32 = -4.355_406e-3_f32;
         let x2 = x * x;
         ATAN2_2_OVER_PI
-            * x
-            * (1.0
-                + x2 * (A03
-                    + x2 * (A05 + x2 * (A07 + x2 * (A09 + x2 * (A11 + x2 * (A13 + x2 * A15)))))))
+            * (x + x
+                * x2
+                * (A03 + x2 * (A05 + x2 * (A07 + x2 * (A09 + x2 * (A11 + x2 * (A13 + x2 * A15)))))))
     }
     if x * x + y * y < 1e-18 {
         return 0.0;
@@ -595,7 +326,7 @@ pub fn compute_theta(
 
     let mut itheta = 0;
     if ctx.encode {
-        itheta = stereo_itheta(x, y, stereo, n);
+        itheta = stereo_itheta(x, y, stereo, n, ctx.arch) >> 16;
     }
 
     let tell_start = tell_frac_inline!(ctx.rc);
@@ -788,7 +519,17 @@ fn quant_partition_n2_encode(
 
     if q != 0 {
         let k = get_pulses(q);
-        alg_quant(x, 2, k, ctx.spread, b_blocks as usize, ctx.rc, gain, false)
+        alg_quant(
+            x,
+            2,
+            k,
+            ctx.spread,
+            b_blocks as usize,
+            ctx.rc,
+            gain,
+            false,
+            ctx.arch,
+        )
     } else {
         let has_lowband = lowband.is_some();
         if has_lowband {
@@ -823,7 +564,17 @@ fn quant_partition_n4_encode(
 
     if q != 0 {
         let k = get_pulses(q);
-        alg_quant(x, 4, k, ctx.spread, b_blocks as usize, ctx.rc, gain, false)
+        alg_quant(
+            x,
+            4,
+            k,
+            ctx.spread,
+            b_blocks as usize,
+            ctx.rc,
+            gain,
+            false,
+            ctx.arch,
+        )
     } else {
         let has_lowband = lowband.is_some();
         if has_lowband {
@@ -858,7 +609,17 @@ fn quant_partition_n8_encode(
 
     if q != 0 {
         let k = get_pulses(q);
-        alg_quant(x, 8, k, ctx.spread, b_blocks as usize, ctx.rc, gain, false)
+        alg_quant(
+            x,
+            8,
+            k,
+            ctx.spread,
+            b_blocks as usize,
+            ctx.rc,
+            gain,
+            false,
+            ctx.arch,
+        )
     } else {
         let has_lowband = lowband.is_some();
         if has_lowband {
@@ -895,7 +656,17 @@ fn quant_partition_direct_encode(
 
     if q != 0 {
         let k = get_pulses(q);
-        alg_quant(x, n, k, ctx.spread, b_blocks as usize, ctx.rc, gain, false)
+        alg_quant(
+            x,
+            n,
+            k,
+            ctx.spread,
+            b_blocks as usize,
+            ctx.rc,
+            gain,
+            false,
+            ctx.arch,
+        )
     } else {
         let has_lowband = lowband.is_some();
         if has_lowband {
@@ -927,12 +698,10 @@ fn quant_partition_encode(
     // Check split condition FIRST (matching C's quant_partition which checks this before dispatch)
     let should_split = if lm >= 0 && n > 2 {
         let cache_idx = (lm + 1) as usize * ctx.m.nb_ebands + ctx.i;
-        let cache_base = unsafe { *ctx.m.cache.index.get_unchecked(cache_idx) };
+        let cache_base = ctx.m.cache.index[cache_idx];
         if cache_base >= 0 {
-            let cache_base = cache_base as usize;
-            let cache_ptr = ctx.m.cache.bits.as_ptr().wrapping_add(cache_base);
-            let max_q = unsafe { *cache_ptr } as usize;
-            b > (unsafe { *cache_ptr.add(max_q) } as i32) + 12
+            let cache = &ctx.m.cache.bits[cache_base as usize..];
+            b > cache[cache[0] as usize] as i32 + 12
         } else {
             false
         }
@@ -1115,7 +884,17 @@ fn quant_partition_encode(
 
         if q != 0 {
             let k = get_pulses(q);
-            alg_quant(x, n, k, ctx.spread, b_blocks as usize, ctx.rc, gain, false)
+            alg_quant(
+                x,
+                n,
+                k,
+                ctx.spread,
+                b_blocks as usize,
+                ctx.rc,
+                gain,
+                false,
+                ctx.arch,
+            )
         } else if lowband.is_some() {
             fill
         } else {
@@ -1141,12 +920,10 @@ pub fn quant_partition(
     This matches the C code which checks this at the top of quant_partition. */
     let should_split = if lm >= 0 && n > 2 {
         let cache_idx = (lm + 1) as usize * ctx.m.nb_ebands + ctx.i;
-        let cache_base = unsafe { *ctx.m.cache.index.get_unchecked(cache_idx) };
+        let cache_base = ctx.m.cache.index[cache_idx];
         if cache_base >= 0 {
-            let cache_base = cache_base as usize;
-            let cache_ptr = ctx.m.cache.bits.as_ptr().wrapping_add(cache_base);
-            let max_q = unsafe { *cache_ptr } as usize;
-            b > (unsafe { *cache_ptr.add(max_q) } as i32) + 12
+            let cache = &ctx.m.cache.bits[cache_base as usize..];
+            b > cache[cache[0] as usize] as i32 + 12
         } else {
             false
         }
@@ -1343,6 +1120,7 @@ pub fn quant_partition(
                     ctx.rc,
                     gain,
                     ctx.resynth,
+                    ctx.arch,
                 )
             } else {
                 alg_unquant(x, n, k, ctx.spread, b_blocks as usize, ctx.rc, gain)
@@ -1355,61 +1133,23 @@ pub fn quant_partition(
                 if fill_masked == 0 {
                     x[..n].fill(0.0);
                 } else if let Some(lb) = lowband {
-                    #[cfg(target_arch = "aarch64")]
-                    unsafe {
-                        use core::arch::aarch64::*;
-                        let n8 = n & !7;
-                        let mut i = 0;
-                        while i < n8 {
-                            let mut vals = [0.0f32; 8];
-                            for j in 0..8 {
-                                ctx.seed = celt_lcg_rand(ctx.seed);
-                                vals[j] = if ctx.seed & 0x8000 != 0 {
-                                    1.0 / 256.0
-                                } else {
-                                    -1.0 / 256.0
-                                };
-                            }
-                            let vnoise = vld1q_f32(vals.as_ptr());
-                            let vnoise1 = vld1q_f32(vals.as_ptr().add(4));
-                            let vlb = vld1q_f32(lb.as_ptr().add(i));
-                            let vlb1 = vld1q_f32(lb.as_ptr().add(i + 4));
-                            let vres = vaddq_f32(vlb, vnoise);
-                            let vres1 = vaddq_f32(vlb1, vnoise1);
-                            vst1q_f32(x.as_mut_ptr().add(i), vres);
-                            vst1q_f32(x.as_mut_ptr().add(i + 4), vres1);
-                            i += 8;
-                        }
-                        for j in i..n {
-                            ctx.seed = celt_lcg_rand(ctx.seed);
-                            x[j] = lb[j]
-                                + if ctx.seed & 0x8000 != 0 {
-                                    1.0 / 256.0
-                                } else {
-                                    -1.0 / 256.0
-                                };
-                        }
+                    for j in 0..n {
+                        ctx.seed = celt_lcg_rand(ctx.seed);
+                        x[j] = lb[j]
+                            + if ctx.seed & 0x8000 != 0 {
+                                1.0 / 256.0
+                            } else {
+                                -1.0 / 256.0
+                            };
                     }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
-                        for j in 0..n {
-                            ctx.seed = celt_lcg_rand(ctx.seed);
-                            x[j] = lb[j]
-                                + if ctx.seed & 0x8000 != 0 {
-                                    1.0 / 256.0
-                                } else {
-                                    -1.0 / 256.0
-                                };
-                        }
-                    }
-                    renormalise_vector(x, n, gain);
+                    renormalise_vector(x, n, gain, ctx.arch);
                     cm = fill_masked;
                 } else {
                     for xv in x[..n].iter_mut() {
                         ctx.seed = celt_lcg_rand(ctx.seed);
-                        *xv = ((ctx.seed as i32 >> 20) as f32) / 16384.0;
+                        *xv = (ctx.seed as i32 >> 20) as f32;
                     }
-                    renormalise_vector(x, n, gain);
+                    renormalise_vector(x, n, gain, ctx.arch);
                     cm = cm_mask;
                 }
             }
@@ -1418,112 +1158,56 @@ pub fn quant_partition(
     }
 }
 
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-unsafe fn deinterleave_hadamard_neon(x: &mut [f32], n0: usize, stride: usize) {
-    let n = n0 * stride;
-    let mut tmp_buf = [core::mem::MaybeUninit::<f32>::uninit(); MAX_PVQ_N];
-    let tmp = core::slice::from_raw_parts_mut(tmp_buf.as_mut_ptr() as *mut f32, n);
-
-    for i in 0..stride {
-        let src_offset = i;
-        let dst_offset = i * n0;
-        for j in 0..n0 {
-            tmp[dst_offset + j] = x[j * stride + src_offset];
-        }
-    }
-
-    x[..n].copy_from_slice(tmp);
+/// The libopus Hadamard ordering of `stride` blocks.
+fn ordery(stride: usize) -> &'static [i32] {
+    let offset = match stride {
+        2 => 0,
+        4 => 2,
+        8 => 6,
+        16 => 14,
+        _ => 0,
+    };
+    &ORDERY_TABLE[offset..offset + stride]
 }
 
 pub fn deinterleave_hadamard(x: &mut [f32], n0: usize, stride: usize, hadamard: bool) {
     let n = n0 * stride;
-
-    let mut tmp_buf = [core::mem::MaybeUninit::<f32>::uninit(); MAX_PVQ_N];
-
-    let tmp = unsafe { core::slice::from_raw_parts_mut(tmp_buf.as_mut_ptr() as *mut f32, n) };
-    if hadamard {
-        let offset = match stride {
-            2 => 0,
-            4 => 2,
-            8 => 6,
-            16 => 14,
-            _ => 0,
-        };
-        let ordery = &ORDERY_TABLE[offset..offset + stride];
-        for i in 0..stride {
-            for j in 0..n0 {
-                tmp[ordery[i] as usize * n0 + j] = x[j * stride + i];
+    with_scratch(n, |tmp: &mut [f32]| {
+        if hadamard {
+            for (i, &o) in ordery(stride).iter().enumerate() {
+                for j in 0..n0 {
+                    tmp[o as usize * n0 + j] = x[j * stride + i];
+                }
+            }
+        } else {
+            for i in 0..stride {
+                for j in 0..n0 {
+                    tmp[i * n0 + j] = x[j * stride + i];
+                }
             }
         }
-    } else {
-        #[cfg(target_arch = "aarch64")]
-        unsafe {
-            if n0 >= 4 {
-                deinterleave_hadamard_neon(x, n0, stride);
-                return;
-            }
-        }
-        for i in 0..stride {
-            for j in 0..n0 {
-                tmp[i * n0 + j] = x[j * stride + i];
-            }
-        }
-    }
-    x[..n].copy_from_slice(tmp);
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-unsafe fn interleave_hadamard_neon(x: &mut [f32], n0: usize, stride: usize) {
-    let n = n0 * stride;
-    let mut tmp_buf = [core::mem::MaybeUninit::<f32>::uninit(); MAX_PVQ_N];
-    let tmp = core::slice::from_raw_parts_mut(tmp_buf.as_mut_ptr() as *mut f32, n);
-
-    for i in 0..stride {
-        let src_offset = i * n0;
-        let dst_offset = i;
-        for j in 0..n0 {
-            tmp[j * stride + dst_offset] = x[src_offset + j];
-        }
-    }
-
-    x[..n].copy_from_slice(tmp);
+        x[..n].copy_from_slice(tmp);
+    });
 }
 
 pub fn interleave_hadamard(x: &mut [f32], n0: usize, stride: usize, hadamard: bool) {
     let n = n0 * stride;
-    let mut tmp_buf = [core::mem::MaybeUninit::<f32>::uninit(); MAX_PVQ_N];
-    let tmp = unsafe { core::slice::from_raw_parts_mut(tmp_buf.as_mut_ptr() as *mut f32, n) };
-    if hadamard {
-        let offset = match stride {
-            2 => 0,
-            4 => 2,
-            8 => 6,
-            16 => 14,
-            _ => 0,
-        };
-        let ordery = &ORDERY_TABLE[offset..offset + stride];
-        for i in 0..stride {
-            for j in 0..n0 {
-                tmp[j * stride + i] = x[ordery[i] as usize * n0 + j];
+    with_scratch(n, |tmp: &mut [f32]| {
+        if hadamard {
+            for (i, &o) in ordery(stride).iter().enumerate() {
+                for j in 0..n0 {
+                    tmp[j * stride + i] = x[o as usize * n0 + j];
+                }
+            }
+        } else {
+            for i in 0..stride {
+                for j in 0..n0 {
+                    tmp[j * stride + i] = x[i * n0 + j];
+                }
             }
         }
-    } else {
-        #[cfg(target_arch = "aarch64")]
-        unsafe {
-            if n0 >= 4 {
-                interleave_hadamard_neon(x, n0, stride);
-                return;
-            }
-        }
-        for i in 0..stride {
-            for j in 0..n0 {
-                tmp[j * stride + i] = x[i * n0 + j];
-            }
-        }
-    }
-    x[..n].copy_from_slice(tmp);
+        x[..n].copy_from_slice(tmp);
+    });
 }
 
 const ORDERY_TABLE: [i32; 30] = [
@@ -1564,8 +1248,9 @@ fn quant_band_n1(
             y_val[0] = if y_sign != 0 { -1.0 } else { 1.0 };
         }
     }
+    // libopus `SHR32(X[0], 4)`, which the float build defines as no shift.
     if let Some(l_out) = lowband_out {
-        l_out[0] = x[0] / 16.0;
+        l_out[0] = x[0];
     }
     1
 }
@@ -1656,7 +1341,8 @@ pub fn quant_band(
         }
     }
 
-    let cm = if ctx.encode {
+    // quant_partition_encode skips the resynthesis.
+    let cm = if ctx.encode && !ctx.resynth {
         quant_partition_encode(ctx, x, n, b, b_blocks, lowband_buf, lm, gain, fill)
     } else {
         quant_partition(ctx, x, n, b, b_blocks, lowband_buf, lm, gain, fill)
@@ -1707,13 +1393,16 @@ pub fn quant_band(
     cm
 }
 
-pub fn stereo_merge(x: &mut [f32], y: &mut [f32], mid: f32, _side: f32, n: usize) {
-    let mut xp = 0.0f32;
-    let mut side_e = 0.0f32;
-    for i in 0..n {
-        xp += y[i] * x[i];
-        side_e += y[i] * y[i];
-    }
+pub fn stereo_merge(
+    x: &mut [f32],
+    y: &mut [f32],
+    mid: f32,
+    _side: f32,
+    n: usize,
+    arch: crate::Arch,
+) {
+    let mut xp = crate::pitch::inner_prod(y, x, n, arch);
+    let side_e = crate::pitch::inner_prod(y, y, n, arch);
 
     xp *= mid;
     let el = mid * mid + side_e - 2.0 * xp;
@@ -1755,9 +1444,11 @@ fn intensity_stereo(
     band: usize,
     n: usize,
 ) {
-    let left = band_e[band].max(MIN_STEREO_ENERGY);
-    let right = band_e[m.nb_ebands + band].max(MIN_STEREO_ENERGY);
-    let norm = (left * left + right * right).sqrt().max(MIN_STEREO_ENERGY);
+    // bands.c:391 (float build): EPSILON inside and outside the root.
+    const EPSILON: f32 = 1e-15;
+    let left = band_e[band];
+    let right = band_e[m.nb_ebands + band];
+    let norm = EPSILON + (EPSILON + left * left + right * right).sqrt();
     let a1 = left / norm;
     let a2 = right / norm;
     for i in 0..n {
@@ -1782,15 +1473,15 @@ fn special_hybrid_folding(m: &CeltMode, norm: &mut [f32], start: usize, m_val: u
     }
 }
 
-fn prepare_lowband_views(
-    norm: &mut [f32],
-    lowband_scratch_ptr: *mut f32,
+fn prepare_lowband_views<'a>(
+    norm: &'a mut [f32],
+    lowband_scratch: &'a mut [f32; MAX_PVQ_N],
     allow_lowband_scratch: bool,
     effective_lowband: i32,
     norm_pos: usize,
     n: usize,
     want_out: bool,
-) -> (Option<&mut [f32]>, Option<&mut [f32]>) {
+) -> (Option<&'a mut [f32]>, Option<&'a mut [f32]>) {
     let len = norm.len();
     let out_range = if want_out && norm_pos + n <= len {
         Some((norm_pos, norm_pos + n))
@@ -1813,10 +1504,9 @@ fn prepare_lowband_views(
     }
 
     if allow_lowband_scratch {
-        unsafe {
-            core::ptr::copy_nonoverlapping(norm.as_ptr().add(lb_start), lowband_scratch_ptr, n)
-        };
-        let lb = Some(unsafe { core::slice::from_raw_parts_mut(lowband_scratch_ptr, n) });
+        let lb = &mut lowband_scratch[..n];
+        lb.copy_from_slice(&norm[lb_start..lb_end]);
+        let lb = Some(lb);
         let lb_out = out_range.map(|(s, e)| &mut norm[s..e]);
         return (lb, lb_out);
     }
@@ -1838,142 +1528,6 @@ fn prepare_lowband_views(
     }
 
     (Some(&mut norm[lb_start..lb_end]), None)
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-#[allow(dead_code)]
-unsafe fn stereo_merge_avx2(x: &mut [f32], y: &mut [f32], mid: f32, side: f32, n: usize) {
-    #[cfg(target_arch = "x86")]
-    use core::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
-
-    let mut i = 0;
-
-    let v_mid = _mm256_set1_ps(mid);
-    let v_side = _mm256_set1_ps(side);
-
-    while i + 15 < n {
-        let x0 = _mm256_loadu_ps(x.as_ptr().add(i));
-        let x1 = _mm256_loadu_ps(x.as_ptr().add(i + 8));
-        let y0 = _mm256_loadu_ps(y.as_ptr().add(i));
-        let y1 = _mm256_loadu_ps(y.as_ptr().add(i + 8));
-
-        let x_val0 = _mm256_mul_ps(x0, v_mid);
-        let x_val1 = _mm256_mul_ps(x1, v_mid);
-        let y_val0 = _mm256_mul_ps(y0, v_side);
-        let y_val1 = _mm256_mul_ps(y1, v_side);
-
-        let new_x0 = _mm256_sub_ps(x_val0, y_val0);
-        let new_x1 = _mm256_sub_ps(x_val1, y_val1);
-        let new_y0 = _mm256_add_ps(x_val0, y_val0);
-        let new_y1 = _mm256_add_ps(x_val1, y_val1);
-
-        _mm256_storeu_ps(x.as_mut_ptr().add(i), new_x0);
-        _mm256_storeu_ps(x.as_mut_ptr().add(i + 8), new_x1);
-        _mm256_storeu_ps(y.as_mut_ptr().add(i), new_y0);
-        _mm256_storeu_ps(y.as_mut_ptr().add(i + 8), new_y1);
-
-        i += 16;
-    }
-
-    while i + 7 < n {
-        let x0 = _mm256_loadu_ps(x.as_ptr().add(i));
-        let y0 = _mm256_loadu_ps(y.as_ptr().add(i));
-
-        let x_val = _mm256_mul_ps(x0, v_mid);
-        let y_val = _mm256_mul_ps(y0, v_side);
-
-        let new_x = _mm256_sub_ps(x_val, y_val);
-        let new_y = _mm256_add_ps(x_val, y_val);
-
-        _mm256_storeu_ps(x.as_mut_ptr().add(i), new_x);
-        _mm256_storeu_ps(y.as_mut_ptr().add(i), new_y);
-
-        i += 8;
-    }
-
-    for j in i..n {
-        let x_val = x[j] * mid;
-        let y_val = y[j] * side;
-        x[j] = x_val - y_val;
-        y[j] = x_val + y_val;
-    }
-}
-
-#[allow(dead_code)]
-#[inline]
-fn stereo_merge_scalar(x: &mut [f32], y: &mut [f32], mid: f32, side: f32, n: usize) {
-    for i in 0..n {
-        let x_val = x[i] * mid;
-        let y_val = y[i] * side;
-        x[i] = x_val - y_val;
-        y[i] = x_val + y_val;
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[allow(dead_code)]
-fn stereo_merge_neon(x: &mut [f32], y: &mut [f32], mid: f32, side: f32, n: usize) {
-    use core::arch::aarch64::*;
-
-    unsafe {
-        let vmid = vdupq_n_f32(mid);
-        let vside = vdupq_n_f32(side);
-
-        let n16 = n & !15;
-        for i in (0..n16).step_by(16) {
-            let x0 = vld1q_f32(x.as_ptr().add(i));
-            let x1 = vld1q_f32(x.as_ptr().add(i + 4));
-            let x2 = vld1q_f32(x.as_ptr().add(i + 8));
-            let x3 = vld1q_f32(x.as_ptr().add(i + 12));
-
-            let y0 = vld1q_f32(y.as_ptr().add(i));
-            let y1 = vld1q_f32(y.as_ptr().add(i + 4));
-            let y2 = vld1q_f32(y.as_ptr().add(i + 8));
-            let y3 = vld1q_f32(y.as_ptr().add(i + 12));
-
-            let xv0 = vmulq_f32(x0, vmid);
-            let xv1 = vmulq_f32(x1, vmid);
-            let xv2 = vmulq_f32(x2, vmid);
-            let xv3 = vmulq_f32(x3, vmid);
-
-            let yv0 = vmulq_f32(y0, vside);
-            let yv1 = vmulq_f32(y1, vside);
-            let yv2 = vmulq_f32(y2, vside);
-            let yv3 = vmulq_f32(y3, vside);
-
-            vst1q_f32(x.as_mut_ptr().add(i), vsubq_f32(xv0, yv0));
-            vst1q_f32(x.as_mut_ptr().add(i + 4), vsubq_f32(xv1, yv1));
-            vst1q_f32(x.as_mut_ptr().add(i + 8), vsubq_f32(xv2, yv2));
-            vst1q_f32(x.as_mut_ptr().add(i + 12), vsubq_f32(xv3, yv3));
-
-            vst1q_f32(y.as_mut_ptr().add(i), vaddq_f32(xv0, yv0));
-            vst1q_f32(y.as_mut_ptr().add(i + 4), vaddq_f32(xv1, yv1));
-            vst1q_f32(y.as_mut_ptr().add(i + 8), vaddq_f32(xv2, yv2));
-            vst1q_f32(y.as_mut_ptr().add(i + 12), vaddq_f32(xv3, yv3));
-        }
-
-        let n4 = (n & !3) - n16;
-        for i in (n16..n16 + n4).step_by(4) {
-            let xv = vld1q_f32(x.as_ptr().add(i));
-            let yv = vld1q_f32(y.as_ptr().add(i));
-
-            let x_val = vmulq_f32(xv, vmid);
-            let y_val = vmulq_f32(yv, vside);
-
-            vst1q_f32(x.as_mut_ptr().add(i), vsubq_f32(x_val, y_val));
-            vst1q_f32(y.as_mut_ptr().add(i), vaddq_f32(x_val, y_val));
-        }
-
-        for i in (n16 + n4)..n {
-            let x_val = x[i] * mid;
-            let y_val = y[i] * side;
-            x[i] = x_val - y_val;
-            y[i] = x_val + y_val;
-        }
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2111,6 +1665,10 @@ pub fn quant_band_stereo(
             x[1] = mx1 - sy1;
             y[0] = mx0 + sy0;
             y[1] = mx1 + sy1;
+            if sctx.inv {
+                y[0] = -y[0];
+                y[1] = -y[1];
+            }
         }
         return cm;
     }
@@ -2183,7 +1741,7 @@ pub fn quant_band_stereo(
     }
 
     if ctx.resynth {
-        stereo_merge(x, y, mid_gain, side_gain, n);
+        stereo_merge(x, y, mid_gain, side_gain, n, ctx.arch);
         if sctx.inv {
             for yv in y[..n].iter_mut() {
                 *yv = -*yv;
@@ -2191,6 +1749,13 @@ pub fn quant_band_stereo(
         }
     }
     cm
+}
+
+/// libopus `celt_exp2` (and `celt_exp2_db`) in the float build
+/// (celt/mathops.h:347-350): 2^x as exp(ln 2 * x) in double, rounded once.
+#[inline]
+fn celt_exp2(x: f32) -> f32 {
+    (0.693_147_180_559_945_309_4_f64 * x as f64).exp() as f32
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2217,10 +1782,14 @@ pub fn quant_all_bands(
     resynth: bool,
     disable_inv: bool,
     seed: &mut u32,
+    arch: crate::Arch,
 ) {
     let mut balance_val = *balance;
     let b_blocks = if short_blocks { 1 << lm } else { 1 };
     let c_channels = if y.is_some() { 2 } else { 1 };
+    // The encoder resynthesises exactly for the stereo angle's
+    // rate-distortion choice (bands.c:1618-1622).
+    let theta_rdo = encode && resynth && y.is_some() && !*dual_stereo;
     let m_val = 1usize << lm as usize;
 
     let norm_offset = m_val * (m.e_bands[start] as usize);
@@ -2229,15 +1798,37 @@ pub fn quant_all_bands(
     const MAX_NORM_SIZE: usize = 800;
     debug_assert!(norm_size <= MAX_NORM_SIZE);
 
-    let mut norm_buf = [core::mem::MaybeUninit::<f32>::uninit(); MAX_NORM_SIZE];
-    let norm =
-        unsafe { core::slice::from_raw_parts_mut(norm_buf.as_mut_ptr() as *mut f32, norm_size) };
-    let mut norm2_buf = [core::mem::MaybeUninit::<f32>::uninit(); MAX_NORM_SIZE];
-    let norm2 =
-        unsafe { core::slice::from_raw_parts_mut(norm2_buf.as_mut_ptr() as *mut f32, norm_size) };
+    let mut norm_buf = [0.0f32; MAX_NORM_SIZE];
+    let norm = &mut norm_buf[..norm_size];
+    // The second channel's folding source, used while dual stereo lasts.
+    let mut norm2_store = None;
+    let norm2: &mut [f32] = match *dual_stereo {
+        true => &mut norm2_store.insert([0.0f32; MAX_NORM_SIZE])[..norm_size],
+        false => &mut [],
+    };
 
-    let mut lowband_scratch_buf = [core::mem::MaybeUninit::<f32>::uninit(); MAX_PVQ_N];
-    let lowband_scratch_ptr = lowband_scratch_buf.as_mut_ptr() as *mut f32;
+    let mut lowband_scratch = [0.0f32; MAX_PVQ_N];
+    // The theta RDO copies (bands.c X_save, Y_save, X_save2, Y_save2,
+    // norm_save2 and bytes_save), set up only where the RDO runs.
+    struct ThetaRdo {
+        x_save: [f32; MAX_PVQ_N],
+        y_save: [f32; MAX_PVQ_N],
+        x_down: [f32; MAX_PVQ_N],
+        y_down: [f32; MAX_PVQ_N],
+        norm_down: [f32; MAX_PVQ_N],
+        bytes_down: [u8; crate::range_coder::RANGE_BUF_MAX],
+    }
+    let mut rdo_store = None;
+    let mut rdo = theta_rdo.then(|| {
+        rdo_store.insert(ThetaRdo {
+            x_save: [0.0; MAX_PVQ_N],
+            y_save: [0.0; MAX_PVQ_N],
+            x_down: [0.0; MAX_PVQ_N],
+            y_down: [0.0; MAX_PVQ_N],
+            norm_down: [0.0; MAX_PVQ_N],
+            bytes_down: [0; crate::range_coder::RANGE_BUF_MAX],
+        })
+    });
 
     let mut lowband_offset: usize = 0;
     let mut update_lowband = true;
@@ -2339,7 +1930,7 @@ pub fn quant_all_bands(
             intensity,
             theta_round: 0,
             avoid_split_noise,
-            arch: 0,
+            arch,
             disable_inv,
             seed: ctx_seed,
         };
@@ -2361,7 +1952,7 @@ pub fn quant_all_bands(
 
             let (lb_x, lb_out_x) = prepare_lowband_views(
                 norm,
-                lowband_scratch_ptr,
+                &mut lowband_scratch,
                 allow_lowband_scratch,
                 effective_lowband,
                 norm_pos,
@@ -2383,7 +1974,7 @@ pub fn quant_all_bands(
 
             let (lb_y, lb_out_y) = prepare_lowband_views(
                 norm2,
-                lowband_scratch_ptr,
+                &mut lowband_scratch,
                 allow_lowband_scratch,
                 effective_lowband,
                 norm_pos,
@@ -2404,33 +1995,124 @@ pub fn quant_all_bands(
             );
         } else if let Some(y_all) = y.as_mut() {
             let y_slice = &mut y_all[offset..offset + n];
-            let (lb, lb_out) = prepare_lowband_views(
-                norm,
-                lowband_scratch_ptr,
-                allow_lowband_scratch,
-                effective_lowband,
-                norm_pos,
-                n,
-                !last,
-            );
-            x_cm = quant_band_stereo(
-                &mut ctx,
-                x_slice,
-                y_slice,
-                n,
-                b,
-                b_blocks,
-                lb,
-                lm,
-                lb_out,
-                1.0,
-                x_cm | y_cm,
-            );
+            if let Some(ThetaRdo {
+                x_save,
+                y_save,
+                x_down,
+                y_down,
+                norm_down,
+                bytes_down,
+            }) = rdo.as_deref_mut().filter(|_| i < intensity)
+            {
+                // Code the angle rounded down and rounded up, and keep the
+                // one with the larger weighted correlation to the input
+                // (bands.c:1808-1895).
+                let (ex, ey) = (band_e[i], band_e[i + m.nb_ebands]);
+                let min_e = ex.min(ey);
+                let w = [ex + min_e / 3.0, ey + min_e / 3.0];
+                let cm = x_cm | y_cm;
+                let rc_save = ctx.rc.state();
+                let (seed_save, bits_save) = (ctx.seed, ctx.remaining_bits);
+                x_save[..n].copy_from_slice(x_slice);
+                y_save[..n].copy_from_slice(y_slice);
+
+                ctx.theta_round = -1;
+                let (lb, lb_out) = prepare_lowband_views(
+                    norm,
+                    &mut lowband_scratch,
+                    allow_lowband_scratch,
+                    effective_lowband,
+                    norm_pos,
+                    n,
+                    !last,
+                );
+                let cm_down = quant_band_stereo(
+                    &mut ctx, x_slice, y_slice, n, b, b_blocks, lb, lm, lb_out, 1.0, cm,
+                );
+                let dist_down = w[0] * crate::pitch::inner_prod(&x_save[..], x_slice, n, arch)
+                    + w[1] * crate::pitch::inner_prod(&y_save[..], y_slice, n, arch);
+
+                let rc_down = ctx.rc.state();
+                let (seed_down, bits_down) = (ctx.seed, ctx.remaining_bits);
+                x_down[..n].copy_from_slice(x_slice);
+                y_down[..n].copy_from_slice(y_slice);
+                if !last {
+                    norm_down[..n].copy_from_slice(&norm[norm_pos..norm_pos + n]);
+                }
+                let written = rc_save.writable();
+                bytes_down[written.clone()].copy_from_slice(&ctx.rc.buf[written.clone()]);
+
+                ctx.rc.set_state(rc_save);
+                ctx.seed = seed_save;
+                ctx.remaining_bits = bits_save;
+                x_slice.copy_from_slice(&x_save[..n]);
+                y_slice.copy_from_slice(&y_save[..n]);
+                if i == start + 1 {
+                    special_hybrid_folding(m, norm, start, m_val);
+                }
+                ctx.theta_round = 1;
+                let (lb, lb_out) = prepare_lowband_views(
+                    norm,
+                    &mut lowband_scratch,
+                    allow_lowband_scratch,
+                    effective_lowband,
+                    norm_pos,
+                    n,
+                    !last,
+                );
+                x_cm = quant_band_stereo(
+                    &mut ctx, x_slice, y_slice, n, b, b_blocks, lb, lm, lb_out, 1.0, cm,
+                );
+                let dist_up = w[0] * crate::pitch::inner_prod(&x_save[..], x_slice, n, arch)
+                    + w[1] * crate::pitch::inner_prod(&y_save[..], y_slice, n, arch);
+                dumpi!("rdo_band", &[i as i32]);
+                dumpf!("rdo_dist", &[dist_down, dist_up]);
+                dumpf!("rdo_x", x_slice);
+                dumpf!("rdo_xsave", &x_save[..n]);
+                dumpf!("rdo_xdown", &x_down[..n]);
+                dumpf!("rdo_ydown", &y_down[..n]);
+                dumpf!("rdo_ysave", &y_save[..n]);
+                if dist_down >= dist_up {
+                    x_cm = cm_down;
+                    ctx.rc.set_state(rc_down);
+                    ctx.rc.buf[written.clone()].copy_from_slice(&bytes_down[written]);
+                    ctx.seed = seed_down;
+                    ctx.remaining_bits = bits_down;
+                    x_slice.copy_from_slice(&x_down[..n]);
+                    y_slice.copy_from_slice(&y_down[..n]);
+                    if !last {
+                        norm[norm_pos..norm_pos + n].copy_from_slice(&norm_down[..n]);
+                    }
+                }
+            } else {
+                let (lb, lb_out) = prepare_lowband_views(
+                    norm,
+                    &mut lowband_scratch,
+                    allow_lowband_scratch,
+                    effective_lowband,
+                    norm_pos,
+                    n,
+                    !last,
+                );
+                x_cm = quant_band_stereo(
+                    &mut ctx,
+                    x_slice,
+                    y_slice,
+                    n,
+                    b,
+                    b_blocks,
+                    lb,
+                    lm,
+                    lb_out,
+                    1.0,
+                    x_cm | y_cm,
+                );
+            }
             y_cm = x_cm;
         } else {
             let (lb, lb_out) = prepare_lowband_views(
                 norm,
-                lowband_scratch_ptr,
+                &mut lowband_scratch,
                 allow_lowband_scratch,
                 effective_lowband,
                 norm_pos,
@@ -2456,102 +2138,6 @@ pub fn quant_all_bands(
     *seed = ctx_seed;
 }
 
-#[cfg(target_arch = "aarch64")]
-fn compute_band_energy_neon(band: &[f32]) -> f32 {
-    use core::arch::aarch64::*;
-
-    let n = band.len();
-    let mut sum = 1e-27f32;
-
-    unsafe {
-        let n16 = n & !15;
-        if n16 > 0 {
-            let mut acc0 = vdupq_n_f32(0.0);
-            let mut acc1 = vdupq_n_f32(0.0);
-            let mut acc2 = vdupq_n_f32(0.0);
-            let mut acc3 = vdupq_n_f32(0.0);
-
-            for i in (0..n16).step_by(16) {
-                let v0 = vld1q_f32(band.as_ptr().add(i));
-                let v1 = vld1q_f32(band.as_ptr().add(i + 4));
-                let v2 = vld1q_f32(band.as_ptr().add(i + 8));
-                let v3 = vld1q_f32(band.as_ptr().add(i + 12));
-
-                acc0 = vfmaq_f32(acc0, v0, v0);
-                acc1 = vfmaq_f32(acc1, v1, v1);
-                acc2 = vfmaq_f32(acc2, v2, v2);
-                acc3 = vfmaq_f32(acc3, v3, v3);
-            }
-
-            acc0 = vaddq_f32(acc0, acc1);
-            acc2 = vaddq_f32(acc2, acc3);
-            acc0 = vaddq_f32(acc0, acc2);
-            sum += vaddvq_f32(acc0);
-        }
-
-        let n4 = (n & !3) - n16;
-        if n4 > 0 {
-            let mut acc = vdupq_n_f32(0.0);
-            for i in (n16..n16 + n4).step_by(4) {
-                let v = vld1q_f32(band.as_ptr().add(i));
-                acc = vfmaq_f32(acc, v, v);
-            }
-            sum += vaddvq_f32(acc);
-        }
-
-        for i in (n16 + n4)..n {
-            let v = band[i];
-            sum += v * v;
-        }
-    }
-
-    sum.sqrt()
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn compute_band_energy_avx2(band: &[f32]) -> f32 {
-    #[cfg(target_arch = "x86")]
-    use core::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
-
-    let n = band.len();
-    let mut i = 0usize;
-
-    let mut acc0 = _mm256_setzero_ps();
-    let mut acc1 = _mm256_setzero_ps();
-
-    while i + 16 <= n {
-        let v0 = _mm256_loadu_ps(band.as_ptr().add(i));
-        let v1 = _mm256_loadu_ps(band.as_ptr().add(i + 8));
-        acc0 = _mm256_fmadd_ps(v0, v0, acc0);
-        acc1 = _mm256_fmadd_ps(v1, v1, acc1);
-        i += 16;
-    }
-
-    if i + 8 <= n {
-        let v0 = _mm256_loadu_ps(band.as_ptr().add(i));
-        acc0 = _mm256_fmadd_ps(v0, v0, acc0);
-        i += 8;
-    }
-
-    let acc = _mm256_add_ps(acc0, acc1);
-    let hi = _mm256_extractf128_ps(acc, 1);
-    let lo = _mm256_castps256_ps128(acc);
-    let s4 = _mm_add_ps(lo, hi);
-    let t1 = _mm_movehl_ps(s4, s4);
-    let s2 = _mm_add_ps(s4, t1);
-    let t2 = _mm_shuffle_ps(s2, s2, 0x55);
-    let mut sum = 1e-27f32 + _mm_cvtss_f32(_mm_add_ss(s2, t2));
-
-    for &v in &band[i..] {
-        sum += v * v;
-    }
-
-    sum.sqrt()
-}
-
 pub fn compute_band_energies(
     m: &CeltMode,
     x: &[f32],
@@ -2559,56 +2145,38 @@ pub fn compute_band_energies(
     end: usize,
     channels: usize,
     lm: usize,
+    arch: crate::Arch,
 ) {
     let frame_size = m.short_mdct_size << lm;
-
-    #[cfg(target_arch = "x86_64")]
-    let use_avx2 = crate::compat::x86_has_avx2_fma();
-
     for c in 0..channels {
         let ch = &x[c * frame_size..(c + 1) * frame_size];
         for i in 0..end {
             let offset = (m.e_bands[i] as usize) << lm;
             let n = ((m.e_bands[i + 1] - m.e_bands[i]) as usize) << lm;
             let band = &ch[offset..offset + n];
-
-            #[cfg(target_arch = "aarch64")]
-            {
-                band_e[c * m.nb_ebands + i] = compute_band_energy_neon(band);
-            }
-            #[cfg(target_arch = "x86_64")]
-            {
-                if n >= 8 && use_avx2 {
-                    band_e[c * m.nb_ebands + i] = unsafe { compute_band_energy_avx2(band) };
-                } else {
-                    let sum = band.iter().fold(1e-27f32, |acc, &v| acc + v * v);
-                    band_e[c * m.nb_ebands + i] = sum.sqrt();
-                }
-            }
-            #[cfg(all(not(target_arch = "aarch64"), not(target_arch = "x86_64")))]
-            {
-                let sum = band.iter().fold(1e-27f32, |acc, &v| acc + v * v);
-                band_e[c * m.nb_ebands + i] = sum.sqrt();
-            }
+            // bands.c:160: 1e-27 after the sum of squares.
+            let sum = 1e-27 + crate::pitch::inner_prod(band, band, n, arch);
+            band_e[c * m.nb_ebands + i] = sum.sqrt();
         }
     }
 }
 
+/// libopus `amp2Log2`: the log energies of bands `0..eff_end`, and -14 for
+/// `eff_end..end`.
 pub fn amp2log2(
     m: &CeltMode,
-    start: usize,
+    eff_end: usize,
     end: usize,
     band_e: &[f32],
     band_log_e: &mut [f32],
     channels: usize,
 ) {
     for c in 0..channels {
-        for i in 0..start {
-            band_log_e[c * m.nb_ebands + i] = -14.0;
+        for i in 0..eff_end {
+            band_log_e[c * m.nb_ebands + i] = celt_log2(band_e[c * m.nb_ebands + i]) - m.e_means[i];
         }
-        for i in start..end {
-            let val = band_e[c * m.nb_ebands + i].max(1e-10);
-            band_log_e[c * m.nb_ebands + i] = val.log2() - m.e_means[i];
+        for i in eff_end..end {
+            band_log_e[c * m.nb_ebands + i] = -14.0;
         }
     }
 }
@@ -2632,8 +2200,6 @@ pub fn normalise_bands(
 ) {
     let lm = m_val.trailing_zeros() as usize;
     let frame_size = m.short_mdct_size << lm;
-    #[cfg(target_arch = "x86_64")]
-    let use_avx2 = crate::compat::x86_has_avx2();
     for c in 0..channels {
         for i in 0..end {
             let base = c * frame_size + ((m.e_bands[i] as usize) << lm);
@@ -2641,16 +2207,6 @@ pub fn normalise_bands(
             let norm = 1.0 / (1e-27 + band_e[c * m.nb_ebands + i]);
             let src = &freq[base..base + n];
             let dst = &mut x[base..base + n];
-            #[cfg(target_arch = "x86_64")]
-            if n >= 8 && use_avx2 {
-                unsafe { scale_slice_avx2(src, dst, norm, n) };
-                continue;
-            }
-            #[cfg(target_arch = "aarch64")]
-            if n >= 8 {
-                unsafe { scale_slice_neon(src, dst, norm, n) };
-                continue;
-            }
             for (d, &s) in dst.iter_mut().zip(src) {
                 *d = s * norm;
             }
@@ -2658,70 +2214,6 @@ pub fn normalise_bands(
     }
 }
 
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn scale_slice_avx2(src: &[f32], dst: &mut [f32], scale: f32, n: usize) {
-    #[cfg(target_arch = "x86")]
-    use core::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
-    let vscale = _mm256_set1_ps(scale);
-    let mut i = 0;
-
-    while i + 16 <= n {
-        let s0 = _mm256_loadu_ps(src.as_ptr().add(i));
-        let s1 = _mm256_loadu_ps(src.as_ptr().add(i + 8));
-        _mm256_storeu_ps(dst.as_mut_ptr().add(i), _mm256_mul_ps(s0, vscale));
-        _mm256_storeu_ps(dst.as_mut_ptr().add(i + 8), _mm256_mul_ps(s1, vscale));
-        i += 16;
-    }
-    while i + 8 <= n {
-        let sv = _mm256_loadu_ps(src.as_ptr().add(i));
-        _mm256_storeu_ps(dst.as_mut_ptr().add(i), _mm256_mul_ps(sv, vscale));
-        i += 8;
-    }
-    for j in i..n {
-        dst[j] = src[j] * scale;
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn scale_slice_neon(src: &[f32], dst: &mut [f32], scale: f32, n: usize) {
-    use core::arch::aarch64::*;
-    let vscale = vdupq_n_f32(scale);
-    let mut i = 0;
-
-    while i + 16 <= n {
-        let s0 = vld1q_f32(src.as_ptr().add(i));
-        let s1 = vld1q_f32(src.as_ptr().add(i + 4));
-        let s2 = vld1q_f32(src.as_ptr().add(i + 8));
-        let s3 = vld1q_f32(src.as_ptr().add(i + 12));
-        vst1q_f32(dst.as_mut_ptr().add(i), vmulq_f32(s0, vscale));
-        vst1q_f32(dst.as_mut_ptr().add(i + 4), vmulq_f32(s1, vscale));
-        vst1q_f32(dst.as_mut_ptr().add(i + 8), vmulq_f32(s2, vscale));
-        vst1q_f32(dst.as_mut_ptr().add(i + 12), vmulq_f32(s3, vscale));
-        i += 16;
-    }
-    while i + 8 <= n {
-        let s0 = vld1q_f32(src.as_ptr().add(i));
-        let s1 = vld1q_f32(src.as_ptr().add(i + 4));
-        vst1q_f32(dst.as_mut_ptr().add(i), vmulq_f32(s0, vscale));
-        vst1q_f32(dst.as_mut_ptr().add(i + 4), vmulq_f32(s1, vscale));
-        i += 8;
-    }
-    while i + 4 <= n {
-        let s0 = vld1q_f32(src.as_ptr().add(i));
-        vst1q_f32(dst.as_mut_ptr().add(i), vmulq_f32(s0, vscale));
-        i += 4;
-    }
-    for j in i..n {
-        dst[j] = src[j] * scale;
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
 pub fn denormalise_bands(
     m: &CeltMode,
     x: &[f32],
@@ -2734,8 +2226,6 @@ pub fn denormalise_bands(
 ) {
     let lm = m_val.trailing_zeros() as usize;
     let frame_size = m.short_mdct_size << lm;
-    #[cfg(target_arch = "x86_64")]
-    let use_avx2 = crate::compat::x86_has_avx2();
 
     for c in 0..channels {
         for i in start..end {
@@ -2744,19 +2234,9 @@ pub fn denormalise_bands(
             let band_log = band_e[c * m.nb_ebands + i];
 
             // Match C: celt_exp2_db(MIN32(32.f, lg)) — cap gain to prevent overflow
-            let g = (2.0f32).powf(band_log.min(32.0));
+            let g = celt_exp2(band_log.min(32.0));
             let src = &x[base..base + n];
             let dst = &mut freq[base..base + n];
-            #[cfg(target_arch = "x86_64")]
-            if n >= 8 && use_avx2 {
-                unsafe { scale_slice_avx2(src, dst, g, n) };
-                continue;
-            }
-            #[cfg(target_arch = "aarch64")]
-            if n >= 8 {
-                unsafe { scale_slice_neon(src, dst, g, n) };
-                continue;
-            }
             for (d, &s) in dst.iter_mut().zip(src) {
                 *d = s * g;
             }
@@ -2764,181 +2244,11 @@ pub fn denormalise_bands(
     }
 }
 
+/// libopus renormalise_vector (vq.c:693-718).
+pub use crate::pvq::renormalise_vector;
+
 pub fn celt_lcg_rand(seed: u32) -> u32 {
     seed.wrapping_mul(1664525).wrapping_add(1013904223)
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn renormalise_vector_neon(x: &mut [f32], n: usize, gain: f32) {
-    use core::arch::aarch64::*;
-
-    let mut sum_vec = vdupq_n_f32(0.0);
-    let mut i = 0;
-
-    while i + 16 <= n {
-        let x0 = vld1q_f32(x.as_ptr().add(i));
-        let x1 = vld1q_f32(x.as_ptr().add(i + 4));
-        let x2 = vld1q_f32(x.as_ptr().add(i + 8));
-        let x3 = vld1q_f32(x.as_ptr().add(i + 12));
-        sum_vec = vfmaq_f32(sum_vec, x0, x0);
-        sum_vec = vfmaq_f32(sum_vec, x1, x1);
-        sum_vec = vfmaq_f32(sum_vec, x2, x2);
-        sum_vec = vfmaq_f32(sum_vec, x3, x3);
-        i += 16;
-    }
-
-    while i + 8 <= n {
-        let x0 = vld1q_f32(x.as_ptr().add(i));
-        let x1 = vld1q_f32(x.as_ptr().add(i + 4));
-        sum_vec = vfmaq_f32(sum_vec, x0, x0);
-        sum_vec = vfmaq_f32(sum_vec, x1, x1);
-        i += 8;
-    }
-
-    while i + 4 <= n {
-        let x0 = vld1q_f32(x.as_ptr().add(i));
-        sum_vec = vfmaq_f32(sum_vec, x0, x0);
-        i += 4;
-    }
-
-    let mut e = 1e-15f32 + vaddvq_f32(sum_vec);
-
-    for j in i..n {
-        e += x[j] * x[j];
-    }
-
-    let norm = gain / e.sqrt();
-    let vnorm = vdupq_n_f32(norm);
-
-    i = 0;
-    while i + 16 <= n {
-        let x0 = vld1q_f32(x.as_ptr().add(i));
-        let x1 = vld1q_f32(x.as_ptr().add(i + 4));
-        let x2 = vld1q_f32(x.as_ptr().add(i + 8));
-        let x3 = vld1q_f32(x.as_ptr().add(i + 12));
-        vst1q_f32(x.as_mut_ptr().add(i), vmulq_f32(x0, vnorm));
-        vst1q_f32(x.as_mut_ptr().add(i + 4), vmulq_f32(x1, vnorm));
-        vst1q_f32(x.as_mut_ptr().add(i + 8), vmulq_f32(x2, vnorm));
-        vst1q_f32(x.as_mut_ptr().add(i + 12), vmulq_f32(x3, vnorm));
-        i += 16;
-    }
-
-    while i + 8 <= n {
-        let x0 = vld1q_f32(x.as_ptr().add(i));
-        let x1 = vld1q_f32(x.as_ptr().add(i + 4));
-        vst1q_f32(x.as_mut_ptr().add(i), vmulq_f32(x0, vnorm));
-        vst1q_f32(x.as_mut_ptr().add(i + 4), vmulq_f32(x1, vnorm));
-        i += 8;
-    }
-
-    while i + 4 <= n {
-        let x0 = vld1q_f32(x.as_ptr().add(i));
-        vst1q_f32(x.as_mut_ptr().add(i), vmulq_f32(x0, vnorm));
-        i += 4;
-    }
-
-    for j in i..n {
-        x[j] *= norm;
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn renormalise_vector_avx2(x: &mut [f32], n: usize, gain: f32) {
-    #[cfg(target_arch = "x86")]
-    use core::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
-
-    let mut i = 0usize;
-
-    let mut acc0 = _mm256_setzero_ps();
-    let mut acc1 = _mm256_setzero_ps();
-
-    while i + 16 <= n {
-        let v0 = _mm256_loadu_ps(x.as_ptr().add(i));
-        let v1 = _mm256_loadu_ps(x.as_ptr().add(i + 8));
-        acc0 = _mm256_fmadd_ps(v0, v0, acc0);
-        acc1 = _mm256_fmadd_ps(v1, v1, acc1);
-        i += 16;
-    }
-
-    if i + 8 <= n {
-        let v0 = _mm256_loadu_ps(x.as_ptr().add(i));
-        acc0 = _mm256_fmadd_ps(v0, v0, acc0);
-        i += 8;
-    }
-
-    let acc = _mm256_add_ps(acc0, acc1);
-    let hi = _mm256_extractf128_ps(acc, 1);
-    let lo = _mm256_castps256_ps128(acc);
-    let s4 = _mm_add_ps(lo, hi);
-    let t1 = _mm_movehl_ps(s4, s4);
-    let s2 = _mm_add_ps(s4, t1);
-    let t2 = _mm_shuffle_ps(s2, s2, 0x55);
-    let mut e = 1e-15f32 + _mm_cvtss_f32(_mm_add_ss(s2, t2));
-
-    for &v in &x[i..n] {
-        e += v * v;
-    }
-
-    let norm = gain / e.sqrt();
-    let vnorm = _mm256_set1_ps(norm);
-
-    i = 0;
-    while i + 16 <= n {
-        let v0 = _mm256_loadu_ps(x.as_ptr().add(i));
-        let v1 = _mm256_loadu_ps(x.as_ptr().add(i + 8));
-        _mm256_storeu_ps(x.as_mut_ptr().add(i), _mm256_mul_ps(v0, vnorm));
-        _mm256_storeu_ps(x.as_mut_ptr().add(i + 8), _mm256_mul_ps(v1, vnorm));
-        i += 16;
-    }
-    while i + 8 <= n {
-        let v = _mm256_loadu_ps(x.as_ptr().add(i));
-        _mm256_storeu_ps(x.as_mut_ptr().add(i), _mm256_mul_ps(v, vnorm));
-        i += 8;
-    }
-    for v in &mut x[i..n] {
-        *v *= norm;
-    }
-}
-
-pub fn renormalise_vector(x: &mut [f32], n: usize, gain: f32) {
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        renormalise_vector_neon(x, n, gain);
-    }
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        if n >= 16 && crate::compat::x86_has_avx2_fma() {
-            renormalise_vector_avx2(x, n, gain);
-            return;
-        }
-    }
-    #[cfg(all(not(target_arch = "aarch64"), not(target_arch = "x86_64")))]
-    {
-        let mut e = 1e-15f32;
-        for &xv in x[..n].iter() {
-            e += xv * xv;
-        }
-        let norm = gain / e.sqrt();
-        for xv in x[..n].iter_mut() {
-            *xv *= norm;
-        }
-    }
-    #[cfg(target_arch = "x86_64")]
-    {
-        let mut e = 1e-15f32;
-        for &xv in x[..n].iter() {
-            e += xv * xv;
-        }
-        let norm = gain / e.sqrt();
-        for xv in x[..n].iter_mut() {
-            *xv *= norm;
-        }
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2956,6 +2266,7 @@ pub fn anti_collapse(
     prev2_log_e: &[f32],
     pulses: &[i32],
     mut seed: u32,
+    arch: crate::Arch,
 ) -> u32 {
     for i in start..end {
         let n0 = (m.e_bands[i + 1] - m.e_bands[i]) as usize;
@@ -2965,7 +2276,7 @@ pub fn anti_collapse(
             0
         };
 
-        let thresh = 0.5 * (-(0.125 * depth as f32)).exp2();
+        let thresh = 0.5 * celt_exp2(-(0.125 * depth as f32));
         let sqrt_1 = 1.0 / ((n0 << lm) as f32).sqrt();
 
         for c in 0..channels {
@@ -2984,7 +2295,7 @@ pub fn anti_collapse(
             let e_diff = log_e[c * m.nb_ebands + i] - p1_adj.min(p2_adj);
             let e_diff = e_diff.max(0.0);
 
-            let mut r = 2.0 * (-e_diff).exp2();
+            let mut r = 2.0 * celt_exp2(-e_diff);
             if lm == 3 {
                 r *= core::f32::consts::SQRT_2;
             }
@@ -3003,11 +2314,54 @@ pub fn anti_collapse(
                 }
             }
             if renormalize {
-                renormalise_vector(&mut x_buf[x_offset..x_offset + (n0 << lm)], n0 << lm, 1.0);
+                renormalise_vector(
+                    &mut x_buf[x_offset..x_offset + (n0 << lm)],
+                    n0 << lm,
+                    1.0,
+                    arch,
+                );
             }
         }
     }
     seed
+}
+
+#[cfg(test)]
+mod isqrt32_tests {
+    use super::isqrt32;
+
+    /// libopus's `isqrt32`, one bit per step.
+    fn isqrt32_bitwise(mut val: u32) -> u32 {
+        let mut g = 0u32;
+        let mut bshift = ((32 - val.leading_zeros()) as i32 - 1) >> 1;
+        let mut b = 1u32 << bshift;
+        while bshift >= 0 {
+            let t = ((g << 1) + b) << bshift;
+            if t <= val {
+                g += b;
+                val -= t;
+            }
+            b >>= 1;
+            bshift -= 1;
+        }
+        g
+    }
+
+    /// isqrt32 gives libopus's result at every square, its neighbours, and
+    /// a spread of other values up to u32::MAX (also in the libm build).
+    #[test]
+    fn isqrt32_matches_libopus() {
+        for r in 1..=65535u32 {
+            for v in [r * r - 1, r * r, r * r + r] {
+                if v > 0 {
+                    assert_eq!(isqrt32(v), isqrt32_bitwise(v), "isqrt32({v})");
+                }
+            }
+        }
+        for v in (1..=u32::MAX).step_by(65521).chain([u32::MAX]) {
+            assert_eq!(isqrt32(v), isqrt32_bitwise(v), "isqrt32({v})");
+        }
+    }
 }
 
 #[cfg(all(test, feature = "std"))]
@@ -3024,5 +2378,39 @@ mod tests {
         assert_eq!(bitexact_log2tan(30274, 12540), 2611);
         assert_eq!(bitexact_log2tan(23171, 23171), 0);
         assert_eq!(bitexact_log2tan(200, 32767), -15059);
+    }
+
+    /// A band without pulses or fold source fills with the integer noise
+    /// (int)seed>>20 and renormalises it (bands.c:1154, SHL32 is an
+    /// identity in float); EPSILON weighs the same as in libopus on tiny
+    /// sums. The seeds give (-1, -1) and (1, 0).
+    #[test]
+    fn noise_fill_renormalises_the_integer_noise() {
+        let m = crate::modes::default_mode();
+        for (seed, noise) in [(727034u32, [-1.0f32, -1.0]), (2600330, [1.0, 0.0])] {
+            let mut rc = RangeCoder::new_decoder(&[0; 8]);
+            let mut ctx = BandCtx {
+                encode: false,
+                m,
+                i: 0,
+                band_e: &[0.0; 21],
+                rc: &mut rc,
+                spread: 2,
+                remaining_bits: 0,
+                resynth: true,
+                tf_change: 0,
+                intensity: 0,
+                theta_round: 0,
+                avoid_split_noise: false,
+                arch: crate::Arch::Scalar,
+                disable_inv: false,
+                seed,
+            };
+            let mut x = [0.0f32; 2];
+            quant_partition(&mut ctx, &mut x, 2, 0, 1, None, 0, 0.7, 1);
+            let mut want = noise;
+            crate::pvq::renormalise_vector(&mut want, 2, 0.7, crate::Arch::Scalar);
+            assert_eq!(x.map(f32::to_bits), want.map(f32::to_bits), "seed {seed}");
+        }
     }
 }

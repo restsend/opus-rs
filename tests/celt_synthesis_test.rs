@@ -227,7 +227,15 @@ fn celt_energy_roundtrip_only() {
 
         // Compute band energies
         let mut band_e = vec![0.0f32; nb_ebands * channels];
-        compute_band_energies(mode, &freq_coeffs, &mut band_e, nb_ebands, channels, lm);
+        compute_band_energies(
+            mode,
+            &freq_coeffs,
+            &mut band_e,
+            nb_ebands,
+            channels,
+            lm,
+            opus_rs::Arch::Scalar,
+        );
 
         // Normalize
         let mut x = vec![0.0f32; frame_size * channels];

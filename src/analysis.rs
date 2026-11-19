@@ -94,6 +94,8 @@ const STD_FEATURE_BIAS: [f32; 9] = [
 pub enum AnalysisPcm<'a> {
     F32(&'a [f32]),
     I16(&'a [i16]),
+    /// 24-bit samples in 32-bit integers (libopus `downmix_int24`).
+    I24(&'a [i32]),
 }
 
 impl AnalysisPcm<'_> {
@@ -129,6 +131,16 @@ impl AnalysisPcm<'_> {
                     }
                 }
             }
+            AnalysisPcm::I24(x) => {
+                for (j, v) in y.iter_mut().enumerate() {
+                    *v = x[(j + offset) * channels] as f32 * (1.0 / 256.0);
+                }
+                for c in 1..channels {
+                    for j in 0..n {
+                        y[j] += x[(j + offset) * channels + c] as f32 * (1.0 / 256.0);
+                    }
+                }
+            }
         }
     }
 }
@@ -159,14 +171,10 @@ fn fast_atan2f(y: f32, x: f32) -> f32 {
 /// libopus `float2int`: round to the nearest integer, ties to even.
 #[inline]
 fn float2int(x: f32) -> i32 {
-    let f = x.floor();
-    let d = x - f;
-    let r = if d > 0.5 || (d == 0.5 && (f as i64) % 2 != 0) {
-        f + 1.0
-    } else {
-        f
-    };
-    r as i32
+    // Below 2^51 in magnitude, x + 1.5 * 2^52 lands where the f64 spacing
+    // is 1, so the sum rounds x to the nearest integer, ties to even.
+    const MAGIC: f64 = 6_755_399_441_055_744.0;
+    ((f64::from(x) + MAGIC) - MAGIC) as i32
 }
 
 /// libopus `MAX32` / `MIN32` (C ternaries).
@@ -227,7 +235,7 @@ fn resampler_down2_hp(s: &mut [f32; 3], out: &mut [f32], input: &[f32]) -> f32 {
 
 /// The analysis state (libopus `TonalityAnalysisState`).
 pub struct TonalityAnalysisState {
-    fs: i32,
+    pub(crate) fs: i32,
     angle: [f32; 240],
     d_angle: [f32; 240],
     d2_angle: [f32; 240],
@@ -262,7 +270,7 @@ pub struct TonalityAnalysisState {
 
 impl TonalityAnalysisState {
     /// libopus `tonality_analysis_init`.
-    pub fn new(fs: i32) -> Self {
+    pub const fn new(fs: i32) -> Self {
         Self {
             fs,
             angle: [0.0; 240],
@@ -978,19 +986,20 @@ impl TonalityAnalysisState {
         info_out
     }
 
-    /// libopus `run_analysis`: analyse the `frame_size` samples per channel of
-    /// interleaved `pcm`, the frame about to be coded, and return the
-    /// analysis for it.
+    /// libopus `run_analysis`: analyse the `analysis_frame_size` samples per
+    /// channel of interleaved `pcm`, which start with the `frame_size` ones
+    /// about to be coded, and return the analysis for those.
     pub fn run(
         &mut self,
         kfft: &KissFftState,
         pcm: AnalysisPcm<'_>,
+        analysis_frame_size: usize,
         frame_size: usize,
         channels: usize,
         lsb_depth: i32,
     ) -> AnalysisInfo {
         let fs = self.fs as usize;
-        let mut analysis_frame_size = frame_size - (frame_size & 1);
+        let mut analysis_frame_size = analysis_frame_size - (analysis_frame_size & 1);
         // Avoid wrapping around the analysis buffer.
         analysis_frame_size = analysis_frame_size.min((DETECT_SIZE - 5) * fs / 50);
         let mut pcm_len = analysis_frame_size as i32 - self.analysis_offset;
@@ -1031,6 +1040,9 @@ mod tests {
             (-1.5, -2),
             (0.49, 0),
             (-0.51, -1),
+            (4_194_303.5, 4_194_304),
+            (4_194_305.5, 4_194_306),
+            (-4_194_304.5, -4_194_304),
         ] {
             assert_eq!(float2int(x), r, "{x}");
         }

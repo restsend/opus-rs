@@ -80,7 +80,11 @@ fn worst_window_snr(api_rate: u32) -> f64 {
             .encode_float(&input[p * frame..(p + 1) * frame], &mut pkt)
             .unwrap();
         // The packet must be SILK-only (not CELT): config <= 11.
-        assert!(pkt[0] >> 3 <= 11, "packet {p} is not SILK: toc {:#04x}", pkt[0]);
+        assert!(
+            pkt[0] >> 3 <= 11,
+            "packet {p} is not SILK: toc {:#04x}",
+            pkt[0]
+        );
         let c_n = c_dec.decode_float(&pkt[..n], &mut c_buf, false).unwrap();
         let rs_n = rs_dec
             .decode(&pkt[..n], MAX_FRAME, &mut rs_buf)

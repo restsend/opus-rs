@@ -44,9 +44,13 @@ fn gemm_accum(
     col_stride: usize,
     x: &[f32],
 ) {
-    for i in 0..rows {
-        for j in 0..cols {
-            out[i] += f32::from(weights[j * col_stride + i]) * x[j];
+    // Column by column: each output still adds its products in column
+    // order, and the outputs of a column are contiguous weights.
+    let out = &mut out[..rows];
+    for (j, &xj) in x[..cols].iter().enumerate() {
+        let w = &weights[j * col_stride..][..rows];
+        for (o, &w) in out.iter_mut().zip(w) {
+            *o += f32::from(w) * xj;
         }
     }
 }

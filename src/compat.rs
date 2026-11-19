@@ -1,106 +1,4 @@
 //! no_std / std compatibility shims — zero external dependencies.
-//!
-//! Provides:
-//! * [`OnceCell`] — a dependency-free, **heap-free** lazy cell backed by a 3-state
-//!   atomic and inline `UnsafeCell<MaybeUninit<T>>` storage. The value is
-//!   constructed exactly once into the inline storage, so no global allocator is
-//!   required. Replaces `std::sync::LazyLock`.
-//! * [`x86_has_avx`] / [`x86_has_avx2`] / [`x86_has_avx_fma`] / [`x86_has_avx2_fma`]
-//!   — x86 SIMD availability probes. Under the
-//!   `std` feature these use the OS-backed `is_x86_feature_detected!`; without `std`
-//!   they fall back to compile-time `cfg!(target_feature = ...)`.
-
-use core::cell::UnsafeCell;
-use core::hint;
-use core::mem::MaybeUninit;
-#[cfg(not(feature = "portable-atomic"))]
-use core::sync::atomic::AtomicU8;
-use core::sync::atomic::Ordering;
-#[cfg(feature = "portable-atomic")]
-use portable_atomic::AtomicU8;
-
-// ---------------------------------------------------------------------------
-// OnceCell (heap-free lazy initialization)
-// ---------------------------------------------------------------------------
-
-/// Lazily-initialized value stored in inline (non-heap) storage.
-///
-/// State machine encoded in [`AtomicU8`]:
-/// * `0` — uninitialized, idle
-/// * `1` — a thread is currently initializing
-/// * `2` — initialization complete; the value is live
-///
-/// The stored value is constructed exactly once into the embedded
-/// `MaybeUninit<T>` and never mutated afterwards. Publication uses `Release`
-/// ordering so all field writes are visible to any reader that observes state `2`
-/// with `Acquire` ordering.
-pub struct OnceCell<T: Sync> {
-    state: AtomicU8,
-    storage: UnsafeCell<MaybeUninit<T>>,
-}
-
-// SAFETY: `OnceCell` hands out shared `&T` references to a value that is
-// constructed once and never mutated. `T: Sync` makes shared access sound. The
-// `UnsafeCell` is only ever written by the single initializer before publication.
-unsafe impl<T: Sync> Sync for OnceCell<T> {}
-
-impl<T: Sync> OnceCell<T> {
-    /// Create a new, uninitialized cell. `const`-constructible so it can live in a
-    /// `static`.
-    pub const fn new() -> Self {
-        Self {
-            state: AtomicU8::new(0),
-            storage: UnsafeCell::new(MaybeUninit::uninit()),
-        }
-    }
-
-    /// Return a shared reference to the value, initializing it on first access.
-    ///
-    /// `init` is invoked at most once across all threads. It must not panic: a
-    /// panic would leave the cell in the `initializing` (1) state and subsequent
-    /// callers would spin indefinitely. In practice the only initializer used by
-    /// this crate (`CeltMode::new_48000_960_120`) is infallible.
-    pub fn get(&self, init: impl FnOnce() -> T) -> &T {
-        if self.state.load(Ordering::Acquire) == 2 {
-            // SAFETY: initialization is complete; storage holds a valid `T`.
-            return unsafe { (*self.storage.get()).assume_init_ref() };
-        }
-        self.get_slow(init)
-    }
-
-    #[cold]
-    fn get_slow(&self, init: impl FnOnce() -> T) -> &T {
-        // Spin until we either claim the initializer slot (0 -> 1) or observe a
-        // finished initialization.
-        while self
-            .state
-            .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            if self.state.load(Ordering::Acquire) == 2 {
-                // SAFETY: another thread finished initialization.
-                return unsafe { (*self.storage.get()).assume_init_ref() };
-            }
-            hint::spin_loop();
-        }
-
-        // We claimed the slot; construct into the inline storage and publish.
-        // SAFETY: we are the sole writer (state == 1); no reader can observe the
-        // storage until we publish state == 2 with Release ordering.
-        unsafe {
-            (*self.storage.get()).write(init());
-        }
-        self.state.store(2, Ordering::Release);
-        // SAFETY: initialization is complete and published.
-        unsafe { (*self.storage.get()).assume_init_ref() }
-    }
-}
-
-impl<T: Sync> Default for OnceCell<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 // ---------------------------------------------------------------------------
 // No-std slice sorting (`alloc` provides `[T]::sort*` as inherent methods; since
@@ -126,60 +24,21 @@ pub fn sort<T: Ord>(slice: &mut [T]) {
 }
 
 // ---------------------------------------------------------------------------
-// x86 SIMD feature detection
+// Zeroed scratch buffers
 // ---------------------------------------------------------------------------
 
-/// Whether the `avx` x86 feature is usable.
-///
-/// * With the `std` feature: OS-backed runtime detection via CPUID.
-/// * Without `std`: compile-time detection (`cfg!(target_feature = "avx")`); build
-///   with e.g. `RUSTFLAGS="-C target-feature=+avx"` to enable it.
-#[cfg(all(feature = "std", target_arch = "x86_64"))]
-pub fn x86_has_avx() -> bool {
-    std::arch::is_x86_feature_detected!("avx")
-}
-#[cfg(not(all(feature = "std", target_arch = "x86_64")))]
-#[allow(dead_code)]
-pub fn x86_has_avx() -> bool {
-    cfg!(target_feature = "avx")
-}
-
-/// Whether the `avx2` x86 feature is usable. See [`x86_has_avx`].
-#[cfg(all(feature = "std", target_arch = "x86_64"))]
-pub fn x86_has_avx2() -> bool {
-    std::arch::is_x86_feature_detected!("avx2")
-}
-#[cfg(not(all(feature = "std", target_arch = "x86_64")))]
-#[allow(dead_code)]
-pub fn x86_has_avx2() -> bool {
-    cfg!(target_feature = "avx2")
-}
-
-/// Whether both `avx` and `fma` are usable. Gates kernels compiled with
-/// `#[target_feature(enable = "avx,fma")]`: AVX alone is not enough, since
-/// Sandy Bridge / Ivy Bridge (and some VMs) have AVX without FMA and would fault
-/// with SIGILL on the first `vfmadd`. See [`x86_has_avx`].
-#[cfg(all(feature = "std", target_arch = "x86_64"))]
-pub fn x86_has_avx_fma() -> bool {
-    std::arch::is_x86_feature_detected!("avx") && std::arch::is_x86_feature_detected!("fma")
-}
-#[cfg(not(all(feature = "std", target_arch = "x86_64")))]
-#[allow(dead_code)]
-pub fn x86_has_avx_fma() -> bool {
-    cfg!(all(target_feature = "avx", target_feature = "fma"))
-}
-
-/// Whether both `avx2` and `fma` are usable. Gates kernels compiled with
-/// `#[target_feature(enable = "avx2,fma")]`; AVX2 does not architecturally imply
-/// FMA. See [`x86_has_avx_fma`].
-#[cfg(all(feature = "std", target_arch = "x86_64"))]
-pub fn x86_has_avx2_fma() -> bool {
-    std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
-}
-#[cfg(not(all(feature = "std", target_arch = "x86_64")))]
-#[allow(dead_code)]
-pub fn x86_has_avx2_fma() -> bool {
-    cfg!(all(target_feature = "avx2", target_feature = "fma"))
+/// Runs `f` on a zeroed stack buffer of `n <= 512` elements, zeroing only the
+/// next power of two from 32, so short buffers cost little to initialize.
+#[inline(always)]
+pub fn with_scratch<T: Copy + Default, R>(n: usize, f: impl FnOnce(&mut [T]) -> R) -> R {
+    let z = T::default();
+    match n {
+        0..=32 => f(&mut [z; 32][..n]),
+        33..=64 => f(&mut [z; 64][..n]),
+        65..=128 => f(&mut [z; 128][..n]),
+        129..=256 => f(&mut [z; 256][..n]),
+        _ => f(&mut [z; 512][..n]),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -405,17 +264,5 @@ impl Math for f64 {
     }
     fn mul_add(self, a: Self, b: Self) -> Self {
         libm::fma(self, a, b)
-    }
-}
-
-#[cfg(all(test, feature = "std", target_arch = "x86_64"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fma_probes_require_both_features() {
-        let fma = std::arch::is_x86_feature_detected!("fma");
-        assert_eq!(x86_has_avx_fma(), x86_has_avx() && fma);
-        assert_eq!(x86_has_avx2_fma(), x86_has_avx2() && fma);
     }
 }

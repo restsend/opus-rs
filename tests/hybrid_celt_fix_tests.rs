@@ -19,7 +19,7 @@ fn test_range_coder_payload_extraction() {
 
     // Encode with a small buffer to ensure both front and back parts are used
     let mut rc = RangeCoder::new_encoder(100);
-    encoder.encode(&input, frame_size, &mut rc);
+    encoder.encode(&input, frame_size, &mut rc).unwrap();
     rc.done();
 
     // Verify that both front and back parts contain data
@@ -51,7 +51,7 @@ fn test_celt_decode_from_range_coder() {
 
     // Encode
     let mut rc = RangeCoder::new_encoder(500);
-    encoder.encode(&input, frame_size, &mut rc);
+    encoder.encode(&input, frame_size, &mut rc).unwrap();
     rc.done();
 
     // Build payload

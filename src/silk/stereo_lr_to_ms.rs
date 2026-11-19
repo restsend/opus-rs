@@ -5,7 +5,7 @@
 
 use crate::silk::define::*;
 use crate::silk::macros::*;
-use crate::silk::sigproc_fix::{silk_inner_prod_aligned_scale, silk_sum_sqr_shift_exact};
+use crate::silk::sigproc_fix::{silk_inner_prod_aligned_scale, silk_sum_sqr_shift};
 use crate::silk::structs::SilkStereoState;
 use crate::silk::tables::SILK_STEREO_PRED_QUANT_Q13;
 
@@ -39,8 +39,8 @@ pub fn silk_stereo_find_predictor(
     smooth_coef_q16: i32,
 ) -> i32 {
     let (mut nrgx, mut nrgy, mut scale1, mut scale2) = (0, 0, 0, 0);
-    silk_sum_sqr_shift_exact(&mut nrgx, &mut scale1, x, length);
-    silk_sum_sqr_shift_exact(&mut nrgy, &mut scale2, y, length);
+    silk_sum_sqr_shift(&mut nrgx, &mut scale1, x, length);
+    silk_sum_sqr_shift(&mut nrgy, &mut scale2, y, length);
     let mut scale = scale1.max(scale2);
     scale += scale & 1; // make even
     nrgy = silk_rshift32(nrgy, scale - scale2);

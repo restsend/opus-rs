@@ -177,16 +177,12 @@ pub fn silk_pitch_analysis_core(
     let frame_8khz: &[i16];
     if fs_khz == 16 {
         filt_state[0..2].fill(0);
-        let output = unsafe {
-            core::slice::from_raw_parts_mut(frame_8khz_buf.as_mut_ptr(), frame_length_8khz)
-        };
+        let output = &mut frame_8khz_buf[..frame_length_8khz];
         silk_resampler_down2(&mut filt_state[..2], output, frame, frame_length as i32);
         frame_8khz = output;
     } else if fs_khz == 12 {
         filt_state[0..6].fill(0);
-        let output = unsafe {
-            core::slice::from_raw_parts_mut(frame_8khz_buf.as_mut_ptr(), frame_length_8khz)
-        };
+        let output = &mut frame_8khz_buf[..frame_length_8khz];
         silk_resampler_down2_3(&mut filt_state[..6], output, frame, frame_length as i32);
         frame_8khz = output;
     } else {
@@ -194,11 +190,9 @@ pub fn silk_pitch_analysis_core(
     }
 
     filt_state[0..2].fill(0);
-    let frame_4khz_sub =
-        unsafe { core::slice::from_raw_parts_mut(frame_4khz.as_mut_ptr(), frame_length_4khz) };
     silk_resampler_down2(
         &mut filt_state[..2],
-        frame_4khz_sub,
+        &mut frame_4khz[..frame_length_4khz],
         frame_8khz,
         frame_length_8khz as i32,
     );
@@ -469,14 +463,11 @@ pub fn silk_pitch_analysis_core(
             cc_max_new_b -= prev_lag_bias_q13;
         }
 
-        let lag_cb_ptr_curr_0: &[i8] = if nb_subfr == PE_MAX_NB_SUBFR {
-            &SILK_CB_LAGS_STAGE2[0]
-        } else {
-            &SILK_CB_LAGS_STAGE2_10_MS[0]
-        };
+        // libopus's lag range test compares the 20 ms codebook offset with
+        // MIN_LAG_8KHZ, which always holds (pitch_analysis_core_FIX.c:434).
         if cc_max_new_b > cc_max_b
             && cc0_max_new > silk_smulbb(nb_subfr as i32, search_thres2_q13)
-            && (d + lag_cb_ptr_curr_0[cb_i_max_new] as i32) >= MIN_LAG_8KHZ as i32
+            && SILK_CB_LAGS_STAGE2[0][cb_i_max_new] as i32 <= MIN_LAG_8KHZ as i32
         {
             cc_max_b = cc_max_new_b;
             cc_max = cc0_max_new;

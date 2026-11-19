@@ -16,8 +16,8 @@ use std::f32::consts::PI;
 /// the `opus` crate links an older libopus whose concealment legitimately
 /// diverges from 1.6 after consecutive losses.
 mod oracle16 {
-    use std::ffi::c_int;
     use opusic_sys as ffi;
+    use std::ffi::c_int;
 
     pub struct Decoder {
         ptr: *mut ffi::OpusDecoder,
@@ -61,11 +61,7 @@ mod oracle16 {
                     out.len() as c_int,
                     fec as c_int,
                 );
-                if n < 0 {
-                    Err(n)
-                } else {
-                    Ok(n as usize)
-                }
+                if n < 0 { Err(n) } else { Ok(n as usize) }
             }
         }
     }
@@ -203,6 +199,11 @@ fn assert_conceals_like_libopus_float(what: &str, packets: &[Vec<u8>]) {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "deep-plc",
+    ignore = "libopus built with deep PLC skips SILK's 16 kHz fade-in after a loss and this oracle is built \
+              without it; fuzz/opusref/tests/dnn_decoder.rs compares with a deep PLC build"
+)]
 fn silk_wideband_concealment_matches_libopus() {
     let packets = encode(16_000, Application::Voip, 20_000, false, 0..0);
     assert!(packets.iter().all(|p| p[0] >> 3 == 9), "SILK WB 20 ms");
@@ -210,6 +211,11 @@ fn silk_wideband_concealment_matches_libopus() {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "deep-plc",
+    ignore = "libopus built with deep PLC skips SILK's 16 kHz fade-in after a loss and this oracle is built \
+              without it; fuzz/opusref/tests/dnn_decoder.rs compares with a deep PLC build"
+)]
 fn hybrid_concealment_matches_libopus() {
     let packets = encode(48_000, Application::Voip, 32_000, true, 0..0);
     assert!(

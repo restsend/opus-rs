@@ -24,10 +24,35 @@ macro_rules! tell_frac_inline {
         let r = $rc.rng >> (l - 16);
         let b = (r >> 12).wrapping_sub(8);
 
-        let correction = unsafe { *CORRECTION.get_unchecked(b as usize) };
+        let correction = CORRECTION[b as usize];
         let b = b + (r > correction) as u32;
         nbits - (l << 3) - b as i32
     }};
+}
+
+/// The coder's state without its buffer, as libopus copies an `ec_ctx`
+/// (whose buffer is a pointer).
+#[derive(Clone, Copy)]
+pub struct RangeCoderState {
+    storage: u32,
+    end_offs: u32,
+    end_window: u32,
+    nend_bits: i32,
+    nbits_total: i32,
+    offs: u32,
+    rng: u32,
+    val: u32,
+    ext: u32,
+    rem: i32,
+    error: i32,
+}
+
+impl RangeCoderState {
+    /// The bytes coding from this state may write: from the front position
+    /// to the end of the buffer.
+    pub fn writable(&self) -> core::ops::Range<usize> {
+        self.offs as usize..self.storage as usize
+    }
 }
 
 #[derive(Clone)]
@@ -47,8 +72,54 @@ pub struct RangeCoder {
 }
 
 impl RangeCoder {
+    pub fn state(&self) -> RangeCoderState {
+        RangeCoderState {
+            storage: self.storage,
+            end_offs: self.end_offs,
+            end_window: self.end_window,
+            nend_bits: self.nend_bits,
+            nbits_total: self.nbits_total,
+            offs: self.offs,
+            rng: self.rng,
+            val: self.val,
+            ext: self.ext,
+            rem: self.rem,
+            error: self.error,
+        }
+    }
+
+    pub fn set_state(&mut self, s: RangeCoderState) {
+        self.storage = s.storage;
+        self.end_offs = s.end_offs;
+        self.end_window = s.end_window;
+        self.nend_bits = s.nend_bits;
+        self.nbits_total = s.nbits_total;
+        self.offs = s.offs;
+        self.rng = s.rng;
+        self.val = s.val;
+        self.ext = s.ext;
+        self.rem = s.rem;
+        self.error = s.error;
+    }
+
+    /// A coder with an empty buffer, for `reset_for_encode` to set up.
+    pub(crate) const EMPTY: Self = RangeCoder {
+        buf: FixedVec::new(),
+        storage: 0,
+        end_offs: 0,
+        end_window: 0,
+        nend_bits: 0,
+        nbits_total: 0,
+        offs: 0,
+        rng: 0,
+        val: 0,
+        ext: 0,
+        rem: 0,
+        error: 0,
+    };
+
     pub fn new_encoder(size: u32) -> Self {
-        let size = (size as usize).clamp(1, RANGE_BUF_MAX);
+        let size = (size as usize).min(RANGE_BUF_MAX);
         let buf = FixedVec::from_value(0u8, size);
         RangeCoder {
             buf,
@@ -68,7 +139,7 @@ impl RangeCoder {
 
     #[inline]
     pub fn reset_for_encode(&mut self, size: u32) {
-        let size = (size as usize).clamp(1, RANGE_BUF_MAX);
+        let size = (size as usize).min(RANGE_BUF_MAX);
         self.buf.resize(size, 0);
         self.storage = size as u32;
         self.end_offs = 0;
@@ -175,7 +246,15 @@ impl RangeCoder {
                 let fs = self.decode(ft);
                 self.update(fs, fs.wrapping_add(1), ft);
                 let r = self.dec_bits(s as u32);
-                (fs << s) | r
+                // libopus ec_dec_uint (entdec.c:233-236): a value past the
+                // range is an error and decodes as the largest one.
+                let t = (fs << s) | r;
+                if t <= ft_minus_1 {
+                    t
+                } else {
+                    self.error = 1;
+                    ft_minus_1
+                }
             } else {
                 let fs = self.decode(ft);
                 self.update(fs, fs.wrapping_add(1), ft);
@@ -227,13 +306,7 @@ impl RangeCoder {
             let write_count = full_bytes.min(available);
             if write_count > 0 {
                 let start = (self.storage - self.end_offs - write_count) as usize;
-                unsafe {
-                    core::ptr::write_bytes(
-                        self.buf.as_mut_ptr().add(start),
-                        0,
-                        write_count as usize,
-                    );
-                }
+                self.buf[start..start + write_count as usize].fill(0);
                 self.end_offs += write_count;
             }
             if write_count < full_bytes {
@@ -315,9 +388,7 @@ impl RangeCoder {
     #[inline(always)]
     fn write_byte(&mut self, value: u8) {
         if self.offs + self.end_offs < self.storage {
-            unsafe {
-                *self.buf.get_unchecked_mut(self.offs as usize) = value;
-            }
+            self.buf[self.offs as usize] = value;
             self.offs += 1;
         } else {
             self.error = 1;
@@ -380,10 +451,7 @@ impl RangeCoder {
                 let carry = c >> EC_SYM_BITS;
                 if self.rem >= 0 {
                     if self.offs + self.end_offs < self.storage {
-                        unsafe {
-                            *self.buf.get_unchecked_mut(self.offs as usize) =
-                                (self.rem + carry) as u8;
-                        }
+                        self.buf[self.offs as usize] = (self.rem + carry) as u8;
                         self.offs += 1;
                     } else {
                         self.error = 1;
@@ -394,9 +462,7 @@ impl RangeCoder {
                     let ext = self.ext as usize;
                     for _j in 0..ext {
                         if self.offs + self.end_offs < self.storage {
-                            unsafe {
-                                *self.buf.get_unchecked_mut(self.offs as usize) = sym as u8;
-                            }
+                            self.buf[self.offs as usize] = sym as u8;
                             self.offs += 1;
                         } else {
                             self.error = 1;
@@ -431,14 +497,14 @@ impl RangeCoder {
     pub fn encode_icdf(&mut self, s: i32, icdf: &[u8], ftb: u32) {
         let r = self.rng >> ftb;
         if s > 0 {
-            let val = unsafe { *icdf.get_unchecked((s - 1) as usize) as u32 };
+            let val = icdf[(s - 1) as usize] as u32;
             self.val = self
                 .val
                 .wrapping_add(self.rng.wrapping_sub(r.wrapping_mul(val)));
-            let lower = unsafe { *icdf.get_unchecked(s as usize) };
+            let lower = icdf[s as usize];
             self.rng = r.wrapping_mul(val.wrapping_sub(lower as u32));
         } else {
-            let val = unsafe { *icdf.get_unchecked(s as usize) as u32 };
+            let val = icdf[s as usize] as u32;
             self.rng = self.rng.wrapping_sub(r.wrapping_mul(val));
         }
         self.normalize_encoder();
@@ -502,77 +568,99 @@ impl RangeCoder {
         self.normalize_decoder();
     }
 
+    /// Whether libopus's Laplace coder returns for every value and input:
+    /// `fs` from 1 to 32736 and `decay` from 0 to 16384. The codec passes
+    /// `fs` up to 32640 and `decay` up to 16320.
+    fn laplace_args_valid(fs: u32, decay: i32) -> bool {
+        (1..=32736).contains(&fs) && (0..=16384).contains(&decay)
+    }
+
+    /// libopus `ec_laplace_encode`, in its unsigned 32-bit arithmetic.
+    /// Outside [`Self::laplace_args_valid`]'s arguments, where libopus's
+    /// coder can loop forever, it sets the error flag and codes nothing.
     pub fn laplace_encode(&mut self, value: &mut i32, fs: u32, decay: i32) {
+        if !Self::laplace_args_valid(fs, decay) {
+            self.error = 1;
+            return;
+        }
         let mut val = *value;
-        let mut fl = 0;
+        let mut fl = 0u32;
         let mut fs_val = fs;
 
         if val != 0 {
             let s = if val < 0 { -1 } else { 0 };
-            val = (val + s) ^ s;
+            val = val.wrapping_add(s) ^ s;
             fl = fs_val;
             fs_val = self.laplace_get_freq1(fs_val, decay);
 
             let mut i = 1;
             while fs_val > 0 && i < val {
-                fs_val *= 2;
-                fl += fs_val + 2;
-                fs_val = ((fs_val as i32 * decay) >> 15) as u32;
+                fs_val = fs_val.wrapping_mul(2);
+                fl = fl.wrapping_add(fs_val.wrapping_add(2));
+                fs_val = fs_val.wrapping_mul(decay as u32) >> 15;
                 i += 1;
             }
 
             if fs_val == 0 {
-                let ndi_max = 32768 - fl + 1 - 1;
-                let ndi_max = (ndi_max as i32 - s) >> 1;
-                let di = (val - i).min(ndi_max - 1);
-                fl += (2 * di + 1 + s) as u32;
-                fs_val = 1u32.min(32768 - fl);
-                *value = (i + di + s) ^ s;
+                let ndi_max = 32768u32.wrapping_sub(fl) as i32;
+                let ndi_max = ndi_max.wrapping_sub(s) >> 1;
+                let di = val.wrapping_sub(i).min(ndi_max.wrapping_sub(1));
+                fl = fl.wrapping_add(di.wrapping_mul(2).wrapping_add(1 + s) as u32);
+                fs_val = 1u32.min(32768u32.wrapping_sub(fl));
+                *value = (i.wrapping_add(di).wrapping_add(s)) ^ s;
             } else {
                 fs_val += 1;
-                fl += fs_val & (!s as u32);
+                fl = fl.wrapping_add(fs_val & !(s as u32));
             }
         }
         self.encode(fl, fl.wrapping_add(fs_val), 1 << 15);
     }
 
     fn laplace_get_freq1(&self, fs0: u32, decay: i32) -> u32 {
-        let ft = 32768 - (2 * 16) - fs0;
-        ((ft as i32 * (16384 - decay)) >> 15) as u32
+        let ft = (32768u32 - 2 * 16).wrapping_sub(fs0);
+        ft.wrapping_mul(16384i32.wrapping_sub(decay) as u32) >> 15
     }
 
+    /// libopus `ec_laplace_decode`. Outside
+    /// [`Self::laplace_args_valid`]'s arguments it sets the error flag and
+    /// returns 0 without reading.
     pub fn laplace_decode(&mut self, fs: u32, decay: i32) -> i32 {
+        if !Self::laplace_args_valid(fs, decay) {
+            self.error = 1;
+            return 0;
+        }
         let fm = self.decode(1 << 15);
-        let mut fl = 0;
+        let mut fl = 0u32;
         let mut fs_val = fs;
-        let mut val = 0;
+        let mut val = 0i32;
 
+        // libopus's unsigned 32-bit arithmetic.
         if fm >= fs_val {
             val += 1;
             fl = fs_val;
-            fs_val = self.laplace_get_freq1(fs_val, decay) + 1;
+            fs_val = self.laplace_get_freq1(fs_val, decay).wrapping_add(1);
 
-            while fs_val > 1 && fm >= fl + 2 * fs_val {
-                fs_val *= 2;
-                fl += fs_val;
-                fs_val = (((fs_val as i32 - 2) * decay) >> 15) as u32 + 1;
+            while fs_val > 1 && fm >= fl.wrapping_add(fs_val.wrapping_mul(2)) {
+                fs_val = fs_val.wrapping_mul(2);
+                fl = fl.wrapping_add(fs_val);
+                fs_val = (fs_val.wrapping_sub(2).wrapping_mul(decay as u32) >> 15).wrapping_add(1);
                 val += 1;
             }
 
             if fs_val <= 1 {
-                let di = (fm - fl) >> 1;
-                val += di as i32;
-                fl += 2 * di;
+                let di = fm.wrapping_sub(fl) >> 1;
+                val = val.wrapping_add(di as i32);
+                fl = fl.wrapping_add(di.wrapping_mul(2));
             }
 
-            if fm < fl + fs_val {
-                val = -val;
+            if fm < fl.wrapping_add(fs_val) {
+                val = val.wrapping_neg();
             } else {
-                fl += fs_val;
+                fl = fl.wrapping_add(fs_val);
             }
         }
 
-        self.update(fl, fl.wrapping_add(fs_val.min(32768 - fl)), 1 << 15);
+        self.update(fl, fl.wrapping_add(fs_val).min(32768), 1 << 15);
         val
     }
 
@@ -581,9 +669,7 @@ impl RangeCoder {
         if self.offs + self.end_offs < self.storage {
             self.end_offs += 1;
             let idx = (self.storage - self.end_offs) as usize;
-            unsafe {
-                *self.buf.get_unchecked_mut(idx) = value;
-            }
+            self.buf[idx] = value;
         } else {
             self.error = 1;
         }
@@ -663,20 +749,18 @@ impl RangeCoder {
     #[cfg(feature = "std")]
     pub fn finish(&mut self) -> Vec<u8> {
         self.done();
-
-        let extra_end = if self.nend_bits > 0 && self.end_offs == 0 {
-            1
+        let (offs, storage) = (self.offs as usize, self.storage as usize);
+        let end = storage - self.end_offs as usize;
+        // done() ORs the raw bits short of a byte into buf[end - 1]
+        // (ec_enc_done); keep it when it lies past the range-coded bytes.
+        let tail = if self.nend_bits & 7 != 0 && offs < end {
+            end - 1
         } else {
-            0
+            end
         };
-        let mut result = Vec::with_capacity((self.offs + self.end_offs + extra_end) as usize);
-        result.extend_from_slice(&self.buf[0..self.offs as usize]);
-        if extra_end > 0 {
-            result.push(self.buf[(self.storage - 1) as usize]);
-        }
-        result.extend_from_slice(
-            &self.buf[(self.storage - self.end_offs) as usize..self.storage as usize],
-        );
+        let mut result = Vec::with_capacity(offs + storage - tail);
+        result.extend_from_slice(&self.buf[..offs]);
+        result.extend_from_slice(&self.buf[tail..storage]);
         result
     }
 }
@@ -780,6 +864,38 @@ mod tests {
         assert_eq!(b2, 5);
         assert_eq!(b3, 7);
         assert_eq!(b4, 0);
+    }
+
+    /// ec_enc_done ORs the bits short of a byte into
+    /// buf[storage-end_offs-1] (entenc.c:287-304); finish() keeps that
+    /// byte also when whole raw-bit bytes follow it.
+    #[test]
+    fn finish_keeps_the_partial_raw_bit_byte() {
+        for bits in [9u32, 13, 17, 20, 25] {
+            let v = (1u32 << bits) - 1;
+            let mut enc = RangeCoder::new_encoder(1024);
+            enc.encode_bit_logp(true, 1);
+            enc.enc_bits(v, bits);
+            let data = enc.finish();
+            let mut dec = RangeCoder::new_decoder(&data);
+            assert!(dec.decode_bit_logp(1));
+            assert_eq!(dec.dec_bits(bits), v, "{bits} bits");
+        }
+    }
+
+    /// ec_enc_init takes any size (entenc.c:112-126): a 0-byte encoder
+    /// fails on its first byte.
+    #[test]
+    fn zero_byte_encoders_fail_on_the_first_byte() {
+        let mut enc = RangeCoder::new_encoder(0);
+        enc.encode_bit_logp(true, 1);
+        enc.done();
+        assert_ne!(enc.error, 0);
+        let mut enc = RangeCoder::new_encoder(8);
+        enc.reset_for_encode(0);
+        enc.encode_bit_logp(true, 1);
+        enc.done();
+        assert_ne!(enc.error, 0);
     }
 
     #[test]

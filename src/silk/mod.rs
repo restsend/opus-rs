@@ -13,6 +13,8 @@ pub mod decode_pulses;
 pub mod decoder_structs;
 pub mod define;
 pub mod encode_indices;
+#[cfg(feature = "silk-fixed")]
+pub mod encode_frame_fix;
 pub mod encode_pulses;
 pub mod gain_quant;
 pub mod hp_variable_cutoff;
@@ -34,6 +36,12 @@ pub mod nlsf_unpack;
 pub mod noise_shape_analysis;
 pub mod nsq;
 pub mod nsq_del_dec;
+#[cfg(target_arch = "aarch64")]
+mod nsq_del_dec_neon;
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+mod nsq_del_dec_wasm;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+mod nsq_del_dec_x86;
 pub mod pitch_analysis;
 pub mod plc;
 pub mod resampler;
@@ -90,3 +98,4 @@ pub use vq_wmat_ec::*;
 pub type SilkFloat = f32;
 pub mod enc_api;
 pub use enc_api::*;
+pub mod float;

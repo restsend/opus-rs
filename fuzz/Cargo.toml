@@ -4,12 +4,28 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
+[workspace]
+members = [".", "opusref"]
+
 [package.metadata]
 cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-opus-rs = { path = ".." }
+arbitrary = { version = "1", features = ["derive"] }
+opus-rs = { path = "..", features = ["fuzzing"] }
+opusref = { path = "opusref" }
+
+[features]
+# The fixed-point reference and opus-rs's fixed-point SILK encoder
+# (`silk-fixed`).
+fixed = ["opusref/fixed", "opus-rs/silk-fixed"]
+# The reference built as libopus's x86-64 configure builds it; run with
+# OPUS_RS_ARCH (and OPUSREF_ARCH) naming the pair's level.
+simd = ["opusref/simd"]
+# The neural network features against the DNN-enabled reference: the
+# decoder targets pick a decoder complexity and the bandwidth extension.
+dnn = ["opusref/dnn", "opus-rs/deep-plc", "opus-rs/dred", "opus-rs/osce"]
 
 [dev-dependencies]
 
@@ -107,6 +123,62 @@ bench = false
 [[bin]]
 name = "fuzz_packet_parsing"
 path = "fuzz_targets/fuzz_packet_parsing.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "diff_decoder"
+path = "fuzz_targets/diff_decoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "diff_encoder"
+path = "fuzz_targets/diff_encoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "diff_kernels"
+path = "fuzz_targets/diff_kernels.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "api_args"
+path = "fuzz_targets/api_args.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "diff_multistream"
+path = "fuzz_targets/diff_multistream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "diff_repacketizer"
+path = "fuzz_targets/diff_repacketizer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "diff_ms_encoder"
+path = "fuzz_targets/diff_ms_encoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "diff_projection"
+path = "fuzz_targets/diff_projection.rs"
 test = false
 doc = false
 bench = false

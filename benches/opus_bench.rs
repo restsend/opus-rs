@@ -597,7 +597,17 @@ fn bench_celt_autocorr(c: &mut Criterion) {
             &(n, lag),
             |b, &(ns, lg)| {
                 let mut ac = vec![0.0f32; lg + 1];
-                b.iter(|| autocorr(black_box(&x), black_box(&mut ac), None, 0, lg, ns));
+                b.iter(|| {
+                    autocorr(
+                        black_box(&x),
+                        black_box(&mut ac),
+                        None,
+                        0,
+                        lg,
+                        ns,
+                        opus_rs::Arch::Scalar,
+                    )
+                });
             },
         );
     }
@@ -686,7 +696,13 @@ fn bench_pvq(c: &mut Criterion) {
             &(n, k),
             |b, &(ns, ks)| {
                 b.iter(|| {
-                    pvq_search(black_box(&x), black_box(&mut y), ks, ns);
+                    pvq_search(
+                        black_box(&x),
+                        black_box(&mut y),
+                        ks,
+                        ns,
+                        opus_rs::Arch::Scalar,
+                    );
                 });
             },
         );
@@ -745,6 +761,7 @@ fn bench_pvq(c: &mut Criterion) {
                         &mut rc,
                         1.0,
                         true,
+                        opus_rs::Arch::Scalar,
                     );
                 });
             },
@@ -756,7 +773,17 @@ fn bench_pvq(c: &mut Criterion) {
         // First encode to get valid bitstream
         let mut x_enc: Vec<f32> = (0..n).map(|i| (i as f32 * 0.5).sin()).collect();
         let mut rc_enc = RangeCoder::new_encoder(1024);
-        alg_quant(&mut x_enc, n, k, 2, 1, &mut rc_enc, 1.0, true);
+        alg_quant(
+            &mut x_enc,
+            n,
+            k,
+            2,
+            1,
+            &mut rc_enc,
+            1.0,
+            true,
+            opus_rs::Arch::Scalar,
+        );
         let data = rc_enc.finish();
 
         let mut x: Vec<f32> = vec![0.0; n];
@@ -922,7 +949,9 @@ fn bench_opus_encode_i16(c: &mut Criterion) {
         let input_f32: Vec<f32> = input_i16.iter().map(|&s| s as f32 / 32768.0).collect();
         let mut output = vec![0u8; 256];
 
-        group.throughput(Throughput::Bytes(frame_size as u64 * 2 /* i16 bytes */));
+        group.throughput(Throughput::Bytes(
+            frame_size as u64 * 2, /* i16 bytes */
+        ));
         group.bench_with_input(
             BenchmarkId::new(format!("{sample_rate}Hz/{frame_ms}ms"), "i16_voip"),
             &(sample_rate, frame_size),

@@ -297,19 +297,20 @@ fn audio_to_silence_to_audio_transition() {
         max_abs(&decoded_all)
     );
     if ffmpeg_available()
-        && let Some(ff) = decode_with_ffmpeg(&packets) {
-            assert!(is_finite_all(&ff));
-            let m = max_abs(&ff);
-            assert!(m < 1.0, "ffmpeg burst {}", m);
-            // Silence region (frames n_sine+1 .. n_sine+n_zero-1) should be near silent after ffmpeg's delay?
-            // Due to framing, we check energy of middle silence frames
-            // Find silence region approx: skip first sine and transition
-            // Use raw decoded length; approximate frame alignment by searching low energy window
-            // Simpler: check that max in silence area is small (allow transition frames)
-            // Check last zero frames before second sine
-            // We'll just check overall no huge burst
-            assert!(m < 1.0);
-        }
+        && let Some(ff) = decode_with_ffmpeg(&packets)
+    {
+        assert!(is_finite_all(&ff));
+        let m = max_abs(&ff);
+        assert!(m < 1.0, "ffmpeg burst {}", m);
+        // Silence region (frames n_sine+1 .. n_sine+n_zero-1) should be near silent after ffmpeg's delay?
+        // Due to framing, we check energy of middle silence frames
+        // Find silence region approx: skip first sine and transition
+        // Use raw decoded length; approximate frame alignment by searching low energy window
+        // Simpler: check that max in silence area is small (allow transition frames)
+        // Check last zero frames before second sine
+        // We'll just check overall no huge burst
+        assert!(m < 1.0);
+    }
 }
 
 #[test]
@@ -339,25 +340,26 @@ fn repeated_silence_no_burst() {
             );
         }
         if ffmpeg_available()
-            && let Some(ff) = decode_with_ffmpeg(&packets) {
-                assert!(is_finite_all(&ff));
-                let m = max_abs(&ff);
+            && let Some(ff) = decode_with_ffmpeg(&packets)
+        {
+            assert!(is_finite_all(&ff));
+            let m = max_abs(&ff);
+            assert!(
+                m < 0.1,
+                "ffmpeg repeated silence burst {} for {} frames",
+                m,
+                n_frames
+            );
+            // Also check packets are all small for VBR (except maybe first if overlap? But all zero from start => all small)
+            for (i, p) in packets.iter().enumerate() {
                 assert!(
-                    m < 0.1,
-                    "ffmpeg repeated silence burst {} for {} frames",
-                    m,
-                    n_frames
+                    p.len() <= 10,
+                    "packet {} not shrunk for repeated silence, len {}",
+                    i,
+                    p.len()
                 );
-                // Also check packets are all small for VBR (except maybe first if overlap? But all zero from start => all small)
-                for (i, p) in packets.iter().enumerate() {
-                    assert!(
-                        p.len() <= 10,
-                        "packet {} not shrunk for repeated silence, len {}",
-                        i,
-                        p.len()
-                    );
-                }
             }
+        }
     }
 }
 
@@ -410,11 +412,12 @@ fn near_silence_threshold() {
     let n = enc2.encode(&above, FRAME_SIZE, &mut out).unwrap();
     pkts.push(out[..n].to_vec());
     if ffmpeg_available()
-        && let Some(dec) = decode_with_ffmpeg(&pkts) {
-            assert!(is_finite_all(&dec));
-            let m = max_abs(&dec);
-            assert!(m < 1.0, "near silence ffmpeg burst {}", m);
-        }
+        && let Some(dec) = decode_with_ffmpeg(&pkts)
+    {
+        assert!(is_finite_all(&dec));
+        let m = max_abs(&dec);
+        assert!(m < 1.0, "near silence ffmpeg burst {}", m);
+    }
 }
 
 #[test]
@@ -480,10 +483,11 @@ fn hybrid_zero_sanity() {
         max_abs(&o)
     );
     if ffmpeg_available()
-        && let Some(ff) = decode_with_ffmpeg(&[out[..n].to_vec()]) {
-            assert!(is_finite_all(&ff));
-            assert!(max_abs(&ff) < 0.5, "hybrid ffmpeg burst {}", max_abs(&ff));
-        }
+        && let Some(ff) = decode_with_ffmpeg(&[out[..n].to_vec()])
+    {
+        assert!(is_finite_all(&ff));
+        assert!(max_abs(&ff) < 0.5, "hybrid ffmpeg burst {}", max_abs(&ff));
+    }
 }
 
 #[test]

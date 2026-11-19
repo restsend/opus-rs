@@ -2,6 +2,7 @@ use crate::bands::{
     SPREAD_AGGRESSIVE, SPREAD_NONE, SPREAD_NORMAL, compute_band_energies, denormalise_bands, haar1,
     log2amp, normalise_bands, quant_all_bands, spreading_decision,
 };
+use crate::mathops::{celt_exp2, celt_log2};
 use crate::modes::{CeltMode, SPREAD_ICDF, TAPSET_ICDF, TF_SELECT_TABLE, TRIM_ICDF};
 use crate::quant_bands::{
     quant_coarse_energy_advanced, quant_energy_finalise, quant_fine_energy, unquant_coarse_energy,
@@ -10,7 +11,6 @@ use crate::quant_bands::{
 use crate::range_coder::RangeCoder;
 use crate::rate::{BITRES, clt_compute_allocation};
 use crate::silk::define::TYPE_VOICED;
-use core::mem::MaybeUninit;
 
 #[cfg(not(feature = "std"))]
 use crate::compat::Math;
@@ -103,33 +103,6 @@ fn compute_vbr(
     }
     target.min(2 * base_target)
 }
-const EMEANS_F: [f32; 25] = [
-    6.4375, 6.25, 5.75, 5.3125, 5.0625, 4.8125, 4.5, 4.375, 4.875, 4.6875, 4.5625, 4.4375, 4.875,
-    4.625, 4.3125, 4.5, 4.375, 4.625, 4.75, 4.4375, 3.75, 3.75, 3.75, 3.75, 3.75,
-];
-fn compute_max_depth(
-    mode: &CeltMode,
-    band_log_e: &[f32],
-    nb_ebands: usize,
-    c: usize,
-    end: usize,
-    lsb_depth: i32,
-) -> f32 {
-    let mut max_depth: f32 = -31.9;
-    for ch in 0..c {
-        for i in 0..end {
-            let log_n = mode.log_n[i] as f32;
-            let e_mean = if i < EMEANS_F.len() { EMEANS_F[i] } else { 0.0 };
-            let noise_floor = 0.0625 * log_n + 0.5 + (9 - lsb_depth) as f32 - e_mean
-                + 0.0062 * ((i + 5) * (i + 5)) as f32;
-            let v = band_log_e[ch * nb_ebands + i] - noise_floor;
-            if v > max_depth {
-                max_depth = v;
-            }
-        }
-    }
-    max_depth
-}
 
 // --- Heap-free buffer capacity constants (all sized for the worst case:
 //     2 channels, 48 kHz, max frame). Runtime construction uses smaller logical
@@ -198,69 +171,9 @@ fn upsample_scale_zero(freq: &mut [f32], frame_size: usize, upsample: usize, cha
     }
 }
 
-#[cfg(target_arch = "aarch64")]
-use core::arch::aarch64::*;
-
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn sum_abs_neon(x: &[f32], n: usize) -> f32 {
-    let mut sum_vec = vdupq_n_f32(0.0);
-    let mut i = 0;
-
-    while i + 16 <= n {
-        let x0 = vld1q_f32(x.as_ptr().add(i));
-        let x1 = vld1q_f32(x.as_ptr().add(i + 4));
-        let x2 = vld1q_f32(x.as_ptr().add(i + 8));
-        let x3 = vld1q_f32(x.as_ptr().add(i + 12));
-
-        sum_vec = vfmaq_f32(sum_vec, vabsq_f32(x0), vdupq_n_f32(1.0));
-        sum_vec = vfmaq_f32(sum_vec, vabsq_f32(x1), vdupq_n_f32(1.0));
-        sum_vec = vfmaq_f32(sum_vec, vabsq_f32(x2), vdupq_n_f32(1.0));
-        sum_vec = vfmaq_f32(sum_vec, vabsq_f32(x3), vdupq_n_f32(1.0));
-
-        i += 16;
-    }
-
-    while i + 8 <= n {
-        let x0 = vld1q_f32(x.as_ptr().add(i));
-        let x1 = vld1q_f32(x.as_ptr().add(i + 4));
-        sum_vec = vfmaq_f32(sum_vec, vabsq_f32(x0), vdupq_n_f32(1.0));
-        sum_vec = vfmaq_f32(sum_vec, vabsq_f32(x1), vdupq_n_f32(1.0));
-        i += 8;
-    }
-
-    while i + 4 <= n {
-        let x0 = vld1q_f32(x.as_ptr().add(i));
-        sum_vec = vfmaq_f32(sum_vec, vabsq_f32(x0), vdupq_n_f32(1.0));
-        i += 4;
-    }
-
-    let mut sum = vaddvq_f32(sum_vec);
-
-    for j in i..n {
-        sum += x[j].abs();
-    }
-
-    sum
-}
-
 #[inline(always)]
 fn sum_abs(x: &[f32]) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        if crate::compat::x86_has_avx() {
-            return sum_abs_avx(x, x.len());
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        sum_abs_neon(x, x.len())
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        x.iter().map(|&v| v.abs()).sum()
-    }
+    x.iter().map(|&v| v.abs()).sum()
 }
 
 const MAX_FRAME_SIZE: usize = 2880;
@@ -271,11 +184,12 @@ const MAX_FRAME_SIZE: usize = 2880;
 /// (Reduced from a previous 3072 to shrink the heap-free footprint.)
 const DECODE_BUFFER_SIZE: usize = 2048;
 
+/// libopus transient_analysis inv_table (celt_encoder.c:286-294).
 const INV_TABLE: [u8; 128] = [
     255, 255, 156, 110, 86, 70, 59, 51, 45, 40, 37, 33, 31, 28, 26, 25, 23, 22, 21, 20, 19, 18, 17,
     16, 16, 15, 15, 14, 13, 13, 12, 12, 12, 12, 11, 11, 11, 10, 10, 10, 9, 9, 9, 9, 9, 9, 8, 8, 8,
-    8, 8, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-    5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3,
+    8, 8, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3,
     3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2,
 ];
 
@@ -336,6 +250,140 @@ impl Default for AnalysisInfo {
     }
 }
 
+/// libopus compute_mdcts (celt_encoder.c:511-555): each input channel's
+/// long MDCT or `1 << lm` short ones, interleaved, their average for a mono
+/// stream of stereo input, scaled for the upsampling.
+#[allow(clippy::too_many_arguments)]
+fn compute_mdcts(
+    mode: &CeltMode,
+    short_blocks: bool,
+    in_buf: &[f32],
+    freq: &mut [f32],
+    channels: usize,
+    cc: usize,
+    frame_size: usize,
+    overlap: usize,
+    lm: usize,
+    upsample: usize,
+) {
+    let buf_stride = frame_size + overlap;
+    let (b, shift) = if short_blocks {
+        (1 << lm, mode.max_lm)
+    } else {
+        (1, mode.max_lm - lm)
+    };
+    let n = frame_size / b;
+    for c in 0..cc {
+        for i in 0..b {
+            mode.mdct.forward(
+                &in_buf[c * buf_stride + i * n..c * buf_stride + buf_stride],
+                &mut freq[c * frame_size + i..],
+                mode.window,
+                overlap,
+                shift,
+                b,
+            );
+        }
+    }
+    if cc == 2 && channels == 1 {
+        for i in 0..frame_size {
+            freq[i] = 0.5 * freq[i] + 0.5 * freq[frame_size + i];
+        }
+    }
+    upsample_scale_zero(freq, frame_size, upsample, channels);
+}
+
+/// libopus patch_transient_decision (celt_encoder.c:473-508): whether the
+/// band energies rose by more than 1 on average above the previous frame's,
+/// spread by -1 per band.
+fn patch_transient_decision(
+    new_e: &[f32],
+    old_e: &[f32],
+    nb_ebands: usize,
+    start: usize,
+    end: usize,
+    channels: usize,
+) -> bool {
+    let mut spread_old = [0.0f32; 26];
+    let old = |i: usize| {
+        if channels == 1 {
+            old_e[i]
+        } else {
+            old_e[i].max(old_e[i + nb_ebands])
+        }
+    };
+    spread_old[start] = old(start);
+    for i in start + 1..end {
+        spread_old[i] = (spread_old[i - 1] - 1.0).max(old(i));
+    }
+    for i in (start..end - 1).rev() {
+        spread_old[i] = spread_old[i].max(spread_old[i + 1] - 1.0);
+    }
+    let first = start.max(2);
+    let mut mean_diff = 0.0f32;
+    for c in 0..channels {
+        for i in first..end - 1 {
+            let x1 = new_e[i + c * nb_ebands].max(0.0);
+            let x2 = spread_old[i].max(0.0);
+            mean_diff += (x1 - x2).max(0.0);
+        }
+    }
+    mean_diff /= (channels as i32 * (end as i32 - 1 - first as i32)) as f32;
+    mean_diff > 1.0
+}
+
+/// transient_analysis's high-pass filter, forward (post-echo) and backward
+/// (pre-echo) passes for `C` channels side by side. Each channel's chains
+/// keep libopus's order; the filter and the forward pass run in one loop and
+/// the channels in step, so the serial chains overlap. `tmp[c * len / 2..]`
+/// gets channel c's threshold; returns each channel's energy sum and peak.
+#[inline(always)]
+fn transient_thresholds<const C: usize>(
+    input: &[f32],
+    len: usize,
+    forward_decay: f32,
+    tmp: &mut [f32],
+) -> [(f32, f32); C] {
+    let len2 = len / 2;
+    let mut hp = [[0.0f32; 2]; C];
+    let mut fwd = [0.0f32; C];
+    let mut out = [(0.0f32, 0.0f32); C];
+    for i in 0..len2 {
+        for c in 0..C {
+            let mut y = [0.0f32; 2];
+            for (k, y) in y.iter_mut().enumerate() {
+                // High-pass filter: (1 - 2*z^-1 + z^-2) / (1 - z^-1 + .5*z^-2).
+                let x = input[c * len + 2 * i + k];
+                let [mem0, mem1] = hp[c];
+                *y = mem0 + x;
+                hp[c] = [mem0 - x + 0.5 * mem1, x - mem0];
+            }
+            // The first 12 outputs are cleared: the filter has no memory.
+            if i < 6 {
+                y = [0.0; 2];
+            }
+            // C float build: PSHR32 is an identity, so x2 is the plain sum of
+            // squares and mean += x2.
+            let x2 = y[0] * y[0] + y[1] * y[1];
+            out[c].0 += x2;
+            fwd[c] = x2 + (1.0 - forward_decay) * fwd[c];
+            tmp[c * len2 + i] = forward_decay * fwd[c];
+        }
+    }
+    let mut bwd = [0.0f32; C];
+    for i in (0..len2).rev() {
+        for c in 0..C {
+            let t = &mut tmp[c * len2 + i];
+            bwd[c] = *t + 0.875 * bwd[c];
+            *t = 0.125 * bwd[c];
+            if *t > out[c].1 {
+                out[c].1 = *t;
+            }
+        }
+    }
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 fn transient_analysis(
     input: &[f32],
@@ -348,7 +396,6 @@ fn transient_analysis(
     _tone_freq: f32,
     toneishness: f32,
     tmp: &mut [f32],
-    tmp2: &mut [f32],
 ) -> bool {
     let mut mask_metric = 0.0f32;
     let mut forward_decay = 0.0625f32;
@@ -360,43 +407,18 @@ fn transient_analysis(
 
     let len2 = len / 2;
     debug_assert!(len <= MAX_TRANSIENT_LEN);
+    let tmp = &mut tmp[..channels * len2];
+    let mut energy = [(0.0f32, 0.0f32); 2];
+    if channels == 2 {
+        energy = transient_thresholds::<2>(input, len, forward_decay, tmp);
+    } else {
+        [energy[0]] = transient_thresholds::<1>(input, len, forward_decay, tmp);
+    }
 
-    for c in 0..channels {
-        let mut mem0 = 0.0f32;
-        let mut mem1 = 0.0f32;
-
-        for i in 0..len {
-            let x = input[c * len + i];
-            let y = mem0 + x;
-            let mem00 = mem0;
-            mem0 = mem0 - x + 0.5 * mem1;
-            mem1 = x - mem00;
-            tmp[i] = y;
-        }
-
-        tmp[..12].fill(0.0);
-
-        let mut mean = 0.0f32;
-        mem0 = 0.0f32;
-        for i in 0..len2 {
-            let x2 = (tmp[2 * i] * tmp[2 * i] + tmp[2 * i + 1] * tmp[2 * i + 1]) / 16.0;
-            // C float build: PSHR32(x2, 12) is an identity, so mean += x2
-            mean += x2;
-            mem0 = x2 + (1.0 - forward_decay) * mem0;
-            tmp2[i] = forward_decay * mem0;
-        }
-
-        mem0 = 0.0f32;
-        let mut max_e = 0.0f32;
-        for i in (0..len2).rev() {
-            mem0 = tmp2[i] + 0.875 * mem0;
-            tmp2[i] = 0.125 * mem0;
-            if tmp2[i] > max_e {
-                max_e = tmp2[i];
-            }
-        }
-
-        mean = (mean * max_e * 0.5 * (len2 as f32)).sqrt();
+    for (c, (threshold, &(mean, max_e))) in tmp.chunks_exact(len2).zip(&energy).enumerate() {
+        // C promotes to double here (`.5` is a double literal) and takes a
+        // double sqrt: `celt_sqrt(mean * maxE*.5*len2)`.
+        let mean = ((mean * max_e) as f64 * 0.5 * len2 as f64).sqrt() as f32;
         // C (float build): norm = len2 / (EPSILON + mean)  [EPSILON = 1e-15f]
         let norm = (len2 as f32) / (1e-15 + mean);
 
@@ -404,7 +426,9 @@ fn transient_analysis(
         // unmask are opus_int32; the 64/6 scaling is an integer division).
         let mut unmask: i32 = 0;
         for i in (12..(len2 - 5)).step_by(4) {
-            let id = (64.0 * norm * (tmp2[i] + 1e-15)).floor() as i32;
+            // The cast truncates toward zero; it equals floor() after the
+            // clamp to 0..=127.
+            let id = (64.0 * norm * (threshold[i] + 1e-15)) as i32;
             let id = id.clamp(0, 127) as usize;
             unmask += INV_TABLE[id] as i32;
         }
@@ -431,125 +455,19 @@ fn transient_analysis(
     // C (celt_encoder.c:460-461): tf_max = max(0, sqrt(27*mask_metric) - 42);
     // tf_estimate = sqrt(max(0, 0.0069*min(163, tf_max) - 0.139))  [float build]
     let tf_max = ((27.0 * mask_metric).sqrt() - 42.0).max(0.0);
-    *tf_estimate = (0.0069 * tf_max.min(163.0) - 0.139).max(0.0).sqrt();
+    // The product is float, the 0.139, the max and the sqrt are double.
+    *tf_estimate = (f64::from(0.0069 * tf_max.min(163.0)) - 0.139)
+        .max(0.0)
+        .sqrt() as f32;
 
     is_transient
-}
-
-fn l1_metric(tmp: &[f32], n: usize, lm: i32, bias: f32) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        if n >= 16 && crate::compat::x86_has_avx() {
-            return l1_metric_avx(tmp, n, lm, bias);
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        if n >= 16 {
-            return unsafe { l1_metric_neon(tmp, n, lm, bias) };
-        }
-    }
-
-    let mut l1 = 0.0f32;
-    for &tv in tmp[..n].iter() {
-        l1 += tv.abs();
-    }
-    l1 + (lm as f32) * bias * l1
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx")]
-unsafe fn sum_abs_avx(x: &[f32], n: usize) -> f32 {
-    #[cfg(target_arch = "x86")]
-    use core::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
-
-    let mut sum0 = _mm256_setzero_ps();
-    let mut sum1 = _mm256_setzero_ps();
-    let mut i = 0usize;
-    let sign_mask = _mm256_set1_ps(-0.0);
-
-    while i + 16 <= n {
-        let v0 = _mm256_loadu_ps(x.as_ptr().add(i));
-        let v1 = _mm256_loadu_ps(x.as_ptr().add(i + 8));
-        sum0 = _mm256_add_ps(sum0, _mm256_andnot_ps(sign_mask, v0));
-        sum1 = _mm256_add_ps(sum1, _mm256_andnot_ps(sign_mask, v1));
-        i += 16;
-    }
-
-    while i + 8 <= n {
-        let v = _mm256_loadu_ps(x.as_ptr().add(i));
-        sum0 = _mm256_add_ps(sum0, _mm256_andnot_ps(sign_mask, v));
-        i += 8;
-    }
-
-    let sum = _mm256_add_ps(sum0, sum1);
-    let hi = _mm256_extractf128_ps(sum, 1);
-    let lo = _mm256_castps256_ps128(sum);
-    let s4 = _mm_add_ps(lo, hi);
-    let t1 = _mm_movehl_ps(s4, s4);
-    let s2 = _mm_add_ps(s4, t1);
-    let t2 = _mm_shuffle_ps(s2, s2, 0x55);
-    let mut out = _mm_cvtss_f32(_mm_add_ss(s2, t2));
-
-    for j in i..n {
-        out += x[j].abs();
-    }
-
-    out
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx")]
-unsafe fn l1_metric_avx(tmp: &[f32], n: usize, lm: i32, bias: f32) -> f32 {
-    let l1 = sum_abs_avx(tmp, n);
-    l1 + (lm as f32) * bias * l1
-}
-
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-unsafe fn l1_metric_neon(tmp: &[f32], n: usize, lm: i32, bias: f32) -> f32 {
-    unsafe {
-        let mut sum4 = vdupq_n_f32(0.0);
-        let mut i = 0;
-
-        while i + 15 < n {
-            let v0 = vld1q_f32(tmp.as_ptr().add(i));
-            let v1 = vld1q_f32(tmp.as_ptr().add(i + 4));
-            let v2 = vld1q_f32(tmp.as_ptr().add(i + 8));
-            let v3 = vld1q_f32(tmp.as_ptr().add(i + 12));
-
-            sum4 = vaddq_f32(sum4, vabsq_f32(v0));
-            sum4 = vaddq_f32(sum4, vabsq_f32(v1));
-            sum4 = vaddq_f32(sum4, vabsq_f32(v2));
-            sum4 = vaddq_f32(sum4, vabsq_f32(v3));
-
-            i += 16;
-        }
-
-        while i + 3 < n {
-            let v = vld1q_f32(tmp.as_ptr().add(i));
-            sum4 = vaddq_f32(sum4, vabsq_f32(v));
-            i += 4;
-        }
-
-        let sum2 = vpaddq_f32(sum4, sum4);
-        let sum1 = vpaddq_f32(sum2, sum2);
-        let mut l1 = vgetq_lane_f32(sum1, 0);
-
-        while i < n {
-            l1 += tmp[i].abs();
-            i += 1;
-        }
-
-        l1 + (lm as f32) * bias * l1
-    }
 }
 
 const MAX_NB_EBANDS: usize = 21;
 
 const MAX_TF_TMP: usize = 176;
+/// Most haar1 steps tf_analysis tries (lm + 1 with lm <= 3).
+const MAX_TF_LEVELS: usize = 4;
 
 #[allow(clippy::too_many_arguments)]
 fn tf_analysis(
@@ -567,37 +485,54 @@ fn tf_analysis(
 ) -> i32 {
     debug_assert!(len <= MAX_NB_EBANDS);
     let mut metric = [0i32; MAX_NB_EBANDS];
-    let mut tmp = [0.0f32; MAX_TF_TMP];
-    let mut tmp_1 = [0.0f32; MAX_TF_TMP];
-
     let bias = 0.04 * (-0.25f32).max(0.5 - tf_estimate);
+    // The haar1 levels of one band (see below).
+    let mut levels = [[0.0f32; MAX_TF_TMP]; 2 + MAX_TF_LEVELS];
 
     for (i, metric_i) in metric[..len].iter_mut().enumerate() {
         let n = ((mode.e_bands[i + 1] - mode.e_bands[i]) as usize) << lm;
         let narrow = (mode.e_bands[i + 1] - mode.e_bands[i]) == 1;
         let offset = tf_chan * n0 + ((mode.e_bands[i] as usize) << lm);
-        tmp[..n].copy_from_slice(&x[offset..offset + n]);
+        // The levels depend on each other only through haar1, so all of them
+        // are transformed first and their (sequential) abs sums run side by
+        // side; the decisions then follow in libopus's order.
+        // levels[0]: the band; [1]: haar1 at the shortest blocks (transient,
+        // wide bands); [2 + k]: after the k+1 progressive haar1 steps.
+        levels[0][..n].copy_from_slice(&x[offset..offset + n]);
+        let try_short = is_transient && !narrow;
+        if try_short {
+            levels[1][..n].copy_from_slice(&x[offset..offset + n]);
+            haar1(&mut levels[1][..n], n >> lm, 1 << lm);
+        }
+        let steps = (lm + if is_transient || narrow { 0 } else { 1 }) as usize;
+        for k in 0..steps {
+            let (done, next) = levels.split_at_mut(2 + k);
+            let prev = if k == 0 { &done[0] } else { &done[1 + k] };
+            next[0][..n].copy_from_slice(&prev[..n]);
+            haar1(&mut next[0][..n], n >> k, 1 << k);
+        }
+        let mut sums = [0.0f32; 2 + MAX_TF_LEVELS];
+        for j in 0..n {
+            for (sum, level) in sums.iter_mut().zip(&levels) {
+                *sum += level[j].abs();
+            }
+        }
+        let l1 = |sum: f32, lm: i32| sum + (lm as f32) * bias * sum;
 
-        let mut l1 = l1_metric(&tmp[..n], n, if is_transient { lm } else { 0 }, bias);
-        let mut best_l1 = l1;
+        let mut best_l1 = l1(sums[0], if is_transient { lm } else { 0 });
         let mut best_level = 0;
 
-        if is_transient && !narrow {
-            tmp_1[..n].copy_from_slice(&tmp[..n]);
-            haar1(&mut tmp_1[..n], n >> lm, 1 << lm);
-            l1 = l1_metric(&tmp_1[..n], n, lm + 1, bias);
+        if try_short {
+            let l1 = l1(sums[1], lm + 1);
             if l1 < best_l1 {
                 best_l1 = l1;
                 best_level = -1;
             }
         }
 
-        for k in 0..(lm + if is_transient || narrow { 0 } else { 1 }) {
+        for k in 0..steps as i32 {
             let b = if is_transient { lm - k - 1 } else { k + 1 };
-
-            haar1(&mut tmp[..n], n >> k, 1 << k);
-            l1 = l1_metric(&tmp[..n], n, b, bias);
-
+            let l1 = l1(sums[2 + k as usize], b);
             if l1 < best_l1 {
                 best_l1 = l1;
                 best_level = k + 1;
@@ -812,8 +747,8 @@ fn tf_decode(
 }
 
 fn stereo_analysis(m: &CeltMode, x: &[f32], lm: i32, n0: usize) -> bool {
-    let mut sum_lr = 1e-9f32;
-    let mut sum_ms = 1e-9f32;
+    let mut sum_lr = 1e-15f32;
+    let mut sum_ms = 1e-15f32;
 
     for i in 0..13 {
         let start = (m.e_bands[i] as usize) << lm;
@@ -828,7 +763,7 @@ fn stereo_analysis(m: &CeltMode, x: &[f32], lm: i32, n0: usize) -> bool {
         }
     }
 
-    sum_ms *= core::f32::consts::FRAC_1_SQRT_2;
+    sum_ms *= 0.707107;
     let mut thetas = 13;
     if lm <= 1 {
         thetas -= 8;
@@ -843,12 +778,15 @@ fn stereo_analysis(m: &CeltMode, x: &[f32], lm: i32, n0: usize) -> bool {
 const COMBFILTER_MINPERIOD: usize = 15;
 const COMBFILTER_MAXPERIOD: usize = 1024;
 
+// The digits of celt.c:246-249.
+#[allow(clippy::excessive_precision)]
 const PREFILTER_GAINS: [[f32; 3]; 3] = [
-    [0.306_640_6, 0.217_041, 0.129_638_7],
-    [0.463_867_2, 0.268_066_4, 0.0],
-    [0.799_804_7, 0.100_097_7, 0.0],
+    [0.306_640_625, 0.217_041_015_6, 0.129_638_671_9],
+    [0.463_867_187_5, 0.268_066_406_2, 0.0],
+    [0.799_804_687_5, 0.100_097_656_2, 0.0],
 ];
 
+/// `y[y_idx..][..n]`: the comb filter with constant period and gains.
 #[allow(clippy::too_many_arguments)]
 fn comb_filter_const(
     y: &mut [f32],
@@ -860,380 +798,91 @@ fn comb_filter_const(
     g10: f32,
     g11: f32,
     g12: f32,
+    arch: crate::Arch,
 ) {
-    #[cfg(target_arch = "aarch64")]
-    {
-        comb_filter_const_neon(y, x, y_idx, x_idx, t, n, g10, g11, g12);
-    }
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    unsafe {
-        if crate::compat::x86_has_avx_fma() {
-            comb_filter_const_avx(y, x, y_idx, x_idx, t, n, g10, g11, g12);
-            return;
-        }
-    }
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
-    unsafe {
-        comb_filter_const_sse(y, x, y_idx, x_idx, t, n, g10, g11, g12);
-        #[allow(clippy::needless_return)]
-        return;
-    }
-    #[cfg(not(any(
-        target_arch = "aarch64",
-        all(target_arch = "x86_64", target_feature = "sse")
-    )))]
-    {
-        comb_filter_const_scalar(y, x, y_idx, x_idx, t, n, g10, g11, g12);
-    }
-}
-
-#[inline]
-#[allow(dead_code)]
-fn comb_filter_const_scalar(
-    y: &mut [f32],
-    x: &[f32],
-    y_idx: usize,
-    x_idx: usize,
-    t: usize,
-    n: usize,
-    g10: f32,
-    g11: f32,
-    g12: f32,
-) {
-    let mut x1;
-    let mut x2;
-    let mut x3;
-    let mut x4;
-    let mut x0;
-
-    x4 = x[x_idx - t - 2];
-    x3 = x[x_idx - t - 1];
-    x2 = x[x_idx - t];
-    x1 = x[x_idx - t + 1];
-
+    let y = &mut y[y_idx..y_idx + n];
+    let xs = &x[x_idx..x_idx + n];
+    // x[x_idx + i - t + k - 2] is xk[i].
+    let past = &x[x_idx - t - 2..x_idx - t + 2 + n];
+    let (x4, x3, x2, x1, x0) = (
+        &past[..n],
+        &past[1..n + 1],
+        &past[2..n + 2],
+        &past[3..n + 3],
+        &past[4..n + 4],
+    );
+    let sse = sse_groups(n, arch);
     for i in 0..n {
-        x0 = x[x_idx + i - t + 2];
-        y[y_idx + i] = x[x_idx + i] + g10 * x2 + g11 * (x1 + x3) + g12 * (x0 + x4);
-        x4 = x3;
-        x3 = x2;
-        x2 = x1;
-        x1 = x0;
+        y[i] = comb_tap(
+            i < sse,
+            xs[i],
+            [x0[i], x1[i], x2[i], x3[i], x4[i]],
+            g10,
+            g11,
+            g12,
+        );
     }
 }
 
-#[cfg(target_arch = "aarch64")]
-fn comb_filter_const_neon(
-    y: &mut [f32],
-    x: &[f32],
-    y_idx: usize,
-    x_idx: usize,
-    t: usize,
-    n: usize,
-    g10: f32,
-    g11: f32,
-    g12: f32,
-) {
-    unsafe { comb_filter_const_neon_impl(y, x, y_idx, x_idx, t, n, g10, g11, g12) }
+/// The samples of a constant comb filter of `n` samples that libopus's
+/// `comb_filter_const_sse` computes at the x86 levels: whole groups of
+/// four (the rest, which only custom modes have, as the scalar code).
+fn sse_groups(n: usize, arch: crate::Arch) -> usize {
+    if arch == crate::Arch::Scalar {
+        0
+    } else {
+        n & !3
+    }
 }
 
-#[cfg(target_arch = "aarch64")]
+/// One sample of the constant comb filter from `x` and the taps
+/// `[x0, x1, x2, x3, x4]` (x[i - T + 2] down to x[i - T - 2]): in
+/// `comb_filter_const_c`'s order, or with `sse` in
+/// `comb_filter_const_sse`'s partial sums.
 #[inline(always)]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn comb_filter_const_neon_impl(
-    y: &mut [f32],
-    x: &[f32],
-    y_idx: usize,
-    x_idx: usize,
-    t: usize,
-    n: usize,
-    g10: f32,
-    g11: f32,
-    g12: f32,
-) {
-    use core::arch::aarch64::*;
-
-    let g10v = vdupq_n_f32(g10);
-    let g11v = vdupq_n_f32(g11);
-    let g12v = vdupq_n_f32(g12);
-
-    let xbase = x.as_ptr().add(x_idx);
-    let ybase = y.as_mut_ptr().add(y_idx);
-
-    let mut x0v = vld1q_f32(xbase.sub(t + 2));
-
-    let mut i = 0;
-    while i + 4 <= n {
-        let x4v = vld1q_f32(xbase.add(i).sub(t - 2));
-
-        let x2v = vextq_f32(x0v, x4v, 2);
-
-        let x1v = vextq_f32(x0v, x4v, 1);
-
-        let x3v = vextq_f32(x0v, x4v, 3);
-
-        let xi = vld1q_f32(xbase.add(i));
-
-        let mut yi = xi;
-        yi = vfmaq_f32(yi, g10v, x2v);
-        yi = vfmaq_f32(yi, g11v, vaddq_f32(x1v, x3v));
-        yi = vfmaq_f32(yi, g12v, vaddq_f32(x4v, x0v));
-        vst1q_f32(ybase.add(i), yi);
-
-        x0v = x4v;
-        i += 4;
-    }
-
-    let x0v_arr: [f32; 4] = core::mem::transmute(x0v);
-    let mut sx4 = x0v_arr[0];
-    let mut sx3 = x0v_arr[1];
-    let mut sx2 = x0v_arr[2];
-    let mut sx1 = x0v_arr[3];
-
-    while i < n {
-        let sx0 = x[x_idx + i - t + 2];
-        y[y_idx + i] = x[x_idx + i] + g10 * sx2 + g11 * (sx1 + sx3) + g12 * (sx0 + sx4);
-        sx4 = sx3;
-        sx3 = sx2;
-        sx2 = sx1;
-        sx1 = sx0;
-        i += 1;
+fn comb_tap(sse: bool, x: f32, t: [f32; 5], g10: f32, g11: f32, g12: f32) -> f32 {
+    let [x0, x1, x2, x3, x4] = t;
+    if sse {
+        (x + g10 * x2) + (g11 * (x3 + x1) + g12 * (x4 + x0))
+    } else {
+        x + g10 * x2 + g11 * (x1 + x3) + g12 * (x0 + x4)
     }
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
-#[inline(always)]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn comb_filter_const_sse(
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn fuzz_comb_filter(
     y: &mut [f32],
     x: &[f32],
     y_idx: usize,
     x_idx: usize,
-    t: usize,
+    t0: usize,
+    t1: usize,
     n: usize,
-    g10: f32,
-    g11: f32,
-    g12: f32,
+    g0: f32,
+    g1: f32,
+    tapset0: i32,
+    tapset1: i32,
+    window: &[f32],
+    overlap: usize,
 ) {
-    #[cfg(target_arch = "x86")]
-    use core::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
-
-    let g10v = _mm_set1_ps(g10);
-    let g11v = _mm_set1_ps(g11);
-    let g12v = _mm_set1_ps(g12);
-
-    let xbase = x.as_ptr().add(x_idx);
-    let ybase = y.as_mut_ptr().add(y_idx);
-    let mut x0v = _mm_loadu_ps(xbase.sub(t + 2));
-
-    let mut i = 0;
-    while i + 4 <= n {
-        let x4v = _mm_loadu_ps(xbase.add(i).sub(t - 2));
-
-        let x2v = _mm_shuffle_ps(x0v, x4v, 0x4e);
-
-        let x1v = _mm_shuffle_ps(x0v, x2v, 0x99);
-
-        let x3v = _mm_shuffle_ps(x2v, x4v, 0x99);
-
-        let xi = _mm_loadu_ps(xbase.add(i));
-
-        let mut yi = xi;
-        yi = _mm_add_ps(yi, _mm_mul_ps(g10v, x2v));
-        let yi2 = _mm_add_ps(
-            _mm_mul_ps(g11v, _mm_add_ps(x3v, x1v)),
-            _mm_mul_ps(g12v, _mm_add_ps(x4v, x0v)),
-        );
-        yi = _mm_add_ps(yi, yi2);
-        _mm_storeu_ps(ybase.add(i), yi);
-
-        x0v = x4v;
-        i += 4;
-    }
-
-    let x0v_arr: [f32; 4] = core::mem::transmute(x0v);
-    let mut sx4 = x0v_arr[0];
-    let mut sx3 = x0v_arr[1];
-    let mut sx2 = x0v_arr[2];
-    let mut sx1 = x0v_arr[3];
-
-    while i < n {
-        let sx0 = x[x_idx + i - t + 2];
-        y[y_idx + i] = x[x_idx + i] + g10 * sx2 + g11 * (sx1 + sx3) + g12 * (sx0 + sx4);
-        sx4 = sx3;
-        sx3 = sx2;
-        sx2 = sx1;
-        sx1 = sx0;
-        i += 1;
-    }
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[target_feature(enable = "avx,fma")]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn comb_filter_const_avx(
-    y: &mut [f32],
-    x: &[f32],
-    y_idx: usize,
-    x_idx: usize,
-    t: usize,
-    n: usize,
-    g10: f32,
-    g11: f32,
-    g12: f32,
-) {
-    #[cfg(target_arch = "x86")]
-    use core::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
-
-    let g10v = _mm256_set1_ps(g10);
-    let g11v = _mm256_set1_ps(g11);
-    let g12v = _mm256_set1_ps(g12);
-
-    let xbase = x.as_ptr().add(x_idx);
-    let ybase = y.as_mut_ptr().add(y_idx);
-
-    let mut i = 0;
-
-    while i + 16 <= n {
-        let xi_a = _mm256_loadu_ps(xbase.add(i));
-        let x0_a = _mm256_loadu_ps(xbase.add(i).sub(t + 2));
-        let x4_a = _mm256_loadu_ps(xbase.add(i).sub(t - 2));
-
-        let x2_a = _mm256_loadu_ps(xbase.add(i).sub(t));
-        let x1x3_a = _mm256_add_ps(
-            _mm256_loadu_ps(xbase.add(i).sub(t + 1)),
-            _mm256_loadu_ps(xbase.add(i).sub(t - 1)),
-        );
-        let x0x4_a = _mm256_add_ps(x0_a, x4_a);
-
-        let mut yi_a = xi_a;
-        yi_a = _mm256_fmadd_ps(g10v, x2_a, yi_a);
-        yi_a = _mm256_fmadd_ps(g11v, x1x3_a, yi_a);
-        yi_a = _mm256_fmadd_ps(g12v, x0x4_a, yi_a);
-        _mm256_storeu_ps(ybase.add(i), yi_a);
-
-        let j = i + 8;
-        let xi_b = _mm256_loadu_ps(xbase.add(j));
-        let x0_b = _mm256_loadu_ps(xbase.add(j).sub(t + 2));
-        let x4_b = _mm256_loadu_ps(xbase.add(j).sub(t - 2));
-        let x2_b = _mm256_loadu_ps(xbase.add(j).sub(t));
-        let x1x3_b = _mm256_add_ps(
-            _mm256_loadu_ps(xbase.add(j).sub(t + 1)),
-            _mm256_loadu_ps(xbase.add(j).sub(t - 1)),
-        );
-        let x0x4_b = _mm256_add_ps(x0_b, x4_b);
-
-        let mut yi_b = xi_b;
-        yi_b = _mm256_fmadd_ps(g10v, x2_b, yi_b);
-        yi_b = _mm256_fmadd_ps(g11v, x1x3_b, yi_b);
-        yi_b = _mm256_fmadd_ps(g12v, x0x4_b, yi_b);
-        _mm256_storeu_ps(ybase.add(j), yi_b);
-
-        i += 16;
-    }
-
-    while i + 8 <= n {
-        let xi = _mm256_loadu_ps(xbase.add(i));
-        let x0 = _mm256_loadu_ps(xbase.add(i).sub(t + 2));
-        let x4 = _mm256_loadu_ps(xbase.add(i).sub(t - 2));
-        let x2 = _mm256_loadu_ps(xbase.add(i).sub(t));
-        let x1x3 = _mm256_add_ps(
-            _mm256_loadu_ps(xbase.add(i).sub(t + 1)),
-            _mm256_loadu_ps(xbase.add(i).sub(t - 1)),
-        );
-        let x0x4 = _mm256_add_ps(x0, x4);
-
-        let mut yi = xi;
-        yi = _mm256_fmadd_ps(g10v, x2, yi);
-        yi = _mm256_fmadd_ps(g11v, x1x3, yi);
-        yi = _mm256_fmadd_ps(g12v, x0x4, yi);
-        _mm256_storeu_ps(ybase.add(i), yi);
-
-        i += 8;
-    }
-
-    if i + 4 <= n {
-        comb_filter_const_sse_fma(y, x, y_idx + i, x_idx + i, t, n - i, g10, g11, g12);
-        return;
-    }
-
-    let mut sx4 = x[x_idx + i - t - 2];
-    let mut sx3 = x[x_idx + i - t - 1];
-    let mut sx2 = x[x_idx + i - t];
-    let mut sx1 = x[x_idx + i - t + 1];
-    while i < n {
-        let sx0 = x[x_idx + i - t + 2];
-        y[y_idx + i] = x[x_idx + i] + g10 * sx2 + g11 * (sx1 + sx3) + g12 * (sx0 + sx4);
-        sx4 = sx3;
-        sx3 = sx2;
-        sx2 = sx1;
-        sx1 = sx0;
-        i += 1;
-    }
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[target_feature(enable = "avx,fma")]
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn comb_filter_const_sse_fma(
-    y: &mut [f32],
-    x: &[f32],
-    y_idx: usize,
-    x_idx: usize,
-    t: usize,
-    n: usize,
-    g10: f32,
-    g11: f32,
-    g12: f32,
-) {
-    #[cfg(target_arch = "x86")]
-    use core::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::*;
-
-    let g10v = _mm_set1_ps(g10);
-    let g11v = _mm_set1_ps(g11);
-    let g12v = _mm_set1_ps(g12);
-
-    let xbase = x.as_ptr().add(x_idx);
-    let ybase = y.as_mut_ptr().add(y_idx);
-    let mut x0v = _mm_loadu_ps(xbase.sub(t + 2));
-
-    let mut i = 0;
-    while i + 4 <= n {
-        let x4v = _mm_loadu_ps(xbase.add(i).sub(t - 2));
-        let x2v = _mm_shuffle_ps(x0v, x4v, 0x4e);
-        let x1v = _mm_shuffle_ps(x0v, x2v, 0x99);
-        let x3v = _mm_shuffle_ps(x2v, x4v, 0x99);
-        let xi = _mm_loadu_ps(xbase.add(i));
-
-        let mut yi = xi;
-        yi = _mm_fmadd_ps(g10v, x2v, yi);
-        yi = _mm_fmadd_ps(g11v, _mm_add_ps(x1v, x3v), yi);
-        yi = _mm_fmadd_ps(g12v, _mm_add_ps(x0v, x4v), yi);
-        _mm_storeu_ps(ybase.add(i), yi);
-
-        x0v = x4v;
-        i += 4;
-    }
-
-    let x0v_arr: [f32; 4] = core::mem::transmute(x0v);
-    let mut sx4 = x0v_arr[0];
-    let mut sx3 = x0v_arr[1];
-    let mut sx2 = x0v_arr[2];
-    let mut sx1 = x0v_arr[3];
-    while i < n {
-        let sx0 = x[x_idx + i - t + 2];
-        y[y_idx + i] = x[x_idx + i] + g10 * sx2 + g11 * (sx1 + sx3) + g12 * (sx0 + sx4);
-        sx4 = sx3;
-        sx3 = sx2;
-        sx2 = sx1;
-        sx1 = sx0;
-        i += 1;
-    }
+    comb_filter(
+        y,
+        x,
+        y_idx,
+        x_idx,
+        t0,
+        t1,
+        n,
+        g0,
+        g1,
+        tapset0,
+        tapset1,
+        window,
+        overlap,
+        crate::Arch::select(),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1251,6 +900,7 @@ fn comb_filter(
     tapset1: i32,
     window: &[f32],
     overlap: usize,
+    arch: crate::Arch,
 ) {
     if g0 == 0.0 && g1 == 0.0 {
         if x_idx != y_idx || !core::ptr::eq(x.as_ptr(), y.as_ptr()) {
@@ -1290,12 +940,14 @@ fn comb_filter(
     while i < inner_overlap && i < n {
         let x0 = x[x_idx + i - t1 + 2];
         let f = window[i] * window[i];
+        // celt.c:283-289: each gain is scaled by the window before use.
         y[y_idx + i] = x[x_idx + i]
-            + (1.0 - f)
-                * (g00 * x[x_idx + i - t0]
-                    + g01 * (x[x_idx + i - t0 + 1] + x[x_idx + i - t0 - 1])
-                    + g02 * (x[x_idx + i - t0 + 2] + x[x_idx + i - t0 - 2]))
-            + f * (g10 * x2 + g11 * (x1 + x3) + g12 * (x0 + x4));
+            + ((1.0 - f) * g00) * x[x_idx + i - t0]
+            + ((1.0 - f) * g01) * (x[x_idx + i - t0 + 1] + x[x_idx + i - t0 - 1])
+            + ((1.0 - f) * g02) * (x[x_idx + i - t0 + 2] + x[x_idx + i - t0 - 2])
+            + (f * g10) * x2
+            + (f * g11) * (x1 + x3)
+            + (f * g12) * (x0 + x4);
 
         x4 = x3;
         x3 = x2;
@@ -1308,14 +960,15 @@ fn comb_filter(
         if g1 == 0.0 {
             y[y_idx + i..y_idx + n].copy_from_slice(&x[x_idx + i..x_idx + n]);
         } else {
-            comb_filter_const(y, x, y_idx + i, x_idx + i, t1, n - i, g10, g11, g12);
+            comb_filter_const(y, x, y_idx + i, x_idx + i, t1, n - i, g10, g11, g12, arch);
         }
     }
 }
 
-/// In-place comb filter: buf[y_idx..y_idx+n] is both input and output.
-/// Reference samples at buf[y_idx + i - T + offset] may already be filtered
-/// if T < i, matching C libopus's in-place comb_filter(out, out, ...) behavior.
+/// comb_filter (celt.c) in place on `buf[y_idx..][..n]`, as the decoder
+/// calls it: the reads at `y_idx + i - T` see the history before `y_idx` and
+/// the samples already filtered.
+#[allow(clippy::too_many_arguments)]
 fn comb_filter_inplace(
     buf: &mut [f32],
     y_idx: usize,
@@ -1328,9 +981,9 @@ fn comb_filter_inplace(
     tapset1: i32,
     window: &[f32],
     overlap: usize,
+    arch: crate::Arch,
 ) {
     if g0 == 0.0 && g1 == 0.0 {
-        // nothing to do; buf[y_idx..] already holds the input
         return;
     }
 
@@ -1345,43 +998,58 @@ fn comb_filter_inplace(
     let g11 = g1 * PREFILTER_GAINS[tapset1 as usize][1];
     let g12 = g1 * PREFILTER_GAINS[tapset1 as usize][2];
 
-    let mut inner_overlap = overlap;
-    if g0 == g1 && t0 == t1 && tapset0 == tapset1 {
-        inner_overlap = 0;
-    }
-
-    let mut i = 0;
-    while i < inner_overlap && i < n {
+    // The filter did not change: no cross-fade.
+    let overlap = if g0 == g1 && t0 == t1 && tapset0 == tapset1 {
+        0
+    } else {
+        overlap.min(n)
+    };
+    for i in 0..overlap {
         let idx = y_idx + i;
         let f = window[i] * window[i];
-        let s = buf[idx]; // original input (not yet overwritten at idx)
-        let r0 = buf[idx - t0];
-        let r0p1 = buf[idx - t0 + 1];
-        let r0m1 = buf[idx - t0 - 1];
-        let r0p2 = buf[idx - t0 + 2];
-        let r0m2 = buf[idx - t0 - 2];
-        let r1 = buf[idx - t1];
-        let r1p1 = buf[idx - t1 + 1];
-        let r1m1 = buf[idx - t1 - 1];
-        let r1p2 = buf[idx - t1 + 2];
-        let r1m2 = buf[idx - t1 - 2];
-        buf[idx] = s
-            + (1.0 - f) * (g00 * r0 + g01 * (r0p1 + r0m1) + g02 * (r0p2 + r0m2))
-            + f * (g10 * r1 + g11 * (r1p1 + r1m1) + g12 * (r1p2 + r1m2));
-        i += 1;
+        // celt.c:283-289: each gain is scaled by the window before use.
+        buf[idx] = buf[idx]
+            + ((1.0 - f) * g00) * buf[idx - t0]
+            + ((1.0 - f) * g01) * (buf[idx - t0 + 1] + buf[idx - t0 - 1])
+            + ((1.0 - f) * g02) * (buf[idx - t0 + 2] + buf[idx - t0 - 2])
+            + (f * g10) * buf[idx - t1]
+            + (f * g11) * (buf[idx - t1 + 1] + buf[idx - t1 - 1])
+            + (f * g12) * (buf[idx - t1 + 2] + buf[idx - t1 - 2]);
+    }
+    if g1 == 0.0 {
+        return;
     }
 
-    // Constant region: only new filter (t1, g1)
-    while i < n {
-        let idx = y_idx + i;
-        let s = buf[idx];
-        let r1 = buf[idx - t1];
-        let r1p1 = buf[idx - t1 + 1];
-        let r1m1 = buf[idx - t1 - 1];
-        let r1p2 = buf[idx - t1 + 2];
-        let r1m2 = buf[idx - t1 - 2];
-        buf[idx] = s + g10 * r1 + g11 * (r1p1 + r1m1) + g12 * (r1p2 + r1m2);
-        i += 1;
+    // comb_filter_const_c: x[i - t1 + k - 2] is buf[start + i + k] here.
+    let start = y_idx + overlap - t1 - 2;
+    let x = &mut buf[start..y_idx + n];
+    // The SSE groups of four read taps at least T >= 15 samples back, all
+    // written before the group, so a group is four independent samples.
+    let sse = sse_groups(n - overlap, arch);
+    for i in (0..sse).step_by(4) {
+        let tap = |k: usize| -> [f32; 4] { x[i + 4 - k..i + 8 - k].try_into().unwrap() };
+        let [x0, x1, x2, x3, x4] = [tap(0), tap(1), tap(2), tap(3), tap(4)];
+        let y: &mut [f32; 4] = (&mut x[i + t1 + 2..i + t1 + 6]).try_into().unwrap();
+        for l in 0..4 {
+            y[l] = comb_tap(
+                true,
+                y[l],
+                [x0[l], x1[l], x2[l], x3[l], x4[l]],
+                g10,
+                g11,
+                g12,
+            );
+        }
+    }
+    let (mut x4, mut x3, mut x2, mut x1) = (x[sse], x[sse + 1], x[sse + 2], x[sse + 3]);
+    for i in sse..n - overlap {
+        let x0 = x[i + 4];
+        let y = &mut x[i + t1 + 2];
+        *y = comb_tap(false, *y, [x0, x1, x2, x3, x4], g10, g11, g12);
+        x4 = x3;
+        x3 = x2;
+        x2 = x1;
+        x1 = x0;
     }
 }
 
@@ -1407,10 +1075,12 @@ fn run_prefilter(
     analysis: &AnalysisInfo,
     loss_rate: i32,
     tf_estimate: f32,
+    enabled: bool,
     nb_available_bytes: usize,
     tone_freq: f32,
     toneishness: f32,
     complexity: i32,
+    arch: crate::Arch,
 ) -> (bool, f32, usize) {
     let max_period = COMBFILTER_MAXPERIOD;
     let min_period = COMBFILTER_MINPERIOD;
@@ -1425,7 +1095,6 @@ fn run_prefilter(
         );
     }
 
-    let enabled = true;
     let mut pitch_index: usize;
     let mut gain1: f32;
     if enabled && toneishness > 0.99 {
@@ -1439,8 +1108,10 @@ fn run_prefilter(
             multiple += 1.0;
         }
         if tone_freq > 0.006148 {
-            pitch_index = ((0.5 + 2.0 * core::f32::consts::PI * multiple / tone_freq) as usize)
-                .min(COMBFILTER_MAXPERIOD - 2);
+            // In double: M_PI and .5 are double literals (C 1452).
+            let period =
+                0.5 + 2.0 * core::f64::consts::PI * f64::from(multiple) / f64::from(tone_freq);
+            pitch_index = (period.floor() as usize).min(COMBFILTER_MAXPERIOD - 2);
         } else {
             pitch_index = COMBFILTER_MINPERIOD;
         }
@@ -1452,7 +1123,14 @@ fn run_prefilter(
             for c in 0..channels {
                 pre_slices.push(&pre[c * pre_size..c * pre_size + pre_size]);
             }
-            crate::pitch::pitch_downsample(&pre_slices, pitch_buf, pitch_buf_len, channels, 2);
+            crate::pitch::pitch_downsample(
+                &pre_slices,
+                pitch_buf,
+                pitch_buf_len,
+                channels,
+                2,
+                arch,
+            );
         }
 
         let search_max = max_period - 3 * min_period;
@@ -1461,6 +1139,7 @@ fn run_prefilter(
             pitch_buf,
             frame_size,
             search_max,
+            arch,
         );
         pitch_index = (max_period - pitch_result).min(max_period - 2);
 
@@ -1472,6 +1151,7 @@ fn run_prefilter(
             &mut pitch_index,
             prefilter_period,
             prefilter_gain,
+            arch,
         );
         if pitch_index > max_period - 2 {
             pitch_index = max_period - 2;
@@ -1557,6 +1237,7 @@ fn run_prefilter(
                 prefilter_tapset,
                 window,
                 0,
+                arch,
             );
         }
 
@@ -1576,6 +1257,7 @@ fn run_prefilter(
                 tapset_decision,
                 window,
                 overlap,
+                arch,
             );
         }
     }
@@ -1586,7 +1268,19 @@ fn run_prefilter(
         after[c] = sum_abs(&in_buf[start..start + frame_size]);
     }
 
-    let cancel_pitch = (0..channels).any(|c| after[c] > before[c]);
+    let cancel_pitch = if channels == 2 {
+        // Stereo (celt_encoder.c:1555-1563): cancel if one channel gets
+        // significantly worse, or neither gets significantly better.
+        let thresh = [
+            0.25 * gain1 * before[0] + 0.01 * before[1],
+            0.25 * gain1 * before[1] + 0.01 * before[0],
+        ];
+        after[0] - before[0] > thresh[0]
+            || after[1] - before[1] > thresh[1]
+            || (before[0] - after[0] < thresh[0] && before[1] - after[1] < thresh[1])
+    } else {
+        after[0] > before[0]
+    };
 
     // C 1572-1584: revert to a gain of zero, but still fade the previous
     // frame's filter out over the overlap. The decoder's post-filter always
@@ -1612,6 +1306,7 @@ fn run_prefilter(
                 tapset_decision,
                 window,
                 overlap,
+                arch,
             );
         }
     }
@@ -1652,6 +1347,9 @@ const STRIDE_ACCESS_PAD: usize = crate::pvq::MAX_PVQ_N;
 pub struct CeltEncoder {
     mode: &'static CeltMode,
     channels: usize,
+    /// libopus `CELTEncoder.arch`: the level whose arithmetic the kernels
+    /// reproduce, chosen at init.
+    arch: crate::Arch,
     /// libopus `CELTEncoder.upsample`: the API input is zero-stuffed by this
     /// factor so the encoder always works at the mode's 48 kHz geometry.
     upsample: usize,
@@ -1662,7 +1360,6 @@ pub struct CeltEncoder {
     end_band: usize,
     pub complexity: i32,
     syn_mem: FixedVec<f32, CELT_SYN_MEM>,
-    enc_decode_mem: FixedVec<f32, CELT_SYN_MEM>,
     old_band_e: FixedVec<f32, CELT_NB_X_CH>,
     preemph_mem: FixedVec<f32, CELT_MAX_CHANNELS>,
     tonal_average: i32,
@@ -1679,6 +1376,15 @@ pub struct CeltEncoder {
     old_band_e3: FixedVec<f32, CELT_NB_X_CH>,
     last_band_log_e: FixedVec<f32, CELT_NB_X_CH>,
     delayed_intra: f32,
+    /// libopus `energyError`: the last frame's fine-quantisation error,
+    /// clamped to +-0.5, which biases stable bands' coarse energy.
+    energy_error: [f32; CELT_NB_X_CH],
+    /// libopus `CELTEncoder.rng`: the last frame's final range, which seeds
+    /// the resynthesis's folding noise.
+    rng: u32,
+    /// libopus `CELT_SET_CHANNELS`: the channels coded, 1 for a mono stream
+    /// of stereo input.
+    stream_channels: usize,
     lsb_depth: i32,
     overlap_max: f32,
     bitrate: i32,
@@ -1704,7 +1410,6 @@ pub struct CeltEncoder {
     w_ebits: FixedVec<i32, CELT_NB_X_CH>,
     w_fine_priority: FixedVec<i32, CELT_NB_X_CH>,
     w_collapse_masks: FixedVec<u32, CELT_NB_X_CH>,
-    w_band_amp_synth: FixedVec<f32, CELT_NB_X_CH>,
     consec_transient: i32,
 
     w_prefilter_pre: FixedVec<f32, CELT_PREFILTER_PRE>,
@@ -1713,7 +1418,6 @@ pub struct CeltEncoder {
     w_prefilter_after: FixedVec<f32, CELT_MAX_CHANNELS>,
 
     w_transient_tmp: FixedVec<f32, MAX_TRANSIENT_LEN>,
-    w_transient_tmp2: FixedVec<f32, { MAX_TRANSIENT_LEN / 2 }>,
 
     analysis: AnalysisInfo,
     /// libopus `stereo_saving`: the bits the stereo correlation saves, which
@@ -1730,6 +1434,15 @@ pub struct CeltEncoder {
     /// at 0 the energy is coded intra.
     disable_pf: bool,
     force_intra: bool,
+    /// No phase inversion in intensity stereo (libopus `disable_inv`,
+    /// `OPUS_SET_PHASE_INVERSION_DISABLED`).
+    pub(crate) disable_inv: bool,
+    /// The stream is a surround LFE channel (libopus `lfe`,
+    /// `OPUS_SET_LFE`).
+    pub(crate) lfe: bool,
+    /// The surround masking of the multistream encoder per band and
+    /// channel (libopus `energy_mask`, `OPUS_SET_ENERGY_MASK`).
+    pub(crate) energy_mask: Option<[f32; 2 * CELT_NB_EBANDS]>,
     /// The last frame's allocation decisions, which unit tests inspect.
     #[cfg(test)]
     decisions: FrameDecisions,
@@ -1743,6 +1456,12 @@ struct FrameDecisions {
     tf_res: [i32; MAX_NB_EBANDS],
     is_transient: bool,
     weak_transient: bool,
+}
+
+#[cfg(test)]
+impl FrameDecisions {
+    const DEFAULT: Self =
+        Self { alloc_trim: 0, tf_select: 0, tf_res: [0; MAX_NB_EBANDS], is_transient: false, weak_transient: false };
 }
 
 const INTEN_THRESHOLDS: [i32; 21] = [
@@ -1786,6 +1505,7 @@ fn alloc_trim_analysis(
     intensity: i32,
     surround_trim: f32,
     equiv_rate: i32,
+    arch: crate::Arch,
 ) -> i32 {
     let mut trim = 5.0f32;
     if equiv_rate < 64000 {
@@ -1800,27 +1520,20 @@ fn alloc_trim_analysis(
         for i in 0..8 {
             let offset = (mode.e_bands[i] as usize) << lm;
             let n = ((mode.e_bands[i + 1] - mode.e_bands[i]) as usize) << lm;
-            let mut partial = 0.0f32;
-            for j in 0..n {
-                partial += x[offset + j] * x[n0 + offset + j];
-            }
-            sum += partial;
+            sum += crate::pitch::inner_prod(&x[offset..], &x[n0 + offset..], n, arch);
         }
         sum = (sum / 8.0).abs().min(1.0);
         let mut min_xc = sum;
         for i in 8..intensity as usize {
             let offset = (mode.e_bands[i] as usize) << lm;
             let n = ((mode.e_bands[i + 1] - mode.e_bands[i]) as usize) << lm;
-            let mut partial = 0.0f32;
-            for j in 0..n {
-                partial += x[offset + j] * x[n0 + offset + j];
-            }
+            let partial = crate::pitch::inner_prod(&x[offset..], &x[n0 + offset..], n, arch);
             min_xc = min_xc.min(partial.abs());
         }
         min_xc = min_xc.min(1.0);
 
-        let log_xc = (1.001 - sum * sum).log2();
-        let log_xc2 = (log_xc * 0.5).max((1.001 - min_xc * min_xc).log2());
+        let log_xc = celt_log2(1.001 - sum * sum);
+        let log_xc2 = (log_xc * 0.5).max(celt_log2(1.001 - min_xc * min_xc));
 
         trim += (-4.0f32).max(0.75 * log_xc);
         *stereo_saving = (*stereo_saving + 0.25).min(-0.5 * log_xc2);
@@ -1863,23 +1576,70 @@ fn median5(v: &[f32]) -> f32 {
     x[2]
 }
 
-// Port of celt_encoder.c tone_lpc / tone_detect (float path, no FIXED_POINT shifts)
-fn tone_lpc(x: &[f32], len: usize, delay: usize, lpc: &mut [f32; 2]) -> bool {
+/// The largest of `init` and the magnitudes in `x`. `f32::max` skips NaN
+/// and otherwise gives the same result in any order, so eight running
+/// maxima equal the sequential fold.
+fn max_abs(x: &[f32], init: f32) -> f32 {
+    let mut m = [init; 8];
+    let blocks = x.chunks_exact(8);
+    let rest = blocks.remainder();
+    for b in blocks {
+        for (m, v) in m.iter_mut().zip(b) {
+            *m = m.max(v.abs());
+        }
+    }
+    rest.iter().chain(&m).fold(init, |m, v| m.max(v.abs()))
+}
+
+const TONE_LAGS: [usize; 8] = [0, 1, 2, 4, 8, 16, 32, 64];
+
+/// Adds x[i]*x[i+TONE_LAGS[j]] to acc[j] for i in start..end, j < K.
+#[inline(always)]
+fn tone_sums<const K: usize>(acc: &mut [f32; 8], x: &[f32], start: usize, end: usize) {
+    for i in start..end {
+        let w = &x[i..=i + TONE_LAGS[K - 1]];
+        for j in 0..K {
+            acc[j] += w[0] * w[TONE_LAGS[j]];
+        }
+    }
+}
+
+/// tone_lpc's forward correlations [r00, r01, r02] for the delays 1 << t,
+/// t < nd: the sums of x[i]*x[i], x[i]*x[i+d] and x[i]*x[i+2d] over
+/// i < len-2d. The sum at lag k for delay k and the one for delay k/2 are
+/// prefixes of one sum, so one pass in ascending i gives every delay, each
+/// sum added in tone_lpc's order. Needs nd <= 6 and len > 2 << (nd - 1).
+fn tone_correlations(x: &[f32], nd: usize) -> [[f32; 3]; 6] {
+    let mut acc = [0.0f32; 8];
+    let mut r = [[0.0; 3]; 6];
+    let mut start = 0;
+    for t in (0..nd).rev() {
+        let end = x.len() - (2 << t);
+        // The sums at lags up to 2 << t.
+        match t {
+            0 => tone_sums::<3>(&mut acc, x, start, end),
+            1 => tone_sums::<4>(&mut acc, x, start, end),
+            2 => tone_sums::<5>(&mut acc, x, start, end),
+            3 => tone_sums::<6>(&mut acc, x, start, end),
+            4 => tone_sums::<7>(&mut acc, x, start, end),
+            _ => tone_sums::<8>(&mut acc, x, start, end),
+        }
+        r[t] = [acc[0], acc[t + 1], acc[t + 2]];
+        start = end;
+    }
+    r
+}
+
+// Port of celt_encoder.c tone_lpc / tone_detect (float path, no FIXED_POINT shifts).
+// `r` holds the first loop's r00, r01, r02 (tone_correlations).
+fn tone_lpc(x: &[f32], len: usize, delay: usize, r: [f32; 3], lpc: &mut [f32; 2]) -> bool {
     // returns true on fail
     if len <= 2 * delay {
         return true;
     }
-    let mut r00 = 0.0f32;
-    let mut r01 = 0.0f32;
-    let mut r02 = 0.0f32;
+    let [mut r00, mut r01, mut r02] = r;
     let mut r11: f32;
     let mut r12: f32;
-    
-    for i in 0..len - 2 * delay {
-        r00 += x[i] * x[i];
-        r01 += x[i] * x[i + delay];
-        r02 += x[i] * x[i + 2 * delay];
-    }
     let mut edges = 0.0f32;
     for i in 0..delay {
         edges += x[len + i - 2 * delay] * x[len + i - 2 * delay] - x[i] * x[i];
@@ -1896,62 +1656,86 @@ fn tone_lpc(x: &[f32], len: usize, delay: usize, lpc: &mut [f32; 2]) -> bool {
     }
     r12 = r01 + edges;
     // Reverse and sum to get backward contribution (float: simple sums)
-    let (rr00, rr01, rr11, rr02, rr12) = (
-        r00 + r22,
-        r01 + r12,
-        2.0 * r11,
-        2.0 * r02,
-        r12 + r01,
-    );
+    let (rr00, rr01, rr11, rr02, rr12) = (r00 + r22, r01 + r12, 2.0 * r11, 2.0 * r02, r12 + r01);
     r00 = rr00;
     r01 = rr01;
     r11 = rr11;
     r02 = rr02;
     r12 = rr12;
     let den = r00 * r11 - r01 * r01;
-    if den < 0.001 * r00 * r11 {
+    if den < 0.001 * (r00 * r11) {
         return true;
     }
-    let mut lpc1 = (r02 * r11 - r01 * r12) / den;
-    let mut lpc0 = (r00 * r12 - r02 * r01) / den;
-    // Clamp as in C (Q29 limits)
-    lpc1 = lpc1.clamp(-1.0, 1.0);
-    lpc0 = lpc0.clamp(-1.999999, 1.999999);
-    // C does HALF check for lpc0, but float clamp suffices
-    lpc[0] = lpc0;
-    lpc[1] = lpc1;
+    // celt_encoder.c:1349-1356: the limits apply where the quotient
+    // reaches 1 or 2.
+    let num1 = r02 * r11 - r01 * r12;
+    lpc[1] = if num1 >= den {
+        1.0
+    } else if num1 <= -den {
+        -1.0
+    } else {
+        num1 / den
+    };
+    let num0 = r00 * r12 - r02 * r01;
+    lpc[0] = if 0.5 * num0 >= den {
+        1.999999
+    } else if 0.5 * num0 <= -den {
+        -1.999999
+    } else {
+        num0 / den
+    };
     false
 }
 
+/// Whether 1 - lpc[0] z^-1 - lpc[1] z^-2 has complex roots: the float
+/// square plus the double product QCONST32(3.999999,29)*lpc[1] below 0,
+/// summed in double (celt_encoder.c:1383).
+fn tone_has_complex_roots(lpc: [f32; 2]) -> bool {
+    f64::from(lpc[0] * lpc[0]) + 3.999999 * f64::from(lpc[1]) < 0.0
+}
+
+/// The tone's frequency, acos(.5f*lpc[0])/delay (celt_encoder.c:1394):
+/// a double acos and division, rounded once to float.
+fn tone_freq(lpc0: f32, delay: usize) -> f32 {
+    let x = f64::from(0.5 * lpc0);
+    #[cfg(feature = "std")]
+    let a = x.acos();
+    #[cfg(not(feature = "std"))]
+    let a = crate::compat::Math::acos(x);
+    (a / delay as f64) as f32
+}
+
 fn tone_detect(in_buf: &[f32], cc: usize, n: usize, fs: i32) -> (f32, f32) {
-    // in_buf is at least N samples per channel, we use N = n (frame+overlap)
-    // For CC==2, average channels; for float, no shift scaling.
-    // Use FixedVec to stay no_std heap-free.
-    let mut x: FixedVec<f32, 2048> = FixedVec::from_value(0.0, n);
-    if cc == 2 {
+    // in_buf holds n = frame + overlap samples per channel. Stereo sums
+    // the channels (celt_encoder.c:1374; SHR32 is an identity in float).
+    let mut sum;
+    let x = if cc == 2 {
+        sum = [0.0f32; 2048];
         for i in 0..n {
-            x[i] = 0.5 * (in_buf[i] + in_buf[i + n]);
+            sum[i] = in_buf[i] + in_buf[i + n];
         }
+        &sum[..n]
     } else {
-        for i in 0..n {
-            x[i] = in_buf[i];
-        }
+        &in_buf[..n]
+    };
+    // The delays the loop below can reach, 1 << t for t < nd, with len > 2*delay.
+    let mut nd = 1;
+    while 1 << (nd - 1) <= fs as usize / 3000 {
+        nd += 1;
     }
+    while nd > 0 && n <= 2 << (nd - 1) {
+        nd -= 1;
+    }
+    let r = tone_correlations(x, nd);
     let mut delay = 1usize;
     let mut lpc = [0.0f32; 2];
-    let mut fail = tone_lpc(&x[..n], n, delay, &mut lpc);
+    let mut fail = tone_lpc(x, n, delay, r[0], &mut lpc);
     while delay <= (fs as usize / 3000) && (fail || (lpc[0] > 1.0 && lpc[1] < 0.0)) {
         delay *= 2;
-        fail = tone_lpc(&x[..n], n, delay, &mut lpc);
+        fail = tone_lpc(x, n, delay, r[delay.trailing_zeros() as usize], &mut lpc);
     }
-    if !fail && lpc[0] * lpc[0] + 3.999999 * lpc[1] < 0.0 {
-        let toneishness = -lpc[1];
-        // acos needs libm in no_std
-        #[cfg(feature = "std")]
-        let freq = (0.5 * lpc[0]).acos() / delay as f32;
-        #[cfg(not(feature = "std"))]
-        let freq = crate::compat::Math::acos(0.5 * lpc[0]) / delay as f32;
-        (freq, toneishness)
+    if !fail && tone_has_complex_roots(lpc) {
+        (tone_freq(lpc[0], delay), -lpc[1])
     } else {
         (-1.0, 0.0)
     }
@@ -1970,26 +1754,63 @@ fn dynalloc_analysis_simple(
     effective_bytes: usize,
     is_transient: bool,
     offsets: &mut [i32],
-    cap: &[i32],
     lsb_depth: i32,
     vbr: bool,
     constrained_vbr: bool,
     analysis: &AnalysisInfo,
+    lfe: bool,
     surround_dynalloc: &[f32],
     tone_freq: f32,
     toneishness: f32,
     importance: &mut [i32],
-) {
+    spread_weight: &mut [i32],
+) -> (f32, i32) {
     offsets.fill(0);
-    if effective_bytes < (30 + 5 * lm) {
+    let nb = mode.nb_ebands;
+    // celt_encoder.c:1063-1117: the noise floor, the deepest band above it,
+    // and from a simple masking model the weights of the spreading decision.
+    let mut noise_floor = [0.0f32; CELT_NB_EBANDS];
+    let mut max_depth = -31.9f32;
+    for i in 0..end {
+        noise_floor[i] = 0.0625 * mode.log_n[i] as f32 + 0.5 + (9 - lsb_depth) as f32
+            - mode.e_means[i]
+            + 0.0062 * (i + 5) as f32 * (i + 5) as f32;
+    }
+    for c in 0..channels {
+        for i in 0..end {
+            max_depth = max_depth.max(band_log_e[c * nb + i] - noise_floor[i]);
+        }
+    }
+    let mut mask = [0.0f32; CELT_NB_EBANDS];
+    for i in 0..end {
+        mask[i] = band_log_e[i] - noise_floor[i];
+        if channels == 2 {
+            mask[i] = mask[i].max(band_log_e[nb + i] - noise_floor[i]);
+        }
+    }
+    let sig = mask;
+    for i in 1..end {
+        mask[i] = mask[i].max(mask[i - 1] - 2.0);
+    }
+    for i in (0..end.saturating_sub(1)).rev() {
+        mask[i] = mask[i].max(mask[i + 1] - 3.0);
+    }
+    for i in 0..end {
+        let smr = sig[i] - (max_depth - 12.0).max(0.0).max(mask[i]);
+        let shift = (-((0.5 + smr).floor() as i32)).clamp(0, 5);
+        spread_weight[i] = 32 >> shift;
+    }
+
+    if effective_bytes < (30 + 5 * lm) || lfe {
         for v in importance.iter_mut() {
             *v = 13;
         }
-        return;
+        return (max_depth, 0);
     }
 
-    let nb = mode.nb_ebands;
     let mut follower: FixedVec<f32, CELT_NB_X_CH> = FixedVec::from_value(0.0f32, nb * channels);
+    // One `last` for both channels (celt_encoder.c:1123).
+    let mut last = 0usize;
     for c in 0..channels {
         let base = c * nb;
         let src = if let Some(b2) = band_log_e2 {
@@ -2006,7 +1827,6 @@ fn dynalloc_analysis_simple(
             band_log_e3[i] = e;
         }
 
-        let mut last = 0usize;
         follower[base] = band_log_e3[0];
         for i in 1..end {
             if band_log_e3[i] > band_log_e3[i - 1] + 0.5 {
@@ -2041,19 +1861,7 @@ fn dynalloc_analysis_simple(
         }
         // Clamp to noise floor (float C: GCONST etc are no-ops)
         for i in 0..end {
-            let log_n = if i < mode.log_n.len() {
-                mode.log_n[i] as f32
-            } else {
-                0.0
-            };
-            let e_mean = if i < mode.e_means.len() {
-                mode.e_means[i]
-            } else {
-                0.0
-            };
-            let noise_floor = 0.0625 * log_n + 0.5 + (9 - lsb_depth) as f32 - e_mean
-                + 0.0062 * ((i + 5) * (i + 5)) as f32;
-            follower[base + i] = follower[base + i].max(noise_floor);
+            follower[base + i] = follower[base + i].max(noise_floor[i]);
         }
     }
     if channels == 2 {
@@ -2077,7 +1885,7 @@ fn dynalloc_analysis_simple(
     // C 1184-1191: importance = floor(0.5+13*exp2(min(follower,4)))
     for i in start..end {
         let v = follower[i].min(4.0);
-        importance[i] = (0.5 + 13.0 * (2.0f32).powf(v)).floor() as i32;
+        importance[i] = (0.5 + 13.0 * celt_exp2(v)).floor() as i32;
     }
     if (!vbr || constrained_vbr) && !is_transient {
         for i in start..end {
@@ -2096,7 +1904,8 @@ fn dynalloc_analysis_simple(
     }
     // C 1206-1222: Compensate for Opus' under-allocation on tones
     if toneishness > 0.98 {
-        let freq_bin = (tone_freq * 120.0 / core::f32::consts::PI + 0.5).floor() as i32;
+        // The division by M_PI, the .5 and the floor are double (C 1210).
+        let freq_bin = (0.5 + f64::from(tone_freq * 120.0) / core::f64::consts::PI).floor() as i32;
         for i in start..end {
             let lo = mode.e_bands[i] as i32;
             let hi = mode.e_bands[i + 1] as i32;
@@ -2128,14 +1937,10 @@ fn dynalloc_analysis_simple(
             follower[i] += (1.0 / 64.0) * analysis.leak_boost[i] as f32;
         }
     }
-    // effBytes>320 boost (C 1232) — trivial, kept
+    // At high rates the first band gets up to 1.5 more (celt_encoder.c:1232).
     if effective_bytes > 320 {
-        let add = (1.5f32).min(1e-3 * (effective_bytes as f32 - 320.0));
-        if start < end {
-            follower[start] += add;
-        }
+        follower[0] += 1.5f32.min(1e-3 * (effective_bytes - 320) as f32);
     }
-
     let mut tot_boost = 0i32;
     for i in start..end {
         let f = follower[i].min(4.0);
@@ -2152,26 +1957,22 @@ fn dynalloc_analysis_simple(
             (b, (b * 6) << BITRES)
         };
 
-        // Cap only for CBR / non-transient constrained VBR (libopus 1254-1257)
-        if !vbr || (constrained_vbr && !is_transient) {
-            let cap_bits = ((2 * effective_bytes as i32) / 3) << (BITRES + 3);
-            if tot_boost + boost_bits > cap_bits {
-                offsets[i] = ((cap_bits - tot_boost) >> BITRES).max(0);
-                break;
-            }
+        // For CBR and non-transient CVBR frames, limit dynalloc to 2/3 of
+        // the bits (celt_encoder.c:1253-1260); the last band gets the rest
+        // of the cap in eighth bits.
+        if (!vbr || (constrained_vbr && !is_transient))
+            && (tot_boost + boost_bits) >> BITRES >> 3 > 2 * effective_bytes as i32 / 3
+        {
+            let cap_bits = (2 * effective_bytes as i32 / 3) << BITRES << 3;
+            offsets[i] = cap_bits - tot_boost;
+            tot_boost = cap_bits;
+            break;
         }
 
-        let quanta = (width << BITRES).min((6 << BITRES).max(width));
-        let mut boost_count = boost;
-        let mut as_bits = boost_count * quanta;
-        if as_bits > cap[i] {
-            as_bits = cap[i];
-            boost_count = as_bits / quanta;
-        }
-
-        offsets[i] = boost_count.max(0);
-        tot_boost += boost_bits.max(0);
+        offsets[i] = boost;
+        tot_boost += boost_bits;
     }
+    (max_depth, tot_boost)
 }
 
 impl CeltEncoder {
@@ -2188,98 +1989,145 @@ impl CeltEncoder {
         channels: usize,
         sampling_rate: i32,
     ) -> Self {
+        let mut enc = Self::EMPTY;
+        enc.init(mode, channels, sampling_rate);
+        enc
+    }
+
+    /// An encoder with empty buffers for [`Self::init`] to set up. It is a
+    /// constant so that it can be written straight into its final memory.
+    pub(crate) const EMPTY: Self = Self {
+        mode: crate::modes::default_mode(),
+        channels: 0,
+        arch: crate::Arch::Scalar,
+        upsample: 1,
+        end_band: 0,
+        // celt_encoder.c:220.
+        complexity: 5,
+        syn_mem: FixedVec::new(),
+        old_band_e: FixedVec::new(),
+        preemph_mem: FixedVec::new(),
+        tonal_average: 256,
+        hf_average: 0,
+        tapset_decision: 0,
+        spread_decision: SPREAD_NORMAL,
+        intensity: 0,
+        last_coded_bands: 0,
+        prefilter_mem: FixedVec::new(),
+        prefilter_period: 0,
+        prefilter_gain: 0.0,
+        prefilter_tapset: 0,
+        old_band_e2: FixedVec::new(),
+        old_band_e3: FixedVec::new(),
+        last_band_log_e: FixedVec::new(),
+        delayed_intra: 0.0,
+        energy_error: [0.0; CELT_NB_X_CH],
+        rng: 0,
+        stream_channels: 0,
+        lsb_depth: 24,
+        overlap_max: 0.0,
+        bitrate: OPUS_BITRATE_MAX,
+        vbr: false,
+        constrained_vbr: true,
+        vbr_reservoir: 0,
+        vbr_drift: 0,
+        vbr_offset: 0,
+        vbr_count: 0,
+        w_in_buf: FixedVec::new(),
+        w_freq: FixedVec::new(),
+        w_band_e: FixedVec::new(),
+        w_band_e2: FixedVec::new(),
+        w_x: FixedVec::new(),
+        w_band_log_e: FixedVec::new(),
+        w_band_log_e2: FixedVec::new(),
+        w_error: FixedVec::new(),
+        w_tf_res: FixedVec::new(),
+        w_cap: FixedVec::new(),
+        w_offsets: FixedVec::new(),
+        w_pulses: FixedVec::new(),
+        w_ebits: FixedVec::new(),
+        w_fine_priority: FixedVec::new(),
+        w_collapse_masks: FixedVec::new(),
+        w_prefilter_pre: FixedVec::new(),
+        w_prefilter_pitch_buf: FixedVec::new(),
+        w_prefilter_before: FixedVec::new(),
+        w_prefilter_after: FixedVec::new(),
+        w_transient_tmp: FixedVec::new(),
+        consec_transient: 0,
+        analysis: AnalysisInfo::zeroed(),
+        stereo_saving: 0.0,
+        spec_avg: 0.0,
+        loss_rate: 0,
+        silk_signal_type: 0,
+        silk_offset: 0,
+        disable_pf: false,
+        force_intra: false,
+        disable_inv: false,
+        lfe: false,
+        energy_mask: None,
+        #[cfg(test)]
+        decisions: FrameDecisions::DEFAULT,
+    };
+
+    /// Sets up an [`Self::EMPTY`] encoder in place for `sampling_rate`, as
+    /// [`Self::with_sampling_rate`] builds one.
+    pub(crate) fn init(&mut self, mode: &'static CeltMode, channels: usize, sampling_rate: i32) {
         // All internal buffers are sized for at most 2 channels; a larger
-        // value would panic later inside `FixedVec::from_value` with an
-        // unhelpful message (issue #27 deep scan).
+        // value would panic later with an unhelpful message (issue #27 deep
+        // scan).
         assert!(
             (1..=2).contains(&channels),
             "CeltEncoder::new: channels must be 1 or 2 (got {channels})"
         );
-        let upsample = resampling_factor(sampling_rate);
         let overlap = mode.overlap;
-        let channel_mem_size = 2048 + overlap;
-        let syn_mem_size = channels * channel_mem_size;
         let nb_ebands = mode.nb_ebands;
         let nb_x_ch = nb_ebands * channels;
         let frame_x_ch = MAX_FRAME_SIZE * channels;
-        let bufstride_x_ch = (MAX_FRAME_SIZE + overlap) * channels;
-        Self {
-            mode,
-            channels,
-            upsample,
-            end_band: mode.nb_ebands,
-            complexity: 9,
-            syn_mem: FixedVec::from_value(0.0, syn_mem_size),
-            enc_decode_mem: FixedVec::from_value(0.0, syn_mem_size),
-            old_band_e: FixedVec::from_value(0.0, nb_x_ch),
-            preemph_mem: FixedVec::from_value(0.0, channels),
-            tonal_average: 256,
-            hf_average: 0,
-            tapset_decision: 0,
-            spread_decision: SPREAD_NORMAL,
-            intensity: 0,
-            last_coded_bands: 0,
-            prefilter_mem: FixedVec::from_value(0.0, channels * COMBFILTER_MAXPERIOD),
-            prefilter_period: COMBFILTER_MINPERIOD,
-            prefilter_gain: 0.0,
-            prefilter_tapset: 0,
-            old_band_e2: FixedVec::from_value(0.0, nb_x_ch),
-            old_band_e3: FixedVec::from_value(0.0, nb_x_ch),
-            last_band_log_e: FixedVec::from_value(0.0, nb_x_ch),
-            delayed_intra: 0.0,
-            lsb_depth: 24,
-            overlap_max: 0.0,
-            bitrate: OPUS_BITRATE_MAX,
-            vbr: false,
-            constrained_vbr: true,
-            vbr_reservoir: 0,
-            vbr_drift: 0,
-            vbr_offset: 0,
-            vbr_count: 0,
-
-            w_in_buf: FixedVec::from_value(0.0, bufstride_x_ch),
-            w_freq: FixedVec::from_value(0.0, frame_x_ch + 4),
-            w_band_e: FixedVec::from_value(0.0, nb_x_ch),
-            w_band_e2: FixedVec::from_value(0.0, nb_x_ch),
-
-            w_x: FixedVec::from_value(0.0, frame_x_ch + STRIDE_ACCESS_PAD),
-            w_band_log_e: FixedVec::from_value(0.0, nb_x_ch),
-            w_band_log_e2: FixedVec::from_value(0.0, nb_x_ch),
-            w_error: FixedVec::from_value(0.0, nb_x_ch),
-            w_tf_res: FixedVec::from_value(0, nb_ebands),
-            w_cap: FixedVec::from_value(0, nb_ebands),
-            w_offsets: FixedVec::from_value(0, nb_ebands),
-            w_pulses: FixedVec::from_value(0, nb_ebands),
-            w_ebits: FixedVec::from_value(0, nb_x_ch),
-            w_fine_priority: FixedVec::from_value(0, nb_x_ch),
-            w_collapse_masks: FixedVec::from_value(0, nb_x_ch),
-            w_band_amp_synth: FixedVec::from_value(0.0, nb_x_ch),
-
-            w_prefilter_pre: FixedVec::from_value(
-                0.0,
-                channels * (COMBFILTER_MAXPERIOD + MAX_FRAME_SIZE),
-            ),
-            w_prefilter_pitch_buf: FixedVec::from_value(
-                0.0,
-                (COMBFILTER_MAXPERIOD + MAX_FRAME_SIZE) >> 1,
-            ),
-            w_prefilter_before: FixedVec::from_value(0.0, channels),
-            w_prefilter_after: FixedVec::from_value(0.0, channels),
-            w_transient_tmp: FixedVec::from_value(0.0, MAX_TRANSIENT_LEN),
-            w_transient_tmp2: FixedVec::from_value(0.0, MAX_TRANSIENT_LEN / 2),
-            consec_transient: 0,
-
-            analysis: AnalysisInfo::default(),
-            stereo_saving: 0.0,
-            spec_avg: 0.0,
-            loss_rate: 0,
-            silk_signal_type: 0,
-            silk_offset: 0,
-            disable_pf: false,
-            force_intra: false,
-            #[cfg(test)]
-            decisions: FrameDecisions::default(),
+        self.mode = mode;
+        self.channels = channels;
+        self.stream_channels = channels;
+        self.arch = crate::Arch::select();
+        self.upsample = resampling_factor(sampling_rate);
+        self.end_band = nb_ebands;
+        // The buffers, zeroed at their lengths.
+        macro_rules! zeroed {
+            ($($buf:ident: $len:expr,)*) => {$(
+                self.$buf.clear();
+                self.$buf.resize($len, Default::default());
+            )*};
         }
+        zeroed! {
+            syn_mem: channels * (2048 + overlap),
+            old_band_e: nb_x_ch,
+            preemph_mem: channels,
+            prefilter_mem: channels * COMBFILTER_MAXPERIOD,
+            old_band_e2: nb_x_ch,
+            old_band_e3: nb_x_ch,
+            last_band_log_e: nb_x_ch,
+            w_in_buf: (MAX_FRAME_SIZE + overlap) * channels,
+            w_freq: frame_x_ch + 4,
+            w_band_e: nb_x_ch,
+            w_band_e2: nb_x_ch,
+            w_x: frame_x_ch + STRIDE_ACCESS_PAD,
+            w_band_log_e: nb_x_ch,
+            w_band_log_e2: nb_x_ch,
+            w_error: nb_x_ch,
+            w_tf_res: nb_ebands,
+            w_cap: nb_ebands,
+            w_offsets: nb_ebands,
+            w_pulses: nb_ebands,
+            w_ebits: nb_x_ch,
+            w_fine_priority: nb_x_ch,
+            w_collapse_masks: nb_x_ch,
+            w_prefilter_pre: channels * (COMBFILTER_MAXPERIOD + MAX_FRAME_SIZE),
+            w_prefilter_pitch_buf: (COMBFILTER_MAXPERIOD + MAX_FRAME_SIZE) >> 1,
+            w_prefilter_before: channels,
+            w_prefilter_after: channels,
+            w_transient_tmp: MAX_TRANSIENT_LEN,
+        }
+        // libopus initialises through OPUS_RESET_STATE
+        // (celt_encoder.c:229).
+        self.reset_state();
     }
 
     /// libopus `OPUS_RESET_STATE`: forget the signal history and the rate
@@ -2287,7 +2135,6 @@ impl CeltEncoder {
     /// loss rate, prediction).
     pub fn reset_state(&mut self) {
         self.syn_mem.fill(0.0);
-        self.enc_decode_mem.fill(0.0);
         self.old_band_e.fill(0.0);
         self.preemph_mem.fill(0.0);
         self.tonal_average = 256;
@@ -2297,13 +2144,15 @@ impl CeltEncoder {
         self.intensity = 0;
         self.last_coded_bands = 0;
         self.prefilter_mem.fill(0.0);
-        self.prefilter_period = COMBFILTER_MINPERIOD;
+        self.prefilter_period = 0;
         self.prefilter_gain = 0.0;
         self.prefilter_tapset = 0;
         self.old_band_e2.fill(-28.0);
         self.old_band_e3.fill(-28.0);
         self.last_band_log_e.fill(0.0);
         self.delayed_intra = 1.0;
+        self.energy_error = [0.0; CELT_NB_X_CH];
+        self.rng = 0;
         self.overlap_max = 0.0;
         self.vbr_reservoir = 0;
         self.vbr_drift = 0;
@@ -2315,22 +2164,46 @@ impl CeltEncoder {
         self.spec_avg = 0.0;
         self.silk_signal_type = 0;
         self.silk_offset = 0;
+        self.energy_mask = None;
     }
 
-    /// libopus `CELT_SET_PREDICTION` (0, 1 or 2).
+    /// libopus `CELT_SET_PREDICTION` (0, 1 or 2; other values are ignored,
+    /// as libopus rejects them).
     pub fn set_prediction(&mut self, prediction: i32) {
-        self.disable_pf = prediction <= 1;
-        self.force_intra = prediction == 0;
+        if (0..=2).contains(&prediction) {
+            self.disable_pf = prediction <= 1;
+            self.force_intra = prediction == 0;
+        }
     }
 
     /// Set the highest coded band (`CELT_SET_END_BAND`). Must match the
     /// bandwidth the packet's TOC signals.
-    pub fn set_end_band(&mut self, end: usize) {
-        self.end_band = end;
+    /// libopus `CELT_SET_CHANNELS`: code `channels` (1 or 2, at most the
+    /// input's) channels; other values are ignored.
+    pub fn set_stream_channels(&mut self, channels: usize) {
+        if (1..=2).contains(&channels) {
+            self.stream_channels = channels.min(self.channels);
+        }
     }
 
-    pub fn encode(&mut self, pcm: &[f32], frame_size: usize, rc: &mut RangeCoder) {
-        self.encode_impl(pcm, frame_size, rc, 0, None, false)
+    /// libopus `CELT_SET_END_BAND` (1 to the band count; other values are
+    /// ignored).
+    pub fn set_end_band(&mut self, end: usize) {
+        if (1..=self.mode.nb_ebands).contains(&end) {
+            self.end_band = end;
+        }
+    }
+
+    /// libopus `celt_encode_with_ec` with the coder's size as the byte
+    /// budget. Errors with `BAD_ARG` for a budget below 2 bytes or a
+    /// frame size other than 2.5, 5, 10 or 20 ms, leaving the state as is.
+    pub fn encode(
+        &mut self,
+        pcm: &[f32],
+        frame_size: usize,
+        rc: &mut RangeCoder,
+    ) -> Result<(), &'static str> {
+        self.encode_impl(pcm, frame_size, rc, 0, None)
     }
 
     pub fn encode_with_start_band(
@@ -2339,8 +2212,8 @@ impl CeltEncoder {
         frame_size: usize,
         rc: &mut RangeCoder,
         start_band: usize,
-    ) {
-        self.encode_impl(pcm, frame_size, rc, start_band, None, false)
+    ) -> Result<(), &'static str> {
+        self.encode_impl(pcm, frame_size, rc, start_band, None)
     }
 
     pub fn encode_with_budget(
@@ -2350,10 +2223,12 @@ impl CeltEncoder {
         rc: &mut RangeCoder,
         start_band: usize,
         total_bits: i32,
-    ) {
-        self.encode_impl(pcm, frame_size, rc, start_band, Some(total_bits), false)
+    ) -> Result<(), &'static str> {
+        self.encode_impl(pcm, frame_size, rc, start_band, Some(total_bits))
     }
 
+    /// As [`Self::encode_with_budget`]. `_is_vbr` has no effect: the frame is
+    /// VBR when the encoder has VBR on and a bitrate (libopus `vbr_rate`).
     pub fn encode_with_budget_vbr(
         &mut self,
         pcm: &[f32],
@@ -2361,27 +2236,38 @@ impl CeltEncoder {
         rc: &mut RangeCoder,
         start_band: usize,
         total_bits: i32,
-        is_vbr: bool,
-    ) {
-        self.encode_impl(pcm, frame_size, rc, start_band, Some(total_bits), is_vbr)
+        _is_vbr: bool,
+    ) -> Result<(), &'static str> {
+        self.encode_impl(pcm, frame_size, rc, start_band, Some(total_bits))
     }
 
+    /// libopus `OPUS_SET_LSB_DEPTH` (8 to 24; other values are ignored).
     pub fn set_lsb_depth(&mut self, depth: i32) {
-        self.lsb_depth = depth.clamp(8, 24);
+        if (8..=24).contains(&depth) {
+            self.lsb_depth = depth;
+        }
     }
 
     pub fn get_lsb_depth(&self) -> i32 {
         self.lsb_depth
     }
+    /// libopus `OPUS_SET_BITRATE` on the CELT encoder: at most 750 kb/s per
+    /// channel; rates of 500 b/s or less other than `OPUS_BITRATE_MAX` (-1)
+    /// are ignored (celt_encoder.c:3001-3009).
     pub fn set_bitrate(&mut self, bitrate: i32) {
-        self.bitrate = bitrate;
+        if bitrate > 500 || bitrate == OPUS_BITRATE_MAX {
+            self.bitrate = bitrate.min(750000 * self.channels as i32);
+        }
     }
     pub fn set_vbr(&mut self, vbr: bool) {
         self.vbr = vbr;
     }
-    /// libopus `OPUS_SET_PACKET_LOSS_PERC` on the CELT encoder.
+    /// libopus `OPUS_SET_PACKET_LOSS_PERC` on the CELT encoder (0 to 100;
+    /// other values are ignored).
     pub fn set_loss_rate(&mut self, loss_rate: i32) {
-        self.loss_rate = loss_rate.clamp(0, 100);
+        if (0..=100).contains(&loss_rate) {
+            self.loss_rate = loss_rate;
+        }
     }
     /// libopus `CELT_SET_SILK_INFO`: the hybrid SILK layer's signal type
     /// and quantization offset (Q10).
@@ -2406,44 +2292,75 @@ impl CeltEncoder {
         rc: &mut RangeCoder,
         start_band: usize,
         explicit_total_bits: Option<i32>,
-        is_vbr: bool,
-    ) {
+    ) -> Result<(), &'static str> {
         let mode = self.mode;
-        let channels = self.channels;
+        // libopus CC (input channels) and C (coded channels): a mono stream
+        // of stereo input codes the two channels' average.
+        let cc = self.channels;
+        let channels = self.stream_channels.min(cc);
         let upsample = self.upsample;
         // Internal (48 kHz) frame size; `pcm` is at the API rate.
         let frame_size = api_frame_size * upsample;
         let nb_ebands = mode.nb_ebands;
-        let end = self.end_band.clamp(1, nb_ebands).max(start_band);
+        let end = self.end_band.clamp(1, nb_ebands);
+        let eff_end = end.min(mode.eff_ebands);
         let overlap = mode.overlap;
 
-        // The encoder geometry requires frame_size == short_mdct_size << lm
-        // (120/240/480/960). Any other size makes the lm search fall back to
-        // lm=0, which mis-sizes the MDCT buffers and panics mid-transform
-        // (or worse, silently mis-encodes). Fail fast with a clear message;
-        // OpusEncoder::encode() validates this before reaching CELT.
-        assert!(
-            (0..=mode.max_lm).any(|lm| mode.short_mdct_size << lm == frame_size),
-            "CeltEncoder: invalid frame_size {} (valid: {}..={} kHz multiples of {})",
-            frame_size,
-            mode.short_mdct_size,
-            mode.short_mdct_size << mode.max_lm,
-            mode.short_mdct_size
+        // libopus's nbCompressedBytes is the coder's size or the budget;
+        // the frame is 120 << lm samples at 48 kHz (celt_encoder.c:1832-1845).
+        if explicit_total_bits.map_or(rc.storage as i32, |b| b / 8) < 2 {
+            return Err(crate::error::BAD_ARG);
+        }
+        let Some(lm) = (0..=mode.max_lm).find(|&lm| mode.short_mdct_size << lm == frame_size)
+        else {
+            return Err(crate::error::BAD_ARG);
+        };
+        // The bands start_band..end are coded; an empty range is refused.
+        if start_band >= end {
+            return Err(crate::error::BAD_ARG);
+        }
+
+        dumpf!(
+            "analysis",
+            &[
+                self.analysis.valid as i32 as f32,
+                self.analysis.tonality,
+                self.analysis.tonality_slope,
+                self.analysis.noisiness,
+                self.analysis.activity,
+                self.analysis.music_prob,
+                self.analysis.bandwidth as f32,
+                self.analysis.activity_probability,
+                self.analysis.max_pitch_ratio,
+            ]
         );
-
-        let mut lm = 0;
-        while (mode.short_mdct_size << lm) != frame_size {
-            lm += 1;
-            if lm > mode.max_lm {
-                break;
-            }
-        }
-        if (mode.short_mdct_size << lm) != frame_size {
-            lm = 0;
-        }
-
+        dumpf!(
+            "pcm",
+            &(0..api_frame_size * cc)
+                .map(|i| pcm[(i % cc) * api_frame_size + i / cc])
+                .collect::<Vec<f32>>()
+        );
+        // --- Silence detection (port of libopus celt_encoder.c: sample_max / overlap_max / lsb_depth) ---
+        // libopus measures sample/overlap maxima on the API-rate `pcm`:
+        // CC*(N-overlap)/upsample and CC*overlap/upsample interleaved
+        // samples, the first (N-overlap)/upsample and the next
+        // overlap/upsample samples of every channel.
+        let head = (frame_size - overlap) / upsample;
+        let tail = overlap / upsample;
+        let channel_max = |r: core::ops::Range<usize>, init: f32| {
+            (0..cc).fold(init, |m, c| {
+                max_abs(&pcm[c * api_frame_size..][r.clone()], m)
+            })
+        };
+        let sample_max = channel_max(0..head, self.overlap_max);
+        let new_overlap_max = channel_max(head..head + tail, 0.0);
+        self.overlap_max = new_overlap_max;
+        let sample_max = sample_max.max(new_overlap_max);
+        // Input beyond +-65536 clips the frame to +-2.0 (celt_encoder.c:2010-2016,
+        // 592-597).
+        let need_clip = sample_max > 65536.0;
         let syn_mem_size = 2048 + overlap;
-        for c in 0..channels {
+        for c in 0..cc {
             let channel_offset = c * syn_mem_size;
 
             self.syn_mem.copy_within(
@@ -2456,22 +2373,38 @@ impl CeltEncoder {
             // Zero-stuff the API-rate input to 48 kHz (libopus celt_preemphasis
             // with `upsample`), then run the pre-emphasis filter over all N
             // internal samples.
-            for i in 0..frame_size {
-                let x = if i % upsample == 0 {
-                    pcm[c * api_frame_size + i / upsample] * 32768.0
+            let syn = &mut self.syn_mem[channel_offset + syn_mem_size - frame_size..][..frame_size];
+            let input = &pcm[c * api_frame_size..];
+            let scale = |v: f32| {
+                let x = v * 32768.0;
+                if need_clip {
+                    x.clamp(-65536.0, 65536.0)
                 } else {
-                    0.0
-                };
-                let val = x - m;
-                self.syn_mem[channel_offset + syn_mem_size - frame_size + i] = val;
-                m = x * coef;
+                    x
+                }
+            };
+            if upsample == 1 {
+                for (y, &v) in syn.iter_mut().zip(input) {
+                    let x = scale(v);
+                    *y = x - m;
+                    m = x * coef;
+                }
+                self.preemph_mem[c] = m;
+                continue;
+            }
+            for (chunk, &v) in syn.chunks_mut(upsample).zip(input) {
+                for (k, y) in chunk.iter_mut().enumerate() {
+                    let x = if k == 0 { scale(v) } else { 0.0 };
+                    *y = x - m;
+                    m = x * coef;
+                }
             }
             self.preemph_mem[c] = m;
         }
 
         let buf_stride = frame_size + overlap;
-        let in_buf = &mut self.w_in_buf[..buf_stride * channels];
-        for c in 0..channels {
+        let in_buf = &mut self.w_in_buf[..buf_stride * cc];
+        for c in 0..cc {
             let channel_offset = c * syn_mem_size;
             let in_buf_offset = c * buf_stride;
 
@@ -2487,39 +2420,57 @@ impl CeltEncoder {
         // step between head and body wherever the comb filter was active,
         // which reads as a transient on steady pitched input (issue #38).
         let max_period = COMBFILTER_MAXPERIOD;
-        for c in 0..channels {
+        for c in 0..cc {
             in_buf[c * buf_stride..c * buf_stride + overlap].copy_from_slice(
                 &self.prefilter_mem[(c + 1) * max_period - overlap..(c + 1) * max_period],
             );
         }
 
-        // libopus effectiveBytes (celt_encoder.c:1901-1923): under VBR the
-        // CELT share in bytes, also in unconstrained hybrid mode, where the
-        // range coder still holds the caller's full capacity; under CBR the
-        // bytes left in the packet.
+        // libopus nbCompressedBytes and effectiveBytes (celt_encoder.c:1859-1923):
+        // at most 1275 bytes, under CBR with a rate the rate's bytes. Under
+        // VBR effectiveBytes is the CELT share in bytes, also in unconstrained
+        // hybrid mode, where the range coder still holds the caller's full
+        // capacity; under CBR the bytes left in the packet.
         let hybrid = start_band != 0;
-        let effective_bytes = if self.vbr && self.bitrate != OPUS_BITRATE_MAX {
+        let tell_initial = rc.tell();
+        let nb_filled_bytes_initial = ((tell_initial + 4) >> 3).max(0) as usize;
+        let capacity = explicit_total_bits.unwrap_or_else(|| (rc.storage * 8) as i32) as usize / 8;
+        let mut nb_compressed_bytes = capacity.min(1275);
+        let mut effective_bytes = if self.vbr && self.bitrate != OPUS_BITRATE_MAX {
             (bitrate_to_bits(self.bitrate, mode.fs, frame_size as i32) / 8).max(1) as usize
         } else {
-            let capacity = explicit_total_bits.unwrap_or_else(|| (rc.buf.len() * 8) as i32);
-            ((capacity / 8) as usize).saturating_sub(((rc.tell() + 4) >> 3).max(0) as usize)
+            if self.bitrate != OPUS_BITRATE_MAX {
+                let mut tmp = self.bitrate * frame_size as i32;
+                if tell_initial > 1 {
+                    tmp += tell_initial * mode.fs;
+                }
+                let rate_bytes = (tmp + 4 * mode.fs) / (8 * mode.fs);
+                nb_compressed_bytes = (nb_compressed_bytes as i32).min(rate_bytes).max(2) as usize;
+            }
+            nb_compressed_bytes.saturating_sub(nb_filled_bytes_initial)
         }
         .max(1);
+        if nb_compressed_bytes < capacity {
+            rc.shrink(nb_compressed_bytes as u32);
+        }
         // Low-rate hybrid frames code weak transients with long blocks.
         let allow_weak_transients =
             hybrid && effective_bytes < 15 && self.silk_signal_type != TYPE_VOICED;
 
         // Tone detection (C 2022): use channel-contiguous in_buf with N+overlap, float path
-        let (tone_freq, mut toneishness) = tone_detect(&*in_buf, channels, buf_stride, mode.fs);
+        let (tone_freq, mut toneishness) = tone_detect(&*in_buf, cc, buf_stride, mode.fs);
+        dumpf!("pre", in_buf);
+        dumpf!("tone_freq", &[tone_freq]);
+        dumpf!("toneishness", &[toneishness]);
         let mut tf_estimate = 0.0f32;
         let mut tf_chan = 0;
         let mut weak_transient = false;
 
-        let mut is_transient = if self.complexity >= 1 {
+        let mut is_transient = if self.complexity >= 1 && !self.lfe {
             transient_analysis(
                 in_buf,
                 buf_stride,
-                channels,
+                cc,
                 &mut tf_estimate,
                 &mut tf_chan,
                 allow_weak_transients,
@@ -2527,15 +2478,20 @@ impl CeltEncoder {
                 tone_freq,
                 toneishness,
                 &mut self.w_transient_tmp,
-                &mut self.w_transient_tmp2,
             )
         } else {
             false
         };
+        if cc == 2 && channels == 1 {
+            tf_chan = 0;
+        }
+        dumpi!("isTransient", &[is_transient as i32]);
+        dumpf!("tf_estimate", &[tf_estimate]);
+        dumpi!("tf_chan", &[tf_chan as i32]);
         // Put the prefiltered overlap back for the prefilter and the MDCT
         // (C run_prefilter: `OPUS_COPY(in, st->in_mem, overlap)`).
         let in_mem_start = syn_mem_size - frame_size - overlap;
-        for c in 0..channels {
+        for c in 0..cc {
             let src = c * syn_mem_size + in_mem_start;
             in_buf[c * buf_stride..c * buf_stride + overlap]
                 .copy_from_slice(&self.syn_mem[src..src + overlap]);
@@ -2544,125 +2500,10 @@ impl CeltEncoder {
         // For float, tf_estimate is log-domain; clamp to [0,1]
         toneishness = toneishness.min((1.0 - tf_estimate).clamp(0.0, 1.0));
 
-        // Check for pure tone: if tonality is very high, bypass pitch search
-        // Keep original analysis.tonality check for prefilter gating, but dynalloc uses tone_detect result
-        let analysis_toneishness = if self.analysis.valid {
-            self.analysis.tonality
-        } else {
-            0.0
-        };
-        // analysis_toneishness kept for prefilter gating; tone_freq/toneishness from tone_detect used for dynalloc
-        let pf_enabled = start_band == 0
-            && self.complexity >= 5
-            && analysis_toneishness < 0.99
-            && channels == 1
-            && !self.disable_pf;
-        let prefilter_tapset = self.tapset_decision;
-        let (pf_on, gain1, pitch_index) = if pf_enabled {
-            let tell = rc.tell();
-            let nb_filled = ((tell + 4) >> 3).max(0) as usize;
-            let total = explicit_total_bits.unwrap_or_else(|| (rc.buf.len() * 8) as i32);
-            let nb_available = ((total / 8) as usize).saturating_sub(nb_filled);
-            run_prefilter(
-                in_buf,
-                &mut self.prefilter_mem,
-                self.prefilter_period,
-                self.prefilter_gain,
-                self.prefilter_tapset,
-                self.tapset_decision,
-                mode.window,
-                channels,
-                frame_size,
-                overlap,
-                &mut self.w_prefilter_pre,
-                &mut self.w_prefilter_pitch_buf,
-                &mut self.w_prefilter_before,
-                &mut self.w_prefilter_after,
-                &self.analysis,
-                self.loss_rate,
-                tf_estimate,
-                nb_available,
-                tone_freq,
-                toneishness,
-                self.complexity,
-            )
-        } else {
-            // libopus runs run_prefilter (disabled) every frame, so its
-            // history stays current for the analysis head above and for the
-            // pitch search when the comb filter turns back on.
-            for c in 0..channels {
-                let body = c * buf_stride + overlap;
-                push_prefilter_history(
-                    &mut self.prefilter_mem[c * max_period..(c + 1) * max_period],
-                    &in_buf[body..body + frame_size],
-                );
-            }
-            (false, 0.0f32, COMBFILTER_MINPERIOD)
-        };
-
-        // A change of pitch (celt_encoder.c:2042-2044), which the VBR target
-        // pays for in tonal frames.
-        let pitch_change = (gain1 > 0.4 || self.prefilter_gain > 0.4)
-            && (!self.analysis.valid || f64::from(self.analysis.tonality) > 0.3)
-            && (pitch_index as f64 > 1.26 * self.prefilter_period as f64
-                || (pitch_index as f64) < 0.79 * self.prefilter_period as f64);
-
-        // Save the prefiltered overlap for the next frame.
-        // In libopus, st->in_mem stores the overlap separately and run_prefilter
-        // copies it to/from in[]. Here we emulate that by updating syn_mem with
-        // the last overlap samples of in_buf (which were prefiltered in place).
-        let syn_mem_size = 2048 + overlap;
-        for c in 0..channels {
-            let channel_offset = c * syn_mem_size;
-            let in_buf_offset = c * buf_stride;
-            self.syn_mem[channel_offset + syn_mem_size - overlap..channel_offset + syn_mem_size]
-                .copy_from_slice(&in_buf[in_buf_offset + frame_size..in_buf_offset + buf_stride]);
-        }
-        let freq = &mut self.w_freq[..frame_size * channels];
-        let band_e = &mut self.w_band_e[..nb_ebands * channels];
-        let band_log_e = &mut self.w_band_log_e[..nb_ebands * channels];
-        let x_pad_end = (frame_size * channels + STRIDE_ACCESS_PAD).min(self.w_x.len());
-        let x = &mut self.w_x[..x_pad_end];
-
-        let mut total_bits = explicit_total_bits.unwrap_or_else(|| (rc.buf.len() * 8) as i32);
-        self.w_error[..nb_ebands * channels].fill(0.0);
-        let error = &mut self.w_error[..nb_ebands * channels];
-
-        // --- Silence detection (port of libopus celt_encoder.c: sample_max / overlap_max / lsb_depth) ---
-        // libopus measures sample/overlap maxima on the API-rate `pcm`:
-        // `(N-overlap)/upsample` and `overlap/upsample` samples.
-        let api_overlap = overlap / upsample;
-        let mut sample_max = self.overlap_max;
-        let n_nonoverlap = api_frame_size.saturating_sub(api_overlap);
-        for c in 0..channels {
-            let base = c * api_frame_size;
-            for i in 0..n_nonoverlap {
-                let v = pcm[base + i].abs();
-                if v > sample_max {
-                    sample_max = v;
-                }
-            }
-        }
-        let mut new_overlap_max = 0.0f32;
-        for c in 0..channels {
-            let base = c * api_frame_size;
-            for i in n_nonoverlap..api_frame_size {
-                let v = pcm[base + i].abs();
-                if v > new_overlap_max {
-                    new_overlap_max = v;
-                }
-            }
-        }
-        self.overlap_max = new_overlap_max;
-        if new_overlap_max > sample_max {
-            sample_max = new_overlap_max;
-        }
+        let mut total_bits = (nb_compressed_bytes * 8) as i32;
         let threshold = 1.0 / ((1 << self.lsb_depth) as f32);
         let mut silence = sample_max <= threshold;
-        let tell_initial = rc.tell();
         let tell_initial_frac = rc.tell_frac();
-        let nb_filled_bytes_initial = ((tell_initial + 4) >> 3).max(0) as usize;
-        let mut nb_compressed_bytes = (total_bits / 8) as usize;
         let nb_compressed_initial = nb_compressed_bytes;
         if tell_initial == 1 {
             rc.encode_bit_logp(silence, 15);
@@ -2670,7 +2511,7 @@ impl CeltEncoder {
             silence = false;
         }
         if silence {
-            if is_vbr {
+            if self.vbr && self.bitrate != OPUS_BITRATE_MAX {
                 let target_bytes = nb_filled_bytes_initial + 2;
                 if target_bytes < nb_compressed_bytes {
                     nb_compressed_bytes = target_bytes;
@@ -2704,6 +2545,86 @@ impl CeltEncoder {
             // effectiveBytes would be vbr_rate>>(3+BITRES) for later lambda, but total_bits already reflects bound
         }
 
+        // libopus nbAvailableBytes after the VBR bound, two in a silent VBR
+        // frame (celt_encoder.c:1924-1993); effectiveBytes follows the
+        // silent frame's budget too.
+        let silent_vbr = silence && self.vbr && self.bitrate != OPUS_BITRATE_MAX;
+        let nb_available = if silent_vbr {
+            2
+        } else {
+            nb_compressed_bytes.saturating_sub(nb_filled_bytes_initial)
+        };
+        if silent_vbr {
+            effective_bytes = nb_compressed_bytes;
+        }
+        // The pre-filter runs every frame; `enabled` as celt_encoder.c:2038.
+        let tell = if silence { total_bits } else { rc.tell() };
+        let enabled = ((self.lfe && nb_available > 3) || nb_available > 12 * channels)
+            && start_band == 0
+            && !silence
+            && tell + 16 <= total_bits
+            && !self.disable_pf;
+        let prefilter_tapset = self.tapset_decision;
+        let (pf_on, gain1, pitch_index) = run_prefilter(
+            in_buf,
+            &mut self.prefilter_mem,
+            self.prefilter_period,
+            self.prefilter_gain,
+            self.prefilter_tapset,
+            self.tapset_decision,
+            mode.window,
+            cc,
+            frame_size,
+            overlap,
+            &mut self.w_prefilter_pre,
+            &mut self.w_prefilter_pitch_buf,
+            &mut self.w_prefilter_before,
+            &mut self.w_prefilter_after,
+            &self.analysis,
+            self.loss_rate,
+            tf_estimate,
+            enabled,
+            nb_available,
+            tone_freq,
+            toneishness,
+            self.complexity,
+            self.arch,
+        );
+
+        dumpi!("pf_on", &[pf_on as i32]);
+        dumpi!("pitch_index", &[pitch_index as i32]);
+        dumpf!("gain1", &[gain1]);
+        dumpf!("inpf", in_buf);
+        // run_prefilter raises the previous period to the shortest one
+        // (celt_encoder.c:1545), which the pitch-change test then reads.
+        self.prefilter_period = self.prefilter_period.max(COMBFILTER_MINPERIOD);
+        // A change of pitch (celt_encoder.c:2042-2044), which the VBR target
+        // pays for in tonal frames.
+        let pitch_change = (gain1 > 0.4 || self.prefilter_gain > 0.4)
+            && (!self.analysis.valid || f64::from(self.analysis.tonality) > 0.3)
+            && (pitch_index as f64 > 1.26 * self.prefilter_period as f64
+                || (pitch_index as f64) < 0.79 * self.prefilter_period as f64);
+
+        // Save the prefiltered overlap for the next frame.
+        // In libopus, st->in_mem stores the overlap separately and run_prefilter
+        // copies it to/from in[]. Here we emulate that by updating syn_mem with
+        // the last overlap samples of in_buf (which were prefiltered in place).
+        let syn_mem_size = 2048 + overlap;
+        for c in 0..cc {
+            let channel_offset = c * syn_mem_size;
+            let in_buf_offset = c * buf_stride;
+            self.syn_mem[channel_offset + syn_mem_size - overlap..channel_offset + syn_mem_size]
+                .copy_from_slice(&in_buf[in_buf_offset + frame_size..in_buf_offset + buf_stride]);
+        }
+        let freq = &mut self.w_freq[..frame_size * cc];
+        let band_e = &mut self.w_band_e[..nb_ebands * channels];
+        let band_log_e = &mut self.w_band_log_e[..nb_ebands * channels];
+        let x_pad_end = (frame_size * channels + STRIDE_ACCESS_PAD).min(self.w_x.len());
+        let x = &mut self.w_x[..x_pad_end];
+
+        self.w_error[..nb_ebands * channels].fill(0.0);
+        let error = &mut self.w_error[..nb_ebands * channels];
+
         if start_band == 0 && !silence && rc.tell() + 16 <= total_bits {
             rc.encode_bit_logp(pf_on, 1);
             if pf_on {
@@ -2719,105 +2640,120 @@ impl CeltEncoder {
             }
         }
 
-        let mut short_blocks = false;
+        // The transient flag is coded only with room for it (not in 2.5 ms
+        // frames); otherwise the decoder takes the frame as not transient,
+        // and so does the encoder.
+        let transient_flag_fits = lm > 0 && rc.tell() + 3 <= total_bits;
         let mut transient_got_disabled = false;
-        if lm > 0 && rc.tell() + 3 <= total_bits {
-            rc.encode_bit_logp(is_transient, 3);
-            if is_transient {
-                short_blocks = true;
-            }
-        } else {
-            // No transient flag is coded (2.5 ms frames, or no room for it),
-            // so the decoder takes the frame as not transient: code it that
-            // way too, as libopus does.
+        if !transient_flag_fits {
             is_transient = false;
             transient_got_disabled = true;
         }
+        let mut short_blocks = is_transient;
         let second_mdct = short_blocks && self.complexity >= 8;
+        let mut have_band_log_e2 = second_mdct;
         if second_mdct {
-            for c in 0..channels {
-                let c_buf = c * buf_stride;
-                let c_freq = c * frame_size;
-                mode.mdct.forward(
-                    &in_buf[c_buf..],
-                    &mut freq[c_freq..],
-                    mode.window,
-                    overlap,
-                    mode.max_lm - lm,
-                    1,
-                );
-            }
-            upsample_scale_zero(freq, frame_size, upsample, channels);
+            compute_mdcts(
+                mode, false, in_buf, freq, channels, cc, frame_size, overlap, lm, upsample,
+            );
             let band_e2 = &mut self.w_band_e2[..nb_ebands * channels];
-            compute_band_energies(mode, freq, band_e2, end, channels, lm);
+            compute_band_energies(mode, freq, band_e2, end, channels, lm, self.arch);
             let band_log_e2 = &mut self.w_band_log_e2[..nb_ebands * channels];
-            crate::bands::amp2log2(mode, 0, end, band_e2, band_log_e2, channels);
+            crate::bands::amp2log2(mode, eff_end, end, band_e2, band_log_e2, channels);
             for c in 0..channels {
                 for i in 0..end {
                     band_log_e2[c * nb_ebands + i] += lm as f32 * 0.5;
                 }
             }
         }
-        if short_blocks {
-            let b = 1 << lm;
-            let n = frame_size / b;
+        compute_mdcts(
+            mode,
+            short_blocks,
+            in_buf,
+            freq,
+            channels,
+            cc,
+            frame_size,
+            overlap,
+            lm,
+            upsample,
+        );
+        compute_band_energies(mode, freq, band_e, end, channels, lm, self.arch);
+        // An LFE stream keeps the energy of its lowest two bands
+        // (celt_encoder.c:2099-2106).
+        if self.lfe {
+            for i in 2..end {
+                band_e[i] = band_e[i].min(1e-4 * band_e[0]).max(1e-15);
+            }
+        }
+        crate::bands::amp2log2(mode, eff_end, end, band_e, band_log_e, channels);
+
+        // The masking between surround channels (celt_encoder.c:2108-2186).
+        let mut surround_dynalloc = [0.0f32; CELT_NB_EBANDS];
+        let (mut surround_trim, mut surround_masking) = (0.0f32, 0.0f32);
+        if let (Some(mask), false, false) = (&self.energy_mask, hybrid, self.lfe) {
+            let e_bands = mode.e_bands;
+            let mask_end = 2.max(self.last_coded_bands as usize);
+            let (mut mask_avg, mut diff, mut count) = (0.0f32, 0.0f32, 0i32);
             for c in 0..channels {
-                let c_offset = c * buf_stride;
-                for i in 0..b {
-                    mode.mdct.forward(
-                        &in_buf[c_offset + i * n..c_offset + buf_stride],
-                        &mut freq[c * frame_size + i..],
-                        mode.window,
-                        overlap,
-                        mode.max_lm,
-                        b,
-                    );
+                for i in 0..mask_end {
+                    let mut m = mask[nb_ebands * c + i].min(0.25).max(-2.0);
+                    if m > 0.0 {
+                        m *= 0.5;
+                    }
+                    let width = (e_bands[i + 1] - e_bands[i]) as i32;
+                    mask_avg += m * width as f32;
+                    count += width;
+                    diff += m * (1 + 2 * i as i32 - mask_end as i32) as f32;
                 }
             }
-            upsample_scale_zero(freq, frame_size, upsample, channels);
-
-            compute_band_energies(mode, freq, band_e, end, channels, lm);
-            normalise_bands(
-                mode,
-                freq,
-                x,
-                band_e,
-                end,
-                channels,
-                (1 << lm) as usize,
-            );
-            crate::bands::amp2log2(mode, start_band, end, band_e, band_log_e, channels);
-        } else {
-            // Long MDCT (non-transient)
-            for c in 0..channels {
-                let c_buf = c * buf_stride;
-                let c_freq = c * frame_size;
-                mode.mdct.forward(
-                    &in_buf[c_buf..],
-                    &mut freq[c_freq..],
-                    mode.window,
-                    overlap,
-                    mode.max_lm - lm,
-                    1,
-                );
+            mask_avg /= count as f32;
+            mask_avg += 0.2;
+            diff = diff * 6.0
+                / (channels as i32 * (mask_end as i32 - 1) * (mask_end as i32 + 1) * mask_end as i32) as f32;
+            diff *= 0.5;
+            diff = diff.min(0.031).max(-0.031);
+            let mut midband = 0;
+            while (e_bands[midband + 1] as i32) < e_bands[mask_end] as i32 / 2 {
+                midband += 1;
             }
-            upsample_scale_zero(freq, frame_size, upsample, channels);
-            compute_band_energies(mode, freq, band_e, end, channels, lm);
-            normalise_bands(
-                mode,
-                freq,
-                x,
-                band_e,
-                end,
-                channels,
-                (1 << lm) as usize,
-            );
-            crate::bands::amp2log2(mode, start_band, end, band_e, band_log_e, channels);
+            let mut count_dynalloc = 0;
+            for i in 0..mask_end {
+                let lin = mask_avg + diff * (i as i32 - midband as i32) as f32;
+                let mut unmask = if channels == 2 {
+                    mask[i].max(mask[nb_ebands + i])
+                } else {
+                    mask[i]
+                };
+                unmask = unmask.min(0.0);
+                unmask -= lin;
+                if unmask > 0.25 {
+                    surround_dynalloc[i] = unmask - 0.25;
+                    count_dynalloc += 1;
+                }
+            }
+            if count_dynalloc >= 3 {
+                mask_avg += 0.25;
+                if mask_avg > 0.0 {
+                    mask_avg = 0.0;
+                    diff = 0.0;
+                    surround_dynalloc[..mask_end].fill(0.0);
+                } else {
+                    for v in &mut surround_dynalloc[..mask_end] {
+                        *v = (*v - 0.25).max(0.0);
+                    }
+                }
+            }
+            mask_avg += 0.2;
+            surround_trim = 64.0 * diff;
+            surround_masking = mask_avg;
         }
 
         // Temporal VBR (celt_encoder.c:2187-2203): how far this frame's
-        // spectral level is above its running average.
-        let temporal_vbr = {
+        // spectral level is above its running average; not for LFE.
+        let temporal_vbr = if self.lfe {
+            0.0
+        } else {
             let mut follow = -10.0f32;
             let mut frame_avg = 0.0f32;
             let offset = if short_blocks { 0.5 * lm as f32 } else { 0.0 };
@@ -2834,27 +2770,51 @@ impl CeltEncoder {
             temporal_vbr
         };
 
-        // C uses st->force_intra (CTL flag, 0 by default) instead of the old
-        // intra_ener heuristic, so no intra forcing happens here.
-        quant_coarse_energy_advanced(
-            mode,
-            start_band,
-            end,
-            end,
-            band_log_e,
-            &mut self.old_band_e,
-            total_bits as u32,
-            error,
-            rc,
-            channels,
-            lm,
-            (total_bits / 8) as usize,
-            self.force_intra,
-            &mut self.delayed_intra,
-            self.complexity >= 4,
-            self.loss_rate,
-            false,
-        );
+        // The last chance to catch a transient the time-domain analysis
+        // missed: a sudden rise of the band energies (celt_encoder.c:2213-2235).
+        if transient_flag_fits
+            && !is_transient
+            && self.complexity >= 5
+            && !self.lfe
+            && !hybrid
+            && patch_transient_decision(
+                band_log_e,
+                &self.old_band_e,
+                nb_ebands,
+                start_band,
+                end,
+                channels,
+            )
+        {
+            is_transient = true;
+            short_blocks = true;
+            // The long-block energies, compensated for the scaling of short
+            // and long MDCTs, steer the dynalloc.
+            let band_log_e2 = &mut self.w_band_log_e2[..nb_ebands * channels];
+            band_log_e2.copy_from_slice(band_log_e);
+            for c in 0..channels {
+                for i in 0..end {
+                    band_log_e2[c * nb_ebands + i] += lm as f32 * 0.5;
+                }
+            }
+            have_band_log_e2 = true;
+            compute_mdcts(
+                mode, true, in_buf, freq, channels, cc, frame_size, overlap, lm, upsample,
+            );
+            compute_band_energies(mode, freq, band_e, end, channels, lm, self.arch);
+            crate::bands::amp2log2(mode, eff_end, end, band_e, band_log_e, channels);
+            tf_estimate = 0.2;
+        }
+        if transient_flag_fits {
+            rc.encode_bit_logp(is_transient, 3);
+        }
+        normalise_bands(mode, freq, x, band_e, end, channels, (1 << lm) as usize);
+
+        dumpf!("freq", freq);
+        dumpf!("bandE", band_e);
+        dumpf!("bandLogE", band_log_e);
+        dumpf!("X", &x[..frame_size * channels]);
+
         self.w_tf_res[..nb_ebands].fill(0);
         let tf_res = &mut self.w_tf_res[..nb_ebands];
         let lambda = 80.max(20480 / effective_bytes + 2) as i32;
@@ -2874,14 +2834,16 @@ impl CeltEncoder {
         self.w_offsets[..nb_ebands].fill(0);
         let offsets = &mut self.w_offsets[..nb_ebands];
 
-        let band_log_e2_opt = if second_mdct {
+        let band_log_e2_opt = if have_band_log_e2 {
             Some(&self.w_band_log_e2[..nb_ebands * channels] as &[f32])
         } else {
             None
         };
-        let surround_dynalloc = [0.0f32; 21];
         let mut importance = [13i32; MAX_NB_EBANDS];
-        dynalloc_analysis_simple(
+        let mut spread_weight = [32i32; MAX_NB_EBANDS];
+        // The deepest band above the noise floor and the boosts' total, for
+        // the VBR target.
+        let (max_depth, tot_boost) = dynalloc_analysis_simple(
             mode,
             band_log_e,
             band_log_e2_opt,
@@ -2893,25 +2855,32 @@ impl CeltEncoder {
             effective_bytes,
             is_transient,
             offsets,
-            cap,
             self.lsb_depth,
             self.vbr,
             self.constrained_vbr,
             &self.analysis,
+            self.lfe,
             &surround_dynalloc,
             tone_freq,
             toneishness,
             &mut importance,
+            &mut spread_weight,
         );
 
+        dumpi!("offsets", &offsets[..end]);
+        dumpi!("importance", &importance[..end]);
+        dumpi!("spread_weight", &spread_weight[..end]);
         // TF resolution (celt_encoder.c:2242-2277): analysed only for CELT
         // frames with enough bytes; low-rate hybrid frames keep 5 ms
         // resolution, weak transients use the long window. Strongly tonal
         // frames skip the analysis and keep `is_transient` (C 2242's
         // `toneishness < QCONST32(.98f, 29)`; float build, post-clamp
         // toneishness from C 2034).
-        let enable_tf_analysis =
-            effective_bytes >= 15 * channels && !hybrid && self.complexity >= 2 && toneishness < 0.98;
+        let enable_tf_analysis = effective_bytes >= 15 * channels
+            && !hybrid
+            && self.complexity >= 2
+            && !self.lfe
+            && toneishness < 0.98;
         let tf_select = if enable_tf_analysis {
             tf_analysis(
                 mode,
@@ -2936,12 +2905,50 @@ impl CeltEncoder {
             tf_res[..end].fill(is_transient as i32);
             0
         };
+        dumpi!("tf_res", &tf_res[..end]);
+        dumpi!("tf_select", &[tf_select]);
         #[cfg(test)]
         let tf_raw = {
             let mut raw = [0i32; MAX_NB_EBANDS];
             raw[..end].copy_from_slice(&tf_res[..end]);
             raw
         };
+        // When the energy is stable, bias the coarse energy towards the
+        // previous error (celt_encoder.c:2283-2294).
+        for c in 0..channels {
+            for i in start_band..end {
+                let k = i + c * nb_ebands;
+                if (band_log_e[k] - self.old_band_e[k]).abs() < 2.0 {
+                    band_log_e[k] -= 0.25 * self.energy_error[k];
+                }
+            }
+        }
+        dumpf!("bandLogE_q", band_log_e);
+        // Coarse energy after the dynalloc and tf analyses, which see the
+        // previous frame's energies (celt_encoder.c:2248-2297).
+        // C uses st->force_intra (CTL flag, 0 by default) instead of the old
+        // intra_ener heuristic, so no intra forcing happens here.
+        quant_coarse_energy_advanced(
+            mode,
+            start_band,
+            end,
+            end,
+            band_log_e,
+            &mut self.old_band_e,
+            total_bits as u32,
+            error,
+            rc,
+            channels,
+            lm,
+            nb_available,
+            self.force_intra,
+            &mut self.delayed_intra,
+            self.complexity >= 4,
+            self.loss_rate,
+            self.lfe,
+        );
+        dumpf!("error", error);
+        dumpf!("oldBandE", &self.old_band_e[..nb_ebands * channels]);
         tf_encode(
             start_band,
             end,
@@ -2952,7 +2959,8 @@ impl CeltEncoder {
             rc,
         );
 
-        let mut dual_stereo_val = if channels == 2 {
+        // 2.5 ms frames always use M/S (celt_encoder.c:2399-2401).
+        let mut dual_stereo_val = if channels == 2 && lm != 0 {
             stereo_analysis(mode, x, lm as i32, frame_size) as i32
         } else {
             0
@@ -2961,8 +2969,7 @@ impl CeltEncoder {
         // libopus equiv_rate (celt_encoder.c:1925-1927): the packet's rate,
         // capped by the target bitrate, less the overhead of short frames.
         let overhead = (40 * channels as i32 + 20) * ((400 >> lm) - 50);
-        let mut equiv_rate =
-            ((nb_compressed_initial.min(1275) as i32 * 8 * 50) << (3 - lm)) - overhead;
+        let mut equiv_rate = ((nb_compressed_initial as i32 * 8 * 50) << (3 - lm)) - overhead;
         if self.bitrate != OPUS_BITRATE_MAX {
             equiv_rate = equiv_rate.min(self.bitrate - overhead);
         }
@@ -2978,11 +2985,16 @@ impl CeltEncoder {
             self.intensity = self.intensity.clamp(start_band as i32, end as i32);
         }
 
-        if self.complexity == 0 {
+        // Without room for the spread symbol the decoder spreads normally,
+        // and so does the encoder (celt_encoder.c:2346-2348).
+        if self.lfe && rc.tell() + 4 <= total_bits {
+            // celt_encoder.c:2304-2307.
+            self.tapset_decision = 0;
+            self.spread_decision = SPREAD_NORMAL;
+            rc.encode_icdf(self.spread_decision, &SPREAD_ICDF, 5);
+        } else if self.complexity == 0 && rc.tell() + 4 <= total_bits {
             self.spread_decision = SPREAD_NONE;
-            if rc.tell() + 4 <= total_bits {
-                rc.encode_icdf(self.spread_decision, &SPREAD_ICDF, 5);
-            }
+            rc.encode_icdf(self.spread_decision, &SPREAD_ICDF, 5);
         } else if rc.tell() + 4 <= total_bits {
             if hybrid {
                 // celt_encoder.c:2308-2314: hybrid frames spread aggressively
@@ -2992,11 +3004,11 @@ impl CeltEncoder {
                 } else {
                     SPREAD_AGGRESSIVE
                 };
-            } else if is_transient || self.complexity < 3 || effective_bytes < 10 * channels {
+            } else if is_transient || self.complexity < 3 || nb_available < 10 * channels {
                 self.spread_decision = SPREAD_NORMAL;
             } else {
-                let update_hf = lm == mode.max_lm;
-                let spread_weights = [32i32; 21];
+                // celt_encoder.c:2338-2340.
+                let update_hf = pf_on && !is_transient;
                 self.spread_decision = spreading_decision(
                     mode,
                     x,
@@ -3005,10 +3017,10 @@ impl CeltEncoder {
                     &mut self.hf_average,
                     &mut self.tapset_decision,
                     update_hf,
-                    end,
+                    eff_end,
                     channels,
                     (1 << lm) as usize,
-                    &spread_weights,
+                    &spread_weight,
                 );
             }
             rc.encode_icdf(self.spread_decision, &SPREAD_ICDF, 5);
@@ -3016,6 +3028,12 @@ impl CeltEncoder {
             self.spread_decision = SPREAD_NORMAL;
         }
 
+        dumpi!("spread", &[self.spread_decision]);
+        // For LFE everything interesting is in the first band
+        // (celt_encoder.c:2351-2353).
+        if self.lfe {
+            offsets[0] = 8.min(effective_bytes as i32 / 3);
+        }
         let mut dynalloc_logp = 6i32;
         let total_bits_bitres = total_bits << BITRES;
         let mut total_boost = 0i32;
@@ -3055,8 +3073,9 @@ impl CeltEncoder {
         // (celt_encoder.c:2397-2410).
         let mut alloc_trim = 5;
         if rc.tell_frac() + (6 << BITRES) <= total_bits_bitres - total_boost {
-            // celt_encoder.c:2410-2413: no trim analysis without the low bands.
-            if hybrid {
+            // celt_encoder.c:2410-2413: no trim analysis without the low
+            // bands or for LFE.
+            if hybrid || self.lfe {
                 self.stereo_saving = 0.0;
             } else {
                 alloc_trim = alloc_trim_analysis(
@@ -3071,12 +3090,16 @@ impl CeltEncoder {
                     &mut self.stereo_saving,
                     tf_estimate,
                     self.intensity,
-                    0.0,
+                    surround_trim,
                     equiv_rate,
+                    self.arch,
                 );
             }
             rc.encode_icdf(alloc_trim, &TRIM_ICDF, 7);
         }
+        dumpi!("alloc_trim", &[alloc_trim]);
+        dumpi!("boosts", &offsets[..end]);
+        dumpi!("intensity", &[self.intensity]);
         #[cfg(test)]
         {
             self.decisions = FrameDecisions {
@@ -3100,30 +3123,40 @@ impl CeltEncoder {
             if self.constrained_vbr {
                 base_target += self.vbr_offset >> lm_diff;
             }
-            let tot_boost = total_boost;
             let cur_tell_frac = rc.tell_frac();
             // Use the exact initial tell_frac captured at entry (libopus tell0_frac),
             // not tell_initial<<BITRES which loses the fractional part.
             let min_allowed = {
-                let a = ((cur_tell_frac + tot_boost + (1 << (BITRES + 3)) - 1) >> (BITRES + 3)) + 2;
+                let a =
+                    ((cur_tell_frac + total_boost + (1 << (BITRES + 3)) - 1) >> (BITRES + 3)) + 2;
                 if hybrid {
-                    let b = (tell_initial_frac + (37 << BITRES) + tot_boost
-                        + (1 << (BITRES + 3))
-                        - 1)
-                        >> (BITRES + 3);
+                    let b =
+                        (tell_initial_frac + (37 << BITRES) + total_boost + (1 << (BITRES + 3))
+                            - 1)
+                            >> (BITRES + 3);
                     a.max(b)
                 } else {
                     a
                 }
             };
             // nbCompressedBytes is current max (after first VBR bound), effectiveBytes ~ vbr_rate>>(3+BITRES) for lambda already
-            let max_depth = compute_max_depth(
-                mode,
-                band_log_e,
-                nb_ebands,
-                channels,
-                end,
-                self.lsb_depth,
+            dumpi!(
+                "vbr_in",
+                &[
+                    base_target,
+                    lm as i32,
+                    equiv_rate,
+                    self.last_coded_bands,
+                    channels as i32,
+                    self.intensity,
+                    self.constrained_vbr as i32,
+                    tot_boost,
+                    pitch_change as i32
+                ]
+            );
+            dumpf!(
+                "vbr_inf",
+                &[self.stereo_saving, tf_estimate, max_depth, temporal_vbr]
             );
             let mut target = if !hybrid {
                 compute_vbr(
@@ -3141,9 +3174,9 @@ impl CeltEncoder {
                     tf_estimate,
                     i32::from(pitch_change),
                     max_depth,
-                    false,
-                    false,
-                    0.0,
+                    self.lfe,
+                    self.energy_mask.is_some(),
+                    surround_masking,
                     temporal_vbr,
                 )
             } else {
@@ -3166,9 +3199,11 @@ impl CeltEncoder {
             // frames smaller than 20 ms." It bounds unconstrained VBR.
             nb_compressed_bytes = nb_compressed_bytes.min(1275 >> (3 - lm));
             target += cur_tell_frac;
-            let mut nb_available = ((target + (1 << (BITRES + 2))) >> (BITRES + 3)) as usize;
-            nb_available = nb_available.max(min_allowed as usize);
-            nb_available = nb_available.min(nb_compressed_bytes);
+            // Signed, like libopus: a negative target gives min_allowed
+            // (celt_encoder.c:2479-2481).
+            let mut nb_available = ((target + (1 << (BITRES + 2))) >> (BITRES + 3))
+                .max(min_allowed)
+                .min(nb_compressed_bytes as i32) as usize;
             let mut delta = target - vbr_rate;
             target = (nb_available as i32) << (BITRES + 3);
             if silence {
@@ -3177,22 +3212,20 @@ impl CeltEncoder {
                 delta = 0;
             }
             // Reservoir / drift update (libopus 2502-2529)
-            if self.vbr_count < 970 {
-                self.vbr_count += 1;
-            }
+            // The float build's alpha: celt_rcp is 1/x and QCONST16 the plain
+            // constant (celt_encoder.c:2501-2506).
             let alpha = if self.vbr_count < 970 {
-                // celt_rcp((vbr_count+20)<<16) in Q15 is 32768/(vbr_count+20)
-                let v = self.vbr_count + 20;
-                32768 / v  // Q15
+                self.vbr_count += 1;
+                1.0 / (self.vbr_count + 20) as f32
             } else {
-                33 // QCONST16(0.001,15) ~33
+                0.001
             };
             if self.constrained_vbr {
                 self.vbr_reservoir += target - vbr_rate;
                 // drift: MULT16_32_Q15(alpha, delta*(1<<lm_diff) - offset - drift) (libopus 2516)
                 let delta_scaled = delta * (1 << lm_diff);
                 let delta_minus = delta_scaled - self.vbr_offset - self.vbr_drift;
-                self.vbr_drift += ((alpha as i64 * delta_minus as i64) >> 15) as i32;
+                self.vbr_drift += (alpha * delta_minus as f32) as i32;
                 self.vbr_offset = -self.vbr_drift;
             }
             if self.constrained_vbr && self.vbr_reservoir < 0 {
@@ -3207,7 +3240,7 @@ impl CeltEncoder {
             rc.shrink(nb_compressed_bytes as u32);
         }
 
-        let mut intensity = self.intensity;
+        dumpi!("nbCompressedBytes", &[nb_compressed_bytes as i32]);
         self.w_pulses[..nb_ebands].fill(0);
         let pulses = &mut self.w_pulses[..nb_ebands];
 
@@ -3254,6 +3287,9 @@ impl CeltEncoder {
             };
             signal_bandwidth = self.analysis.bandwidth.max(min_bandwidth);
         }
+        if self.lfe {
+            signal_bandwidth = 1;
+        }
 
         let coded_bands = clt_compute_allocation(
             mode,
@@ -3262,7 +3298,7 @@ impl CeltEncoder {
             offsets,
             cap,
             alloc_trim,
-            &mut intensity,
+            &mut self.intensity,
             &mut dual_stereo_val,
             alloc_bits,
             &mut balance,
@@ -3284,6 +3320,11 @@ impl CeltEncoder {
             coded_bands
         };
 
+        dumpi!("pulses", &pulses[..end]);
+        dumpi!("fine_quant", &ebits[..end]);
+        dumpi!("fine_priority", &fine_priority[..end]);
+        dumpi!("codedBands", &[coded_bands]);
+        dumpi!("balance", &[balance]);
         quant_fine_energy(
             mode,
             start_band,
@@ -3294,6 +3335,7 @@ impl CeltEncoder {
             rc,
             channels,
         );
+        self.energy_error = [0.0; CELT_NB_X_CH];
 
         self.w_collapse_masks[..nb_ebands * channels].fill(0);
         let collapse_masks = &mut self.w_collapse_masks[..nb_ebands * channels];
@@ -3318,7 +3360,7 @@ impl CeltEncoder {
             short_blocks,
             self.spread_decision,
             &mut dual_stereo,
-            intensity as usize,
+            self.intensity as usize,
             tf_res,
             (total_bits << BITRES) - anti_collapse_rsv,
             &mut balance,
@@ -3326,10 +3368,12 @@ impl CeltEncoder {
             lm as i32,
             coded_bands,
             resynth,
-            false,
-            &mut 0u32,
+            self.disable_inv,
+            &mut self.rng,
+            self.arch,
         );
 
+        dumpf!("Xq", &x[..frame_size * channels]);
         if anti_collapse_rsv > 0 {
             let anti_collapse_on = if self.consec_transient < 2 {
                 1u32
@@ -3339,6 +3383,8 @@ impl CeltEncoder {
             rc.enc_bits(anti_collapse_on, 1);
         }
 
+        dumpf!("error_fine", error);
+        dumpi!("bits_left", &[total_bits - rc.tell()]);
         quant_energy_finalise(
             mode,
             start_band,
@@ -3351,6 +3397,12 @@ impl CeltEncoder {
             rc,
             channels,
         );
+        for c in 0..channels {
+            for i in start_band..end {
+                let k = i + c * nb_ebands;
+                self.energy_error[k] = error[k].clamp(-0.5, 0.5);
+            }
+        }
 
         if silence {
             for v in self.old_band_e[..channels * nb_ebands].iter_mut() {
@@ -3358,70 +3410,33 @@ impl CeltEncoder {
             }
         }
 
-        if resynth {
-            let band_amp_synth = &mut self.w_band_amp_synth[..nb_ebands * channels];
-            log2amp(mode, end, band_amp_synth, &self.old_band_e, channels);
-            // `w_freq` is no longer needed after analysis/quant; reuse it as the
-            // synthesis scratch (avoids a separate `w_freq_synth` buffer).
-            self.w_freq[..frame_size * channels].fill(0.0);
-            let freq_synth = &mut self.w_freq[..frame_size * channels];
-            denormalise_bands(
-                mode,
-                x,
-                freq_synth,
-                band_amp_synth,
-                start_band,
-                end,
-                channels,
-                (1 << lm) as usize,
-            );
-            let (syn_shift, syn_b) = if is_transient {
-                (mode.max_lm, 1 << lm)
-            } else {
-                (mode.max_lm - lm, 1)
-            };
-            let syn_n = frame_size / syn_b;
-            let decode_buf_size = 2048;
-
-            for c in 0..channels {
-                let co = c * syn_mem_size;
-                self.enc_decode_mem
-                    .copy_within(co + frame_size..co + decode_buf_size + overlap, co);
-            }
-
-            for c in 0..channels {
-                let co = c * syn_mem_size;
-                let out_syn_idx = decode_buf_size - frame_size;
-                for bi in 0..syn_b {
-                    let syn_stride = if is_transient {
-                        mode.short_mdct_size
-                    } else {
-                        syn_n
-                    };
-                    mode.mdct.backward(
-                        &freq_synth[c * frame_size + bi..],
-                        &mut self.enc_decode_mem[co + out_syn_idx + bi * syn_stride..],
-                        mode.window,
-                        overlap,
-                        syn_shift,
-                        syn_b,
-                    );
-                }
-            }
+        // A mono stream's energies stand for both input channels
+        // (celt_encoder.c:2778-2780).
+        if cc == 2 && channels == 1 {
+            self.old_band_e.copy_within(..nb_ebands, nb_ebands);
         }
-
         self.last_band_log_e.copy_from_slice(&self.old_band_e);
 
         if !is_transient {
             self.old_band_e3.copy_from_slice(&self.old_band_e2);
             self.old_band_e2.copy_from_slice(&self.old_band_e);
         } else {
-            for i in 0..channels * nb_ebands {
+            for i in 0..cc * nb_ebands {
                 self.old_band_e2[i] = self.old_band_e2[i].min(self.old_band_e[i]);
             }
         }
 
-        rc.pad_to_bits(total_bits);
+        // Bands outside start..end start from zero energy when they come
+        // back (celt_encoder.c:2790-2804).
+        for c in 0..cc {
+            for i in (0..start_band).chain(end..nb_ebands) {
+                let k = c * nb_ebands + i;
+                self.old_band_e[k] = 0.0;
+                self.old_band_e2[k] = -28.0;
+                self.old_band_e3[k] = -28.0;
+            }
+        }
+        self.rng = rc.rng;
 
         // libopus keeps the pitch found even when the pre-filter is off (its
         // gain is then 0), and the tapset the frame started with.
@@ -3434,12 +3449,23 @@ impl CeltEncoder {
         } else {
             self.consec_transient = 0;
         }
+        Ok(())
     }
+}
+
+/// Where the CELT decoder writes its output: planar, or interleaved (libopus),
+/// optionally added onto what `pcm` holds (`accum`).
+#[derive(Clone, Copy)]
+pub(crate) enum PcmLayout {
+    Planar,
+    Interleaved { accum: bool },
 }
 
 pub struct CeltDecoder {
     mode: &'static CeltMode,
     channels: usize,
+    /// libopus `CELTDecoder.arch`, chosen at init.
+    arch: crate::Arch,
     /// Channels coded in the stream (libopus `CELT_SET_CHANNELS`). It drives
     /// the bitstream; `channels` drives synthesis and the output.
     stream_channels: usize,
@@ -3449,7 +3475,6 @@ pub struct CeltDecoder {
     decode_mem: FixedVec<f32, CELT_DECODE_MEM>,
     old_band_e: FixedVec<f32, CELT_NB_X_CH>,
     preemph_mem: FixedVec<f32, CELT_MAX_CHANNELS>,
-    prefilter_mem: FixedVec<f32, CELT_PREFILTER_MEM>,
     prefilter_period: usize,
     prefilter_period_old: usize,
     prefilter_gain: f32,
@@ -3471,12 +3496,27 @@ pub struct CeltDecoder {
     last_frame_type: u8,
     /// Pitch period the periodic concealment repeats.
     last_pitch_index: usize,
+    /// Decay of the periodic concealment per channel, measured on the
+    /// first lost frame (`plc_decay`).
+    plc_decay: [f32; CELT_MAX_CHANNELS],
     /// Whether the next frame must fold a concealed overlap first.
     prefilter_and_fold: bool,
     /// Concealment LPC filter per channel.
     plc_lpc: [f32; plc::LPC_ORDER * CELT_MAX_CHANNELS],
-    /// End band of the last decoded frame, which noise concealment keeps.
+    /// First band decoded and concealed (libopus `CELT_SET_START_BAND`).
+    start_band: usize,
+    /// End band decoded and concealed (libopus `CELT_SET_END_BAND`).
     end_band: usize,
+    /// No phase inversion in intensity stereo (libopus `disable_inv`,
+    /// `OPUS_SET_PHASE_INVERSION_DISABLED`); set for one output channel.
+    pub(crate) disable_inv: bool,
+    /// libopus `postfilter_period` (`OPUS_GET_PITCH`): the postfilter
+    /// period of the last decoded frame, 0 without the postfilter, at least
+    /// `COMBFILTER_MINPERIOD` after a noise concealment.
+    pub(crate) postfilter_pitch: usize,
+    /// The deep PLC fields of libopus's decoder.
+    #[cfg(feature = "deep-plc")]
+    pub(crate) deep_plc: plc::deep_plc::DeepPlcMem,
 
     w_tf_res: FixedVec<i32, CELT_NB_EBANDS>,
     w_cap: FixedVec<i32, CELT_NB_EBANDS>,
@@ -3488,28 +3528,152 @@ pub struct CeltDecoder {
     w_collapse_masks: FixedVec<u32, CELT_NB_X_CH>,
     w_freq: FixedVec<f32, CELT_W_FREQ_DEC>,
     w_band_amp: FixedVec<f32, CELT_NB_X_CH>,
-    w_pcm_frame: FixedVec<f32, DECODE_BUFFER_SIZE>,
-    w_post: FixedVec<f32, { DECODE_BUFFER_SIZE + COMBFILTER_MAXPERIOD }>,
 }
 
 impl CeltDecoder {
+    /// The decoder's RNG state, which libopus reports as the final range
+    /// after concealment.
+    pub(crate) fn rng(&self) -> u32 {
+        self.rng
+    }
+
+    /// Sets the end band (libopus `CELT_SET_END_BAND`).
+    pub(crate) fn set_end_band(&mut self, end: usize) {
+        self.end_band = end;
+    }
+
+    /// Sets the start band (libopus `CELT_SET_START_BAND`).
+    pub(crate) fn set_start_band(&mut self, start: usize) {
+        self.start_band = start;
+    }
+
+    /// libopus `celt_decode_with_ec`: decodes `data` with the start and end
+    /// bands set, reading through `rc` when given (a hybrid frame's shared
+    /// range coder), or conceals the frame when `data` is `None` or at most
+    /// one byte. Output is interleaved; `accum` adds it onto `pcm`. Returns
+    /// the samples per channel, or `None` for a frame size CELT lacks.
+    pub(crate) fn decode_with_ec(
+        &mut self,
+        data: Option<&[u8]>,
+        rc: Option<&mut RangeCoder>,
+        pcm: &mut [f32],
+        frame_size: usize,
+        accum: bool,
+    ) -> Option<usize> {
+        self.decode_with_ec_dred(data, rc, pcm, frame_size, accum, None)
+    }
+
+    /// libopus `celt_decode_with_ec_dred`: [`Self::decode_with_ec`] with the
+    /// deep PLC state of the Opus decoder, which concealment uses and a
+    /// decoded frame resets (`blend`).
+    pub(crate) fn decode_with_ec_dred(
+        &mut self,
+        data: Option<&[u8]>,
+        rc: Option<&mut RangeCoder>,
+        pcm: &mut [f32],
+        frame_size: usize,
+        accum: bool,
+        lpcnet: crate::silk::plc::DeepPlc<'_>,
+    ) -> Option<usize> {
+        let mode = self.mode;
+        let n = frame_size * self.downsample;
+        (0..=mode.max_lm).find(|&lm| mode.short_mdct_size << lm == n)?;
+        let layout = PcmLayout::Interleaved { accum };
+        let r = match data {
+            Some(d) if d.len() > 1 => {
+                if d.len() > 1275 {
+                    return None;
+                }
+                let mut own;
+                let rc = match rc {
+                    Some(rc) => rc,
+                    None => {
+                        own = RangeCoder::new_decoder(d);
+                        &mut own
+                    }
+                };
+                // A bit of a hack in libopus too: opus_decode_native learns
+                // that the PLC has ended.
+                #[cfg(feature = "deep-plc")]
+                if let Some(l) = lpcnet {
+                    l.blend = 0;
+                }
+                #[cfg(not(feature = "deep-plc"))]
+                let _ = lpcnet;
+                let (start, end) = (self.start_band, self.end_band);
+                self.decode_impl_from_rc(
+                    rc,
+                    (d.len() * 8) as i32,
+                    frame_size,
+                    pcm,
+                    start,
+                    end,
+                    layout,
+                )
+            }
+            _ => self.decode_lost_into(frame_size, pcm, self.start_band, layout, lpcnet),
+        };
+        (r == frame_size).then_some(r)
+    }
+
     /// Create a CELT decoder. `sampling_rate` is the API sampling rate
     /// (8000–48000); the decoder always operates at 48 kHz internally and
     /// decimates by `resampling_factor(sampling_rate)` on output.
     pub fn new(mode: &'static CeltMode, channels: usize, sampling_rate: i32) -> Self {
-        let mut decoder = MaybeUninit::uninit();
-        unsafe {
-            Self::write_new(decoder.as_mut_ptr(), mode, channels, sampling_rate);
-            decoder.assume_init()
-        }
+        let mut decoder = Self::EMPTY;
+        decoder.init(mode, channels, sampling_rate);
+        decoder
     }
 
-    pub(crate) unsafe fn write_new(
-        this: *mut Self,
-        mode: &'static CeltMode,
-        channels: usize,
-        sampling_rate: i32,
-    ) {
+    /// A decoder with empty buffers for [`Self::init`] to set up. It is a
+    /// constant so that it can be written straight into its final memory.
+    pub(crate) const EMPTY: Self = Self {
+        mode: crate::modes::default_mode(),
+        channels: 0,
+        arch: crate::Arch::Scalar,
+        stream_channels: 0,
+        downsample: 1,
+        decode_mem: FixedVec::new(),
+        old_band_e: FixedVec::new(),
+        preemph_mem: FixedVec::new(),
+        prefilter_period: 0,
+        prefilter_period_old: 0,
+        prefilter_gain: 0.0,
+        prefilter_gain_old: 0.0,
+        prefilter_tapset: 0,
+        prefilter_tapset_old: 0,
+        old_band_e2: FixedVec::new(),
+        old_band_e3: FixedVec::new(),
+        rng: 0,
+        background_log_e: FixedVec::new(),
+        loss_duration: 0,
+        plc_duration: 0,
+        skip_plc: true,
+        last_frame_type: plc::FRAME_NONE,
+        last_pitch_index: 0,
+        plc_decay: [0.0; CELT_MAX_CHANNELS],
+        prefilter_and_fold: false,
+        plc_lpc: [0.0; plc::LPC_ORDER * CELT_MAX_CHANNELS],
+        start_band: 0,
+        end_band: 0,
+        disable_inv: false,
+        postfilter_pitch: 0,
+        #[cfg(feature = "deep-plc")]
+        deep_plc: plc::deep_plc::DeepPlcMem::EMPTY,
+        w_tf_res: FixedVec::new(),
+        w_cap: FixedVec::new(),
+        w_offsets: FixedVec::new(),
+        w_pulses: FixedVec::new(),
+        w_ebits: FixedVec::new(),
+        w_fine_priority: FixedVec::new(),
+        w_x: FixedVec::new(),
+        w_collapse_masks: FixedVec::new(),
+        w_freq: FixedVec::new(),
+        w_band_amp: FixedVec::new(),
+    };
+
+    /// Sets the decoder up as [`Self::new`] does, in place.
+    pub(crate) fn init(&mut self, mode: &'static CeltMode, channels: usize, sampling_rate: i32) {
         // All internal buffers are sized for at most 2 channels
         // (issue #27 deep scan).
         assert!(
@@ -3523,63 +3687,49 @@ impl CeltDecoder {
         // may be handed one. Capacity is fixed, so this costs no memory.
         let nb_x_ch = nb_ebands * CELT_MAX_CHANNELS;
         let dec_frame_x_ch = DECODE_BUFFER_SIZE * CELT_MAX_CHANNELS;
-        unsafe {
-            (&raw mut (*this).mode).write(mode);
-            (&raw mut (*this).channels).write(channels);
-            (&raw mut (*this).stream_channels).write(channels);
-            (&raw mut (*this).downsample).write(resampling_factor(sampling_rate));
-            FixedVec::write_from_value(
-                &raw mut (*this).decode_mem,
-                0.0,
-                channels * (DECODE_BUFFER_SIZE + overlap),
-            );
-            FixedVec::write_from_value(&raw mut (*this).old_band_e, 0.0, nb_x_ch);
-            FixedVec::write_from_value(&raw mut (*this).preemph_mem, 0.0, channels);
-            FixedVec::write_from_value(
-                &raw mut (*this).prefilter_mem,
-                0.0,
-                channels * COMBFILTER_MAXPERIOD,
-            );
-            (&raw mut (*this).prefilter_period).write(COMBFILTER_MINPERIOD);
-            (&raw mut (*this).prefilter_period_old).write(COMBFILTER_MINPERIOD);
-            (&raw mut (*this).prefilter_gain).write(0.0);
-            (&raw mut (*this).prefilter_gain_old).write(0.0);
-            (&raw mut (*this).prefilter_tapset).write(0);
-            (&raw mut (*this).prefilter_tapset_old).write(0);
-            // oldLogE and oldLogE2 start at -28 dB, as libopus's reset (run at init) sets them.
-            FixedVec::write_from_value(&raw mut (*this).old_band_e2, -28.0, nb_x_ch);
-            FixedVec::write_from_value(&raw mut (*this).old_band_e3, -28.0, nb_x_ch);
-            (&raw mut (*this).rng).write(0);
-            FixedVec::write_from_value(&raw mut (*this).background_log_e, 0.0, nb_x_ch);
-            (&raw mut (*this).loss_duration).write(0);
-            (&raw mut (*this).plc_duration).write(0);
-            (&raw mut (*this).skip_plc).write(true);
-            (&raw mut (*this).last_frame_type).write(plc::FRAME_NONE);
-            (&raw mut (*this).last_pitch_index).write(0);
-            (&raw mut (*this).prefilter_and_fold).write(false);
-            (&raw mut (*this).plc_lpc).write([0.0; plc::LPC_ORDER * CELT_MAX_CHANNELS]);
-            (&raw mut (*this).end_band).write(mode.eff_ebands);
-            FixedVec::write_from_value(&raw mut (*this).w_tf_res, 0, nb_ebands);
-            FixedVec::write_from_value(&raw mut (*this).w_cap, 0, nb_ebands);
-            FixedVec::write_from_value(&raw mut (*this).w_offsets, 0, nb_ebands);
-            FixedVec::write_from_value(&raw mut (*this).w_pulses, 0, nb_ebands);
-            FixedVec::write_from_value(&raw mut (*this).w_ebits, 0, nb_x_ch);
-            FixedVec::write_from_value(&raw mut (*this).w_fine_priority, 0, nb_x_ch);
-            FixedVec::write_from_value(
-                &raw mut (*this).w_x,
-                0.0,
-                dec_frame_x_ch + STRIDE_ACCESS_PAD,
-            );
-            FixedVec::write_from_value(&raw mut (*this).w_collapse_masks, 0, nb_x_ch);
-            FixedVec::write_from_value(&raw mut (*this).w_freq, 0.0, dec_frame_x_ch + 4); // +4: NEON backward pre-rotation reads up to 3 elements past n2
-            FixedVec::write_from_value(&raw mut (*this).w_band_amp, 0.0, nb_x_ch);
-            FixedVec::write_from_value(&raw mut (*this).w_pcm_frame, 0.0, DECODE_BUFFER_SIZE);
-            FixedVec::write_from_value(
-                &raw mut (*this).w_post,
-                0.0,
-                DECODE_BUFFER_SIZE + COMBFILTER_MAXPERIOD,
-            );
-        }
+        // Field by field: a whole `Self` value would need a large stack frame.
+        self.mode = mode;
+        self.arch = crate::Arch::select();
+        self.channels = channels;
+        self.stream_channels = channels;
+        self.downsample = resampling_factor(sampling_rate);
+        self.decode_mem
+            .fill_to(channels * (DECODE_BUFFER_SIZE + overlap), 0.0);
+        self.old_band_e.fill_to(nb_x_ch, 0.0);
+        self.preemph_mem.fill_to(channels, 0.0);
+        self.prefilter_period = COMBFILTER_MINPERIOD;
+        self.prefilter_period_old = COMBFILTER_MINPERIOD;
+        self.prefilter_gain = 0.0;
+        self.prefilter_gain_old = 0.0;
+        self.prefilter_tapset = 0;
+        self.prefilter_tapset_old = 0;
+        // oldLogE and oldLogE2 start at -28 dB, as libopus's reset (run at init) sets them.
+        self.old_band_e2.fill_to(nb_x_ch, -28.0);
+        self.old_band_e3.fill_to(nb_x_ch, -28.0);
+        self.rng = 0;
+        self.background_log_e.fill_to(nb_x_ch, 0.0);
+        self.loss_duration = 0;
+        self.plc_duration = 0;
+        self.skip_plc = true;
+        self.last_frame_type = plc::FRAME_NONE;
+        self.last_pitch_index = 0;
+        self.plc_decay = [0.0; CELT_MAX_CHANNELS];
+        self.prefilter_and_fold = false;
+        self.plc_lpc = [0.0; plc::LPC_ORDER * CELT_MAX_CHANNELS];
+        self.start_band = 0;
+        self.end_band = mode.eff_ebands;
+        self.disable_inv = channels == 1;
+        self.postfilter_pitch = 0;
+        self.w_tf_res.fill_to(nb_ebands, 0);
+        self.w_cap.fill_to(nb_ebands, 0);
+        self.w_offsets.fill_to(nb_ebands, 0);
+        self.w_pulses.fill_to(nb_ebands, 0);
+        self.w_ebits.fill_to(nb_x_ch, 0);
+        self.w_fine_priority.fill_to(nb_x_ch, 0);
+        self.w_x.fill_to(dec_frame_x_ch + STRIDE_ACCESS_PAD, 0.0);
+        self.w_collapse_masks.fill_to(nb_x_ch, 0);
+        self.w_freq.fill_to(dec_frame_x_ch + 4, 0.0); // +4: NEON backward pre-rotation reads up to 3 elements past n2
+        self.w_band_amp.fill_to(nb_x_ch, 0.0);
     }
 
     pub fn decode(&mut self, compressed: &[u8], frame_size: usize, pcm: &mut [f32]) -> usize {
@@ -3597,13 +3747,12 @@ impl CeltDecoder {
         self.stream_channels = channels;
     }
 
-    /// Reset all decoder state (equivalent to libopus `OPUS_RESET_STATE`).
-    /// Used at SILK↔CELT mode transitions to avoid cross-mode artifacts.
+    /// Reset the decoder state (libopus `OPUS_RESET_STATE`). The stream
+    /// channels and the start and end bands are settings and stay.
     pub fn reset_state(&mut self) {
         self.decode_mem.fill(0.0);
         self.old_band_e.fill(0.0);
         self.preemph_mem.fill(0.0);
-        self.prefilter_mem.fill(0.0);
         self.prefilter_period = COMBFILTER_MINPERIOD;
         self.prefilter_period_old = COMBFILTER_MINPERIOD;
         self.prefilter_gain = 0.0;
@@ -3620,9 +3769,18 @@ impl CeltDecoder {
         self.skip_plc = true;
         self.last_frame_type = plc::FRAME_NONE;
         self.last_pitch_index = 0;
+        self.plc_decay = [0.0; CELT_MAX_CHANNELS];
         self.prefilter_and_fold = false;
         self.plc_lpc = [0.0; plc::LPC_ORDER * CELT_MAX_CHANNELS];
-        self.end_band = self.mode.eff_ebands;
+        self.postfilter_pitch = 0;
+        #[cfg(feature = "deep-plc")]
+        self.deep_plc.reset();
+    }
+
+    /// The postfilter period of the last decoded frame, 0 without the
+    /// postfilter (libopus `OPUS_GET_PITCH`).
+    pub fn postfilter_pitch(&self) -> usize {
+        self.postfilter_pitch
     }
 
     pub fn decode_with_start_band(
@@ -3650,6 +3808,7 @@ impl CeltDecoder {
             pcm,
             start_band,
             self.mode.nb_ebands,
+            PcmLayout::Planar,
         )
     }
 
@@ -3662,7 +3821,67 @@ impl CeltDecoder {
         start_band: usize,
         end_band: usize,
     ) -> usize {
-        self.decode_impl_from_rc(rc, total_bits, frame_size, pcm, start_band, end_band)
+        self.decode_impl_from_rc(
+            rc,
+            total_bits,
+            frame_size,
+            pcm,
+            start_band,
+            end_band,
+            PcmLayout::Planar,
+        )
+    }
+
+    /// libopus `deemphasis` of the last `n` (48 kHz) samples of each
+    /// channel's decode memory into `pcm`, keeping every `downsample`-th.
+    pub(crate) fn deemphasis(&mut self, n: usize, pcm: &mut [f32], layout: PcmLayout) {
+        // libopus saturates at SIG_SAT here only in the fixed-point build;
+        // the float build's SATURATE is the identity (celt/arch.h:323).
+        const VERY_SMALL: f32 = 1e-30;
+        let cc = self.channels;
+        let ds = self.downsample;
+        let nd = n / ds;
+        let coef0 = self.mode.preemph[0];
+        let mem_len = DECODE_BUFFER_SIZE + self.mode.overlap;
+        for c in 0..cc {
+            let x = &self.decode_mem[c * mem_len + DECODE_BUFFER_SIZE - n..][..n];
+            let mut m = self.preemph_mem[c];
+            let (base, stride, accum) = match layout {
+                PcmLayout::Planar => (c * nd, 1, false),
+                PcmLayout::Interleaved { accum } => (c, cc, accum),
+            };
+            if ds == 1 && accum {
+                // libopus adds VERY_SMALL last on this path.
+                for (j, &xj) in x.iter().enumerate() {
+                    let tmp = xj + m + VERY_SMALL;
+                    m = coef0 * tmp;
+                    pcm[base + j * stride] += (1.0 / 32768.0) * tmp;
+                }
+            } else if ds == 1 {
+                for (j, &xj) in x.iter().enumerate() {
+                    let tmp = xj + VERY_SMALL + m;
+                    m = coef0 * tmp;
+                    pcm[base + j * stride] = (1.0 / 32768.0) * tmp;
+                }
+            } else {
+                // Every ds-th sample is an output.
+                for (j, xs) in x.chunks(ds).enumerate() {
+                    for (k, &xj) in xs.iter().enumerate() {
+                        let tmp = xj + VERY_SMALL + m;
+                        m = coef0 * tmp;
+                        if k == 0 {
+                            let y = &mut pcm[base + j * stride];
+                            if accum {
+                                *y += (1.0 / 32768.0) * tmp;
+                            } else {
+                                *y = (1.0 / 32768.0) * tmp;
+                            }
+                        }
+                    }
+                }
+            }
+            self.preemph_mem[c] = m;
+        }
     }
 
     fn decode_impl(
@@ -3675,7 +3894,15 @@ impl CeltDecoder {
     ) -> usize {
         let total_bits = (compressed.len() * 8) as i32;
         let mut rc = RangeCoder::new_decoder(compressed);
-        self.decode_impl_from_rc(&mut rc, total_bits, frame_size, pcm, start_band, end_band)
+        self.decode_impl_from_rc(
+            &mut rc,
+            total_bits,
+            frame_size,
+            pcm,
+            start_band,
+            end_band,
+            PcmLayout::Planar,
+        )
     }
 
     fn decode_impl_from_rc(
@@ -3686,6 +3913,7 @@ impl CeltDecoder {
         pcm: &mut [f32],
         start_band: usize,
         end_band: usize,
+        layout: PcmLayout,
     ) -> usize {
         let mode = self.mode;
         // `channels` are coded in the stream and drive the bitstream (libopus
@@ -3780,9 +4008,6 @@ impl CeltDecoder {
                 }
                 gain1 = 0.09375 * (qg as f32 + 1.0);
             }
-        }
-        if start_band != 0 {
-            self.prefilter_gain = 0.0;
         }
 
         let mut is_transient = false;
@@ -3926,8 +4151,7 @@ impl CeltDecoder {
         );
 
         // Hard bound: `out_syn_idx = DECODE_BUFFER_SIZE - frame_size` below must
-        // stay non-negative and w_pcm_frame is sized DECODE_BUFFER_SIZE. libopus
-        // rejects frame sizes beyond DECODE_BUFFER_SIZE the same way
+        // stay non-negative. libopus rejects frame sizes beyond DECODE_BUFFER_SIZE the same way
         // (celt_decoder.c). The old `+ overlap` bound let 2049..=2168 through and
         // caused an underflow/panic (issue #27 deep-scan).
         if frame_size > DECODE_BUFFER_SIZE {
@@ -3969,8 +4193,9 @@ impl CeltDecoder {
             lm as i32,
             coded_bands,
             true,
-            false,
+            self.disable_inv,
             &mut self.rng,
+            self.arch,
         );
         // Trace X values for comparison with C decoder
         let mut anti_collapse_on = false;
@@ -4003,6 +4228,7 @@ impl CeltDecoder {
                 &self.old_band_e3,
                 pulses,
                 self.rng,
+                self.arch,
             );
         }
         if silence {
@@ -4085,6 +4311,7 @@ impl CeltDecoder {
                     pf,
                     mode.window,
                     overlap,
+                    self.arch,
                 );
             }
 
@@ -4122,114 +4349,51 @@ impl CeltDecoder {
                 );
             }
 
-            const SIG_SAT: f32 = 536870911.0;
-            for i in 0..frame_size {
-                let v = &mut self.decode_mem[channel_mem_offset + out_syn_idx + i];
-                *v = v.clamp(-SIG_SAT, SIG_SAT);
-            }
+            // celt_synthesis saturates at SIG_SAT, which the float build's
+            // SATURATE leaves out (celt/arch.h:323).
 
-            self.w_pcm_frame[..frame_size].fill(0.0);
-            let pcm_frame = &mut self.w_pcm_frame[..frame_size];
-
-            pcm_frame.copy_from_slice(
-                &self.decode_mem[channel_mem_offset + out_syn_idx
-                    ..channel_mem_offset + out_syn_idx + frame_size],
+            // The postfilter runs in place on the synthesis; the earlier
+            // output in decode_mem is its history (celt_decoder.c:1537-1548).
+            let out = &mut self.decode_mem[channel_mem_offset..channel_mem_offset + mem_size];
+            let short_n = mode.short_mdct_size;
+            comb_filter_inplace(
+                out,
+                out_syn_idx,
+                self.prefilter_period_old,
+                self.prefilter_period,
+                short_n,
+                self.prefilter_gain_old,
+                self.prefilter_gain,
+                self.prefilter_tapset_old,
+                self.prefilter_tapset,
+                mode.window,
+                overlap,
+                self.arch,
             );
-            if pf_on || self.prefilter_gain > 0.0 || self.prefilter_gain_old > 0.0 {
-                // Set up w_post = [prefilter_mem | pcm_frame] for history access.
-                // We apply combfilter in-place on w_post[COMBFILTER_MAXPERIOD..] so that
-                // later samples can reference already-filtered earlier samples, matching C's
-                // in-place comb_filter behavior.
-                self.w_post[..COMBFILTER_MAXPERIOD].copy_from_slice(
-                    &self.prefilter_mem[c * COMBFILTER_MAXPERIOD..(c + 1) * COMBFILTER_MAXPERIOD],
-                );
-                self.w_post[COMBFILTER_MAXPERIOD..COMBFILTER_MAXPERIOD + frame_size]
-                    .copy_from_slice(pcm_frame);
-
-                let short_n = mode.short_mdct_size;
-                // Call 1: first short_n samples, transition old→current params
-                // Apply in-place on w_post[COMBFILTER_MAXPERIOD..], output overwrites input
+            if lm != 0 {
                 comb_filter_inplace(
-                    &mut self.w_post,
-                    COMBFILTER_MAXPERIOD,
-                    self.prefilter_period_old,
+                    out,
+                    out_syn_idx + short_n,
                     self.prefilter_period,
-                    short_n,
-                    self.prefilter_gain_old,
+                    pitch_index,
+                    frame_size - short_n,
                     self.prefilter_gain,
-                    self.prefilter_tapset_old,
+                    gain1,
                     self.prefilter_tapset,
+                    prefilter_tapset as i32,
                     mode.window,
                     overlap,
+                    self.arch,
                 );
-                if lm != 0 {
-                    // Call 2: remaining N-short_n samples, transition current→new params
-                    comb_filter_inplace(
-                        &mut self.w_post,
-                        COMBFILTER_MAXPERIOD + short_n,
-                        self.prefilter_period,
-                        pitch_index,
-                        frame_size - short_n,
-                        self.prefilter_gain,
-                        gain1,
-                        self.prefilter_tapset,
-                        prefilter_tapset as i32,
-                        mode.window,
-                        overlap,
-                    );
-                }
-
-                pcm_frame.copy_from_slice(
-                    &self.w_post[COMBFILTER_MAXPERIOD..COMBFILTER_MAXPERIOD + frame_size],
-                );
-
-                self.decode_mem[channel_mem_offset + out_syn_idx
-                    ..channel_mem_offset + out_syn_idx + frame_size]
-                    .copy_from_slice(pcm_frame);
             }
-            let mut new_mem = [0.0f32; COMBFILTER_MAXPERIOD];
-            if frame_size >= COMBFILTER_MAXPERIOD {
-                new_mem.copy_from_slice(&pcm_frame[frame_size - COMBFILTER_MAXPERIOD..frame_size]);
-            } else {
-                new_mem[..COMBFILTER_MAXPERIOD - frame_size].copy_from_slice(
-                    &self.prefilter_mem
-                        [c * COMBFILTER_MAXPERIOD + frame_size..(c + 1) * COMBFILTER_MAXPERIOD],
-                );
-                new_mem[COMBFILTER_MAXPERIOD - frame_size..].copy_from_slice(pcm_frame);
-            }
-            self.prefilter_mem[c * COMBFILTER_MAXPERIOD..(c + 1) * COMBFILTER_MAXPERIOD]
-                .copy_from_slice(&new_mem);
-
-            let coef = mode.preemph[0];
-            let mut m = self.preemph_mem[c];
-            const VERY_SMALL: f32 = 1e-30f32;
-            let ds = self.downsample;
-            if ds == 1 {
-                for i in 0..frame_size {
-                    let x = pcm_frame[i];
-                    let val = (x + VERY_SMALL + m).clamp(-SIG_SAT, SIG_SAT);
-                    pcm[c * api_frame_size + i] = val * (1.0 / 32768.0);
-                    m = val * coef;
-                }
-            } else {
-                // Run deemphasis IIR over all internal samples, but only write
-                // every downsample-th sample (libopus deemphasis() stride).
-                for i in 0..frame_size {
-                    let x = pcm_frame[i];
-                    let val = (x + VERY_SMALL + m).clamp(-SIG_SAT, SIG_SAT);
-                    if i % ds == 0 {
-                        pcm[c * api_frame_size + i / ds] = val * (1.0 / 32768.0);
-                    }
-                    m = val * coef;
-                }
-            }
-            self.preemph_mem[c] = m;
         }
+        self.deemphasis(frame_size, pcm, layout);
 
         self.prefilter_period_old = self.prefilter_period;
         self.prefilter_gain_old = self.prefilter_gain;
         self.prefilter_tapset_old = self.prefilter_tapset;
 
+        self.postfilter_pitch = if pf_on { pitch_index } else { 0 };
         if pf_on {
             self.prefilter_period = pitch_index;
             self.prefilter_gain = gain1;
@@ -4292,6 +4456,279 @@ mod tests {
     use super::*;
     use crate::{modes, range_coder::RangeCoder};
 
+    /// tone_lpc's singularity test is den < .001f*(r00*r11)
+    /// (celt_encoder.c:1347); this input lies between the two products.
+    #[test]
+    fn tone_lpc_tests_singularity_on_the_product() {
+        let x = [
+            1065354220u32,
+            1065258483,
+            1064974314,
+            1064508070,
+            1063861141,
+            1063042093,
+        ]
+        .map(f32::from_bits);
+        assert!(tone_lpc(
+            &x,
+            6,
+            1,
+            tone_correlations(&x, 1)[0],
+            &mut [0.0; 2]
+        ));
+    }
+
+    /// tone_detect's frequency is the double acos rounded once to float
+    /// (celt_encoder.c:1394); the expected values are glibc's acos. glibc's
+    /// acosf differs at the first two inputs, libm's acosf at -1.
+    #[test]
+    fn tone_freq_rounds_the_double_acos() {
+        for (x, delay, want) in [
+            (847807907u32, 1, 1070141402u32),
+            (964846114, 2, 1061750708),
+            (0xbf80_0000, 1, 1078530011),
+            (0xbf80_0000, 2, 1070141403),
+        ] {
+            let lpc0 = 2.0 * f32::from_bits(x);
+            assert_eq!(tone_freq(lpc0, delay).to_bits(), want, "{x} {delay}");
+        }
+    }
+
+    /// The complex-root test sums in double (celt_encoder.c:1383); in
+    /// float these pairs sum to exactly 0.
+    #[test]
+    fn tone_roots_test_sums_in_double() {
+        for (l0, l1) in [(1066480345u32, 3198465355u32), (1070819174, 3207500703)] {
+            assert!(tone_has_complex_roots([
+                f32::from_bits(l0),
+                f32::from_bits(l1)
+            ]));
+        }
+        assert!(!tone_has_complex_roots([1.0, -0.25]));
+    }
+
+    /// tone_lpc limits lpc[0] to +-1.999999 only where num0/den reaches
+    /// +-2 (celt_encoder.c:1354-1356); this input gives -1.9999999.
+    #[test]
+    fn tone_lpc_keeps_quotients_below_two() {
+        let x = [
+            1012005056u32,
+            1023960200,
+            3156529856,
+            3188496314,
+            1052018348,
+        ]
+        .map(f32::from_bits);
+        let mut lpc = [0.0; 2];
+        assert!(!tone_lpc(&x, 5, 1, tone_correlations(&x, 1)[0], &mut lpc));
+        assert!(lpc[0] < -1.999999, "{lpc:?}");
+    }
+
+    /// dynalloc's tone bin is floor(.5 + tone_freq*120/M_PI) in double
+    /// (celt_encoder.c:1210): 0.01308996882 rad/sample is bin 0.
+    #[test]
+    fn dynalloc_tone_bin_rounds_in_double() {
+        let mode = modes::default_mode();
+        let band_log_e: Vec<f32> = (0..21).map(|i| 4.0 - 0.3 * i as f32).collect();
+        let old = [0.0f32; 21];
+        let run = |tone_freq: f32| {
+            let (mut offsets, mut importance, mut spread_weight) = ([0; 21], [0; 21], [0; 21]);
+            let r = dynalloc_analysis_simple(
+                mode,
+                &band_log_e,
+                None,
+                &old,
+                0,
+                21,
+                1,
+                3,
+                200,
+                false,
+                &mut offsets,
+                24,
+                true,
+                false,
+                &AnalysisInfo::default(),
+                false,
+                &[0.0; 21],
+                tone_freq,
+                0.99,
+                &mut importance,
+                &mut spread_weight,
+            );
+            (r, offsets, importance)
+        };
+        assert_eq!(run(0.01308996882), run(0.0));
+    }
+
+    /// A pure tone's comb-filter period is floor(.5 + 2*M_PI*multiple/freq)
+    /// in double (celt_encoder.c:1452): 0.3807991147 rad/sample gives 16.
+    #[test]
+    fn tone_period_rounds_in_double() {
+        let mode = modes::default_mode();
+        let (n, overlap) = (960, mode.overlap);
+        let mut in_buf: Vec<f32> = (0..n + overlap)
+            .map(|i| (i as f32 * 0.3808).sin() * 1000.0)
+            .collect();
+        let mut mem = vec![0.0f32; COMBFILTER_MAXPERIOD];
+        let mut pre = vec![0.0f32; COMBFILTER_MAXPERIOD + n];
+        let mut pitch_buf = vec![0.0f32; (COMBFILTER_MAXPERIOD + n) >> 1];
+        let (mut before, mut after) = ([0.0f32; 1], [0.0f32; 1]);
+        let (_, _, pitch_index) = run_prefilter(
+            &mut in_buf,
+            &mut mem,
+            0,
+            0.0,
+            0,
+            0,
+            mode.window,
+            1,
+            n,
+            overlap,
+            &mut pre,
+            &mut pitch_buf,
+            &mut before,
+            &mut after,
+            &AnalysisInfo::default(),
+            0,
+            0.0,
+            true,
+            100,
+            0.3807991147041321,
+            1.0,
+            10,
+            crate::Arch::Scalar,
+        );
+        assert_eq!(pitch_index, 16);
+    }
+
+    /// tf_estimate = celt_sqrt(MAX32(0, 0.0069f*min(163, tf_max) - 0.139))
+    /// with the subtraction and root in double (celt_encoder.c:461). The
+    /// first frame of a 527.1533 Hz tone at 48 kHz gives libopus's
+    /// 0.8355611562728882.
+    #[test]
+    fn tf_estimate_subtracts_in_double() {
+        let mode = modes::default_mode();
+        let (n, overlap) = (960, mode.overlap);
+        let mut input = vec![0.0f32; n + overlap];
+        let mut m = 0.0f32;
+        for i in 0..n {
+            let x = (i as f64 * 527.1533f32 as f64 / 48000.0 * core::f64::consts::TAU).sin() as f32
+                * 0.5
+                * 32768.0;
+            input[overlap + i] = x - m;
+            m = x * mode.preemph[0];
+        }
+        let (mut tf_estimate, mut tf_chan, mut weak) = (0.0, 0, false);
+        let mut tmp = vec![0.0; MAX_TRANSIENT_LEN];
+        let (tone_freq, toneishness) = tone_detect(&input, 1, n + overlap, 48000);
+        transient_analysis(
+            &input,
+            n + overlap,
+            1,
+            &mut tf_estimate,
+            &mut tf_chan,
+            false,
+            &mut weak,
+            tone_freq,
+            toneishness,
+            &mut tmp,
+        );
+        assert_eq!(tf_estimate, 0.8355611562728882);
+    }
+
+    /// A silent frame shrinks to two bytes when the encoder has VBR on and
+    /// a bitrate (celt_encoder.c:1988-1994), through every entry point.
+    #[test]
+    fn silent_frames_shrink_under_vbr_only() {
+        let silence = [0.0f32; 960];
+        for (vbr, bitrate, is_vbr, bytes) in [
+            (true, 64000, false, 2),
+            (false, 64000, true, 100),
+            (true, OPUS_BITRATE_MAX, true, 100),
+        ] {
+            let mut enc = CeltEncoder::new(modes::default_mode(), 1);
+            enc.set_vbr(vbr);
+            enc.set_bitrate(bitrate);
+            let mut rc = RangeCoder::new_encoder(100);
+            enc.encode_with_budget_vbr(&silence, 960, &mut rc, 0, 800, is_vbr)
+                .unwrap();
+            assert_eq!(
+                rc.storage, bytes,
+                "vbr {vbr} bitrate {bitrate} is_vbr {is_vbr}"
+            );
+        }
+    }
+
+    /// patch_transient_decision divides by the signed band count
+    /// C*(end-1-IMAX(2,start)) (celt_encoder.c:504), which is negative for
+    /// end bands 1 and 2: the mean stays -0 and the frame is no transient.
+    #[test]
+    fn end_bands_below_three_patch_no_transient() {
+        let new_e = [10.0f32; 42];
+        let old_e = [-10.0f32; 42];
+        for end in [1, 2, 3] {
+            for c in [1, 2] {
+                assert!(!patch_transient_decision(&new_e, &old_e, 21, 0, end, c));
+            }
+        }
+        assert!(patch_transient_decision(&new_e, &old_e, 21, 0, 4, 2));
+    }
+
+    /// A start band at or above the end band codes no band; those frames
+    /// are refused (they panicked in the allocation before), and every
+    /// start below the end band codes.
+    #[test]
+    fn start_bands_below_the_end_band_code() {
+        let pcm: Vec<f32> = (0..1920)
+            .map(|i| ((i * 7919) % 101) as f32 / 101.0 - 0.5)
+            .collect();
+        for end in [1, 2, 3, 13, 17, 21] {
+            for start in [0, 1, 2, 5, 16, 17, 20, 21, 30] {
+                let mut enc = CeltEncoder::new(modes::default_mode(), 2);
+                enc.complexity = 10;
+                enc.set_end_band(end);
+                for _ in 0..3 {
+                    let mut rc = RangeCoder::new_encoder(200);
+                    let r = enc.encode_with_start_band(&pcm, 960, &mut rc, start);
+                    assert_eq!(r.is_ok(), start < end, "start {start} end {end}");
+                }
+            }
+        }
+    }
+
+    /// libopus's CELT ctls reject out-of-range values and keep the setting
+    /// (celt_encoder.c:2956-3024); the bitrate is capped at 750 kb/s per
+    /// channel.
+    #[test]
+    fn out_of_range_settings_are_ignored() {
+        let mut enc = CeltEncoder::new(modes::default_mode(), 1);
+        enc.set_lsb_depth(16);
+        enc.set_lsb_depth(30);
+        enc.set_loss_rate(10);
+        enc.set_loss_rate(150);
+        enc.set_bitrate(64000);
+        enc.set_bitrate(400);
+        enc.set_end_band(17);
+        enc.set_end_band(0);
+        enc.set_stream_channels(3);
+        enc.set_prediction(1);
+        enc.set_prediction(3);
+        assert_eq!(
+            (
+                enc.lsb_depth,
+                enc.loss_rate,
+                enc.bitrate,
+                enc.end_band,
+                enc.stream_channels
+            ),
+            (16, 10, 64000, 17, 1)
+        );
+        assert_eq!((enc.disable_pf, enc.force_intra), (true, false));
+        enc.set_bitrate(2_000_000);
+        assert_eq!(enc.bitrate, 750000);
+    }
+
     #[test]
     fn frames_without_a_transient_flag_are_coded_as_not_transient() {
         // A 2.5 ms frame codes no transient flag, so decoders take it as not
@@ -4303,7 +4740,8 @@ mod tests {
         enc.complexity = 10;
         let code = |enc: &mut CeltEncoder, pcm: &[f32]| {
             let mut rc = RangeCoder::new_encoder(20);
-            enc.encode_with_budget_vbr(pcm, pcm.len(), &mut rc, 0, 160, false);
+            enc.encode_with_budget_vbr(pcm, pcm.len(), &mut rc, 0, 160, false)
+                .unwrap();
             rc.done();
         };
         let tone: Vec<f32> = (0..120 * 8).map(|i| 0.1 * (i as f32 * 0.3).sin()).collect();
@@ -4318,34 +4756,43 @@ mod tests {
         assert_eq!(enc.consec_transient, 8);
     }
 
-    // Regression test: directly drive CeltEncoder with an invalid frame_size=48,
-    // bypassing the OpusEncoder::encode() validation layer.
-    //
-    // This reproduces the crash that was reported against opus-rs 0.1.19 when
-    // G.729-decoded PCM (8 kHz) reached the 48 kHz Opus encoder without correct
-    // resampling, producing a 48-sample frame instead of 480.
-    //
-    // Root cause: the lm-search in encode_impl finds no valid match for frame_size=48
-    // (valid sizes are 120, 240, 480, 960) and silently falls back to lm=0.
-    // With lm=0 and shift=max_lm=3: n=1920>>3=240, n2=120, overlap2=60.
-    // The in_buf slice has only frame_size+overlap=168 elements, but forward()
-    // requires input.len() >= n2+overlap2 = 180, so it panics immediately.
-    // In opus-rs 0.1.19 this assertion was absent and the crash reached the MDCT
-    // output write: "index out of bounds: the len is 48 but the index is 119".
-    //
-    // Either way: the call panics, confirming the crash path is real.
-    // The fix in OpusEncoder::encode() returns Err before reaching CeltEncoder.
+    /// celt_encode_with_ec returns OPUS_BAD_ARG for a budget below 2 bytes
+    /// or a frame size other than 120 << LM (celt_encoder.c:1832-1845),
+    /// before it changes the state: the next frame codes like a new
+    /// encoder's first. 48-sample frames (8 kHz PCM fed at 48 kHz) panicked
+    /// in the MDCT before.
     #[test]
-    #[should_panic]
-    fn test_celt_frame_size_48_panics_confirms_crash_path() {
-        let mode = modes::default_mode();
-        let mut enc = CeltEncoder::new(mode, 1);
-        // frame_size=48: lm-search fails, falls back to lm=0.
-        // forward() will panic — either on the input-size assertion (0.1.21+) or
-        // on the output write (0.1.19): "len is 48 but the index is 119".
-        let pcm = vec![0.0f32; 48 + mode.overlap]; // supply ≥ frame_size samples
-        let mut rc = RangeCoder::new_encoder(100);
-        enc.encode_with_budget(&pcm, 48, &mut rc, 0, 800);
+    fn bad_budgets_and_frame_sizes_are_refused() {
+        let pcm: Vec<f32> = (0..960).map(|i| (i as f32 * 0.1).sin() * 0.5).collect();
+        let first = |enc: &mut CeltEncoder| {
+            let mut rc = RangeCoder::new_encoder(100);
+            enc.encode(&pcm, 960, &mut rc).unwrap();
+            rc.done();
+            (rc.buf[..100].to_vec(), rc.rng)
+        };
+        let mut enc = CeltEncoder::new(modes::default_mode(), 1);
+        let want = first(&mut enc);
+        let mut enc = CeltEncoder::new(modes::default_mode(), 1);
+        for (size, frame, bits) in [
+            (1, 960, None),
+            (100, 960, Some(15)),
+            (100, 960, Some(-8)),
+            (100, 48, None),
+            (100, 100, Some(800)),
+        ] {
+            let mut rc = RangeCoder::new_encoder(size);
+            let r = match bits {
+                None => enc.encode(&pcm[..frame], frame, &mut rc),
+                Some(b) => enc.encode_with_budget(&pcm[..frame], frame, &mut rc, 0, b),
+            };
+            assert_eq!(
+                r,
+                Err(crate::error::BAD_ARG),
+                "{size} bytes, {frame} samples, {bits:?} bits"
+            );
+            assert_eq!(rc.tell(), 1);
+        }
+        assert_eq!(first(&mut enc), want);
     }
 
     // Issue #54: a frame whose comb filter is cancelled must still fade the
@@ -4381,10 +4828,12 @@ mod tests {
             &AnalysisInfo::default(),
             0,
             0.0,
+            true,
             100,
             -1.0,
             0.0,
             9,
+            crate::Arch::Scalar,
         );
         assert!(!pf_on && gain == 0.0, "expected a cancelled filter");
         let body = &in_buf[overlap..];
@@ -4429,7 +4878,8 @@ mod mode_switch_tests {
     /// A CBR frame of `bytes` bytes.
     fn encode(enc: &mut CeltEncoder, pcm: &[f32], bytes: usize) -> Vec<u8> {
         let mut rc = RangeCoder::new_encoder(bytes as u32);
-        enc.encode_with_budget_vbr(pcm, pcm.len(), &mut rc, 0, (bytes * 8) as i32, false);
+        enc.encode_with_budget_vbr(pcm, pcm.len(), &mut rc, 0, (bytes * 8) as i32, false)
+            .unwrap();
         rc.done();
         rc.buf[..bytes].to_vec()
     }
@@ -4512,7 +4962,8 @@ mod hybrid_decision_tests {
     fn encode(enc: &mut CeltEncoder, pcm: &[f32], start_band: usize, bytes: usize) -> i32 {
         let mut rc = RangeCoder::new_encoder(bytes as u32);
         let vbr = enc.vbr;
-        enc.encode_with_budget_vbr(pcm, 960, &mut rc, start_band, (bytes * 8) as i32, vbr);
+        enc.encode_with_budget_vbr(pcm, 960, &mut rc, start_band, (bytes * 8) as i32, vbr)
+            .unwrap();
         rc.tell()
     }
 
@@ -4595,7 +5046,6 @@ mod hybrid_decision_tests {
         let mode = modes::default_mode();
         let len = 960 + mode.overlap;
         let mut tmp = vec![0.0f32; MAX_TRANSIENT_LEN];
-        let mut tmp2 = vec![0.0f32; MAX_TRANSIENT_LEN / 2];
         let mut found = false;
         for step in [1.5f32, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0] {
             let mut seed = 11;
@@ -4603,7 +5053,7 @@ mod hybrid_decision_tests {
             for v in &mut x[len / 2..] {
                 *v *= step;
             }
-            let analyse = |allow: bool, tmp: &mut [f32], tmp2: &mut [f32]| {
+            let analyse = |allow: bool, tmp: &mut [f32]| {
                 let (mut tf_estimate, mut tf_chan, mut weak) = (0.0, 0, false);
                 let transient = transient_analysis(
                     &x,
@@ -4616,13 +5066,12 @@ mod hybrid_decision_tests {
                     0.0,
                     0.0,
                     tmp,
-                    tmp2,
                 );
                 (transient, weak)
             };
-            let (transient, weak) = analyse(false, &mut tmp, &mut tmp2);
+            let (transient, weak) = analyse(false, &mut tmp);
             assert!(!weak);
-            let (allowed_transient, allowed_weak) = analyse(true, &mut tmp, &mut tmp2);
+            let (allowed_transient, allowed_weak) = analyse(true, &mut tmp);
             assert!(!(allowed_transient && allowed_weak));
             found |= transient && allowed_weak;
         }

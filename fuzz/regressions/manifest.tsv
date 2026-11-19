@@ -1,0 +1,58 @@
+# id	target	env	pattern (present = bug reproduces)	parse (hash of the parsed input, OFZ_PARSE)	description
+01a	api_args	-	rate.rs", line: 33	3a928ac4d4c06bb7	bits2pulses indexes its table unchecked
+01b	api_args	-	rate.rs", line: 76	4a001b18ec3cc7c0	pulses2bits indexes its table unchecked
+01c	api_args	-	range_coder.rs", line: 434	4ea9dc82fc5d1baa	encode_icdf reads past the table
+01d	api_args	OFZ_SUPPRESS=rate	range_coder.rs", line: 585	7536e306ce7676d8	shrink accepts a size larger than the buffer
+02	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	hybrid->silk first-2.5ms	25d9c5f5a0e16429	no CELT fade-out on Hybrid->SILK
+03	diff_kernels	-	kernel] silk_lshift_sat32	-	silk_lshift_sat32 saturates after shifting
+04	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	clamp	9248ed0f225b6122	float output clamped to +-1
+05	diff_kernels	-	comb_filter/scalar exact	-	comb-filter tap constants
+06	diff_encoder	OFZ_SUPPRESS=toc,simd	silk-input] app2049	1581cfb75547dccb	SILK input skips dc_reject / truncates
+07	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	celt_decoder.c:1401	c1f84d70a84efeab	spreading_decision weights
+08	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	celt_decoder.c:1426	8582d18b4d724043	band-0 boost above 320 bytes
+09	diff_encoder	OFZ_SUPPRESS=toc,simd	>750k/ch	b5348c40317934a6	bitrate clamped at 3 Mb/s
+10	diff_kernels	-	haar1/simd exact	-	AVX2 haar1 rounding
+12	diff_kernels@aarch64	-	pvq_search/scalar objective	-	NEON pulse search objective
+13	test:fec_after_dtx	-	FAILED	-	decode_fec mode after DTX
+14	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	range] decode_fec ->hybrid	4563a898ae873fc0	decode_fec final range on Hybrid
+14b	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	range] decode_fec	dc5b1a7913c4a66f	decode_fec range after concealing part of a Hybrid frame
+14c	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid,simd	range] decode_fec	a40a9911aed587c6	decode_fec range after a SILK-to-CELT redundant frame
+14d	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	rs-err	11a85efc189b3e84	partial Hybrid concealment at a length CELT supports
+15a	diff_kernels	-	silk_sum_sqr_shift/simd	-	silk_sum_sqr_shift AVX2
+15b	diff_kernels@aarch64	-	silk_sum_sqr_shift/scalar	-	silk_sum_sqr_shift NEON
+16	diff_kernels@aarch64	-	celt_fir/scalar tol	-	celt_fir_neon
+17a	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	multiply with overflow	c7a7f55240175f54	decode with an absurd frame_size
+17b	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	multiply with overflow	5a5d5c33f2071950	decode_fec with an absurd frame_size
+n1	diff_encoder	OFZ_SUPPRESS=toc	stack-buffer-overflow	d7b7b48a63efbbd9	AVX2 xcorr kernel reads past its input
+n2	diff_encoder@fixed	OFZ_SUPPRESS=toc,simd	silk-input] app2048	ef448d1b42841c2b	VoIP SILK input follows fixed-point libopus (by design, see src/lib.rs)
+n3	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	decode_fec dtx->silk	fd0dcd27b04bc514	FEC frame after long concealment differs
+n4	diff_encoder@fixed	OFZ_SUPPRESS=toc,simd	silk-input] app2048	d96ff07e06301edc	VoIP SILK input follows fixed-point libopus (by design)
+n5	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	bytes] celt length	c56d378a6c6d7a7e	no DTX inside multi-frame CELT packets
+n7	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	cbr] scalar 20ms	c33a945a097289b9	CBR packets stop at 1276 bytes; libopus pads to the CBR size
+n8	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid,simd	lost silk->	fd3ebba93aa59210	SILK concealment differs (libopus output beyond full scale)
+n9	diff_encoder	OFZ_SUPPRESS=toc,simd	range celt	6fe2095e6c18eea9	encoder final range differs from the decoder's for its own packet
+n10	diff_encoder	OFZ_SUPPRESS=toc,simd	returns -4	f05d5bb69c563af1	encoder emits a 2-byte packet libopus rejects
+d1	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode ->hybrid	f6345608e691792c	SILK resampling to 8 kHz misses the down-FIR
+d2	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode ->celt first-2.5ms	6f38963549ea0725	2.5 ms CELT frames fold from a scaled N=1 band
+d3	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] valid decode ->hybrid	1c20804145873114	N=2 stereo bands drop the decoded inversion
+d4	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] valid decode hybrid->celt	0de058e4afd8c997	mode-transition bridge synthesised apart from libopus PLC
+d5	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode silk->celt first-2.5ms	4d6ea1083236559b	no transition fade into a 2.5 ms frame
+d6	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode_fec hybrid->silk	64e96328b4c37bb4	no CELT fade-out in decode_fec after Hybrid
+d7	test:hybrid_lost_celt_layer	-	FAILED	-	Hybrid CELT layer of at most one byte left silent
+d8	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] valid lost silk->	e66c22347d3000f2	concealment ignores the last packet frame size
+d9	test:packet_limits	-	FAILED	-	frames over 1275 bytes and code-3 packets over 120 ms accepted
+d10	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode ->silk	e2b8d0dc2317643d	frames of a packet ignore the previous frame redundancy
+d11	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] decode_fec silk->dtx	5da375689bbf6e14	decode_fec of a ToC-only packet conceals with the old frame size
+d12	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid,simd	pcm] decode_fec dtx->silk	25aeebe905e0dbf6	decode_fec after CELT concealment skips the SILK reset and bridge
+d14	test:toc_only_code2	-	FAILED	-	ToC-only code-2 packet concealed instead of rejected
+d13	test:tiny_frames	-	FAILED	-	0/1-byte frames inside a packet decoded instead of concealed
+d15	test:hybrid_postfilter_carry	-	FAILED	-	Hybrid frames drop the postfilter gain of the frame before
+d16	test:mono_inv	-	FAILED	-	mono decoder applies intensity inversion before the downmix
+d17	test:celt_fold_after_loss	-	FAILED	-	prefilter_and_fold crossfades the postfilters
+d18	test:celt_no_saturation	-	FAILED	-	CELT output saturated at SIG_SAT in the float path
+d19	test:dec_uint_overflow	-	FAILED	-	ec_dec_uint returns values past its range
+d20	diff_decoder	OFZ_SUPPRESS=tiny-frame,fec-invalid	pcm] valid decode silk->silk	beb54b68e1585d18	silk_lpc_inverse_pred_gain uses a wrong A_LIMIT
+e1	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	celt rate.c:418	761f319de69541ed	stereo_analysis scales sumMS by 0.707107
+e2	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	celt celt_decoder.c:1332	b1aa00f84068f41a	the first frame's pre-filter sees a previous period of 0
+e3	diff_encoder	OFZ_STRICT_BYTES=1 OFZ_SUPPRESS=toc,simd	celt celt_decoder.c:1359	499d5bba9b5e3513	a new CELT encoder starts as a reset one (delayedIntra 1)
+e4	diff_encoder	OFZ_SUPPRESS=toc,simd	fidelity] scalar celt	64a675370ebea43d	bands outside start..end restart from zero energy

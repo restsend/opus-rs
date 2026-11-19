@@ -24,7 +24,7 @@ fn test_celt_multi_frame() {
         // Encode
         let buf_size = 1000u32;
         let mut rc_enc = RangeCoder::new_encoder(buf_size);
-        encoder.encode(&pcm, frame_size, &mut rc_enc);
+        encoder.encode(&pcm, frame_size, &mut rc_enc).unwrap();
         rc_enc.done();
         // Use full buffer to preserve dual-stream layout
         let encoded = rc_enc.buf[..buf_size as usize].to_vec();

@@ -270,10 +270,12 @@ fn silk_vbr_packets_ignore_output_buffer_size() {
 
 /// CBR is unaffected: every packet is exactly the nominal size, at rates
 /// whose per-frame bit budget does and does not divide into whole bytes.
+/// (CBR codes at the rate of those whole bytes, as libopus does: 13000 b/s
+/// at 10 ms is 16 bytes, 12800 b/s, which libopus codes in narrowband.)
 #[test]
 fn silk_cbr_packets_stay_nominal() {
     for ms in [10, 20] {
-        for bitrate in [13000, 16000] {
+        for bitrate in [13400, 16000] {
             let setup = Setup::new(16000, ms, bitrate);
             let target_bits = bitrate as usize * setup.frame() / setup.sr;
             let cbr_bytes = (target_bits + 4) / 8;

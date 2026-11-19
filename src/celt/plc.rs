@@ -10,12 +10,12 @@
 //! blends with its MDCT.
 
 use super::{
-    COMBFILTER_MAXPERIOD, COMBFILTER_MINPERIOD, CeltDecoder, DECODE_BUFFER_SIZE, comb_filter,
+    COMBFILTER_MINPERIOD, CeltDecoder, DECODE_BUFFER_SIZE, PcmLayout, comb_filter,
     comb_filter_inplace,
 };
 use crate::bands::{celt_lcg_rand, denormalise_bands, log2amp, renormalise_vector};
 use crate::celt_lpc::{autocorr, lpc as celt_lpc};
-use crate::pitch::{pitch_downsample, pitch_search};
+use crate::pitch::{pitch_downsample, pitch_search, xcorr_kernel};
 
 #[cfg(not(feature = "std"))]
 use crate::compat::Math;
@@ -28,6 +28,12 @@ pub(super) const FRAME_NORMAL: u8 = 1;
 const FRAME_PLC_NOISE: u8 = 2;
 /// Last frame concealed by pitch repetition.
 const FRAME_PLC_PERIODIC: u8 = 3;
+/// Last frame concealed by deep PLC.
+#[cfg(feature = "deep-plc")]
+const FRAME_PLC_NEURAL: u8 = 4;
+/// Last frame rebuilt from DRED.
+#[cfg(feature = "dred")]
+const FRAME_DRED: u8 = 5;
 
 const PLC_PITCH_LAG_MAX: usize = 720;
 const PLC_PITCH_LAG_MIN: usize = 100;
@@ -42,6 +48,20 @@ impl CeltDecoder {
     ///
     /// Returns `frame_size`, or 0 for a frame size CELT does not have.
     pub fn decode_lost(&mut self, frame_size: usize, pcm: &mut [f32], start_band: usize) -> usize {
+        self.decode_lost_into(frame_size, pcm, start_band, PcmLayout::Planar, None)
+    }
+
+    /// [`Self::decode_lost`] with the output written as `layout` says and
+    /// the deep PLC state of the Opus decoder (libopus passes `lpcnet` to
+    /// `celt_decode_lost`).
+    pub(crate) fn decode_lost_into(
+        &mut self,
+        frame_size: usize,
+        pcm: &mut [f32],
+        start_band: usize,
+        layout: PcmLayout,
+        lpcnet: crate::silk::plc::DeepPlc<'_>,
+    ) -> usize {
         let mode = self.mode;
         let n = frame_size * self.downsample;
         let Some(lm) = (0..=mode.max_lm).find(|&lm| mode.short_mdct_size << lm == n) else {
@@ -53,43 +73,41 @@ impl CeltDecoder {
         }
 
         let periodic = self.plc_duration < 40 && start_band == 0 && !self.skip_plc;
-        if periodic {
-            self.conceal_periodic(n);
-        } else {
-            self.conceal_noise(n, lm, start_band, self.end_band);
-        }
-        self.loss_duration = (self.loss_duration + (1 << lm)).min(10_000);
-        self.plc_duration = (self.plc_duration + (1 << lm)).min(10_000);
-        self.last_frame_type = if periodic {
+        #[allow(unused_mut)]
+        let mut frame_type = if periodic {
             FRAME_PLC_PERIODIC
         } else {
             FRAME_PLC_NOISE
         };
-
-        let mem_len = DECODE_BUFFER_SIZE + mode.overlap;
-        let out_syn = DECODE_BUFFER_SIZE - n;
-        const SIG_SAT: f32 = 536870911.0;
-        const VERY_SMALL: f32 = 1e-30;
-        for c in 0..cc {
-            let base = c * mem_len;
-            // The postfilter memory continues from the concealed signal.
-            self.prefilter_mem[c * COMBFILTER_MAXPERIOD..(c + 1) * COMBFILTER_MAXPERIOD]
-                .copy_from_slice(
-                    &self.decode_mem[base + DECODE_BUFFER_SIZE - COMBFILTER_MAXPERIOD
-                        ..base + DECODE_BUFFER_SIZE],
-                );
-            let coef = mode.preemph[0];
-            let mut m = self.preemph_mem[c];
-            for i in 0..n {
-                let x = self.decode_mem[base + out_syn + i];
-                let val = (x + VERY_SMALL + m).clamp(-SIG_SAT, SIG_SAT);
-                if i % self.downsample == 0 {
-                    pcm[c * frame_size + i / self.downsample] = val * (1.0 / 32768.0);
-                }
-                m = val * coef;
+        #[cfg(feature = "deep-plc")]
+        if start_band == 0
+            && let Some(l) = lpcnet.as_deref()
+        {
+            if self.deep_plc.complexity >= 5 && self.plc_duration < 80 && !self.skip_plc {
+                frame_type = FRAME_PLC_NEURAL;
             }
-            self.preemph_mem[c] = m;
+            #[cfg(feature = "dred")]
+            if l.fec_fill_pos > l.fec_read_pos {
+                frame_type = FRAME_DRED;
+            }
+            #[cfg(not(feature = "dred"))]
+            let _ = l;
         }
+        if frame_type == FRAME_PLC_NOISE {
+            self.conceal_noise(n, lm, start_band, self.end_band);
+        } else {
+            self.conceal_periodic(n, frame_type, lpcnet);
+        }
+        self.loss_duration = (self.loss_duration + (1 << lm)).min(10_000);
+        self.plc_duration = (self.plc_duration + (1 << lm)).min(10_000);
+        #[cfg(feature = "dred")]
+        if frame_type == FRAME_DRED {
+            self.plc_duration = 0;
+            self.skip_plc = false;
+        }
+        self.last_frame_type = frame_type;
+
+        self.deemphasis(n, pcm, layout);
         frame_size
     }
 
@@ -112,7 +130,12 @@ impl CeltDecoder {
             }
         }
 
-        let decay = if self.loss_duration == 0 { 1.5 } else { 0.5 };
+        // 3 dB per 20 ms, and on the first noise frame the decay the
+        // periodic or neural concealment before it skipped.
+        let mut decay = (1 << lm) as f32 * 0.0625;
+        if self.last_frame_type != FRAME_PLC_NOISE {
+            decay += 1f32.max(self.loss_duration.min(160) as f32 * 0.0625);
+        }
         for c in 0..cc {
             for i in start..end {
                 let e = &mut self.old_band_e[c * nb + i];
@@ -131,7 +154,7 @@ impl CeltDecoder {
                     seed = celt_lcg_rand(seed);
                     *v = ((seed as i32) >> 20) as f32;
                 }
-                renormalise_vector(&mut x[b0..b0 + blen], blen, 1.0);
+                renormalise_vector(&mut x[b0..b0 + blen], blen, 1.0, self.arch);
             }
         }
         self.rng = seed;
@@ -163,6 +186,7 @@ impl CeltDecoder {
         // Run the postfilter with the last parameters.
         self.prefilter_period = self.prefilter_period.max(COMBFILTER_MINPERIOD);
         self.prefilter_period_old = self.prefilter_period_old.max(COMBFILTER_MINPERIOD);
+        self.postfilter_pitch = self.postfilter_pitch.max(COMBFILTER_MINPERIOD);
         let short = mode.short_mdct_size;
         for c in 0..cc {
             let mem = &mut self.decode_mem[c * mem_len..(c + 1) * mem_len];
@@ -178,6 +202,7 @@ impl CeltDecoder {
                 self.prefilter_tapset,
                 mode.window,
                 overlap,
+                self.arch,
             );
             if lm != 0 {
                 comb_filter_inplace(
@@ -192,6 +217,7 @@ impl CeltDecoder {
                     self.prefilter_tapset,
                     mode.window,
                     overlap,
+                    self.arch,
                 );
             }
         }
@@ -205,42 +231,83 @@ impl CeltDecoder {
 
     /// Periodic concealment: repeat the last pitch period through the LPC
     /// filter of the signal before the loss.
-    fn conceal_periodic(&mut self, n: usize) {
+    fn conceal_periodic(
+        &mut self,
+        n: usize,
+        frame_type: u8,
+        lpcnet: crate::silk::plc::DeepPlc<'_>,
+    ) {
         let mode = self.mode;
         let overlap = mode.overlap;
         let window = mode.window;
         let cc = self.channels;
         let mem_len = DECODE_BUFFER_SIZE + overlap;
-        let first = self.last_frame_type != FRAME_PLC_PERIODIC;
+        let curr_neural = is_neural(frame_type);
+        let last_neural = is_neural(self.last_frame_type);
+        let first = self.last_frame_type != FRAME_PLC_PERIODIC && !(last_neural && curr_neural);
         let (pitch_index, fade) = if first {
             let pitch = self.plc_pitch_search();
             self.last_pitch_index = pitch;
             (pitch, 1.0f32)
         } else {
-            (self.last_pitch_index, 0.8)
+            // Fade once a whole pitch period is concealed.
+            let concealed = self.plc_duration as usize * mode.short_mdct_size;
+            let fade = if concealed >= self.last_pitch_index {
+                0.8
+            } else {
+                1.0
+            };
+            (self.last_pitch_index, fade)
         };
-        // Excitation of two pitch periods, to see whether the signal decays.
-        let exc_length = (2 * pitch_index).min(MAX_PERIOD);
+        #[cfg(feature = "deep-plc")]
+        let mut lpcnet = lpcnet;
+        #[cfg(feature = "deep-plc")]
+        if curr_neural
+            && !last_neural
+            && let Some(l) = lpcnet.as_deref_mut()
+        {
+            deep_plc::update_plc_state(
+                l,
+                &self.decode_mem,
+                mem_len,
+                &mut self.deep_plc.preemphasis_mem,
+                cc,
+            );
+        }
+        #[cfg(not(feature = "deep-plc"))]
+        let _ = lpcnet;
+        // Excitation of two pitch periods, to see whether the signal
+        // decays, and at least MAX_PERIOD to look for pitch multiples.
+        let exc_length = MAX_PERIOD.max(2 * pitch_index);
+        // sig[i] here is libopus's sig[i - CELT_LPC_ORDER].
+        let mut sig = [0.0f32; 2 * PLC_PITCH_LAG_MAX + LPC_ORDER];
+        let sig = &mut sig[..exc_length + LPC_ORDER];
+        let mut exc = [0.0f32; 2 * PLC_PITCH_LAG_MAX];
+        let exc = &mut exc[..exc_length];
+        // After a decoded frame, the extrapolation completes its folded
+        // right overlap.
+        let unfold = self.last_frame_type == FRAME_NORMAL;
+        let pf = self.postfilter();
 
         for c in 0..cc {
+            let mut pitch_index = pitch_index;
             let buf = &mut self.decode_mem[c * mem_len..(c + 1) * mem_len];
             let lpc = &mut self.plc_lpc[c * LPC_ORDER..(c + 1) * LPC_ORDER];
-            // exc[i] here is libopus's exc[i - CELT_LPC_ORDER].
-            let mut exc = [0.0f32; MAX_PERIOD + LPC_ORDER];
-            exc.copy_from_slice(
-                &buf[DECODE_BUFFER_SIZE - MAX_PERIOD - LPC_ORDER..DECODE_BUFFER_SIZE],
+            sig.copy_from_slice(
+                &buf[DECODE_BUFFER_SIZE - exc_length - LPC_ORDER..DECODE_BUFFER_SIZE],
             );
 
             if first {
                 // LPC of the last MAX_PERIOD samples, to work in the excitation domain.
                 let mut ac = [0.0f32; LPC_ORDER + 1];
                 autocorr(
-                    &exc[LPC_ORDER..],
+                    &sig[LPC_ORDER + exc_length - MAX_PERIOD..],
                     &mut ac,
                     Some(window),
                     overlap,
                     LPC_ORDER,
                     MAX_PERIOD,
+                    self.arch,
                 );
                 // A noise floor of -40 dB, and lag windowing for a stable recursion.
                 ac[0] *= 1.0001;
@@ -251,37 +318,68 @@ impl CeltDecoder {
                 celt_lpc(lpc, &ac, LPC_ORDER);
             }
 
-            // Whiten the last exc_length samples (celt_fir with history).
-            let start = LPC_ORDER + MAX_PERIOD - exc_length;
-            let mut fir = [0.0f32; MAX_PERIOD];
-            for (i, out) in fir.iter_mut().enumerate().take(exc_length) {
-                let mut sum = exc[start + i];
-                for k in (0..LPC_ORDER).rev() {
-                    sum += lpc[k] * exc[start + i - k - 1];
+            // The excitation: sig whitened (libopus celt_fir with history:
+            // xcorr_kernel on groups of four outputs, the rest in order).
+            let rnum: [f32; LPC_ORDER] = core::array::from_fn(|j| lpc[LPC_ORDER - 1 - j]);
+            let groups = exc.len() & !3;
+            for (i, out) in exc[..groups].chunks_exact_mut(4).enumerate() {
+                let i = 4 * i;
+                let sum = core::array::from_fn(|k| sig[LPC_ORDER + i + k]);
+                let sum = match self.arch {
+                    crate::Arch::Scalar => xcorr_kernel::<4, false>(&rnum, &sig[i..], sum),
+                    _ => xcorr_kernel::<4, true>(&rnum, &sig[i..], sum),
+                };
+                out.copy_from_slice(&sum);
+            }
+            for (i, out) in exc.iter_mut().enumerate().skip(groups) {
+                let mut sum = sig[LPC_ORDER + i];
+                for (j, &r) in rnum.iter().enumerate() {
+                    sum += r * sig[i + j];
                 }
                 *out = sum;
             }
-            exc[start..start + exc_length].copy_from_slice(&fir[..exc_length]);
-
-            // How fast the waveform decays, so concealment adds no energy.
-            // (The float build's SHR32 is a no-op: no halving of E1.)
-            let decay = {
-                let (mut e1, mut e2) = (1.0f32, 1.0f32);
-                let decay_length = exc_length >> 1;
-                for i in 0..decay_length {
-                    let a = exc[LPC_ORDER + MAX_PERIOD - decay_length + i];
-                    e1 += a * a;
-                    let b = exc[LPC_ORDER + MAX_PERIOD - 2 * decay_length + i];
-                    e2 += b * b;
-                }
-                (e1.min(e2) / e2).sqrt()
+            // 1 plus the energy of the pitch period of exc at `from`.
+            let energy = |from: usize| {
+                exc[from..from + pitch_index]
+                    .iter()
+                    .fold(1.0f32, |e, &x| e + x * x)
             };
 
-            // Make room for the new frame; the old overlap is not used.
+            // How fast the waveform decays, so concealment adds no energy,
+            // measured on the first lost frame and kept for the next ones.
+            // (The float build's SHR32 is a no-op: no halving of E1.)
+            let decay = if first {
+                let e1 = energy(exc_length - pitch_index);
+                let e2 = energy(exc_length - 2 * pitch_index);
+                self.plc_decay[c] = (e1.min(e2) / e2).sqrt();
+                self.plc_decay[c]
+            } else {
+                self.plc_decay[c]
+            };
+
+            // Repeat the largest multiple of the pitch period whose periods
+            // all stay within 6 dB of the last one, so a short period does
+            // not repeat many times.
+            let e0 = energy(exc_length - pitch_index);
+            let k_max = exc_length / pitch_index;
+            let k = (2..=k_max)
+                .find(|&k| {
+                    let ek = energy(exc_length - k * pitch_index);
+                    ek < 0.25 * e0 || e0 < 0.25 * ek
+                })
+                .unwrap_or(k_max + 1);
+            pitch_index *= k - 1;
+
+            // Make room for the new frame, keeping the folded overlap.
+            let mut old_overlap = [0.0f32; 64];
+            if unfold {
+                old_overlap[..overlap / 2]
+                    .copy_from_slice(&buf[DECODE_BUFFER_SIZE..DECODE_BUFFER_SIZE + overlap / 2]);
+            }
             buf.copy_within(n..DECODE_BUFFER_SIZE, 0);
 
             // Extrapolate one period at a time, each one decayed further.
-            let extrapolation_offset = MAX_PERIOD - pitch_index;
+            let extrapolation_offset = exc_length - pitch_index;
             let extrapolation_len = n + overlap;
             let mut attenuation = fade * decay;
             let mut s1 = 0.0f32;
@@ -291,10 +389,10 @@ impl CeltDecoder {
                     j -= pitch_index;
                     attenuation *= decay;
                 }
-                buf[DECODE_BUFFER_SIZE - n + i] =
-                    attenuation * exc[LPC_ORDER + extrapolation_offset + j];
-                // Energy of the decoded signal whose excitation is copied.
-                let tmp = buf[DECODE_BUFFER_SIZE - MAX_PERIOD - n + extrapolation_offset + j];
+                buf[DECODE_BUFFER_SIZE - n + i] = attenuation * exc[extrapolation_offset + j];
+                // Expected energy of the attenuated signal whose excitation
+                // is copied.
+                let tmp = attenuation * sig[LPC_ORDER + extrapolation_offset + j];
                 s1 += tmp * tmp;
                 j += 1;
             }
@@ -305,15 +403,7 @@ impl CeltDecoder {
                 *m = buf[DECODE_BUFFER_SIZE - n - 1 - i];
             }
             let out = &mut buf[DECODE_BUFFER_SIZE - n..DECODE_BUFFER_SIZE - n + extrapolation_len];
-            for v in out.iter_mut() {
-                let mut sum = *v;
-                for (d, m) in lpc.iter().zip(lpc_mem.iter()) {
-                    sum -= d * m;
-                }
-                lpc_mem.copy_within(..LPC_ORDER - 1, 1);
-                lpc_mem[0] = sum;
-                *v = sum;
-            }
+            celt_iir(out, lpc, &lpc_mem, self.arch);
 
             // Attenuate a synthesis louder than what it copies; drop an
             // explosion (written to also catch a NaN, as libopus does).
@@ -331,6 +421,54 @@ impl CeltDecoder {
                     *v *= g;
                 }
             }
+
+            if unfold {
+                // Unfold the old overlap with the TDAC complement of the
+                // extrapolation, both before the postfilter.
+                let x0 = DECODE_BUFFER_SIZE - n;
+                let mut etmp = [0.0f32; 128];
+                comb_filter(
+                    &mut etmp,
+                    buf,
+                    0,
+                    x0,
+                    pf.period_old,
+                    pf.period_old,
+                    overlap,
+                    -pf.gain_old,
+                    -pf.gain_old,
+                    pf.tapset_old,
+                    pf.tapset_old,
+                    &[],
+                    0,
+                    self.arch,
+                );
+                for i in 0..overlap / 2 {
+                    let (w1, w2) = (window[i], window[overlap - 1 - i]);
+                    let x2 = old_overlap[i];
+                    let x1 = w2 * etmp[overlap - 1 - i] - w1 * etmp[i];
+                    buf[x0 + i] = w2 * x2 - w1 * x1;
+                    buf[x0 + overlap - 1 - i] = w1 * x2 + w2 * x1;
+                }
+                comb_filter_inplace(
+                    buf,
+                    x0,
+                    pf.period_old,
+                    pf.period_old,
+                    overlap,
+                    pf.gain_old,
+                    pf.gain_old,
+                    pf.tapset_old,
+                    pf.tapset_old,
+                    &[],
+                    0,
+                    self.arch,
+                );
+            }
+        }
+        #[cfg(feature = "deep-plc")]
+        if curr_neural && let Some(l) = lpcnet {
+            deep_plc::synthesize(self, l, n, last_neural);
         }
         self.prefilter_and_fold = true;
     }
@@ -352,31 +490,15 @@ impl CeltDecoder {
             DECODE_BUFFER_SIZE >> 1,
             self.channels,
             2,
+            self.arch,
         );
-        // TEMP bit-exactness trace.
-        #[cfg(feature = "std")]
-        let trace_n = {
-            use std::sync::atomic::{AtomicUsize, Ordering};
-            static N: AtomicUsize = AtomicUsize::new(0);
-            if let Ok(dir) = std::env::var("OPUS_TRACE_PLC") {
-                let n = N.fetch_add(1, Ordering::SeqCst);
-                let bytes: Vec<u8> = lp.iter().flat_map(|v| v.to_le_bytes()).collect();
-                let _ = std::fs::write(format!("{dir}/rs_lp_{n}.f32"), &bytes);
-                n
-            } else {
-                usize::MAX
-            }
-        };
         let pitch = pitch_search(
             &lp[PLC_PITCH_LAG_MAX >> 1..],
             &lp,
             DECODE_BUFFER_SIZE - PLC_PITCH_LAG_MAX,
             PLC_PITCH_LAG_MAX - PLC_PITCH_LAG_MIN,
+            self.arch,
         );
-        #[cfg(feature = "std")]
-        if trace_n != usize::MAX {
-            eprintln!("RS plc search {trace_n}: lag {}", PLC_PITCH_LAG_MAX - pitch);
-        }
         PLC_PITCH_LAG_MAX - pitch
     }
 
@@ -403,6 +525,7 @@ impl CeltDecoder {
             &pf,
             self.mode.window,
             self.mode.overlap,
+            self.arch,
         );
     }
 
@@ -453,6 +576,7 @@ pub(super) fn prefilter_and_fold(
     pf: &Postfilter,
     window: &[f32],
     overlap: usize,
+    arch: crate::Arch,
 ) {
     let x0 = DECODE_BUFFER_SIZE - n;
     let mut etmp = [0.0f32; 128];
@@ -468,10 +592,291 @@ pub(super) fn prefilter_and_fold(
         -pf.gain,
         pf.tapset_old,
         pf.tapset,
-        window,
-        overlap,
+        // libopus passes no window and no overlap: every sample is
+        // filtered with the current parameters (celt_decoder.c:606-609).
+        &[],
+        0,
+        arch,
     );
     for i in 0..overlap / 2 {
         mem[x0 + i] = window[i] * etmp[overlap - 1 - i] + window[overlap - i - 1] * etmp[i];
+    }
+}
+
+/// libopus `celt_iir` (celt/celt_lpc.c:221-276) at `arch`, in place: `x`
+/// filtered by 1/A(z) with `den` and the past outputs `mem` (newest first),
+/// in libopus's arithmetic. `y` holds the negated outputs. Outputs come four
+/// at a time: [`xcorr_kernel`] sums the history known when the group
+/// starts, oldest sample first, then the group's own earlier outputs are
+/// added, newest first.
+fn celt_iir(x: &mut [f32], den: &[f32], mem: &[f32; LPC_ORDER], arch: crate::Arch) {
+    const ORD: usize = LPC_ORDER;
+    let n = x.len();
+    let rden: [f32; ORD] = core::array::from_fn(|i| den[ORD - i - 1]);
+    let mut y = [0.0f32; ORD + MAX_PERIOD + 2 * 120];
+    for i in 0..ORD {
+        y[i] = -mem[ORD - i - 1];
+    }
+    let mut i = 0;
+    while i + 3 < n {
+        let sum = [x[i], x[i + 1], x[i + 2], x[i + 3]];
+        let mut sum = match arch {
+            crate::Arch::Scalar => xcorr_kernel::<4, false>(&rden, &y[i..], sum),
+            _ => xcorr_kernel::<4, true>(&rden, &y[i..], sum),
+        };
+        y[i + ORD] = -sum[0];
+        sum[1] += y[i + ORD] * den[0];
+        y[i + ORD + 1] = -sum[1];
+        sum[2] += y[i + ORD + 1] * den[0];
+        sum[2] += y[i + ORD] * den[1];
+        y[i + ORD + 2] = -sum[2];
+        sum[3] += y[i + ORD + 2] * den[0];
+        sum[3] += y[i + ORD + 1] * den[1];
+        sum[3] += y[i + ORD] * den[2];
+        y[i + ORD + 3] = -sum[3];
+        x[i..i + 4].copy_from_slice(&sum);
+        i += 4;
+    }
+    while i < n {
+        let mut sum = x[i];
+        for j in 0..ORD {
+            sum -= rden[j] * y[i + j];
+        }
+        y[i + ORD] = sum;
+        x[i] = sum;
+        i += 1;
+    }
+}
+
+/// Whether a frame type is a deep PLC or DRED frame.
+fn is_neural(frame_type: u8) -> bool {
+    #[cfg(feature = "deep-plc")]
+    if frame_type == FRAME_PLC_NEURAL {
+        return true;
+    }
+    #[cfg(feature = "dred")]
+    if frame_type == FRAME_DRED {
+        return true;
+    }
+    let _ = frame_type;
+    false
+}
+
+/// The deep PLC part of libopus `celt_decode_lost` (ENABLE_DEEP_PLC): the
+/// concealed frame comes from the LPCNet PLC at 16 kHz, resampled to 48 kHz.
+#[cfg(feature = "deep-plc")]
+pub(super) mod deep_plc {
+    use super::{CeltDecoder, DECODE_BUFFER_SIZE};
+    #[cfg(not(feature = "std"))]
+    use crate::compat::Math;
+    use crate::dnn::freq::{FRAME_SIZE, PREEMPHASIS};
+    use crate::dnn::lpcnet_plc::LpcnetPlcState;
+    use crate::dnn::vec::{max32, min32};
+
+    const PLC_UPDATE_FRAMES: usize = 4;
+    const PLC_UPDATE_SAMPLES: usize = PLC_UPDATE_FRAMES * FRAME_SIZE;
+    const SINC_ORDER: usize = 48;
+    /// `sinc_filter` of celt_decoder.c.
+    const SINC_FILTER: [f32; SINC_ORDER + 1] = [
+        4.2931e-05,
+        -0.000190293,
+        -0.000816132,
+        -0.000637162,
+        0.00141662,
+        0.00354764,
+        0.00184368,
+        -0.00428274,
+        -0.00856105,
+        -0.0034003,
+        0.00930201,
+        0.0159616,
+        0.00489785,
+        -0.0169649,
+        -0.0259484,
+        -0.00596856,
+        0.0286551,
+        0.0405872,
+        0.00649994,
+        -0.0509284,
+        -0.0716655,
+        -0.00665212,
+        0.134336,
+        0.278927,
+        0.339995,
+        0.278927,
+        0.134336,
+        -0.00665212,
+        -0.0716655,
+        -0.0509284,
+        0.00649994,
+        0.0405872,
+        0.0286551,
+        -0.00596856,
+        -0.0259484,
+        -0.0169649,
+        0.00489785,
+        0.0159616,
+        0.00930201,
+        -0.0034003,
+        -0.00856105,
+        -0.00428274,
+        0.00184368,
+        0.00354764,
+        0.00141662,
+        -0.000637162,
+        -0.000816132,
+        -0.000190293,
+        4.2931e-05,
+    ];
+
+    /// The deep PLC fields of libopus's CELTDecoder (`complexity`,
+    /// `plc_pcm`, `plc_fill`, `plc_preemphasis_mem`).
+    pub(crate) struct DeepPlcMem {
+        /// The decoder complexity (`OPUS_SET_COMPLEXITY`), kept by a reset.
+        pub(crate) complexity: i32,
+        plc_pcm: [i16; PLC_UPDATE_SAMPLES],
+        plc_fill: usize,
+        pub(super) preemphasis_mem: f32,
+    }
+
+    impl DeepPlcMem {
+        pub(crate) const EMPTY: Self = Self {
+            complexity: 0,
+            plc_pcm: [0; PLC_UPDATE_SAMPLES],
+            plc_fill: 0,
+            preemphasis_mem: 0.0,
+        };
+
+        /// `OPUS_RESET_STATE` (these fields follow `DECODER_RESET_START`).
+        pub(crate) fn reset(&mut self) {
+            *self = Self {
+                complexity: self.complexity,
+                ..Self::EMPTY
+            };
+        }
+    }
+
+    /// `float2int` (lrintf): round to nearest, ties to even.
+    fn float2int(x: f32) -> i32 {
+        let f = x.floor();
+        let d = x - f;
+        (if d > 0.5 || (d == 0.5 && (f as i64) % 2 != 0) {
+            f + 1.0
+        } else {
+            f
+        }) as i32
+    }
+
+    /// `update_plc_state`: feeds the last 40 ms of the decoded signal,
+    /// downsampled to 16 kHz, to the deep PLC without consuming DRED
+    /// features.
+    pub(super) fn update_plc_state(
+        lpcnet: &mut LpcnetPlcState<'static>,
+        decode_mem: &[f32],
+        mem_len: usize,
+        preemphasis_mem: &mut f32,
+        cc: usize,
+    ) {
+        let mut buf48k = [0.0f32; DECODE_BUFFER_SIZE];
+        let mut buf16k = [0i16; PLC_UPDATE_SAMPLES];
+        if cc == 1 {
+            buf48k.copy_from_slice(&decode_mem[..DECODE_BUFFER_SIZE]);
+        } else {
+            for (i, b) in buf48k.iter_mut().enumerate() {
+                *b = (0.5 * (decode_mem[i] + decode_mem[mem_len + i]) as f64) as f32;
+            }
+        }
+        for i in 1..DECODE_BUFFER_SIZE {
+            buf48k[i] += PREEMPHASIS * buf48k[i - 1];
+        }
+        *preemphasis_mem = buf48k[DECODE_BUFFER_SIZE - 1];
+        let offset = DECODE_BUFFER_SIZE - SINC_ORDER - 1 - 3 * (PLC_UPDATE_SAMPLES - 1);
+        for (i, o) in buf16k.iter_mut().enumerate() {
+            let mut sum = 0.0f32;
+            for (j, &f) in SINC_FILTER.iter().enumerate() {
+                sum += buf48k[3 * i + j + offset] * f;
+            }
+            *o = float2int(min32(32767.0, max32(-32767.0, sum))) as i16;
+        }
+        let (read_pos, skip) = (lpcnet.fec_read_pos, lpcnet.fec_skip);
+        for k in 0..PLC_UPDATE_FRAMES {
+            lpcnet.update(&buf16k[FRAME_SIZE * k..]);
+        }
+        lpcnet.fec_read_pos = read_pos;
+        lpcnet.fec_skip = skip;
+    }
+
+    /// Replaces the periodic concealment of the frame (and its overlap)
+    /// with the deep PLC output resampled to 48 kHz, cross-fading the first
+    /// overlap when the previous frame was not neural.
+    pub(super) fn synthesize(
+        st: &mut CeltDecoder,
+        lpcnet: &mut LpcnetPlcState<'static>,
+        n: usize,
+        last_neural: bool,
+    ) {
+        let overlap = st.mode.overlap;
+        let window = st.mode.window;
+        let cc = st.channels;
+        let mem_len = DECODE_BUFFER_SIZE + overlap;
+        let start = DECODE_BUFFER_SIZE - n;
+        let mut buf_copy = [0.0f32; 2 * 120];
+        for c in 0..cc {
+            buf_copy[c * overlap..(c + 1) * overlap].copy_from_slice(
+                &st.decode_mem[c * mem_len + start..c * mem_len + start + overlap],
+            );
+        }
+        let samples_needed16k = (n + SINC_ORDER + overlap) / 3;
+        let m = &mut st.deep_plc;
+        if !last_neural {
+            m.plc_fill = 0;
+        }
+        while m.plc_fill < samples_needed16k {
+            lpcnet.conceal(&mut m.plc_pcm[m.plc_fill..m.plc_fill + FRAME_SIZE]);
+            m.plc_fill += FRAME_SIZE;
+        }
+        let buf = &mut st.decode_mem[..mem_len];
+        for i in 0..(n + overlap) / 3 {
+            let mut sum = 0.0f32;
+            for j in 0..17 {
+                sum += (3 * m.plc_pcm[i + j] as i32) as f32 * SINC_FILTER[3 * j];
+            }
+            buf[start + 3 * i] = sum;
+            let mut sum = 0.0f32;
+            for j in 0..16 {
+                sum += (3 * m.plc_pcm[i + j + 1] as i32) as f32 * SINC_FILTER[3 * j + 2];
+            }
+            buf[start + 3 * i + 1] = sum;
+            let mut sum = 0.0f32;
+            for j in 0..16 {
+                sum += (3 * m.plc_pcm[i + j + 1] as i32) as f32 * SINC_FILTER[3 * j + 1];
+            }
+            buf[start + 3 * i + 2] = sum;
+        }
+        m.plc_pcm.copy_within(n / 3..m.plc_fill, 0);
+        m.plc_fill -= n / 3;
+        for i in 0..n {
+            let tmp = buf[start + i];
+            buf[start + i] -= PREEMPHASIS * m.preemphasis_mem;
+            m.preemphasis_mem = tmp;
+        }
+        let mut overlap_mem = m.preemphasis_mem;
+        for i in 0..overlap {
+            let tmp = buf[DECODE_BUFFER_SIZE + i];
+            buf[DECODE_BUFFER_SIZE + i] -= PREEMPHASIS * overlap_mem;
+            overlap_mem = tmp;
+        }
+        // Deep PLC is mono.
+        if cc == 2 {
+            st.decode_mem.copy_within(..mem_len, mem_len);
+        }
+        if !last_neural {
+            for c in 0..cc {
+                for i in 0..overlap {
+                    let d = &mut st.decode_mem[c * mem_len + start + i];
+                    *d = (1.0 - window[i]) * buf_copy[c * overlap + i] + window[i] * *d;
+                }
+            }
+        }
     }
 }

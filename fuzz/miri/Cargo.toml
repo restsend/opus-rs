@@ -1,0 +1,14 @@
+[package]
+name = "opus-rs-miri"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Replays opus-rs's decoder, encoder, range coder and DSP kernels on
+# deterministic pseudo-random inputs, for `cargo +nightly miri test`.
+# Kept out of the fuzz crate because Miri cannot run libFuzzer or the C
+# reference.
+[workspace]
+
+[dependencies]
+opus-rs = { path = "../..", features = ["fuzzing"] }

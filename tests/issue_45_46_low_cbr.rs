@@ -120,7 +120,11 @@ fn issue46_low_cbr_decodes_as_celt() {
             let mut best = f64::NEG_INFINITY;
             for lag in -400i64..=400 {
                 let (mut sig, mut err) = (0f64, 0f64);
-                for (i, &xi) in input.iter().enumerate().skip(frame).take(input.len() - 2 * frame)
+                for (i, &xi) in input
+                    .iter()
+                    .enumerate()
+                    .skip(frame)
+                    .take(input.len() - 2 * frame)
                 {
                     let j = i as i64 + lag;
                     if j < 0 || j as usize >= pcm.len() {

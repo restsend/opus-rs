@@ -28,7 +28,7 @@ fn generate_voiced_signal(len: usize) -> Vec<i16> {
 /// Helper: create and configure a WB SILK encoder at complexity 1 (simplest non-trivial)
 fn create_wb_encoder(complexity: i32) -> SilkEncoderState {
     let mut enc = SilkEncoderState::default();
-    silk_init_encoder(&mut enc, 0);
+    silk_init_encoder(&mut enc, opus_rs::Arch::Scalar);
     silk_control_encoder(&mut enc, 16, 20, 20000, complexity);
     // Set SNR target manually (normally done by silk_control_SNR)
     enc.s_cmn.snr_db_q7 = 25 * 128; // 25 dB in Q7
